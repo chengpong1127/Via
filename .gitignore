@@ -1,0 +1,4 @@
+/server/target/
+.DS_Store
+.env
+/server/var/valhalla/

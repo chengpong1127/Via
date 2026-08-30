@@ -1,0 +1,17 @@
+services:
+  valhalla:
+    image: ghcr.io/valhalla/valhalla:3.8.3
+    command: ["/opt/via/prepare-valhalla.sh"]
+    ports:
+      - "127.0.0.1:8002:8002"
+    volumes:
+      - ./fixtures/valhalla:/fixtures:ro
+      - ./scripts/prepare-valhalla.sh:/opt/via/prepare-valhalla.sh:ro
+      - ./var/valhalla:/data/valhalla
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/status | grep --quiet tileset_last_modified"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
