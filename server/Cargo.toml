@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 language-tags = "0.3"
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

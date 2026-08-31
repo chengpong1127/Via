@@ -33,7 +33,7 @@ pub struct Freshness {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObservationTimes {
+pub struct LiveStatusTimes {
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub measured_at: Option<OffsetDateTime>,
     #[serde(default, with = "time::serde::rfc3339::option")]
@@ -44,7 +44,7 @@ pub struct ObservationTimes {
     pub normalized_at: OffsetDateTime,
 }
 
-impl ObservationTimes {
+impl LiveStatusTimes {
     pub fn received(received_at: OffsetDateTime) -> Self {
         Self {
             measured_at: None,
@@ -77,7 +77,7 @@ impl FreshnessPolicy {
 
     pub fn evaluate(
         &self,
-        times: ObservationTimes,
+        times: LiveStatusTimes,
         evaluated_at: OffsetDateTime,
         source_failure: Option<FreshnessReason>,
     ) -> Freshness {

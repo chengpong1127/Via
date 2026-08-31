@@ -13,6 +13,7 @@ fn snapshot(id: &str, version: u64) -> NetworkSnapshot {
         freshness_policy_version: "1".into(),
         publication_version: version,
         feed_evidence: Vec::new(),
+        live_status: Vec::new(),
     }
 }
 

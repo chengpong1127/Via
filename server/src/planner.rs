@@ -5,7 +5,9 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::{PlanningRequest, RequestCoordinate, SelectedMode},
+    api::{PlanningRequest, RequestCoordinate, SelectedMode, TravelMode, new_request_id},
+    live_status::{FreshnessReason, FreshnessState},
+    ranking::{JourneyClass, JourneyLabel, RankingReason},
     snapshot::{NetworkSnapshot, SnapshotError, SnapshotStore},
     street::{
         Attribution, Coordinate, DetailedPath, DetailedPathQuery, Maneuver, ManeuverKind,
@@ -28,6 +30,7 @@ impl JourneyPlanningService {
     }
 
     pub async fn plan(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
+        let request_started_at = taipei_now();
         let snapshot = self.snapshots.pin_current().await?;
         let origin = to_street_coordinate(request.origin.coordinate)?;
         let destination = to_street_coordinate(request.destination.coordinate)?;
@@ -46,9 +49,13 @@ impl JourneyPlanningService {
             Err(error) => return Err(error.into()),
         };
 
-        let generated_at = taipei_now();
-        let request_id = next_request_id();
-        let metadata = ResultMetadata::new(request_id, generated_at, snapshot, &request);
+        let metadata = ResultMetadata::new(
+            new_request_id(),
+            taipei_now(),
+            request_started_at,
+            snapshot,
+            &request,
+        );
         let Some(path) = path else {
             return Ok(PlanningOutcome::Empty(EmptyResult {
                 metadata,
@@ -147,12 +154,13 @@ impl ResultMetadata {
     fn new(
         request_id: String,
         generated_at: OffsetDateTime,
+        request_started_at: OffsetDateTime,
         network_snapshot: NetworkSnapshot,
         request: &PlanningRequest,
     ) -> Self {
         let effective_search_time = request
             .departure_setting
-            .effective_search_time(generated_at);
+            .effective_search_time(request_started_at);
         Self {
             api_version: crate::api::API_VERSION,
             semantic_catalog_version: crate::api::SEMANTIC_CATALOG_VERSION,
@@ -182,9 +190,9 @@ pub struct PolicyVersions {
 pub struct JourneyOption {
     pub id: String,
     pub matching_key: String,
-    pub class: &'static str,
-    pub label: Option<&'static str>,
-    pub ranking_reasons: Vec<&'static str>,
+    pub class: JourneyClass,
+    pub label: Option<JourneyLabel>,
+    pub ranking_reasons: Vec<RankingReason>,
     #[serde(with = "time::serde::rfc3339")]
     pub departure_time: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -192,7 +200,7 @@ pub struct JourneyOption {
     pub duration_seconds: u32,
     pub walking_seconds: u32,
     pub transfer_count: u32,
-    pub travel_modes: Vec<&'static str>,
+    pub travel_modes: Vec<TravelMode>,
     pub live_status_summary: LiveStatusSummary,
     pub overview_geometry: Geometry,
     pub legs: Vec<Leg>,
@@ -209,7 +217,7 @@ pub struct Geometry {
 #[derive(Clone, Debug, Serialize)]
 pub struct Leg {
     pub id: String,
-    pub mode: &'static str,
+    pub mode: TravelMode,
     pub from: Place,
     pub to: Place,
     #[serde(with = "time::serde::rfc3339")]
@@ -224,8 +232,8 @@ pub struct Leg {
     pub distance_metres: u32,
     pub geometry: Geometry,
     pub guidance: Vec<Guidance>,
-    pub details: serde_json::Value,
-    pub live_status: Vec<serde_json::Value>,
+    pub details: LegDetails,
+    pub live_status: Vec<LiveStatusEvidence>,
     pub warnings: Vec<Warning>,
     pub attribution: Vec<Attribution>,
 }
@@ -252,14 +260,17 @@ pub struct Transfer {
     pub connector_leg_ids: Vec<String>,
     pub duration_seconds: u32,
     pub available_seconds: u32,
-    pub class: &'static str,
-    pub reasons: Vec<&'static str>,
+    pub class: JourneyClass,
+    pub reasons: Vec<RankingReason>,
+    pub geometry: Option<Geometry>,
+    pub guidance: Vec<Guidance>,
+    pub warnings: Vec<Warning>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LiveStatusSummary {
-    pub state: &'static str,
-    pub reasons: Vec<&'static str>,
+    pub state: FreshnessState,
+    pub reasons: Vec<FreshnessReason>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub observed_at: Option<OffsetDateTime>,
 }
@@ -270,6 +281,95 @@ pub struct Warning {
     pub required: bool,
     pub severity: &'static str,
     pub parameters: BTreeMap<String, serde_json::Value>,
+    pub scope: WarningScope,
+    pub source_text_variants: Vec<SourceTextVariant>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LegDetails {
+    Walking {
+        start_fact: Option<String>,
+        end_fact: Option<String>,
+    },
+    Bus {
+        via_service_id: String,
+        via_boarding_point_id: String,
+        via_alighting_point_id: String,
+        service_label: String,
+        headsign: String,
+        stop_count: Option<u32>,
+    },
+    Metro {
+        via_line_id: String,
+        via_boarding_point_id: String,
+        via_alighting_point_id: String,
+        line_label: String,
+        headsign: String,
+    },
+    #[serde(rename = "youbike")]
+    YouBike {
+        via_pickup_station_id: String,
+        via_return_station_id: String,
+        pickup_state: crate::normalization::ActionState,
+        return_state: crate::normalization::ActionState,
+        available_bikes: Option<u32>,
+        available_return_slots: Option<u32>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LiveStatusEvidence {
+    pub kind: LiveStatusKind,
+    pub evidence_type: EvidenceType,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub observed_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub published_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub received_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub evaluated_at: OffsetDateTime,
+    pub freshness: crate::live_status::Freshness,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStatusKind {
+    ArrivalEstimate,
+    ServiceCondition,
+    BikeAvailability,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceType {
+    Live,
+    ScheduleOnly,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WarningScope {
+    #[serde(rename = "type")]
+    pub kind: WarningScopeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WarningScopeKind {
+    Result,
+    JourneyOption,
+    Leg,
+    Transfer,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SourceTextVariant {
+    pub locale: String,
+    pub text: String,
+    pub attribution: Vec<Attribution>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -292,7 +392,7 @@ fn walking_option(
     };
     let leg = Leg {
         id: "leg_1".into(),
-        mode: "walking",
+        mode: TravelMode::Walking,
         from: Place {
             display_name: request.origin.display_text.clone(),
             coordinate: request.origin.coordinate,
@@ -316,11 +416,10 @@ fn walking_option(
             points: encoded,
         },
         guidance: guidance(&path.maneuvers),
-        details: serde_json::json!({
-            "type": "walking",
-            "start_fact": null,
-            "end_fact": null
-        }),
+        details: LegDetails::Walking {
+            start_fact: None,
+            end_fact: None,
+        },
         live_status: Vec::new(),
         warnings: Vec::new(),
         attribution: path.attribution,
@@ -328,17 +427,17 @@ fn walking_option(
     JourneyOption {
         id: "option_1".into(),
         matching_key: matching_key(request),
-        class: "reliable",
-        label: Some("best_now"),
-        ranking_reasons: vec!["earliest_reliable_arrival"],
+        class: JourneyClass::Reliable,
+        label: Some(JourneyLabel::BestNow),
+        ranking_reasons: vec![RankingReason::EarliestReliableArrival],
         departure_time,
         arrival_time,
         duration_seconds: path.duration.0,
         walking_seconds: path.duration.0,
         transfer_count: 0,
-        travel_modes: vec!["walking"],
+        travel_modes: vec![TravelMode::Walking],
         live_status_summary: LiveStatusSummary {
-            state: "not_applicable",
+            state: FreshnessState::NotApplicable,
             reasons: Vec::new(),
             observed_at: None,
         },
@@ -413,15 +512,6 @@ fn to_street_coordinate(coordinate: RequestCoordinate) -> Result<Coordinate, Pla
 
 fn taipei_now() -> OffsetDateTime {
     OffsetDateTime::now_utc().to_offset(UtcOffset::from_hms(8, 0, 0).unwrap())
-}
-
-fn next_request_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "req_{:016x}",
-        NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 pub fn selected_modes_as_strings(modes: &[SelectedMode]) -> Vec<&'static str> {

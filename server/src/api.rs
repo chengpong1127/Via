@@ -10,6 +10,10 @@ use crate::street::Coordinate;
 pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
 
+pub fn new_request_id() -> String {
+    format!("req_{}", uuid::Uuid::new_v4().simple())
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningRequest {
@@ -110,6 +114,16 @@ pub enum SelectedMode {
     YouBike,
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TravelMode {
+    Walking,
+    Bus,
+    Metro,
+    #[serde(rename = "youbike")]
+    YouBike,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

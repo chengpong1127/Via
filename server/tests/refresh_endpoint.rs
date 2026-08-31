@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use via_server::{
     app::build_router_with_services,
     live_status::{Freshness, FreshnessState},
-    refresh::{FeedSource, RefreshCoordinator},
+    refresh::{FeedRefreshBatch, FeedSource, RefreshCoordinator},
     snapshot::{InMemorySnapshotStore, NetworkSnapshot},
     street::{FakeProvider, GraphRevision},
 };
@@ -27,12 +27,15 @@ impl FeedSource for FreshFeed {
     async fn refresh(
         &self,
         evaluated_at: OffsetDateTime,
-    ) -> Result<Freshness, via_server::live_status::FreshnessReason> {
-        Ok(Freshness {
-            state: FreshnessState::Fresh,
-            reason: None,
-            policy_version: "1".into(),
-            evaluated_at,
+    ) -> Result<FeedRefreshBatch, via_server::live_status::FreshnessReason> {
+        Ok(FeedRefreshBatch {
+            freshness: Freshness {
+                state: FreshnessState::Fresh,
+                reason: None,
+                policy_version: "1".into(),
+                evaluated_at,
+            },
+            live_status: Vec::new(),
         })
     }
 }
@@ -48,6 +51,7 @@ async fn app() -> axum::Router {
         freshness_policy_version: "1".into(),
         publication_version: 1,
         feed_evidence: Vec::new(),
+        live_status: Vec::new(),
     }));
     let coordinator = RefreshCoordinator::new(store.clone(), vec![Arc::new(FreshFeed)], 4);
     build_router_with_services(

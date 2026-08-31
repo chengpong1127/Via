@@ -187,17 +187,26 @@
       },
       "Warning": {
         "type": "object",
-        "required": ["code", "required", "severity", "parameters"],
+        "required": ["code", "required", "severity", "parameters", "scope", "source_text_variants"],
         "properties": {
           "code": { "type": "string" },
           "required": { "type": "boolean" },
           "severity": { "enum": ["information", "caution"] },
-          "parameters": { "type": "object" }
+          "parameters": { "type": "object" },
+          "scope": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "enum": ["result", "journey_option", "leg", "transfer"] },
+              "id": { "type": "string" }
+            }
+          },
+          "source_text_variants": { "type": "array", "items": { "type": "object" } }
         }
       },
       "Transfer": {
         "type": "object",
-        "required": ["from_leg_id", "to_leg_id", "connector_leg_ids", "duration_seconds", "available_seconds", "class", "reasons"],
+        "required": ["from_leg_id", "to_leg_id", "connector_leg_ids", "duration_seconds", "available_seconds", "class", "reasons", "geometry", "guidance", "warnings"],
         "properties": {
           "from_leg_id": { "type": "string" },
           "to_leg_id": { "type": "string" },
@@ -205,7 +214,10 @@
           "duration_seconds": { "type": "integer", "minimum": 0 },
           "available_seconds": { "type": "integer", "minimum": 0 },
           "class": { "enum": ["reliable", "feasible"] },
-          "reasons": { "type": "array", "items": { "type": "string" } }
+          "reasons": { "type": "array", "items": { "type": "string" } },
+          "geometry": { "oneOf": [{ "$ref": "#/components/schemas/Geometry" }, { "type": "null" }] },
+          "guidance": { "type": "array", "items": { "$ref": "#/components/schemas/Guidance" } },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } }
         }
       },
       "JourneyOption": {

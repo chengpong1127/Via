@@ -11,7 +11,7 @@ use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION},
+    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     planner::{JourneyPlanningService, PlanningError},
     refresh::{RefreshCoordinator, RefreshOutcome},
     snapshot::{InMemorySnapshotStore, NetworkSnapshot, SnapshotStore},
@@ -48,6 +48,7 @@ pub async fn build_router(
         freshness_policy_version: "1".into(),
         publication_version: 1,
         feed_evidence: Vec::new(),
+        live_status: Vec::new(),
     }));
     build_router_with_store(provider, snapshots).await
 }
@@ -247,7 +248,7 @@ fn error_response(status: StatusCode, code: &str, field: Option<&str>) -> Respon
         Json(ErrorEnvelope {
             api_version: API_VERSION,
             semantic_catalog_version: SEMANTIC_CATALOG_VERSION,
-            request_id: request_id(),
+            request_id: new_request_id(),
             error: ErrorObject {
                 code,
                 required: true,
@@ -256,15 +257,6 @@ fn error_response(status: StatusCode, code: &str, field: Option<&str>) -> Respon
             },
         }),
     ))
-}
-
-fn request_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT_ERROR_ID: AtomicU64 = AtomicU64::new(1);
-    format!(
-        "req_error_{:016x}",
-        NEXT_ERROR_ID.fetch_add(1, Ordering::Relaxed)
-    )
 }
 
 fn no_store(response: impl IntoResponse) -> Response {

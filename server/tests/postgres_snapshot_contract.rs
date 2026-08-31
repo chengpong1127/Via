@@ -1,7 +1,9 @@
 use time::OffsetDateTime;
 use via_server::{
+    live_status::{Freshness, FreshnessState},
+    normalization::{ArrivalEstimate, ArrivalState, BoardingPointId, TransitServiceId},
     postgres::PostgresSnapshotStore,
-    snapshot::{NetworkSnapshot, SnapshotStore},
+    snapshot::{LiveStatusValue, NetworkSnapshot, NormalizedLiveStatus, SnapshotStore},
 };
 
 fn snapshot(id: String, version: u64, now: OffsetDateTime) -> NetworkSnapshot {
@@ -14,6 +16,7 @@ fn snapshot(id: String, version: u64, now: OffsetDateTime) -> NetworkSnapshot {
         freshness_policy_version: "1".into(),
         publication_version: version,
         feed_evidence: Vec::new(),
+        live_status: Vec::new(),
     }
 }
 
@@ -36,16 +39,40 @@ async fn postgres_is_authoritative_for_lease_and_snapshot_publication() {
         .await
         .unwrap()
         .unwrap();
-    let next = snapshot(
+    let mut next = snapshot(
         format!("integration-snapshot-{}", now.unix_timestamp_nanos()),
         current.publication_version + 1,
         now,
     );
+    next.live_status.push(NormalizedLiveStatus {
+        id: format!("integration-observation-{}", now.unix_timestamp_nanos()),
+        received_at: now,
+        normalized_at: now,
+        freshness: Freshness {
+            state: FreshnessState::Fresh,
+            reason: None,
+            policy_version: "1".into(),
+            evaluated_at: now,
+        },
+        value: LiveStatusValue::ArrivalEstimate(ArrivalEstimate {
+            transit_service_id: TransitServiceId::new("via_service_test"),
+            boarding_point_id: BoardingPointId::new("via_boarding_point_test"),
+            predicted_arrival_at: Some(now),
+            state: ArrivalState::Predicted,
+            transmitted_at: now,
+        }),
+    });
 
     store
         .publish(lease, current.publication_version, next.clone())
         .await
         .unwrap();
 
-    assert_eq!(store.pin_current().await.unwrap(), next);
+    let published = store.pin_current().await.unwrap();
+    assert_eq!(published, next);
+
+    let reloaded_store = PostgresSnapshotStore::connect(&database_url, 2)
+        .await
+        .unwrap();
+    assert_eq!(reloaded_store.pin_current().await.unwrap(), next);
 }

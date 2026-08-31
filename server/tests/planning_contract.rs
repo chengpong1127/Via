@@ -2,7 +2,7 @@ use serde_json::json;
 use time::macros::datetime;
 use via_server::{
     api::{PlanningRequest, RequestValidationError, SelectedMode},
-    live_status::{FreshnessPolicy, FreshnessReason, FreshnessState, ObservationTimes},
+    live_status::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
 };
 
 #[test]
@@ -62,17 +62,17 @@ fn tdx_freshness_boundaries_are_exact_and_use_evidence_time() {
     let evaluated_at = datetime!(2026-08-31 12:00 +08:00);
 
     let fresh = policy.evaluate(
-        ObservationTimes::received(datetime!(2026-08-31 11:58 +08:00)),
+        LiveStatusTimes::received(datetime!(2026-08-31 11:58 +08:00)),
         evaluated_at,
         None,
     );
     let degraded = policy.evaluate(
-        ObservationTimes::received(datetime!(2026-08-31 11:57:59 +08:00)),
+        LiveStatusTimes::received(datetime!(2026-08-31 11:57:59 +08:00)),
         evaluated_at,
         None,
     );
     let unavailable = policy.evaluate(
-        ObservationTimes::received(datetime!(2026-08-31 11:56:59 +08:00)),
+        LiveStatusTimes::received(datetime!(2026-08-31 11:56:59 +08:00)),
         evaluated_at,
         None,
     );
@@ -87,7 +87,7 @@ fn tdx_freshness_boundaries_are_exact_and_use_evidence_time() {
 fn source_failure_never_makes_an_old_observation_fresh() {
     let policy = FreshnessPolicy::tdx_one_minute("1");
     let result = policy.evaluate(
-        ObservationTimes::received(datetime!(2026-08-31 11:59:30 +08:00)),
+        LiveStatusTimes::received(datetime!(2026-08-31 11:59:30 +08:00)),
         datetime!(2026-08-31 12:00 +08:00),
         Some(FreshnessReason::SourceError),
     );

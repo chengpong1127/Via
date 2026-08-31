@@ -1,8 +1,9 @@
 use time::macros::{date, datetime};
 use via_server::normalization::{
     AliasKey, AliasRegistry, ArrivalState, BoardingPointId, EntityId, Provider, ServiceDayPolicy,
-    TransitServiceId, map_tdx_n1,
+    TransitServiceId,
 };
+use via_server::tdx::normalize_n1;
 
 #[test]
 fn reviewed_alias_change_preserves_via_identity() {
@@ -39,19 +40,19 @@ fn n1_nulls_and_statuses_never_collapse_into_zero() {
     let anchor = datetime!(2026-08-31 12:00 +08:00);
 
     assert_eq!(
-        map_tdx_n1(service.clone(), boarding.clone(), 0, None, anchor).state,
+        normalize_n1(service.clone(), boarding.clone(), 0, None, anchor).state,
         ArrivalState::Unknown
     );
     assert_eq!(
-        map_tdx_n1(service.clone(), boarding.clone(), 1, Some(120), anchor).state,
+        normalize_n1(service.clone(), boarding.clone(), 1, Some(120), anchor).state,
         ArrivalState::NotDeparted
     );
     assert_eq!(
-        map_tdx_n1(service.clone(), boarding.clone(), 2, None, anchor).state,
+        normalize_n1(service.clone(), boarding.clone(), 2, None, anchor).state,
         ArrivalState::Skipped
     );
     assert_eq!(
-        map_tdx_n1(service, boarding, 0, Some(0), anchor).state,
+        normalize_n1(service, boarding, 0, Some(0), anchor).state,
         ArrivalState::AtBoardingPoint
     );
 }

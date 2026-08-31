@@ -1,7 +1,8 @@
+use via_server::normalization::ActionState;
 use via_server::{
     live_status::FreshnessState,
     ranking::{
-        ActionState, BikeAvailability, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
+        BikeActionEvidence, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
         TransferEvidence, TransferKind,
     },
 };
@@ -81,7 +82,7 @@ fn youbike_zero_one_two_and_three_thresholds_are_exact() {
                 _ => 600,
             };
             option.main_service_sequence = vec![format!("bike-{count}")];
-            option.bike_availability = Some(BikeAvailability {
+            option.bike_availability = Some(BikeActionEvidence {
                 pickup_state: ActionState::Enabled,
                 return_state: ActionState::Enabled,
                 available_bikes: Some(count),

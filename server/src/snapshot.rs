@@ -7,6 +7,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 
 use crate::live_status::{Freshness, FreshnessReason};
+use crate::normalization::{ArrivalEstimate, BikeAvailability, ServiceCondition};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkSnapshot {
@@ -22,6 +23,28 @@ pub struct NetworkSnapshot {
     pub publication_version: u64,
     #[serde(skip_serializing)]
     pub feed_evidence: Vec<FeedEvidence>,
+    #[serde(skip_serializing)]
+    pub live_status: Vec<NormalizedLiveStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedLiveStatus {
+    pub id: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub received_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub normalized_at: OffsetDateTime,
+    pub freshness: Freshness,
+    #[serde(flatten)]
+    pub value: LiveStatusValue,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "family", content = "value", rename_all = "snake_case")]
+pub enum LiveStatusValue {
+    ArrivalEstimate(ArrivalEstimate),
+    BikeAvailability(BikeAvailability),
+    ServiceCondition(ServiceCondition),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

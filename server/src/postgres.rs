@@ -5,9 +5,12 @@ use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 
+use crate::live_status::FreshnessState;
 use crate::snapshot::{
-    FeedEvidence, NetworkSnapshot, PublishError, RefreshLease, SnapshotError, SnapshotStore,
+    FeedEvidence, NetworkSnapshot, NormalizedLiveStatus, PublishError, RefreshLease, SnapshotError,
+    SnapshotStore,
 };
+use crate::tdx::IdentityResolver;
 
 #[derive(Clone)]
 pub struct PostgresSnapshotStore {
@@ -69,7 +72,7 @@ impl SnapshotStore for PostgresSnapshotStore {
             }
         }
         let row = sqlx::query(
-            "SELECT s.id, s.created_at, s.live_cutoff, s.static_network_revision, s.schedule_revision, s.freshness_policy_version, s.publication_version, s.feed_evidence
+            "SELECT s.id, s.created_at, s.live_cutoff, s.static_network_revision, s.schedule_revision, s.freshness_policy_version, s.publication_version, s.feed_evidence, s.selected_observation_ids
              FROM via_network_snapshots s
              WHERE s.id = $1",
         )
@@ -84,6 +87,34 @@ impl SnapshotStore for PostgresSnapshotStore {
         let feed_evidence: serde_json::Value = row
             .try_get("feed_evidence")
             .map_err(|_| SnapshotError::Storage)?;
+        let selected_observation_ids: serde_json::Value = row
+            .try_get("selected_observation_ids")
+            .map_err(|_| SnapshotError::Storage)?;
+        let selected_observation_ids: Vec<String> =
+            serde_json::from_value(selected_observation_ids).map_err(|_| SnapshotError::Storage)?;
+        let live_status = if selected_observation_ids.is_empty() {
+            Vec::new()
+        } else {
+            let rows = sqlx::query(
+                "SELECT observed_payload
+                 FROM via_live_status_observations
+                 WHERE id = ANY($1)
+                 ORDER BY array_position($1::text[], id)",
+            )
+            .bind(&selected_observation_ids)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|_| SnapshotError::Storage)?;
+            rows.into_iter()
+                .map(|row| {
+                    let payload: serde_json::Value = row
+                        .try_get("observed_payload")
+                        .map_err(|_| SnapshotError::Storage)?;
+                    serde_json::from_value::<NormalizedLiveStatus>(payload)
+                        .map_err(|_| SnapshotError::Storage)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let snapshot = NetworkSnapshot {
             id: row.try_get("id").map_err(|_| SnapshotError::Storage)?,
             created_at: row
@@ -105,6 +136,7 @@ impl SnapshotStore for PostgresSnapshotStore {
                 .map_err(|_| SnapshotError::Storage)?,
             feed_evidence: serde_json::from_value::<Vec<FeedEvidence>>(feed_evidence)
                 .map_err(|_| SnapshotError::Storage)?,
+            live_status,
         };
         *self.cache.write().await = Some(snapshot.clone());
         Ok(snapshot)
@@ -206,6 +238,12 @@ impl SnapshotStore for PostgresSnapshotStore {
         if snapshot.publication_version != expected_publication_version + 1 {
             return Err(PublishError::InvalidPublicationVersion);
         }
+        insert_live_status(&mut transaction, &snapshot.live_status)
+            .await
+            .map_err(|_| PublishError::Storage)?;
+        insert_feed_health(&mut transaction, &snapshot.feed_evidence)
+            .await
+            .map_err(|_| PublishError::Storage)?;
         insert_snapshot(&mut transaction, &snapshot)
             .await
             .map_err(|_| PublishError::Storage)?;
@@ -270,10 +308,18 @@ async fn insert_snapshot(
 ) -> Result<(), sqlx::Error> {
     let feed_evidence = serde_json::to_value(&snapshot.feed_evidence)
         .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+    let selected_observation_ids = serde_json::to_value(
+        snapshot
+            .live_status
+            .iter()
+            .map(|live_status| &live_status.id)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
     sqlx::query(
         "INSERT INTO via_network_snapshots
-         (id, created_at, live_cutoff, static_network_revision, schedule_revision, freshness_policy_version, publication_version, feed_evidence)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (id, created_at, live_cutoff, static_network_revision, schedule_revision, freshness_policy_version, publication_version, feed_evidence, selected_observation_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (id) DO NOTHING",
     )
     .bind(&snapshot.id)
@@ -284,7 +330,105 @@ async fn insert_snapshot(
     .bind(&snapshot.freshness_policy_version)
     .bind(snapshot.publication_version as i64)
     .bind(feed_evidence)
+    .bind(selected_observation_ids)
     .execute(&mut **transaction)
     .await?;
     Ok(())
+}
+
+async fn insert_live_status(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    live_status: &[NormalizedLiveStatus],
+) -> Result<(), sqlx::Error> {
+    for status in live_status {
+        let (family, measured_at, published_at) = match &status.value {
+            crate::snapshot::LiveStatusValue::ArrivalEstimate(arrival) => {
+                ("arrival_estimate", None, Some(arrival.transmitted_at))
+            }
+            crate::snapshot::LiveStatusValue::BikeAvailability(availability) => (
+                "bike_availability",
+                availability.source_change_at,
+                availability.provider_published_at,
+            ),
+            crate::snapshot::LiveStatusValue::ServiceCondition(_) => {
+                ("service_condition", None, None)
+            }
+        };
+        let payload = serde_json::to_value(status)
+            .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO via_live_status_observations
+             (id, family, observed_payload, measured_at, published_at, received_at, normalized_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&status.id)
+        .bind(family)
+        .bind(payload)
+        .bind(measured_at)
+        .bind(published_at)
+        .bind(status.received_at)
+        .bind(status.normalized_at)
+        .bind(status.normalized_at + Duration::days(7))
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_feed_health(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    evidence: &[FeedEvidence],
+) -> Result<(), sqlx::Error> {
+    for feed in evidence {
+        sqlx::query(
+            "INSERT INTO via_feed_health (capability, state, reason, evaluated_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&feed.capability)
+        .bind(freshness_state_name(feed.freshness.state))
+        .bind(
+            feed.failure_reason
+                .map(|reason| format!("{reason:?}").to_lowercase()),
+        )
+        .bind(feed.freshness.evaluated_at)
+        .bind(feed.freshness.evaluated_at + Duration::days(30))
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+fn freshness_state_name(state: FreshnessState) -> &'static str {
+    match state {
+        FreshnessState::Fresh => "fresh",
+        FreshnessState::Degraded => "degraded",
+        FreshnessState::Unavailable => "unavailable",
+        FreshnessState::NotApplicable => "not_applicable",
+    }
+}
+
+#[async_trait]
+impl IdentityResolver for PostgresSnapshotStore {
+    async fn resolve(
+        &self,
+        entity_kind: &str,
+        authority_namespace: &str,
+        upstream_key: &str,
+    ) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT via_id FROM via_provider_aliases
+             WHERE provider = 'tdx' AND entity_kind = $1 AND authority_namespace = $2
+               AND upstream_key = $3 AND valid_from <= NOW()
+               AND (valid_until IS NULL OR NOW() < valid_until)
+             ORDER BY valid_from DESC LIMIT 1",
+        )
+        .bind(entity_kind)
+        .bind(authority_namespace)
+        .bind(upstream_key)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
 }

@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::live_status::FreshnessState;
+use crate::{live_status::FreshnessState, normalization::ActionState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,14 +44,7 @@ pub struct TransferEvidence {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActionState {
-    Enabled,
-    Disabled,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BikeAvailability {
+pub struct BikeActionEvidence {
     pub pickup_state: ActionState,
     pub return_state: ActionState,
     pub available_bikes: Option<u32>,
@@ -68,7 +61,7 @@ pub struct CandidateJourney {
     pub main_service_sequence: Vec<String>,
     pub required_live_status: Vec<FreshnessState>,
     pub transfers: Vec<TransferEvidence>,
-    pub bike_availability: Option<BikeAvailability>,
+    pub bike_availability: Option<BikeActionEvidence>,
     pub blocking_condition: bool,
 }
 

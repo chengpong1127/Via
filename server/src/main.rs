@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             freshness_policy_version: "1".into(),
             publication_version: 1,
             feed_evidence: Vec::new(),
+            live_status: Vec::new(),
         })
         .await?;
     let refresh_token = env::var("VIA_REFRESH_TOKEN")
@@ -68,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .map(|config| {
             TdxFeedSource::new(config, &tdx_bearer_token)
+                .map(|source| source.with_identity_resolver(snapshot_store.clone()))
                 .map(|source| Arc::new(source) as Arc<dyn via_server::refresh::FeedSource>)
         })
         .collect::<Result<Vec<_>, _>>()?;

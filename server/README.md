@@ -52,7 +52,7 @@ VIA_STATIC_NETWORK_REVISION=tdx-static-2026-08-31 \
 VIA_SCHEDULE_REVISION=tdx-schedule-2026-08-31 \
 VIA_REFRESH_TOKEN=<scheduler-secret> \
 VIA_TDX_BEARER_TOKEN=<tdx-access-token> \
-VIA_TDX_FEEDS='[{"capability":"bus_arrival_taipei","url":"https://..."}]' \
+VIA_TDX_FEEDS='[{"capability":"bus_arrival_taipei","url":"https://...","family":"bus_arrival","authority_namespace":"taipei"}]' \
 cargo run
 ```
 
@@ -71,7 +71,7 @@ Optional configuration:
 | `VIA_SCHEDULE_REVISION` | Immutable schedule revision; required on first bootstrap. |
 | `VIA_REFRESH_TOKEN` | Bearer token used only by the external scheduler; required. |
 | `VIA_TDX_BEARER_TOKEN` | TDX access token held only by feed adapters; required. |
-| `VIA_TDX_FEEDS` | JSON array of reviewed TDX capability/URL pairs; required and non-empty. |
+| `VIA_TDX_FEEDS` | JSON array of reviewed TDX feeds with `capability`, `url`, `family`, and `authority_namespace`; required and non-empty. |
 | `PORT` | Axum port; defaults to `3000`. |
 
 Database migrations run at startup. The first startup publishes one coherent
@@ -84,6 +84,16 @@ translate rate limits and malformed payloads into explicit feed evidence, and
 evaluate Freshness from the provider publication timestamp rather than a station's
 last-change timestamp. Planning Requests never receive feed credentials and never
 invoke adapters.
+
+## Current planner boundary
+
+The request path currently constructs direct Walking options. The accepted API,
+normalization, snapshot, refresh, and ranking contracts are implemented, but the
+multimodal Bus/Metro/YouBike candidate generator is not: the routing research
+still leaves the allowed Journey grammar and the production static timetable
+artifact unresolved. Those decisions must be accepted before a McRAPTOR and
+time-dependent rental-graph implementation can be wired into this service
+without inventing product behavior.
 
 ## Tests
 
