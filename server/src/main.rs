@@ -2,8 +2,12 @@ use std::{env, net::SocketAddr, sync::Arc};
 
 use url::Url;
 use via_server::{
-    app::build_router,
+    app::build_router_with_services,
+    postgres::PostgresSnapshotStore,
+    refresh::RefreshCoordinator,
+    snapshot::NetworkSnapshot,
     street::{GraphRevision, ValhallaConfig, ValhallaProvider},
+    tdx::{TdxFeedConfig, TdxFeedSource},
 };
 
 #[tokio::main]
@@ -27,7 +31,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.base_url = Url::parse(&base_url)?;
     }
     let provider = Arc::new(ValhallaProvider::new(config)?);
-    let router = build_router(provider).await?;
+    let database_url = env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL must point to the pooled PostgreSQL endpoint")?;
+    let max_database_connections = env::var("VIA_DATABASE_MAX_CONNECTIONS")
+        .unwrap_or_else(|_| "4".into())
+        .parse()?;
+    let snapshot_store =
+        Arc::new(PostgresSnapshotStore::connect(&database_url, max_database_connections).await?);
+    let now = time::OffsetDateTime::now_utc();
+    snapshot_store
+        .ensure_initial(NetworkSnapshot {
+            id: "initial-snapshot".into(),
+            created_at: now,
+            live_cutoff: now,
+            static_network_revision: env::var("VIA_STATIC_NETWORK_REVISION")
+                .map_err(|_| "VIA_STATIC_NETWORK_REVISION must identify the immutable network")?,
+            schedule_revision: env::var("VIA_SCHEDULE_REVISION")
+                .map_err(|_| "VIA_SCHEDULE_REVISION must identify the immutable schedule")?,
+            freshness_policy_version: "1".into(),
+            publication_version: 1,
+            feed_evidence: Vec::new(),
+        })
+        .await?;
+    let refresh_token = env::var("VIA_REFRESH_TOKEN")
+        .map_err(|_| "VIA_REFRESH_TOKEN must authenticate scheduler refreshes")?;
+    let feed_configs: Vec<TdxFeedConfig> = serde_json::from_str(
+        &env::var("VIA_TDX_FEEDS")
+            .map_err(|_| "VIA_TDX_FEEDS must be a JSON array of capability and URL objects")?,
+    )?;
+    if feed_configs.is_empty() {
+        return Err("VIA_TDX_FEEDS must configure at least one authoritative feed".into());
+    }
+    let tdx_bearer_token = env::var("VIA_TDX_BEARER_TOKEN")
+        .map_err(|_| "VIA_TDX_BEARER_TOKEN must authenticate authoritative feed requests")?;
+    let feed_sources = feed_configs
+        .into_iter()
+        .map(|config| {
+            TdxFeedSource::new(config, &tdx_bearer_token)
+                .map(|source| Arc::new(source) as Arc<dyn via_server::refresh::FeedSource>)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let refresh = RefreshCoordinator::new(snapshot_store.clone(), feed_sources, 4);
+    let router =
+        build_router_with_services(provider, snapshot_store, Some(refresh), Some(refresh_token))
+            .await?;
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()?;

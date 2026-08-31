@@ -1,11 +1,25 @@
 # Via server
 
-The Rust server owns Via's provider-neutral street-routing boundary. Journey
-Planning receives a pinned `StreetRoutingSession`; it never constructs a
-Valhalla client or branches on a provider name.
+The Rust/Axum server owns Via's provider-neutral Journey Planning contract and
+street-routing boundary. A Planning Request pins one immutable Network Snapshot,
+uses no government feed on the request path, and returns a complete result with
+`Cache-Control: no-store`.
 
 Implemented capabilities:
 
+- `POST /v1/journey-plans` with strict provider-neutral request validation,
+  redacted errors, full-result refresh semantics, and polyline6 Walking results;
+- deterministic Live Status eligibility, Reliable/Feasible classification,
+  Transfer and YouBike boundaries, dominance, ranking, diversity, labels, and
+  replay behavior;
+- stable typed network identities, reviewed provider aliases, explicit TDX N1
+  status normalization, Service Day handling, and separate YouBike timestamps;
+- PostgreSQL-authoritative immutable Network Snapshots, warm immutable caching,
+  leased and idempotent publication, optimistic publication-version checks,
+  partial feed evidence, and retention cleanup;
+- authenticated `POST /internal/v1/refresh` with at most four concurrent feed
+  adapters and atomic snapshot publication;
+- `GET /openapi.json` plus shared request, result, empty, and error fixtures;
 - coordinate correlation;
 - one-to-many and many-to-one Walking/YouBike matrices;
 - detailed geometry and semantic maneuver facts;
@@ -17,8 +31,8 @@ Implemented capabilities:
 
 ## Run locally
 
-Start the pinned Valhalla 3.8.3 image and build the checked-in deterministic
-fixture:
+Start PostgreSQL plus the pinned Valhalla 3.8.3 image, then build the checked-in
+deterministic street fixture:
 
 ```sh
 docker compose up -d valhalla
@@ -33,6 +47,12 @@ Then start Axum:
 ```sh
 VIA_STREET_GRAPH_REVISION=valhalla-3.8.3-bike-fixture-d4cfdad98205 \
 VIA_VALHALLA_TILESET_LAST_MODIFIED=<value-from-status> \
+DATABASE_URL=postgresql://via:via-development-only@127.0.0.1:5433/via \
+VIA_STATIC_NETWORK_REVISION=tdx-static-2026-08-31 \
+VIA_SCHEDULE_REVISION=tdx-schedule-2026-08-31 \
+VIA_REFRESH_TOKEN=<scheduler-secret> \
+VIA_TDX_BEARER_TOKEN=<tdx-access-token> \
+VIA_TDX_FEEDS='[{"capability":"bus_arrival_taipei","url":"https://..."}]' \
 cargo run
 ```
 
@@ -45,13 +65,35 @@ Optional configuration:
 | Variable | Meaning |
 | --- | --- |
 | `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
+| `DATABASE_URL` | Pooled PostgreSQL endpoint; required. |
+| `VIA_DATABASE_MAX_CONNECTIONS` | Small per-instance pool size; defaults to `4`. |
+| `VIA_STATIC_NETWORK_REVISION` | Immutable normalized network revision; required on first bootstrap. |
+| `VIA_SCHEDULE_REVISION` | Immutable schedule revision; required on first bootstrap. |
+| `VIA_REFRESH_TOKEN` | Bearer token used only by the external scheduler; required. |
+| `VIA_TDX_BEARER_TOKEN` | TDX access token held only by feed adapters; required. |
+| `VIA_TDX_FEEDS` | JSON array of reviewed TDX capability/URL pairs; required and non-empty. |
 | `PORT` | Axum port; defaults to `3000`. |
+
+Database migrations run at startup. The first startup publishes one coherent
+bootstrap snapshot. Later refreshes acquire a 55-second PostgreSQL lease and
+publish only if their expected publication version still matches. Snapshot and
+observation retention cleanup runs in the same successful publication cycle.
+
+TDX feed adapters enforce an eight-second deadline and 8 MiB response bound,
+translate rate limits and malformed payloads into explicit feed evidence, and
+evaluate Freshness from the provider publication timestamp rather than a station's
+last-change timestamp. Planning Requests never receive feed credentials and never
+invoke adapters.
 
 ## Tests
 
 ```sh
 cargo test --test provider_contract
 cargo test --test valhalla_contract
+cargo test --test planning_contract
+cargo test --test ranking_contract
+cargo test --test refresh_contract
+cargo test --test journey_endpoint
 cargo test
 ```
 

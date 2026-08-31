@@ -1,0 +1,81 @@
+{
+  "api_version": "1.0",
+  "semantic_catalog_version": "1.0",
+  "request_id": "req_fixture",
+  "generated_at": "2026-08-31T12:00:00+08:00",
+  "effective_search_time": "2026-08-31T12:00:00+08:00",
+  "time_zone": "Asia/Taipei",
+  "network_snapshot": {
+    "id": "snapshot_fixture",
+    "created_at": "2026-08-31T11:59:50+08:00",
+    "live_cutoff": "2026-08-31T11:59:45+08:00",
+    "static_network_revision": "static-1",
+    "schedule_revision": "schedule-1",
+    "freshness_policy_version": "1"
+  },
+  "policy_versions": {
+    "freshness": "1",
+    "ranking": "1",
+    "transfer_safety": "1"
+  },
+  "warnings": [],
+  "journey_options": [
+    {
+      "id": "option_1",
+      "matching_key": "match_fixture",
+      "class": "reliable",
+      "label": "best_now",
+      "ranking_reasons": ["earliest_reliable_arrival"],
+      "departure_time": "2026-08-31T12:00:00+08:00",
+      "arrival_time": "2026-08-31T12:10:20+08:00",
+      "duration_seconds": 620,
+      "walking_seconds": 620,
+      "transfer_count": 0,
+      "travel_modes": ["walking"],
+      "live_status_summary": {
+        "state": "not_applicable",
+        "reasons": [],
+        "observed_at": null
+      },
+      "overview_geometry": {
+        "encoding": "polyline6",
+        "points": "_fixture_polyline6_"
+      },
+      "legs": [
+        {
+          "id": "leg_1",
+          "mode": "walking",
+          "from": {
+            "display_name": "Taipei Main Station",
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "kind": "selected_place",
+            "via_id": null
+          },
+          "to": {
+            "display_name": "Taipei 101",
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "kind": "selected_place",
+            "via_id": null
+          },
+          "departure_time": "2026-08-31T12:00:00+08:00",
+          "arrival_time": "2026-08-31T12:10:20+08:00",
+          "scheduled_departure_time": null,
+          "scheduled_arrival_time": null,
+          "duration_seconds": 620,
+          "distance_metres": 3900,
+          "geometry": {"encoding": "polyline6", "points": "_fixture_polyline6_"},
+          "guidance": [
+            {"code": "depart", "required": true, "parameters": {}},
+            {"code": "arrive", "required": true, "parameters": {}}
+          ],
+          "details": {"type": "walking", "start_fact": null, "end_fact": null},
+          "live_status": [],
+          "warnings": [],
+          "attribution": []
+        }
+      ],
+      "transfers": [],
+      "warnings": []
+    }
+  ]
+}

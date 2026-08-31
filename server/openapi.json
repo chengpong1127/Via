@@ -1,0 +1,304 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Via Journey Planning API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/journey-plans": {
+      "post": {
+        "operationId": "createJourneyPlan",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlanningRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A complete Journey Planning result or a successful empty result",
+            "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/JourneyOptionsResult" },
+                    { "$ref": "#/components/schemas/EmptyResult" }
+                  ]
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "Error": {
+        "description": "Provider-neutral error envelope",
+        "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Coordinate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["latitude", "longitude"],
+        "properties": {
+          "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+          "longitude": { "type": "number", "minimum": -180, "maximum": 180 }
+        }
+      },
+      "SelectedPlace": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["coordinate", "display_text"],
+        "properties": {
+          "coordinate": { "$ref": "#/components/schemas/Coordinate" },
+          "display_text": { "type": "string", "minLength": 1, "maxLength": 200 }
+        }
+      },
+      "DepartureSetting": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type"],
+            "properties": { "type": { "const": "depart_now" } }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "time"],
+            "properties": {
+              "type": { "enum": ["depart_at", "arrive_by"] },
+              "time": { "type": "string", "format": "date-time" }
+            }
+          }
+        ]
+      },
+      "PlanningRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["origin", "destination", "selected_modes", "locale", "departure_setting"],
+        "properties": {
+          "origin": { "$ref": "#/components/schemas/SelectedPlace" },
+          "destination": { "$ref": "#/components/schemas/SelectedPlace" },
+          "selected_modes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": { "enum": ["bus", "metro", "youbike"] }
+          },
+          "locale": { "type": "string" },
+          "departure_setting": { "$ref": "#/components/schemas/DepartureSetting" }
+        }
+      },
+      "NetworkSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "created_at", "live_cutoff", "static_network_revision", "schedule_revision", "freshness_policy_version"],
+        "properties": {
+          "id": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "live_cutoff": { "type": "string", "format": "date-time" },
+          "static_network_revision": { "type": "string" },
+          "schedule_revision": { "type": "string" },
+          "freshness_policy_version": { "type": "string" }
+        }
+      },
+      "Geometry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["encoding", "points"],
+        "properties": {
+          "encoding": { "const": "polyline6" },
+          "points": { "type": "string" }
+        }
+      },
+      "Place": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["display_name", "coordinate", "kind", "via_id"],
+        "properties": {
+          "display_name": { "type": "string" },
+          "coordinate": { "$ref": "#/components/schemas/Coordinate" },
+          "kind": { "type": "string" },
+          "via_id": { "type": ["string", "null"] }
+        }
+      },
+      "Guidance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "required", "parameters"],
+        "properties": {
+          "code": { "type": "string" },
+          "required": { "type": "boolean" },
+          "parameters": { "type": "object" }
+        }
+      },
+      "Leg": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "mode", "from", "to", "departure_time", "arrival_time", "scheduled_departure_time", "scheduled_arrival_time", "duration_seconds", "distance_metres", "geometry", "guidance", "details", "live_status", "warnings", "attribution"],
+        "properties": {
+          "id": { "type": "string" },
+          "mode": { "enum": ["walking", "bus", "metro", "youbike"] },
+          "from": { "$ref": "#/components/schemas/Place" },
+          "to": { "$ref": "#/components/schemas/Place" },
+          "departure_time": { "type": "string", "format": "date-time" },
+          "arrival_time": { "type": "string", "format": "date-time" },
+          "scheduled_departure_time": { "type": ["string", "null"], "format": "date-time" },
+          "scheduled_arrival_time": { "type": ["string", "null"], "format": "date-time" },
+          "duration_seconds": { "type": "integer", "minimum": 0 },
+          "distance_metres": { "type": "integer", "minimum": 0 },
+          "geometry": { "$ref": "#/components/schemas/Geometry" },
+          "guidance": { "type": "array", "items": { "$ref": "#/components/schemas/Guidance" } },
+          "details": { "type": "object" },
+          "live_status": { "type": "array", "items": { "$ref": "#/components/schemas/LiveStatusEvidence" } },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } },
+          "attribution": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "LiveStatusEvidence": {
+        "type": "object",
+        "required": ["kind", "evidence_type", "observed_at", "published_at", "received_at", "evaluated_at", "freshness"],
+        "properties": {
+          "kind": { "enum": ["arrival_estimate", "service_condition", "bike_availability"] },
+          "evidence_type": { "enum": ["live", "schedule_only"] },
+          "observed_at": { "type": ["string", "null"], "format": "date-time" },
+          "published_at": { "type": ["string", "null"], "format": "date-time" },
+          "received_at": { "type": "string", "format": "date-time" },
+          "evaluated_at": { "type": "string", "format": "date-time" },
+          "freshness": { "type": "object" }
+        }
+      },
+      "Warning": {
+        "type": "object",
+        "required": ["code", "required", "severity", "parameters"],
+        "properties": {
+          "code": { "type": "string" },
+          "required": { "type": "boolean" },
+          "severity": { "enum": ["information", "caution"] },
+          "parameters": { "type": "object" }
+        }
+      },
+      "Transfer": {
+        "type": "object",
+        "required": ["from_leg_id", "to_leg_id", "connector_leg_ids", "duration_seconds", "available_seconds", "class", "reasons"],
+        "properties": {
+          "from_leg_id": { "type": "string" },
+          "to_leg_id": { "type": "string" },
+          "connector_leg_ids": { "type": "array", "items": { "type": "string" } },
+          "duration_seconds": { "type": "integer", "minimum": 0 },
+          "available_seconds": { "type": "integer", "minimum": 0 },
+          "class": { "enum": ["reliable", "feasible"] },
+          "reasons": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "JourneyOption": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "matching_key", "class", "label", "ranking_reasons", "departure_time", "arrival_time", "duration_seconds", "walking_seconds", "transfer_count", "travel_modes", "live_status_summary", "overview_geometry", "legs", "transfers", "warnings"],
+        "properties": {
+          "id": { "type": "string" },
+          "matching_key": { "type": "string" },
+          "class": { "enum": ["reliable", "feasible"] },
+          "label": { "type": ["string", "null"], "enum": ["best_now", "fewer_transfers", "less_walking", null] },
+          "ranking_reasons": { "type": "array", "items": { "type": "string" } },
+          "departure_time": { "type": "string", "format": "date-time" },
+          "arrival_time": { "type": "string", "format": "date-time" },
+          "duration_seconds": { "type": "integer", "minimum": 0 },
+          "walking_seconds": { "type": "integer", "minimum": 0 },
+          "transfer_count": { "type": "integer", "minimum": 0 },
+          "travel_modes": { "type": "array", "items": { "enum": ["walking", "bus", "metro", "youbike"] } },
+          "live_status_summary": { "type": "object" },
+          "overview_geometry": { "$ref": "#/components/schemas/Geometry" },
+          "legs": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/Leg" } },
+          "transfers": { "type": "array", "items": { "$ref": "#/components/schemas/Transfer" } },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } }
+        }
+      },
+      "ResultMetadata": {
+        "type": "object",
+        "required": ["api_version", "semantic_catalog_version", "request_id", "generated_at", "effective_search_time", "time_zone", "network_snapshot", "policy_versions", "warnings"],
+        "properties": {
+          "api_version": { "const": "1.0" },
+          "semantic_catalog_version": { "const": "1.0" },
+          "request_id": { "type": "string" },
+          "generated_at": { "type": "string", "format": "date-time" },
+          "effective_search_time": { "type": "string", "format": "date-time" },
+          "time_zone": { "const": "Asia/Taipei" },
+          "network_snapshot": { "$ref": "#/components/schemas/NetworkSnapshot" },
+          "policy_versions": { "type": "object" },
+          "warnings": { "type": "array", "items": { "$ref": "#/components/schemas/Warning" } }
+        }
+      },
+      "JourneyOptionsResult": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ResultMetadata" },
+          {
+            "type": "object",
+            "required": ["journey_options"],
+            "properties": {
+              "journey_options": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "$ref": "#/components/schemas/JourneyOption" } }
+            }
+          }
+        ]
+      },
+      "EmptyResult": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ResultMetadata" },
+          {
+            "type": "object",
+            "required": ["empty"],
+            "properties": { "empty": { "$ref": "#/components/schemas/SemanticObject" } }
+          }
+        ]
+      },
+      "SemanticObject": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "required", "parameters"],
+        "properties": {
+          "code": { "type": "string" },
+          "required": { "type": "boolean" },
+          "parameters": { "type": "object" }
+        }
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "semantic_catalog_version", "request_id", "error"],
+        "properties": {
+          "api_version": { "const": "1.0" },
+          "semantic_catalog_version": { "const": "1.0" },
+          "request_id": { "type": "string" },
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "required", "parameters"],
+            "properties": {
+              "code": { "type": "string" },
+              "required": { "const": true },
+              "field": { "type": "string" },
+              "parameters": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

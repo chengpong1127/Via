@@ -1,4 +1,20 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: via
+      POSTGRES_USER: via
+      POSTGRES_PASSWORD: via-development-only
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - via-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U via -d via"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
   valhalla:
     image: ghcr.io/valhalla/valhalla:3.8.3
     command: ["/opt/via/prepare-valhalla.sh"]
@@ -15,3 +31,6 @@ services:
       retries: 30
       start_period: 30s
     restart: unless-stopped
+
+volumes:
+  via-postgres:
