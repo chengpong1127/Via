@@ -45,16 +45,11 @@ requires it so a configured graph revision cannot silently name different tiles.
 Then start Axum:
 
 ```sh
-VIA_STREET_GRAPH_REVISION=valhalla-3.8.3-bike-fixture-d4cfdad98205 \
-VIA_VALHALLA_TILESET_LAST_MODIFIED=<value-from-status> \
-DATABASE_URL=postgresql://via:via-development-only@127.0.0.1:5433/via \
-VIA_STATIC_NETWORK_REVISION=tdx-static-2026-08-31 \
-VIA_SCHEDULE_REVISION=tdx-schedule-2026-08-31 \
-VIA_REFRESH_TOKEN=<scheduler-secret> \
-VIA_TDX_BEARER_TOKEN=<tdx-access-token> \
-VIA_TDX_FEEDS='[{"capability":"bus_arrival_taipei","url":"https://...","family":"bus_arrival","authority_namespace":"taipei"}]' \
 cargo run
 ```
+
+At startup, the server loads configuration from `server/.env`. Variables already
+set in the process environment take precedence.
 
 The server fails startup until Valhalla is healthy. Its operator endpoint is
 `GET /health/street-routing`; responses use `Cache-Control: no-store` and report

@@ -2181,6 +2181,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "dotenvy",
  "futures-util",
  "http-body-util",
  "language-tags",
