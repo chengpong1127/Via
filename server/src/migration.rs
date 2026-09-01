@@ -1,36 +1,24 @@
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait};
+use sea_orm::{
+    ActiveValue::Set,
+    ConnectionTrait, EntityTrait, TransactionTrait,
+    sea_query::{Alias, Func, OnConflict, Query},
+};
 use sea_orm_migration::prelude::*;
-use sha2::{Digest, Sha256};
 
-const MIGRATION_LOCK: i64 = 1_986_252_370;
-const SNAPSHOT_AUTHORITY_VERSION: &str = "m0001_network_snapshot_authority";
-const SNAPSHOT_AUTHORITY_SQL: &str = include_str!("../migrations/0001_snapshot_authority.sql");
-const LIVE_STATUS_PUBLICATION_VERSION: &str = "m0002_live_status_publication";
-const LIVE_STATUS_PUBLICATION_SQL: &str =
-    include_str!("../migrations/0002_live_status_publication.sql");
+use crate::entity::{
+    feed_health, live_status_observation, network_snapshot, provider_alias, refresh_control,
+    refresh_cycle,
+};
 
-pub async fn migrate(database: &DatabaseConnection) -> Result<(), DbErr> {
+pub async fn migrate(database: &sea_orm::DatabaseConnection) -> Result<(), DbErr> {
     let transaction = database.begin().await?;
+    let lock = Query::select()
+        .expr(Func::cust(Alias::new("pg_advisory_xact_lock")).arg(1_986_252_370_i64))
+        .to_owned();
     transaction
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT pg_advisory_xact_lock($1)",
-            [MIGRATION_LOCK.into()],
-        ))
+        .query_one(transaction.get_database_backend().build(&lock))
         .await?;
     Migrator::up(&transaction, None).await?;
-    verify_checksum(
-        &transaction,
-        SNAPSHOT_AUTHORITY_VERSION,
-        SNAPSHOT_AUTHORITY_SQL,
-    )
-    .await?;
-    verify_checksum(
-        &transaction,
-        LIVE_STATUS_PUBLICATION_VERSION,
-        LIVE_STATUS_PUBLICATION_SQL,
-    )
-    .await?;
     transaction.commit().await
 }
 
@@ -42,6 +30,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(NetworkSnapshotAuthority),
             Box::new(LiveStatusPublication),
+            Box::new(RemoveRawMigrationChecksums),
         ]
     }
 }
@@ -50,14 +39,252 @@ struct NetworkSnapshotAuthority;
 
 impl MigrationName for NetworkSnapshotAuthority {
     fn name(&self) -> &str {
-        SNAPSHOT_AUTHORITY_VERSION
+        "m0001_network_snapshot_authority"
     }
 }
 
 #[async_trait::async_trait]
 impl MigrationTrait for NetworkSnapshotAuthority {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        apply_sql_migration(manager, SNAPSHOT_AUTHORITY_VERSION, SNAPSHOT_AUTHORITY_SQL).await
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(live_status_observation::Entity)
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::Id)
+                            .text()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::Family)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::ObservedPayload)
+                            .json_binary()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::MeasuredAt)
+                            .timestamp_with_time_zone(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::PublishedAt)
+                            .timestamp_with_time_zone(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::ReceivedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::NormalizedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(live_status_observation::Column::ExpiresAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .check(Expr::col(live_status_observation::Column::Family).is_in([
+                        "arrival_estimate",
+                        "service_condition",
+                        "bike_availability",
+                    ]))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(feed_health::Entity)
+                    .col(
+                        ColumnDef::new(feed_health::Column::Id)
+                            .big_integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(feed_health::Column::Capability)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(feed_health::Column::State).text().not_null())
+                    .col(ColumnDef::new(feed_health::Column::Reason).text())
+                    .col(
+                        ColumnDef::new(feed_health::Column::EvaluatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(feed_health::Column::ExpiresAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(network_snapshot::Entity)
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::Id)
+                            .text()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::LiveCutoff)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::StaticNetworkRevision)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::ScheduleRevision)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::FreshnessPolicyVersion)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::PublicationVersion)
+                            .big_integer()
+                            .not_null()
+                            .unique_key(),
+                    )
+                    .col(
+                        ColumnDef::new(network_snapshot::Column::FeedEvidence)
+                            .json_binary()
+                            .not_null()
+                            .default(serde_json::json!([])),
+                    )
+                    .check(Expr::col(network_snapshot::Column::PublicationVersion).gt(0))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(refresh_control::Entity)
+                    .col(
+                        ColumnDef::new(refresh_control::Column::Singleton)
+                            .boolean()
+                            .not_null()
+                            .default(true)
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(refresh_control::Column::CurrentSnapshotId).text())
+                    .col(
+                        ColumnDef::new(refresh_control::Column::PublicationVersion)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(ColumnDef::new(refresh_control::Column::LeaseKey).text())
+                    .col(ColumnDef::new(refresh_control::Column::LeaseToken).big_integer())
+                    .col(
+                        ColumnDef::new(refresh_control::Column::LeaseExpiresAt)
+                            .timestamp_with_time_zone(),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(
+                                refresh_control::Entity,
+                                refresh_control::Column::CurrentSnapshotId,
+                            )
+                            .to(network_snapshot::Entity, network_snapshot::Column::Id),
+                    )
+                    .check(Expr::col(refresh_control::Column::Singleton).eq(true))
+                    .to_owned(),
+            )
+            .await?;
+        refresh_control::Entity::insert(refresh_control::ActiveModel {
+            singleton: Set(true),
+            current_snapshot_id: Set(None),
+            publication_version: Set(0),
+            lease_key: Set(None),
+            lease_token: Set(None),
+            lease_expires_at: Set(None),
+        })
+        .on_conflict(
+            OnConflict::column(refresh_control::Column::Singleton)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(manager.get_connection())
+        .await?;
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(refresh_cycle::Entity)
+                    .col(
+                        ColumnDef::new(refresh_cycle::Column::RefreshKey)
+                            .text()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(refresh_cycle::Column::Status)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(refresh_cycle::Column::SnapshotId).text())
+                    .col(
+                        ColumnDef::new(refresh_cycle::Column::CompletedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(refresh_cycle::Entity, refresh_cycle::Column::SnapshotId)
+                            .to(network_snapshot::Entity, network_snapshot::Column::Id),
+                    )
+                    .check(Expr::col(refresh_cycle::Column::Status).eq("published"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("via_live_status_expiry_idx")
+                    .table(live_status_observation::Entity)
+                    .col(live_status_observation::Column::ExpiresAt)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("via_feed_health_expiry_idx")
+                    .table(feed_health::Entity)
+                    .col(feed_health::Column::ExpiresAt)
+                    .to_owned(),
+            )
+            .await
     }
 }
 
@@ -65,69 +292,116 @@ struct LiveStatusPublication;
 
 impl MigrationName for LiveStatusPublication {
     fn name(&self) -> &str {
-        LIVE_STATUS_PUBLICATION_VERSION
+        "m0002_live_status_publication"
     }
 }
 
 #[async_trait::async_trait]
 impl MigrationTrait for LiveStatusPublication {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        apply_sql_migration(
-            manager,
-            LIVE_STATUS_PUBLICATION_VERSION,
-            LIVE_STATUS_PUBLICATION_SQL,
-        )
-        .await
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(provider_alias::Entity)
+                    .col(
+                        ColumnDef::new(provider_alias::Column::Provider)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::EntityKind)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::AuthorityNamespace)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::UpstreamKey)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::ViaId)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::ValidFrom)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(provider_alias::Column::ValidUntil)
+                            .timestamp_with_time_zone(),
+                    )
+                    .primary_key(
+                        Index::create()
+                            .col(provider_alias::Column::Provider)
+                            .col(provider_alias::Column::EntityKind)
+                            .col(provider_alias::Column::AuthorityNamespace)
+                            .col(provider_alias::Column::UpstreamKey)
+                            .col(provider_alias::Column::ValidFrom),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        if !manager
+            .has_column("via_network_snapshots", "selected_observation_ids")
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(network_snapshot::Entity)
+                        .add_column(
+                            ColumnDef::new(network_snapshot::Column::SelectedObservationIds)
+                                .json_binary()
+                                .not_null()
+                                .default(serde_json::json!([])),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("via_provider_alias_lookup_idx")
+                    .table(provider_alias::Entity)
+                    .col(provider_alias::Column::Provider)
+                    .col(provider_alias::Column::EntityKind)
+                    .col(provider_alias::Column::AuthorityNamespace)
+                    .col(provider_alias::Column::UpstreamKey)
+                    .col(provider_alias::Column::ValidFrom)
+                    .to_owned(),
+            )
+            .await
     }
 }
 
-async fn apply_sql_migration(
-    manager: &SchemaManager<'_>,
-    version: &str,
-    sql: &str,
-) -> Result<(), DbErr> {
-    let connection = manager.get_connection();
-    connection.execute_unprepared(sql).await?;
-    connection
-        .execute_unprepared(
-            "CREATE TABLE IF NOT EXISTS via_migration_checksums (
-                version TEXT PRIMARY KEY,
-                checksum TEXT NOT NULL
-            )",
-        )
-        .await?;
-    connection
-        .execute(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "INSERT INTO via_migration_checksums (version, checksum) VALUES ($1, $2)",
-            [version.into(), checksum(sql).into()],
-        ))
-        .await?;
-    Ok(())
-}
+struct RemoveRawMigrationChecksums;
 
-async fn verify_checksum(
-    connection: &impl ConnectionTrait,
-    version: &str,
-    sql: &str,
-) -> Result<(), DbErr> {
-    let row = connection
-        .query_one(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT checksum FROM via_migration_checksums WHERE version = $1",
-            [version.into()],
-        ))
-        .await?
-        .ok_or_else(|| DbErr::Custom(format!("missing checksum for migration {version}")))?;
-    let stored: String = row.try_get("", "checksum")?;
-    if stored != checksum(sql) {
-        return Err(DbErr::Custom(format!(
-            "checksum mismatch for migration {version}"
-        )));
+impl MigrationName for RemoveRawMigrationChecksums {
+    fn name(&self) -> &str {
+        "m0003_remove_raw_migration_checksums"
     }
-    Ok(())
 }
 
-fn checksum(sql: &str) -> String {
-    format!("{:x}", Sha256::digest(sql.as_bytes()))
+#[async_trait::async_trait]
+impl MigrationTrait for RemoveRawMigrationChecksums {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(
+                Table::drop()
+                    .if_exists()
+                    .table(Alias::new("via_migration_checksums"))
+                    .to_owned(),
+            )
+            .await
+    }
 }

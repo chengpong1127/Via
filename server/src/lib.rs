@@ -1,5 +1,6 @@
 pub mod api;
 pub mod app;
+mod entity;
 pub mod live_status;
 mod migration;
 pub mod normalization;

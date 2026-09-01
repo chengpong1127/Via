@@ -1,13 +1,20 @@
-use std::{sync::Arc, time::Duration as StdDuration};
+use std::{collections::HashMap, sync::Arc, time::Duration as StdDuration};
 
 use async_trait::async_trait;
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DatabaseTransaction, DbBackend,
-    DbErr, QueryResult, Statement, TransactionTrait,
+    ActiveModelTrait,
+    ActiveValue::{NotSet, Set},
+    ColumnTrait, ConnectOptions, Database, DatabaseConnection, DatabaseTransaction, DbErr,
+    EntityTrait, IntoActiveModel, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    sea_query::OnConflict,
 };
 use time::{Duration, OffsetDateTime};
 use tokio::sync::RwLock;
 
+use crate::entity::{
+    feed_health, live_status_observation, network_snapshot, provider_alias, refresh_control,
+    refresh_cycle,
+};
 use crate::live_status::FreshnessState;
 use crate::migration;
 use crate::snapshot::{
@@ -15,12 +22,6 @@ use crate::snapshot::{
     SnapshotStore,
 };
 use crate::tdx::IdentityResolver;
-
-const POSTGRES: DbBackend = DbBackend::Postgres;
-
-fn statement(sql: &str, values: impl IntoIterator<Item = sea_orm::Value>) -> Statement {
-    Statement::from_sql_and_values(POSTGRES, sql, values)
-}
 
 #[derive(Clone)]
 pub struct PostgresSnapshotStore {
@@ -46,100 +47,48 @@ impl PostgresSnapshotStore {
 
     pub async fn ensure_initial(&self, snapshot: NetworkSnapshot) -> Result<(), DbErr> {
         let transaction = self.database.begin().await?;
-        let row = transaction
-            .query_one(Statement::from_string(
-                POSTGRES,
-                "SELECT current_snapshot_id FROM via_refresh_control WHERE singleton = TRUE FOR UPDATE",
-            ))
+        let control = refresh_control::Entity::find_by_id(true)
+            .lock_exclusive()
+            .one(&transaction)
             .await?
             .ok_or_else(|| DbErr::RecordNotFound("via_refresh_control".into()))?;
-        let current: Option<String> = row.try_get("", "current_snapshot_id")?;
-        if current.is_none() {
+        if control.current_snapshot_id.is_none() {
             insert_snapshot(&transaction, &snapshot).await?;
-            transaction
-                .execute(statement(
-                    "UPDATE via_refresh_control SET current_snapshot_id = $1, publication_version = $2 WHERE singleton = TRUE",
-                    [snapshot.id.clone().into(), (snapshot.publication_version as i64).into()],
-                ))
-                .await?;
+            let mut active = control.into_active_model();
+            active.current_snapshot_id = Set(Some(snapshot.id.clone()));
+            active.publication_version = Set(snapshot.publication_version as i64);
+            active.update(&transaction).await?;
         }
-        transaction.commit().await?;
-        Ok(())
+        transaction.commit().await
     }
 }
 
 #[async_trait]
 impl SnapshotStore for PostgresSnapshotStore {
     async fn pin_current(&self) -> Result<NetworkSnapshot, SnapshotError> {
-        let row = self
-            .database
-            .query_one(Statement::from_string(
-                POSTGRES,
-                "SELECT current_snapshot_id FROM via_refresh_control WHERE singleton = TRUE",
-            ))
+        let control = refresh_control::Entity::find_by_id(true)
+            .one(&self.database)
             .await
             .map_err(|_| SnapshotError::Storage)?
             .ok_or(SnapshotError::Storage)?;
-        let current_snapshot_id: Option<String> = row
-            .try_get("", "current_snapshot_id")
-            .map_err(|_| SnapshotError::Storage)?;
-        let current_snapshot_id = current_snapshot_id.ok_or(SnapshotError::Unavailable)?;
+        let current_snapshot_id = control
+            .current_snapshot_id
+            .ok_or(SnapshotError::Unavailable)?;
         if let Some(snapshot) = self.cache.read().await.clone() {
             if snapshot.id == current_snapshot_id {
                 return Ok(snapshot);
             }
         }
-        let row = self
-            .database
-            .query_one(statement(
-                "SELECT s.id, s.created_at, s.live_cutoff, s.static_network_revision, s.schedule_revision, s.freshness_policy_version, s.publication_version, s.feed_evidence, s.selected_observation_ids
-                 FROM via_network_snapshots s
-                 WHERE s.id = $1",
-                [current_snapshot_id.into()],
-            ))
+        let model = network_snapshot::Entity::find_by_id(current_snapshot_id)
+            .one(&self.database)
             .await
             .map_err(|_| SnapshotError::Storage)?
             .ok_or(SnapshotError::Unavailable)?;
-        let publication_version: i64 = get(&row, "publication_version")?;
-        let feed_evidence: serde_json::Value = get(&row, "feed_evidence")?;
-        let selected_observation_ids: serde_json::Value = get(&row, "selected_observation_ids")?;
         let selected_observation_ids: Vec<String> =
-            serde_json::from_value(selected_observation_ids).map_err(|_| SnapshotError::Storage)?;
-        let live_status = if selected_observation_ids.is_empty() {
-            Vec::new()
-        } else {
-            let rows = self
-                .database
-                .query_all(statement(
-                    "SELECT observed_payload
-                     FROM via_live_status_observations
-                     WHERE id = ANY($1)
-                     ORDER BY array_position($1::text[], id)",
-                    [selected_observation_ids.into()],
-                ))
-                .await
+            serde_json::from_value(model.selected_observation_ids.clone())
                 .map_err(|_| SnapshotError::Storage)?;
-            rows.into_iter()
-                .map(|row| {
-                    let payload: serde_json::Value = get(&row, "observed_payload")?;
-                    serde_json::from_value::<NormalizedLiveStatus>(payload)
-                        .map_err(|_| SnapshotError::Storage)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        let snapshot = NetworkSnapshot {
-            id: get(&row, "id")?,
-            created_at: get(&row, "created_at")?,
-            live_cutoff: get(&row, "live_cutoff")?,
-            static_network_revision: get(&row, "static_network_revision")?,
-            schedule_revision: get(&row, "schedule_revision")?,
-            freshness_policy_version: get(&row, "freshness_policy_version")?,
-            publication_version: u64::try_from(publication_version)
-                .map_err(|_| SnapshotError::Storage)?,
-            feed_evidence: serde_json::from_value::<Vec<FeedEvidence>>(feed_evidence)
-                .map_err(|_| SnapshotError::Storage)?,
-            live_status,
-        };
+        let live_status = load_live_status(&self.database, &selected_observation_ids).await?;
+        let snapshot = snapshot_from_model(model, live_status)?;
         *self.cache.write().await = Some(snapshot.clone());
         Ok(snapshot)
     }
@@ -154,39 +103,37 @@ impl SnapshotStore for PostgresSnapshotStore {
             .begin()
             .await
             .map_err(|_| SnapshotError::Storage)?;
-        let completed_row = transaction
-            .query_one(statement(
-                "SELECT EXISTS(SELECT 1 FROM via_refresh_cycles WHERE refresh_key = $1 AND status = 'published') AS completed",
-                [refresh_key.into()],
-            ))
+        let completed = refresh_cycle::Entity::find_by_id(refresh_key)
+            .filter(refresh_cycle::Column::Status.eq("published"))
+            .one(&transaction)
+            .await
+            .map_err(|_| SnapshotError::Storage)?
+            .is_some();
+        let control = refresh_control::Entity::find_by_id(true)
+            .lock_exclusive()
+            .one(&transaction)
             .await
             .map_err(|_| SnapshotError::Storage)?
             .ok_or(SnapshotError::Storage)?;
-        let completed: bool = get(&completed_row, "completed")?;
-        let control = transaction
-            .query_one(Statement::from_string(
-                POSTGRES,
-                "SELECT lease_key, lease_token, lease_expires_at FROM via_refresh_control WHERE singleton = TRUE FOR UPDATE",
-            ))
-            .await
-            .map_err(|_| SnapshotError::Storage)?
-            .ok_or(SnapshotError::Storage)?;
-        let active_expires_at: Option<OffsetDateTime> = get(&control, "lease_expires_at")?;
-        if completed || active_expires_at.is_some_and(|expires_at| expires_at > now) {
+        if completed
+            || control
+                .lease_expires_at
+                .is_some_and(|expires_at| expires_at > now)
+        {
             transaction
                 .rollback()
                 .await
                 .map_err(|_| SnapshotError::Storage)?;
             return Ok(None);
         }
-        let previous_token: Option<i64> = get(&control, "lease_token")?;
-        let token = previous_token.unwrap_or(0).saturating_add(1) as u64;
+        let token = control.lease_token.unwrap_or(0).saturating_add(1) as u64;
         let expires_at = now + self.lease_duration;
-        transaction
-            .execute(statement(
-                "UPDATE via_refresh_control SET lease_key = $1, lease_token = $2, lease_expires_at = $3 WHERE singleton = TRUE",
-                [refresh_key.into(), (token as i64).into(), expires_at.into()],
-            ))
+        let mut active = control.into_active_model();
+        active.lease_key = Set(Some(refresh_key.into()));
+        active.lease_token = Set(Some(token as i64));
+        active.lease_expires_at = Set(Some(expires_at));
+        active
+            .update(&transaction)
             .await
             .map_err(|_| SnapshotError::Storage)?;
         transaction
@@ -211,26 +158,20 @@ impl SnapshotStore for PostgresSnapshotStore {
             .begin()
             .await
             .map_err(|_| PublishError::Storage)?;
-        let control = transaction
-            .query_one(Statement::from_string(
-                POSTGRES,
-                "SELECT publication_version, lease_key, lease_token, lease_expires_at FROM via_refresh_control WHERE singleton = TRUE FOR UPDATE",
-            ))
+        let control = refresh_control::Entity::find_by_id(true)
+            .lock_exclusive()
+            .one(&transaction)
             .await
             .map_err(|_| PublishError::Storage)?
             .ok_or(PublishError::Storage)?;
-        let publication_version: i64 = publish_get(&control, "publication_version")?;
-        let lease_key: Option<String> = publish_get(&control, "lease_key")?;
-        let lease_token: Option<i64> = publish_get(&control, "lease_token")?;
-        let lease_expires_at: Option<OffsetDateTime> = publish_get(&control, "lease_expires_at")?;
-        if lease_key.as_deref() != Some(&lease.key)
-            || lease_token != Some(lease.token as i64)
-            || lease_expires_at != Some(lease.expires_at)
+        if control.lease_key.as_deref() != Some(&lease.key)
+            || control.lease_token != Some(lease.token as i64)
+            || control.lease_expires_at != Some(lease.expires_at)
             || lease.expires_at <= OffsetDateTime::now_utc()
         {
             return Err(PublishError::LeaseLost);
         }
-        if publication_version != expected_publication_version as i64 {
+        if control.publication_version != expected_publication_version as i64 {
             return Err(PublishError::PublicationVersionChanged);
         }
         if snapshot.publication_version != expected_publication_version + 1 {
@@ -245,44 +186,38 @@ impl SnapshotStore for PostgresSnapshotStore {
         insert_snapshot(&transaction, &snapshot)
             .await
             .map_err(|_| PublishError::Storage)?;
-        transaction
-            .execute(statement(
-                "UPDATE via_refresh_control
-                 SET current_snapshot_id = $1, publication_version = $2, lease_key = NULL, lease_token = NULL, lease_expires_at = NULL
-                 WHERE singleton = TRUE",
-                [snapshot.id.clone().into(), (snapshot.publication_version as i64).into()],
-            ))
+
+        let mut active = control.into_active_model();
+        active.current_snapshot_id = Set(Some(snapshot.id.clone()));
+        active.publication_version = Set(snapshot.publication_version as i64);
+        active.lease_key = Set(None);
+        active.lease_token = Set(None);
+        active.lease_expires_at = Set(None);
+        active
+            .update(&transaction)
             .await
             .map_err(|_| PublishError::Storage)?;
-        transaction
-            .execute(statement(
-                "INSERT INTO via_refresh_cycles (refresh_key, status, snapshot_id, completed_at)
-                 VALUES ($1, 'published', $2, NOW())
-                 ON CONFLICT (refresh_key) DO UPDATE SET status = 'published', snapshot_id = EXCLUDED.snapshot_id, completed_at = EXCLUDED.completed_at",
-                [lease.key.into(), snapshot.id.clone().into()],
-            ))
-            .await
-            .map_err(|_| PublishError::Storage)?;
-        for sql in [
-            "DELETE FROM via_live_status_observations WHERE expires_at <= NOW()",
-            "DELETE FROM via_feed_health WHERE expires_at <= NOW()",
-            "DELETE FROM via_refresh_cycles WHERE completed_at < NOW() - INTERVAL '30 days'",
-        ] {
-            transaction
-                .execute(Statement::from_string(POSTGRES, sql))
-                .await
-                .map_err(|_| PublishError::Storage)?;
-        }
-        transaction
-            .execute(statement(
-                "DELETE FROM via_network_snapshots
-                 WHERE created_at < NOW() - INTERVAL '7 days'
-                   AND id <> $1
-                   AND NOT EXISTS (
-                       SELECT 1 FROM via_refresh_cycles r WHERE r.snapshot_id = via_network_snapshots.id
-                   )",
-                [snapshot.id.clone().into()],
-            ))
+
+        refresh_cycle::Entity::insert(refresh_cycle::ActiveModel {
+            refresh_key: Set(lease.key),
+            status: Set("published".into()),
+            snapshot_id: Set(Some(snapshot.id.clone())),
+            completed_at: Set(OffsetDateTime::now_utc()),
+        })
+        .on_conflict(
+            OnConflict::column(refresh_cycle::Column::RefreshKey)
+                .update_columns([
+                    refresh_cycle::Column::Status,
+                    refresh_cycle::Column::SnapshotId,
+                    refresh_cycle::Column::CompletedAt,
+                ])
+                .to_owned(),
+        )
+        .exec_without_returning(&transaction)
+        .await
+        .map_err(|_| PublishError::Storage)?;
+
+        cleanup(&transaction, &snapshot.id)
             .await
             .map_err(|_| PublishError::Storage)?;
         transaction
@@ -294,12 +229,48 @@ impl SnapshotStore for PostgresSnapshotStore {
     }
 }
 
-fn get<T: sea_orm::TryGetable>(row: &QueryResult, column: &str) -> Result<T, SnapshotError> {
-    row.try_get("", column).map_err(|_| SnapshotError::Storage)
+async fn load_live_status(
+    database: &DatabaseConnection,
+    selected_ids: &[String],
+) -> Result<Vec<NormalizedLiveStatus>, SnapshotError> {
+    if selected_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let models = live_status_observation::Entity::find()
+        .filter(live_status_observation::Column::Id.is_in(selected_ids.iter().cloned()))
+        .all(database)
+        .await
+        .map_err(|_| SnapshotError::Storage)?;
+    let mut by_id = models
+        .into_iter()
+        .map(|model| (model.id, model.observed_payload))
+        .collect::<HashMap<_, _>>();
+    selected_ids
+        .iter()
+        .map(|id| {
+            let payload = by_id.remove(id).ok_or(SnapshotError::Storage)?;
+            serde_json::from_value(payload).map_err(|_| SnapshotError::Storage)
+        })
+        .collect()
 }
 
-fn publish_get<T: sea_orm::TryGetable>(row: &QueryResult, column: &str) -> Result<T, PublishError> {
-    row.try_get("", column).map_err(|_| PublishError::Storage)
+fn snapshot_from_model(
+    model: network_snapshot::Model,
+    live_status: Vec<NormalizedLiveStatus>,
+) -> Result<NetworkSnapshot, SnapshotError> {
+    Ok(NetworkSnapshot {
+        id: model.id,
+        created_at: model.created_at,
+        live_cutoff: model.live_cutoff,
+        static_network_revision: model.static_network_revision,
+        schedule_revision: model.schedule_revision,
+        freshness_policy_version: model.freshness_policy_version,
+        publication_version: u64::try_from(model.publication_version)
+            .map_err(|_| SnapshotError::Storage)?,
+        feed_evidence: serde_json::from_value(model.feed_evidence)
+            .map_err(|_| SnapshotError::Storage)?,
+        live_status,
+    })
 }
 
 fn json(value: impl serde::Serialize) -> Result<serde_json::Value, DbErr> {
@@ -310,33 +281,30 @@ async fn insert_snapshot(
     transaction: &DatabaseTransaction,
     snapshot: &NetworkSnapshot,
 ) -> Result<(), DbErr> {
-    let feed_evidence = json(&snapshot.feed_evidence)?;
-    let selected_observation_ids = json(
-        snapshot
-            .live_status
-            .iter()
-            .map(|live_status| &live_status.id)
-            .collect::<Vec<_>>(),
-    )?;
-    transaction
-        .execute(statement(
-            "INSERT INTO via_network_snapshots
-             (id, created_at, live_cutoff, static_network_revision, schedule_revision, freshness_policy_version, publication_version, feed_evidence, selected_observation_ids)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (id) DO NOTHING",
-            [
-                snapshot.id.clone().into(),
-                snapshot.created_at.into(),
-                snapshot.live_cutoff.into(),
-                snapshot.static_network_revision.clone().into(),
-                snapshot.schedule_revision.clone().into(),
-                snapshot.freshness_policy_version.clone().into(),
-                (snapshot.publication_version as i64).into(),
-                feed_evidence.into(),
-                selected_observation_ids.into(),
-            ],
-        ))
-        .await?;
+    network_snapshot::Entity::insert(network_snapshot::ActiveModel {
+        id: Set(snapshot.id.clone()),
+        created_at: Set(snapshot.created_at),
+        live_cutoff: Set(snapshot.live_cutoff),
+        static_network_revision: Set(snapshot.static_network_revision.clone()),
+        schedule_revision: Set(snapshot.schedule_revision.clone()),
+        freshness_policy_version: Set(snapshot.freshness_policy_version.clone()),
+        publication_version: Set(snapshot.publication_version as i64),
+        feed_evidence: Set(json(&snapshot.feed_evidence)?),
+        selected_observation_ids: Set(json(
+            snapshot
+                .live_status
+                .iter()
+                .map(|status| &status.id)
+                .collect::<Vec<_>>(),
+        )?),
+    })
+    .on_conflict(
+        OnConflict::column(network_snapshot::Column::Id)
+            .do_nothing()
+            .to_owned(),
+    )
+    .exec_without_returning(transaction)
+    .await?;
     Ok(())
 }
 
@@ -358,24 +326,23 @@ async fn insert_live_status(
                 ("service_condition", None, None)
             }
         };
-        transaction
-            .execute(statement(
-                "INSERT INTO via_live_status_observations
-                 (id, family, observed_payload, measured_at, published_at, received_at, normalized_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                 ON CONFLICT (id) DO NOTHING",
-                [
-                    status.id.clone().into(),
-                    family.into(),
-                    json(status)?.into(),
-                    measured_at.into(),
-                    published_at.into(),
-                    status.received_at.into(),
-                    status.normalized_at.into(),
-                    (status.normalized_at + Duration::days(7)).into(),
-                ],
-            ))
-            .await?;
+        live_status_observation::Entity::insert(live_status_observation::ActiveModel {
+            id: Set(status.id.clone()),
+            family: Set(family.into()),
+            observed_payload: Set(json(status)?),
+            measured_at: Set(measured_at),
+            published_at: Set(published_at),
+            received_at: Set(status.received_at),
+            normalized_at: Set(status.normalized_at),
+            expires_at: Set(status.normalized_at + Duration::days(7)),
+        })
+        .on_conflict(
+            OnConflict::column(live_status_observation::Column::Id)
+                .do_nothing()
+                .to_owned(),
+        )
+        .exec_without_returning(transaction)
+        .await?;
     }
     Ok(())
 }
@@ -385,22 +352,52 @@ async fn insert_feed_health(
     evidence: &[FeedEvidence],
 ) -> Result<(), DbErr> {
     for feed in evidence {
-        transaction
-            .execute(statement(
-                "INSERT INTO via_feed_health (capability, state, reason, evaluated_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5)",
-                [
-                    feed.capability.clone().into(),
-                    freshness_state_name(feed.freshness.state).into(),
-                    feed.failure_reason
-                        .map(|reason| format!("{reason:?}").to_lowercase())
-                        .into(),
-                    feed.freshness.evaluated_at.into(),
-                    (feed.freshness.evaluated_at + Duration::days(30)).into(),
-                ],
-            ))
-            .await?;
+        feed_health::ActiveModel {
+            id: NotSet,
+            capability: Set(feed.capability.clone()),
+            state: Set(freshness_state_name(feed.freshness.state).into()),
+            reason: Set(feed
+                .failure_reason
+                .map(|reason| format!("{reason:?}").to_lowercase())),
+            evaluated_at: Set(feed.freshness.evaluated_at),
+            expires_at: Set(feed.freshness.evaluated_at + Duration::days(30)),
+        }
+        .insert(transaction)
+        .await?;
     }
+    Ok(())
+}
+
+async fn cleanup(
+    transaction: &DatabaseTransaction,
+    current_snapshot_id: &str,
+) -> Result<(), DbErr> {
+    let now = OffsetDateTime::now_utc();
+    live_status_observation::Entity::delete_many()
+        .filter(live_status_observation::Column::ExpiresAt.lte(now))
+        .exec(transaction)
+        .await?;
+    feed_health::Entity::delete_many()
+        .filter(feed_health::Column::ExpiresAt.lte(now))
+        .exec(transaction)
+        .await?;
+    refresh_cycle::Entity::delete_many()
+        .filter(refresh_cycle::Column::CompletedAt.lt(now - Duration::days(30)))
+        .exec(transaction)
+        .await?;
+    let retained_snapshot_ids = refresh_cycle::Entity::find()
+        .all(transaction)
+        .await?
+        .into_iter()
+        .filter_map(|cycle| cycle.snapshot_id)
+        .collect::<Vec<_>>();
+    let mut deletion = network_snapshot::Entity::delete_many()
+        .filter(network_snapshot::Column::CreatedAt.lt(now - Duration::days(7)))
+        .filter(network_snapshot::Column::Id.ne(current_snapshot_id));
+    if !retained_snapshot_ids.is_empty() {
+        deletion = deletion.filter(network_snapshot::Column::Id.is_not_in(retained_snapshot_ids));
+    }
+    deletion.exec(transaction).await?;
     Ok(())
 }
 
@@ -421,22 +418,23 @@ impl IdentityResolver for PostgresSnapshotStore {
         authority_namespace: &str,
         upstream_key: &str,
     ) -> Option<String> {
-        self.database
-            .query_one(statement(
-                "SELECT via_id FROM via_provider_aliases
-                 WHERE provider = 'tdx' AND entity_kind = $1 AND authority_namespace = $2
-                   AND upstream_key = $3 AND valid_from <= NOW()
-                   AND (valid_until IS NULL OR NOW() < valid_until)
-                 ORDER BY valid_from DESC LIMIT 1",
-                [
-                    entity_kind.into(),
-                    authority_namespace.into(),
-                    upstream_key.into(),
-                ],
-            ))
+        let now = OffsetDateTime::now_utc();
+        provider_alias::Entity::find()
+            .filter(provider_alias::Column::Provider.eq("tdx"))
+            .filter(provider_alias::Column::EntityKind.eq(entity_kind))
+            .filter(provider_alias::Column::AuthorityNamespace.eq(authority_namespace))
+            .filter(provider_alias::Column::UpstreamKey.eq(upstream_key))
+            .filter(provider_alias::Column::ValidFrom.lte(now))
+            .filter(
+                provider_alias::Column::ValidUntil
+                    .is_null()
+                    .or(provider_alias::Column::ValidUntil.gt(now)),
+            )
+            .order_by_desc(provider_alias::Column::ValidFrom)
+            .one(&self.database)
             .await
             .ok()
             .flatten()
-            .and_then(|row| row.try_get("", "via_id").ok())
+            .map(|alias| alias.via_id)
     }
 }
