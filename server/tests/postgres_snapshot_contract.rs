@@ -24,9 +24,12 @@ fn snapshot(id: String, version: u64, now: OffsetDateTime) -> NetworkSnapshot {
 #[ignore = "requires VIA_TEST_DATABASE_URL pointing to disposable PostgreSQL"]
 async fn postgres_is_authoritative_for_lease_and_snapshot_publication() {
     let database_url = std::env::var("VIA_TEST_DATABASE_URL").unwrap();
-    let store = PostgresSnapshotStore::connect(&database_url, 2)
-        .await
-        .unwrap();
+    let (store, concurrent_store) = tokio::join!(
+        PostgresSnapshotStore::connect(&database_url, 2),
+        PostgresSnapshotStore::connect(&database_url, 2),
+    );
+    let store = store.unwrap();
+    concurrent_store.unwrap();
     let now = OffsetDateTime::now_utc();
     store
         .ensure_initial(snapshot("integration-initial".into(), 1, now))

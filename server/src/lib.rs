@@ -1,6 +1,7 @@
 pub mod api;
 pub mod app;
 pub mod live_status;
+mod migration;
 pub mod normalization;
 pub mod planner;
 pub mod postgres;
