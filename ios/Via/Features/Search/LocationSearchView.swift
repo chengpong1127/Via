@@ -6,6 +6,7 @@ struct LocationSearchView: View {
     @State private var query = ""
     @State private var results: [PlaceSearchResult] = []
     @State private var isSearching = false
+    @FocusState private var searchIsFocused: Bool
 
     let title: String
     let onSelect: (SelectedPlace) -> Void
@@ -41,7 +42,7 @@ struct LocationSearchView: View {
                     ContentUnavailableView(
                         "Search Taipei and New Taipei",
                         systemImage: "magnifyingglass",
-                        description: Text("Your search stays on this device. Only the place you choose is sent in a Planning Request.")
+                        description: Text("Search for a station, landmark, or address to start planning your journey.")
                     )
                 } else if results.isEmpty && !isSearching {
                     ContentUnavailableView.search(text: query)
@@ -50,8 +51,12 @@ struct LocationSearchView: View {
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search places")
+            .searchFocusedIfAvailable($searchIsFocused)
             .task(id: query) {
                 await search()
+            }
+            .task {
+                searchIsFocused = true
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -121,4 +126,15 @@ private struct PlaceSearchResult: Identifiable {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+private extension View {
+    @ViewBuilder
+    func searchFocusedIfAvailable(_ isFocused: FocusState<Bool>.Binding) -> some View {
+        if #available(iOS 18.0, *) {
+            searchFocused(isFocused)
+        } else {
+            self
+        }
+    }
 }

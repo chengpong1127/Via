@@ -6,6 +6,8 @@ struct JourneyMapView: View {
     @State private var cameraPosition: MapCameraPosition = .region(Self.taipeiRegion)
     @State private var detailsOption: JourneyOption?
     @State private var showStaticGuidanceExplanation = false
+    @State private var isPlanningJourney = false
+    @State private var isSearching = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -19,11 +21,31 @@ struct JourneyMapView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
 
-            DirectionsPanel(
-                onShowDetails: { detailsOption = $0 },
-                onStart: { showStaticGuidanceExplanation = true }
-            )
-            .frame(maxHeight: 570)
+            if isPlanningJourney {
+                DirectionsPanel(
+                    onShowDetails: { detailsOption = $0 },
+                    onStart: { showStaticGuidanceExplanation = true }
+                )
+                .frame(maxHeight: 570)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                MapSearchPanel {
+                    isSearching = true
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: isPlanningJourney)
+        .sheet(isPresented: $isSearching) {
+            LocationSearchView(title: "Search") { place in
+                session.destination = place
+                session.returnToEditing()
+                cameraPosition = .region(MKCoordinateRegion(
+                    center: place.coordinate.clLocationCoordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.025, longitudeDelta: 0.025)
+                ))
+                isPlanningJourney = true
+            }
         }
         .sheet(item: $detailsOption) { option in
             JourneyDetailsView(option: option)
@@ -34,11 +56,6 @@ struct JourneyMapView: View {
             Button("Got it", role: .cancel) {}
         } message: {
             Text("Via provides static Guidance. It does not track your location or advance through Legs.")
-        }
-        .task {
-            if session.state == .editing, session.canSubmit {
-                await session.submit()
-            }
         }
         .onChange(of: session.selectedOptionID) {
             frameSelectedJourney()
@@ -65,7 +82,7 @@ struct JourneyMapView: View {
                     .stroke(Color.viaBlue, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
             }
         }
-        .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll))
+        .mapStyle(.standard(elevation: .realistic))
         .mapControls {
             MapCompass()
             MapScaleView()
@@ -83,7 +100,11 @@ struct JourneyMapView: View {
 
             Menu {
                 Button("Reset Journey", systemImage: "arrow.counterclockwise") {
+                    session.origin = nil
+                    session.destination = nil
                     session.returnToEditing()
+                    isPlanningJourney = false
+                    cameraPosition = .region(Self.taipeiRegion)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -119,6 +140,46 @@ struct JourneyMapView: View {
         center: CLLocationCoordinate2D(latitude: 25.0418, longitude: 121.5434),
         span: MKCoordinateSpan(latitudeDelta: 0.055, longitudeDelta: 0.075)
     )
+}
+
+private struct MapSearchPanel: View {
+    let onSearch: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Capsule()
+                .fill(.tertiary)
+                .frame(width: 38, height: 5)
+                .frame(maxWidth: .infinity)
+
+            Text("Where to?")
+                .font(.title2.bold())
+                .foregroundStyle(Color.viaInk)
+
+            Button(action: onSearch) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.headline)
+                    Text("Search places")
+                        .font(.body)
+                    Spacer()
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 48)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("map.search")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 9)
+        .padding(.bottom, 22)
+        .background(.ultraThickMaterial)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28))
+        .shadow(color: .black.opacity(0.16), radius: 24, y: -5)
+    }
 }
 
 #Preview {
