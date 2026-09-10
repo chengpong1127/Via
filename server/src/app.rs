@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{State, rejection::JsonRejection},
+    body::Body,
+    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header::CACHE_CONTROL},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -12,6 +14,7 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id, taipei_offset},
+    observability::OperationalMetrics,
     planner::{JourneyPlanningService, PlanningError},
     refresh::{RefreshCoordinator, RefreshOutcome},
     snapshot::{InMemorySnapshotStore, NetworkSnapshot, SnapshotStore},
@@ -27,6 +30,9 @@ struct AppState {
     street_routing: StreetRoutingSession,
     journey_planning: JourneyPlanningService,
     refresh: Option<RefreshEndpoint>,
+    snapshots: Arc<dyn SnapshotStore>,
+    transit_network: Arc<TransitNetwork>,
+    metrics: OperationalMetrics,
 }
 
 #[derive(Clone)]
@@ -85,12 +91,15 @@ pub async fn build_router_with_services_and_network(
     transit_network: TransitNetwork,
 ) -> Result<Router, ProviderError> {
     let street_routing = StreetRoutingSession::start(provider).await?;
-    let journey_planning = JourneyPlanningService::new(street_routing.clone(), snapshots)
-        .with_transit_network(transit_network);
+    let journey_planning = JourneyPlanningService::new(street_routing.clone(), snapshots.clone())
+        .with_transit_network(transit_network.clone());
     let refresh_endpoint = refresh_coordinator
         .zip(refresh_token)
         .map(|(coordinator, token)| RefreshEndpoint { coordinator, token });
     Ok(Router::new()
+        .route("/health/live", get(liveness))
+        .route("/health/ready", get(readiness))
+        .route("/metrics", get(metrics))
         .route("/health/street-routing", get(street_routing_health))
         .route("/openapi.json", get(openapi))
         .route("/v1/journey-plans", post(journey_plan))
@@ -99,7 +108,79 @@ pub async fn build_router_with_services_and_network(
             street_routing,
             journey_planning,
             refresh: refresh_endpoint,
-        }))
+            snapshots,
+            transit_network: Arc::new(transit_network),
+            metrics: OperationalMetrics::default(),
+        })
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(middleware::from_fn(http_timeout)))
+}
+
+async fn http_timeout(request: axum::http::Request<Body>, next: Next) -> Response {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, "request_timeout", None),
+    }
+}
+
+async fn liveness() -> Response {
+    no_store((StatusCode::OK, Json(serde_json::json!({ "alive": true }))))
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    no_store((
+        StatusCode::OK,
+        [
+            ("content-type", "text/plain; version=0.0.4"),
+            ("cache-control", "no-store"),
+        ],
+        state.metrics.prometheus(),
+    ))
+}
+
+#[derive(Serialize)]
+struct ReadinessResponse {
+    ready: bool,
+    street_routing: bool,
+    network_snapshot: bool,
+    transit_artifact: bool,
+}
+
+async fn readiness(State(state): State<AppState>) -> Response {
+    let street_routing = state
+        .street_routing
+        .current_status()
+        .await
+        .is_ok_and(|status| {
+            status.healthy
+                && status.graph_revision == state.street_routing.pinned_status().graph_revision
+                && status.capabilities.supports(ProviderCapabilities::REQUIRED)
+        });
+    let snapshot = state.snapshots.pin_current().await.ok();
+    let network_snapshot = snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.publication_version > 0 && !snapshot.id.trim().is_empty());
+    let transit_artifact = state.transit_network.validate().is_ok()
+        && snapshot.as_ref().is_some_and(|snapshot| {
+            state.transit_network.matches_snapshot(
+                &snapshot.static_network_revision,
+                &snapshot.schedule_revision,
+            )
+        });
+    let body = ReadinessResponse {
+        ready: street_routing && network_snapshot && transit_artifact,
+        street_routing,
+        network_snapshot,
+        transit_artifact,
+    };
+    no_store((
+        if body.ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(body),
+    ))
 }
 
 async fn openapi() -> Response {
@@ -163,8 +244,19 @@ async fn journey_plan(
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
     match state.journey_planning.plan(request).await {
-        Ok(outcome) => no_store((StatusCode::OK, Json(outcome))),
+        Ok(outcome) => {
+            match &outcome {
+                crate::planner::PlanningOutcome::Options(result) => state
+                    .metrics
+                    .record_planning_success(result.journey_options.len()),
+                crate::planner::PlanningOutcome::Empty(_) => {
+                    state.metrics.record_planning_success(0)
+                }
+            }
+            no_store((StatusCode::OK, Json(outcome)))
+        }
         Err(PlanningError::SnapshotUnavailable | PlanningError::TemporarilyUnavailable) => {
+            state.metrics.record_planning_failure();
             error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "temporarily_unavailable",
@@ -172,6 +264,7 @@ async fn journey_plan(
             )
         }
         Err(PlanningError::Internal) => {
+            state.metrics.record_planning_failure();
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }
     }
@@ -236,15 +329,12 @@ fn valid_refresh_key(key: &str) -> bool {
 }
 
 fn secure_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
+    let mut difference = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        difference |= usize::from(left.get(index).copied().unwrap_or_default())
+            ^ usize::from(right.get(index).copied().unwrap_or_default());
     }
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |difference, (left, right)| {
-            difference | (left ^ right)
-        })
-        == 0
+    difference == 0
 }
 
 #[derive(Serialize)]

@@ -23,8 +23,8 @@ use crate::{
     },
     street::{
         Attribution, Coordinate, DetailedPath, DetailedPathQuery, Maneuver, ManeuverKind,
-        ProviderError, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetRoutingSession,
-        StreetTravelMode,
+        MatrixOrientation, MatrixQuery, MatrixReachability, ProviderError, RoutingConstraints,
+        RoutingTime, RoutingTimeKind, StreetRoutingSession, StreetTravelMode,
     },
     transit::{
         TransitAccess, TransitItinerary, TransitMode, TransitNetwork, TransitQuery, TransitRide,
@@ -37,6 +37,29 @@ pub struct JourneyPlanningService {
     snapshots: Arc<dyn SnapshotStore>,
     transit_network: Arc<TransitNetwork>,
     ranking: RankingPolicy,
+    limits: PlanningLimits,
+    request_slots: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PlanningLimits {
+    pub request_timeout: std::time::Duration,
+    pub max_concurrent_requests: usize,
+    pub max_transit_access_stops: usize,
+    pub max_youbike_stations: usize,
+    pub max_candidates: usize,
+}
+
+impl Default for PlanningLimits {
+    fn default() -> Self {
+        Self {
+            request_timeout: std::time::Duration::from_secs(5),
+            max_concurrent_requests: 32,
+            max_transit_access_stops: 24,
+            max_youbike_stations: 12,
+            max_candidates: 16,
+        }
+    }
 }
 
 impl JourneyPlanningService {
@@ -46,6 +69,10 @@ impl JourneyPlanningService {
             snapshots,
             transit_network: Arc::new(TransitNetwork::default()),
             ranking: RankingPolicy::default(),
+            request_slots: Arc::new(tokio::sync::Semaphore::new(
+                PlanningLimits::default().max_concurrent_requests,
+            )),
+            limits: PlanningLimits::default(),
         }
     }
 
@@ -59,9 +86,54 @@ impl JourneyPlanningService {
         self
     }
 
+    pub fn with_limits(mut self, limits: PlanningLimits) -> Self {
+        let limits = PlanningLimits {
+            max_concurrent_requests: limits.max_concurrent_requests.max(1),
+            max_transit_access_stops: limits.max_transit_access_stops.max(1),
+            max_youbike_stations: limits.max_youbike_stations.max(1),
+            max_candidates: limits.max_candidates.max(1),
+            ..limits
+        };
+        self.request_slots = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests));
+        self.limits = limits;
+        self
+    }
+
     pub async fn plan(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
+        let request_timeout = self.limits.request_timeout;
+        match tokio::time::timeout(request_timeout, async {
+            let _permit = self
+                .request_slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| PlanningError::TemporarilyUnavailable)?;
+            self.plan_inner(request).await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(PlanningError::TemporarilyUnavailable),
+        }
+    }
+
+    async fn plan_inner(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
         let snapshot = self.snapshots.pin_current().await?;
+        if !self.transit_network.static_network_revision.is_empty()
+            && !self.transit_network.matches_snapshot(
+                &snapshot.static_network_revision,
+                &snapshot.schedule_revision,
+            )
+        {
+            tracing::error!(
+                snapshot_static_revision = %snapshot.static_network_revision,
+                snapshot_schedule_revision = %snapshot.schedule_revision,
+                artifact_static_revision = %self.transit_network.static_network_revision,
+                artifact_schedule_revision = %self.transit_network.schedule_revision,
+                "transit artifact revision does not match pinned Network Snapshot"
+            );
+            return Err(PlanningError::SnapshotUnavailable);
+        }
         let metadata = ResultMetadata::new(
             new_request_id(),
             taipei_now(),
@@ -70,7 +142,12 @@ impl JourneyPlanningService {
             &request,
         );
 
-        let context = PlanningContext::new(&request, snapshot.clone(), request_started_at)?;
+        let context = PlanningContext::new(
+            &request,
+            snapshot.clone(),
+            request_started_at,
+            &self.transit_network,
+        )?;
         let mut candidates = Vec::new();
         let mut had_transient_failure = false;
 
@@ -148,10 +225,6 @@ impl JourneyPlanningService {
     }
 }
 
-const MAX_TRANSIT_ACCESS_STOPS: usize = 24;
-const MAX_YOUBIKE_STATIONS: usize = 12;
-const ARRIVE_BY_SEARCH_WINDOW: Duration = Duration::hours(4);
-
 #[derive(Clone)]
 struct PlanningContext {
     request: PlanningRequest,
@@ -166,13 +239,15 @@ impl PlanningContext {
         request: &PlanningRequest,
         snapshot: NetworkSnapshot,
         request_started_at: OffsetDateTime,
+        transit_network: &TransitNetwork,
     ) -> Result<Self, PlanningError> {
         let effective_search_time = request
             .departure_setting
             .effective_search_time(request_started_at);
         let (search_start, latest_arrival) = match request.departure_setting {
             crate::api::DepartureSetting::ArriveBy { .. } => (
-                effective_search_time - ARRIVE_BY_SEARCH_WINDOW,
+                transit_network
+                    .service_day_start(transit_network.service_day(effective_search_time)),
                 Some(effective_search_time),
             ),
             crate::api::DepartureSetting::DepartNow
@@ -256,6 +331,39 @@ impl PathAttempt {
             )
         )
     }
+}
+
+#[derive(Clone, Copy)]
+struct MatrixMetric {
+    duration: crate::street::Seconds,
+    distance: crate::street::Metres,
+}
+
+fn matrix_metric(cell: &crate::street::MatrixCell) -> Option<MatrixMetric> {
+    match cell.reachability {
+        MatrixReachability::Reachable { duration, distance } => {
+            Some(MatrixMetric { duration, distance })
+        }
+        MatrixReachability::Unreachable => None,
+    }
+}
+
+fn is_transient_provider_error(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::Timeout | ProviderError::RateLimited | ProviderError::TemporarilyUnavailable
+    )
+}
+
+fn is_global_provider_error(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::InvalidRequest { .. }
+            | ProviderError::MalformedResponse
+            | ProviderError::UnsupportedCapability
+            | ProviderError::InconsistentGraphRevision { .. }
+            | ProviderError::ResponseTooLarge { .. }
+    )
 }
 
 #[derive(Clone)]
@@ -368,40 +476,59 @@ impl JourneyPlanningService {
         let Ok(destination) = to_street_coordinate(context.request.destination.coordinate) else {
             return (Vec::new(), false, false);
         };
-
-        let mut access_paths = HashMap::new();
-        let mut access = Vec::new();
         let mut had_transient_failure = false;
         let mut had_global_failure = false;
-        for stop in self
+        let stops = self
             .transit_network
-            .stops
-            .iter()
-            .take(MAX_TRANSIT_ACCESS_STOPS)
-        {
-            let Ok(stop_coordinate) = to_street_coordinate(stop.coordinate) else {
-                continue;
-            };
-            let attempt = self
-                .street_path(
-                    StreetTravelMode::Walking,
-                    origin,
-                    stop_coordinate,
-                    context.access_constraints(),
-                )
-                .await;
-            had_transient_failure |= attempt.was_transient_failure();
-            had_global_failure |= attempt.is_global_failure();
-            let PathAttempt::Found(path) = attempt else {
-                continue;
-            };
-            access.push(TransitAccess::new(
-                stop.id.clone(),
-                context.search_start,
-                context.search_start + Duration::seconds(i64::from(path.duration.0)),
-            ));
-            access_paths.insert(stop.id.as_str().to_owned(), AccessPath { path });
+            .nearest_stops(
+                context.request.origin.coordinate,
+                self.limits.max_transit_access_stops,
+            )
+            .into_iter()
+            .filter_map(|stop| {
+                to_street_coordinate(stop.coordinate)
+                    .ok()
+                    .map(|coordinate| (stop.clone(), coordinate))
+            })
+            .collect::<Vec<_>>();
+        if stops.is_empty() {
+            return (Vec::new(), false, false);
         }
+        let access_matrix = self
+            .street_routing
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::OneToMany,
+                travel_mode: StreetTravelMode::Walking,
+                sources: vec![origin],
+                targets: stops.iter().map(|(_, coordinate)| *coordinate).collect(),
+                constraints: context.access_constraints(),
+            })
+            .await;
+        let access_matrix = match access_matrix {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                had_transient_failure |= is_transient_provider_error(&error);
+                had_global_failure |= is_global_provider_error(&error);
+                return (Vec::new(), had_transient_failure, had_global_failure);
+            }
+        };
+        let access = access_matrix
+            .cells
+            .first()
+            .into_iter()
+            .flatten()
+            .filter_map(|cell| {
+                let (stop, _) = stops.get(cell.target_index)?;
+                let metric = matrix_metric(cell)?;
+                let available_at =
+                    context.search_start + Duration::seconds(i64::from(metric.duration.0));
+                Some(TransitAccess::new(
+                    stop.id.clone(),
+                    context.search_start,
+                    available_at,
+                ))
+            })
+            .collect::<Vec<_>>();
 
         let query = match context.latest_arrival {
             Some(latest_arrival) => TransitQuery::ArriveBy { latest_arrival },
@@ -412,15 +539,80 @@ impl JourneyPlanningService {
         let itineraries =
             self.transit_network
                 .itineraries(&access, query, &context.request.selected_modes);
+        let mut egress_stops = Vec::new();
+        let mut egress_seen = HashSet::new();
+        for itinerary in itineraries.iter().take(self.limits.max_candidates) {
+            let Some(ride) = itinerary.rides.last() else {
+                continue;
+            };
+            if egress_seen.insert(ride.alight_stop_id.clone()) {
+                if let Some(stop) = self.transit_network.stop(&ride.alight_stop_id) {
+                    if let Ok(coordinate) = to_street_coordinate(stop.coordinate) {
+                        egress_stops.push((ride.alight_stop_id.clone(), coordinate));
+                    }
+                }
+            }
+        }
+        if egress_stops.is_empty() {
+            return (Vec::new(), had_transient_failure, had_global_failure);
+        }
+        let egress_matrix = self
+            .street_routing
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::ManyToOne,
+                travel_mode: StreetTravelMode::Walking,
+                sources: egress_stops
+                    .iter()
+                    .map(|(_, coordinate)| *coordinate)
+                    .collect(),
+                targets: vec![destination],
+                constraints: context.direct_constraints(),
+            })
+            .await;
+        let egress_matrix = match egress_matrix {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                had_transient_failure |= is_transient_provider_error(&error);
+                had_global_failure |= is_global_provider_error(&error);
+                return (Vec::new(), had_transient_failure, had_global_failure);
+            }
+        };
+        let mut egress_metrics = HashMap::new();
+        for (source_index, cells) in egress_matrix.cells.iter().enumerate() {
+            if let Some(metric) = cells.first().and_then(matrix_metric) {
+                if let Some((stop_id, _)) = egress_stops.get(source_index) {
+                    egress_metrics.insert(stop_id.clone(), metric);
+                }
+            }
+        }
         let mut candidates = Vec::new();
-        for itinerary in itineraries {
+        for itinerary in itineraries.into_iter().take(self.limits.max_candidates) {
             let Some(first_ride) = itinerary.rides.first() else {
                 continue;
             };
-            let Some(access_path) = access_paths.get(first_ride.board_stop_id.as_str()) else {
+            let Some(first_stop) = self.transit_network.stop(&first_ride.board_stop_id) else {
                 continue;
             };
             let Some(last_ride) = itinerary.rides.last() else {
+                continue;
+            };
+            let Some(_egress_metric) = egress_metrics.get(&last_ride.alight_stop_id) else {
+                continue;
+            };
+            let Ok(first_coordinate) = to_street_coordinate(first_stop.coordinate) else {
+                continue;
+            };
+            let access_attempt = self
+                .street_path(
+                    StreetTravelMode::Walking,
+                    origin,
+                    first_coordinate,
+                    context.access_constraints(),
+                )
+                .await;
+            had_transient_failure |= access_attempt.was_transient_failure();
+            had_global_failure |= access_attempt.is_global_failure();
+            let PathAttempt::Found(access_path) = access_attempt else {
                 continue;
             };
             let Some(last_stop) = self.transit_network.stop(&last_ride.alight_stop_id) else {
@@ -429,7 +621,7 @@ impl JourneyPlanningService {
             let Ok(last_coordinate) = to_street_coordinate(last_stop.coordinate) else {
                 continue;
             };
-            let attempt = self
+            let egress_attempt = self
                 .street_path(
                     StreetTravelMode::Walking,
                     last_coordinate,
@@ -437,14 +629,17 @@ impl JourneyPlanningService {
                     context.constraints(itinerary.arrival_at, RoutingTimeKind::DepartAt),
                 )
                 .await;
-            had_transient_failure |= attempt.was_transient_failure();
-            had_global_failure |= attempt.is_global_failure();
-            let PathAttempt::Found(egress_path) = attempt else {
+            had_transient_failure |= egress_attempt.was_transient_failure();
+            had_global_failure |= egress_attempt.is_global_failure();
+            let PathAttempt::Found(egress_path) = egress_attempt else {
                 continue;
             };
-            if let Some(candidate) =
-                self.assemble_transit_candidate(context, itinerary, access_path, egress_path)
-            {
+            if let Some(candidate) = self.assemble_transit_candidate(
+                context,
+                itinerary,
+                &AccessPath { path: access_path },
+                egress_path,
+            ) {
                 candidates.push(candidate);
             }
         }
@@ -493,6 +688,9 @@ impl JourneyPlanningService {
             match ride.mode {
                 TransitMode::Bus => {
                     let status = find_arrival_status(&context.snapshot, &ride)?;
+                    if status.freshness.state == FreshnessState::Unavailable {
+                        return None;
+                    }
                     effective.required_states.push(status.freshness.state);
                     let LiveStatusValue::ArrivalEstimate(arrival) = &status.value else {
                         return None;
@@ -507,6 +705,9 @@ impl JourneyPlanningService {
                     let delay = predicted - ride.scheduled_departure;
                     effective.departure = ride.scheduled_departure + delay;
                     effective.arrival = ride.scheduled_arrival + delay;
+                    if effective.arrival < effective.departure {
+                        return None;
+                    }
                     effective.evidence.push(status_evidence(
                         status,
                         LiveStatusKind::ArrivalEstimate,
@@ -590,7 +791,13 @@ impl JourneyPlanningService {
                 .and_then(|previous_index| effective_rides.get(previous_index))
             {
                 let available = seconds_between(previous.arrival, effective.departure)?;
-                let physical = self.transit_network.default_transfer_seconds;
+                let physical = self.transit_network.transfer_seconds(
+                    &previous.ride.alight_stop_id,
+                    &effective.ride.board_stop_id,
+                )?;
+                if available < physical {
+                    return None;
+                }
                 let kind = if matches!(previous.ride.mode, TransitMode::Metro)
                     && matches!(effective.ride.mode, TransitMode::Metro)
                 {
@@ -708,24 +915,162 @@ impl JourneyPlanningService {
         let Ok(destination) = to_street_coordinate(context.request.destination.coordinate) else {
             return (Vec::new(), false, false);
         };
-        let stations = self
+        let pickups = self
             .transit_network
-            .youbike_stations
-            .iter()
-            .take(MAX_YOUBIKE_STATIONS)
+            .nearest_youbike_stations(
+                context.request.origin.coordinate,
+                self.limits.max_youbike_stations,
+            )
+            .into_iter()
+            .filter_map(|station| {
+                to_street_coordinate(station.coordinate)
+                    .ok()
+                    .map(|coordinate| (station.clone(), coordinate))
+            })
             .collect::<Vec<_>>();
-        let mut candidates = Vec::new();
+        let dropoffs = self
+            .transit_network
+            .nearest_youbike_stations(
+                context.request.destination.coordinate,
+                self.limits.max_youbike_stations,
+            )
+            .into_iter()
+            .filter_map(|station| {
+                to_street_coordinate(station.coordinate)
+                    .ok()
+                    .map(|coordinate| (station.clone(), coordinate))
+            })
+            .collect::<Vec<_>>();
+        if pickups.is_empty() || dropoffs.is_empty() {
+            return (Vec::new(), false, false);
+        }
         let mut had_transient_failure = false;
         let mut had_global_failure = false;
-        for pickup in &stations {
-            let Ok(pickup_coordinate) = to_street_coordinate(pickup.coordinate) else {
+        let access_matrix = match self
+            .street_routing
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::OneToMany,
+                travel_mode: StreetTravelMode::Walking,
+                sources: vec![origin],
+                targets: pickups.iter().map(|(_, coordinate)| *coordinate).collect(),
+                constraints: context.access_constraints(),
+            })
+            .await
+        {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                had_transient_failure |= is_transient_provider_error(&error);
+                had_global_failure |= is_global_provider_error(&error);
+                return (Vec::new(), had_transient_failure, had_global_failure);
+            }
+        };
+        let mut access_metrics = HashMap::new();
+        for (index, cell) in access_matrix
+            .cells
+            .first()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if let (Some((station, _)), Some(metric)) = (pickups.get(index), matrix_metric(cell)) {
+                access_metrics.insert(station.id.clone(), metric);
+            }
+        }
+        let egress_matrix = match self
+            .street_routing
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::ManyToOne,
+                travel_mode: StreetTravelMode::Walking,
+                sources: dropoffs.iter().map(|(_, coordinate)| *coordinate).collect(),
+                targets: vec![destination],
+                constraints: context.direct_constraints(),
+            })
+            .await
+        {
+            Ok(matrix) => matrix,
+            Err(error) => {
+                had_transient_failure |= is_transient_provider_error(&error);
+                had_global_failure |= is_global_provider_error(&error);
+                return (Vec::new(), had_transient_failure, had_global_failure);
+            }
+        };
+        let mut egress_metrics = HashMap::new();
+        for (index, cells) in egress_matrix.cells.iter().enumerate() {
+            if let (Some((station, _)), Some(metric)) =
+                (dropoffs.get(index), cells.first().and_then(matrix_metric))
+            {
+                egress_metrics.insert(station.id.clone(), metric);
+            }
+        }
+
+        let mut metric_candidates = Vec::new();
+        for (pickup_index, (pickup, pickup_coordinate)) in pickups.iter().enumerate() {
+            let Some(access) = access_metrics.get(&pickup.id).copied() else {
                 continue;
             };
+            let bike_matrix = match self
+                .street_routing
+                .matrix(MatrixQuery {
+                    orientation: MatrixOrientation::OneToMany,
+                    travel_mode: StreetTravelMode::YouBike,
+                    sources: vec![*pickup_coordinate],
+                    targets: dropoffs.iter().map(|(_, coordinate)| *coordinate).collect(),
+                    constraints: context.constraints(
+                        context.search_start + Duration::seconds(i64::from(access.duration.0)),
+                        RoutingTimeKind::DepartAt,
+                    ),
+                })
+                .await
+            {
+                Ok(matrix) => matrix,
+                Err(error) => {
+                    had_transient_failure |= is_transient_provider_error(&error);
+                    had_global_failure |= is_global_provider_error(&error);
+                    continue;
+                }
+            };
+            for (dropoff_index, cell) in bike_matrix.cells.first().into_iter().flatten().enumerate()
+            {
+                let Some(dropoff) = dropoffs.get(dropoff_index) else {
+                    continue;
+                };
+                if pickup.id == dropoff.0.id || !bike_metric_is_sensible(cell) {
+                    continue;
+                }
+                let Some(bike) = matrix_metric(cell) else {
+                    continue;
+                };
+                let Some(egress) = egress_metrics.get(&dropoff.0.id).copied() else {
+                    continue;
+                };
+                if !usable_bike_station(&context.snapshot, pickup)
+                    || !usable_return_station(&context.snapshot, &dropoff.0)
+                {
+                    continue;
+                }
+                metric_candidates.push(BikeMetricCandidate {
+                    pickup_index,
+                    dropoff_index,
+                    total_seconds: access.duration.0 + bike.duration.0 + egress.duration.0,
+                });
+            }
+        }
+        metric_candidates.sort_by(|left, right| {
+            left.total_seconds
+                .cmp(&right.total_seconds)
+                .then(left.pickup_index.cmp(&right.pickup_index))
+                .then(left.dropoff_index.cmp(&right.dropoff_index))
+        });
+        metric_candidates.truncate(self.limits.max_candidates);
+        let mut candidates = Vec::new();
+        for pair in metric_candidates {
+            let (pickup, pickup_coordinate) = &pickups[pair.pickup_index];
+            let (dropoff, dropoff_coordinate) = &dropoffs[pair.dropoff_index];
             let access_attempt = self
                 .street_path(
                     StreetTravelMode::Walking,
                     origin,
-                    pickup_coordinate,
+                    *pickup_coordinate,
                     context.access_constraints(),
                 )
                 .await;
@@ -734,59 +1079,50 @@ impl JourneyPlanningService {
             let PathAttempt::Found(access_path) = access_attempt else {
                 continue;
             };
-            for dropoff in &stations {
-                if pickup.id == dropoff.id {
-                    continue;
-                }
-                let Ok(dropoff_coordinate) = to_street_coordinate(dropoff.coordinate) else {
-                    continue;
-                };
-                let bike_attempt = self
-                    .street_path(
-                        StreetTravelMode::YouBike,
-                        pickup_coordinate,
-                        dropoff_coordinate,
-                        context.constraints(
-                            context.search_start
-                                + Duration::seconds(i64::from(access_path.duration.0)),
-                            RoutingTimeKind::DepartAt,
-                        ),
-                    )
-                    .await;
-                had_transient_failure |= bike_attempt.was_transient_failure();
-                had_global_failure |= bike_attempt.is_global_failure();
-                let PathAttempt::Found(bike_path) = bike_attempt else {
-                    continue;
-                };
-                let egress_attempt = self
-                    .street_path(
-                        StreetTravelMode::Walking,
-                        dropoff_coordinate,
-                        destination,
-                        context.constraints(
-                            context.search_start
-                                + Duration::seconds(i64::from(
-                                    access_path.duration.0 + bike_path.duration.0,
-                                )),
-                            RoutingTimeKind::DepartAt,
-                        ),
-                    )
-                    .await;
-                had_transient_failure |= egress_attempt.was_transient_failure();
-                had_global_failure |= egress_attempt.is_global_failure();
-                let PathAttempt::Found(egress_path) = egress_attempt else {
-                    continue;
-                };
-                if let Some(candidate) = assemble_youbike_candidate(
-                    context,
-                    pickup,
-                    dropoff,
-                    &access_path,
-                    bike_path,
-                    egress_path,
-                ) {
-                    candidates.push(candidate);
-                }
+            let bike_attempt = self
+                .street_path(
+                    StreetTravelMode::YouBike,
+                    *pickup_coordinate,
+                    *dropoff_coordinate,
+                    context.constraints(
+                        context.search_start + Duration::seconds(i64::from(access_path.duration.0)),
+                        RoutingTimeKind::DepartAt,
+                    ),
+                )
+                .await;
+            had_transient_failure |= bike_attempt.was_transient_failure();
+            had_global_failure |= bike_attempt.is_global_failure();
+            let PathAttempt::Found(bike_path) = bike_attempt else {
+                continue;
+            };
+            let egress_attempt = self
+                .street_path(
+                    StreetTravelMode::Walking,
+                    *dropoff_coordinate,
+                    destination,
+                    context.constraints(
+                        context.search_start
+                            + Duration::seconds(i64::from(
+                                access_path.duration.0 + bike_path.duration.0,
+                            )),
+                        RoutingTimeKind::DepartAt,
+                    ),
+                )
+                .await;
+            had_transient_failure |= egress_attempt.was_transient_failure();
+            had_global_failure |= egress_attempt.is_global_failure();
+            let PathAttempt::Found(egress_path) = egress_attempt else {
+                continue;
+            };
+            if let Some(candidate) = assemble_youbike_candidate(
+                context,
+                pickup,
+                dropoff,
+                &access_path,
+                bike_path,
+                egress_path,
+            ) {
+                candidates.push(candidate);
             }
         }
         (candidates, had_transient_failure, had_global_failure)
@@ -797,6 +1133,46 @@ impl AccessPath {
     fn path_duration_arrival(&self, departure: OffsetDateTime) -> OffsetDateTime {
         departure + Duration::seconds(i64::from(self.path.duration.0))
     }
+}
+
+#[derive(Clone, Copy)]
+struct BikeMetricCandidate {
+    pickup_index: usize,
+    dropoff_index: usize,
+    total_seconds: u32,
+}
+
+fn bike_metric_is_sensible(cell: &crate::street::MatrixCell) -> bool {
+    matrix_metric(cell)
+        .is_some_and(|metric| metric.distance.0 <= 20_000 && metric.duration.0 <= 2 * 60 * 60)
+}
+
+fn usable_bike_station(
+    snapshot: &NetworkSnapshot,
+    station: &crate::transit::YouBikeStation,
+) -> bool {
+    find_bike_status(snapshot, &station.id).is_some_and(|status| {
+        status.freshness.state == FreshnessState::Fresh
+            && bike_value(status).is_some_and(|availability| {
+                availability.rental_state == crate::normalization::ActionState::Enabled
+                    && availability.available_bikes.is_some_and(|count| count > 0)
+            })
+    })
+}
+
+fn usable_return_station(
+    snapshot: &NetworkSnapshot,
+    station: &crate::transit::YouBikeStation,
+) -> bool {
+    find_bike_status(snapshot, &station.id).is_some_and(|status| {
+        status.freshness.state == FreshnessState::Fresh
+            && bike_value(status).is_some_and(|availability| {
+                availability.return_state == crate::normalization::ActionState::Enabled
+                    && availability
+                        .available_return_slots
+                        .is_some_and(|count| count > 0)
+            })
+    })
 }
 
 fn assemble_youbike_candidate(

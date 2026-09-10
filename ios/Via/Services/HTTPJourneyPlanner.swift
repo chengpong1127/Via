@@ -64,11 +64,17 @@ enum ViaAPIConfiguration {
            let url = URL(string: configured),
            url.scheme != nil,
            url.host != nil {
+#if !DEBUG
+            precondition(url.scheme?.lowercased() == "https", "VIA_API_BASE_URL must use HTTPS in Release builds")
+#endif
             return url
         }
-        // The release build should provide VIA_API_BASE_URL as an Info.plist
-        // build setting. localhost keeps the developer simulator useful.
+#if DEBUG
+        // Localhost is intentionally available only to development builds.
         return URL(string: "http://127.0.0.1:3000")!
+#else
+        preconditionFailure("VIA_API_BASE_URL must be configured for Release builds")
+#endif
     }
 }
 

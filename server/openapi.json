@@ -5,6 +5,35 @@
     "version": "1.0.0"
   },
   "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "description": "The process is alive",
+            "headers": { "Cache-Control": { "schema": { "const": "no-store" } } },
+            "content": { "application/json": { "schema": { "type": "object", "required": ["alive"], "properties": { "alive": { "const": true } } } } }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "responses": {
+          "200": { "description": "All planning dependencies are ready" },
+          "503": { "description": "One or more planning dependencies are unavailable" }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "getOperationalMetrics",
+        "responses": {
+          "200": { "description": "Location-free operational metrics", "content": { "text/plain": {} } }
+        }
+      }
+    },
     "/v1/journey-plans": {
       "post": {
         "operationId": "createJourneyPlan",
@@ -32,6 +61,7 @@
             }
           },
           "400": { "$ref": "#/components/responses/Error" },
+          "408": { "$ref": "#/components/responses/Error" },
           "500": { "$ref": "#/components/responses/Error" },
           "503": { "$ref": "#/components/responses/Error" }
         }

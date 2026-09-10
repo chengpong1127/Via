@@ -4,6 +4,7 @@ mod entity;
 pub mod live_status;
 mod migration;
 pub mod normalization;
+pub mod observability;
 pub mod planner;
 pub mod postgres;
 pub mod ranking;

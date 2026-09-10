@@ -61,6 +61,55 @@ impl PostgresSnapshotStore {
         }
         transaction.commit().await
     }
+
+    /// Atomically install reviewed provider aliases for a static artifact.
+    /// Existing rows remain immutable versions; a new `valid_from` creates a
+    /// new mapping rather than mutating the Via identity in place.
+    pub async fn upsert_provider_aliases(
+        &self,
+        aliases: &[ProviderAliasRecord],
+    ) -> Result<(), DbErr> {
+        let transaction = self.database.begin().await?;
+        for alias in aliases {
+            provider_alias::Entity::insert(provider_alias::ActiveModel {
+                provider: Set(alias.provider.clone()),
+                entity_kind: Set(alias.entity_kind.clone()),
+                authority_namespace: Set(alias.authority_namespace.clone()),
+                upstream_key: Set(alias.upstream_key.clone()),
+                via_id: Set(alias.via_id.clone()),
+                valid_from: Set(alias.valid_from),
+                valid_until: Set(alias.valid_until),
+            })
+            .on_conflict(
+                OnConflict::columns([
+                    provider_alias::Column::Provider,
+                    provider_alias::Column::EntityKind,
+                    provider_alias::Column::AuthorityNamespace,
+                    provider_alias::Column::UpstreamKey,
+                    provider_alias::Column::ValidFrom,
+                ])
+                .update_columns([
+                    provider_alias::Column::ViaId,
+                    provider_alias::Column::ValidUntil,
+                ])
+                .to_owned(),
+            )
+            .exec_without_returning(&transaction)
+            .await?;
+        }
+        transaction.commit().await
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderAliasRecord {
+    pub provider: String,
+    pub entity_kind: String,
+    pub authority_namespace: String,
+    pub upstream_key: String,
+    pub via_id: String,
+    pub valid_from: OffsetDateTime,
+    pub valid_until: Option<OffsetDateTime>,
 }
 
 #[async_trait]
@@ -373,10 +422,23 @@ async fn cleanup(
     current_snapshot_id: &str,
 ) -> Result<(), DbErr> {
     let now = OffsetDateTime::now_utc();
-    live_status_observation::Entity::delete_many()
-        .filter(live_status_observation::Column::ExpiresAt.lte(now))
-        .exec(transaction)
-        .await?;
+    // Snapshot rows retain observation IDs explicitly. Gather them before any
+    // retention work so cleanup can never invalidate a pinned historical view.
+    let mut protected_observation_ids = std::collections::HashSet::new();
+    for snapshot in network_snapshot::Entity::find().all(transaction).await? {
+        let ids = serde_json::from_value::<Vec<String>>(snapshot.selected_observation_ids)
+            .map_err(|error| DbErr::Custom(format!("invalid selected observation IDs: {error}")))?;
+        protected_observation_ids.extend(ids);
+    }
+    let mut observation_deletion = live_status_observation::Entity::delete_many()
+        .filter(live_status_observation::Column::ExpiresAt.lte(now));
+    if !protected_observation_ids.is_empty() {
+        observation_deletion = observation_deletion.filter(
+            live_status_observation::Column::Id
+                .is_not_in(protected_observation_ids.into_iter().collect::<Vec<_>>()),
+        );
+    }
+    observation_deletion.exec(transaction).await?;
     feed_health::Entity::delete_many()
         .filter(feed_health::Column::ExpiresAt.lte(now))
         .exec(transaction)

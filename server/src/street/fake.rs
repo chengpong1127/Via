@@ -227,9 +227,8 @@ impl StreetRoutingProvider for FakeProvider {
                     .iter()
                     .enumerate()
                     .map(|(target_index, target)| {
-                        let fixture =
-                            self.matrix
-                                .get(&LegKey::new(query.travel_mode, *source, *target));
+                        let key = LegKey::new(query.travel_mode, *source, *target);
+                        let fixture = self.matrix.get(&key);
                         let reachability = match fixture {
                             Some(MatrixFixture::Reachable { duration, distance })
                                 if query
@@ -243,8 +242,21 @@ impl StreetRoutingProvider for FakeProvider {
                                 }
                             }
                             Some(MatrixFixture::Reachable { .. })
-                            | Some(MatrixFixture::Unreachable)
-                            | None => MatrixReachability::Unreachable,
+                            | Some(MatrixFixture::Unreachable) => MatrixReachability::Unreachable,
+                            None => self
+                                .paths
+                                .get(&key)
+                                .filter(|path| {
+                                    query
+                                        .constraints
+                                        .max_distance
+                                        .is_none_or(|maximum| path.distance.0 <= maximum.0)
+                                })
+                                .map(|path| MatrixReachability::Reachable {
+                                    duration: path.duration,
+                                    distance: path.distance,
+                                })
+                                .unwrap_or(MatrixReachability::Unreachable),
                         };
                         MatrixCell {
                             source_index,

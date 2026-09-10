@@ -55,10 +55,11 @@ The server fails startup until Valhalla is healthy. Its operator endpoint is
 `GET /health/street-routing`; responses use `Cache-Control: no-store` and report
 both the current and startup-pinned graph revision.
 
-Optional configuration:
+Configuration:
 
 | Variable | Meaning |
 | --- | --- |
+| `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and feed URLs. |
 | `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
 | `DATABASE_URL` | Pooled PostgreSQL endpoint; required. |
 | `VIA_DATABASE_MAX_CONNECTIONS` | Small per-instance pool size; defaults to `4`. |

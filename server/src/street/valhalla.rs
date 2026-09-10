@@ -55,6 +55,12 @@ impl ValhallaConfig {
     }
 
     fn validate(&self) -> Result<(), ProviderError> {
+        if !matches!(self.base_url.scheme(), "http" | "https") || self.base_url.host_str().is_none()
+        {
+            return Err(ProviderError::InvalidRequest {
+                reason: "Valhalla URL must be an HTTP(S) URL with a host".into(),
+            });
+        }
         if self.max_concurrency == 0
             || self.max_sources == 0
             || self.max_targets == 0

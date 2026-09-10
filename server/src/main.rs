@@ -8,13 +8,22 @@ use via_server::{
     refresh::RefreshCoordinator,
     snapshot::NetworkSnapshot,
     street::{GraphRevision, ValhallaConfig, ValhallaProvider},
-    tdx::{TdxFeedConfig, TdxFeedSource},
+    tdx::{TdxConfigError, TdxFeedConfig, TdxFeedSource},
     transit::TransitNetwork,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
+
+    let environment = env::var("VIA_ENV")
+        .map_err(|_| "VIA_ENV must be explicitly set to development, staging, or production")?;
+    if !matches!(
+        environment.as_str(),
+        "development" | "staging" | "production"
+    ) {
+        return Err("VIA_ENV must be development, staging, or production".into());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -34,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
         config.base_url = Url::parse(&base_url)?;
     }
+    if environment == "production" && config.base_url.scheme() != "https" {
+        return Err("VIA_VALHALLA_URL must use HTTPS in production".into());
+    }
     let provider = Arc::new(ValhallaProvider::new(config)?);
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| "DATABASE_URL must point to the pooled PostgreSQL endpoint")?;
@@ -44,21 +56,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(PostgresSnapshotStore::connect(&database_url, max_database_connections).await?);
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
-    let transit_network: TransitNetwork = serde_json::from_str(
+    let transit_network = TransitNetwork::from_artifact_json(
         &std::fs::read_to_string(&transit_network_path)
             .map_err(|_| "VIA_TRANSIT_NETWORK could not be read")?,
     )
-    .map_err(|_| "VIA_TRANSIT_NETWORK is not a valid transit network JSON artifact")?;
+    .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
+    let static_network_revision = env::var("VIA_STATIC_NETWORK_REVISION")
+        .map_err(|_| "VIA_STATIC_NETWORK_REVISION must identify the immutable network")?;
+    let schedule_revision = env::var("VIA_SCHEDULE_REVISION")
+        .map_err(|_| "VIA_SCHEDULE_REVISION must identify the immutable schedule")?;
+    if !transit_network.matches_snapshot(&static_network_revision, &schedule_revision) {
+        return Err(
+            "VIA_TRANSIT_NETWORK revisions must match VIA_STATIC_NETWORK_REVISION and VIA_SCHEDULE_REVISION"
+                .into(),
+        );
+    }
     let now = time::OffsetDateTime::now_utc().to_offset(taipei_offset());
     snapshot_store
         .ensure_initial(NetworkSnapshot {
             id: "initial-snapshot".into(),
             created_at: now,
             live_cutoff: now,
-            static_network_revision: env::var("VIA_STATIC_NETWORK_REVISION")
-                .map_err(|_| "VIA_STATIC_NETWORK_REVISION must identify the immutable network")?,
-            schedule_revision: env::var("VIA_SCHEDULE_REVISION")
-                .map_err(|_| "VIA_SCHEDULE_REVISION must identify the immutable schedule")?,
+            static_network_revision,
+            schedule_revision,
             freshness_policy_version: "1".into(),
             publication_version: 1,
             feed_evidence: Vec::new(),
@@ -79,6 +99,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let feed_sources = feed_configs
         .into_iter()
         .map(|config| {
+            if environment == "production" && config.url.scheme() != "https" {
+                return Err(TdxConfigError::InvalidConfiguration(
+                    "TDX feed URLs must use HTTPS in production",
+                ));
+            }
             TdxFeedSource::new(config, &tdx_bearer_token)
                 .map(|source| source.with_identity_resolver(snapshot_store.clone()))
                 .map(|source| Arc::new(source) as Arc<dyn via_server::refresh::FeedSource>)

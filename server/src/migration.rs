@@ -31,6 +31,7 @@ impl MigratorTrait for Migrator {
             Box::new(NetworkSnapshotAuthority),
             Box::new(LiveStatusPublication),
             Box::new(RemoveRawMigrationChecksums),
+            Box::new(ProductionIndexes),
         ]
     }
 }
@@ -389,6 +390,71 @@ struct RemoveRawMigrationChecksums;
 impl MigrationName for RemoveRawMigrationChecksums {
     fn name(&self) -> &str {
         "m0003_remove_raw_migration_checksums"
+    }
+}
+
+struct ProductionIndexes;
+
+impl MigrationName for ProductionIndexes {
+    fn name(&self) -> &str {
+        "m0004_production_indexes"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for ProductionIndexes {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for index in [
+            Index::create()
+                .if_not_exists()
+                .name("via_live_status_family_expiry_idx")
+                .table(live_status_observation::Entity)
+                .col(live_status_observation::Column::Family)
+                .col(live_status_observation::Column::ExpiresAt)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_live_status_received_idx")
+                .table(live_status_observation::Entity)
+                .col(live_status_observation::Column::ReceivedAt)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_feed_health_capability_evaluated_idx")
+                .table(feed_health::Entity)
+                .col(feed_health::Column::Capability)
+                .col(feed_health::Column::EvaluatedAt)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_network_snapshot_created_idx")
+                .table(network_snapshot::Entity)
+                .col(network_snapshot::Column::CreatedAt)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_network_snapshot_revisions_idx")
+                .table(network_snapshot::Entity)
+                .col(network_snapshot::Column::StaticNetworkRevision)
+                .col(network_snapshot::Column::ScheduleRevision)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_refresh_cycles_completed_idx")
+                .table(refresh_cycle::Entity)
+                .col(refresh_cycle::Column::CompletedAt)
+                .to_owned(),
+            Index::create()
+                .if_not_exists()
+                .name("via_refresh_cycles_status_idx")
+                .table(refresh_cycle::Entity)
+                .col(refresh_cycle::Column::Status)
+                .col(refresh_cycle::Column::CompletedAt)
+                .to_owned(),
+        ] {
+            manager.create_index(index).await?;
+        }
+        Ok(())
     }
 }
 

@@ -54,7 +54,7 @@ impl LiveStatusTimes {
         }
     }
 
-    fn evidence_time(self) -> OffsetDateTime {
+    pub(crate) fn evidence_time(self) -> OffsetDateTime {
         self.published_at.unwrap_or(self.received_at)
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::{Client, StatusCode, header};
 use serde::Deserialize;
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
 
 use crate::{
@@ -18,6 +18,7 @@ use crate::{
 };
 
 const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +34,7 @@ pub struct TdxFeedConfig {
 pub enum TdxFeedFamily {
     BusArrival,
     BikeAvailability,
+    ServiceCondition,
 }
 
 #[async_trait]
@@ -66,6 +68,10 @@ pub struct TdxFeedSource {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TdxConfigError {
+    #[error("TDX feed configuration is invalid: {0}")]
+    InvalidConfiguration(&'static str),
+    #[error("TDX bearer token must not be empty")]
+    EmptyBearerToken,
     #[error("TDX bearer token contains invalid header characters")]
     InvalidBearerToken(#[from] header::InvalidHeaderValue),
     #[error("TDX HTTP client configuration failed")]
@@ -74,6 +80,24 @@ pub enum TdxConfigError {
 
 impl TdxFeedSource {
     pub fn new(config: TdxFeedConfig, bearer_token: &str) -> Result<Self, TdxConfigError> {
+        if config.capability.trim().is_empty() {
+            return Err(TdxConfigError::InvalidConfiguration(
+                "capability must not be empty",
+            ));
+        }
+        if config.authority_namespace.trim().is_empty() {
+            return Err(TdxConfigError::InvalidConfiguration(
+                "authority namespace must not be empty",
+            ));
+        }
+        if config.url.host_str().is_none() {
+            return Err(TdxConfigError::InvalidConfiguration(
+                "feed URL must include a host",
+            ));
+        }
+        if bearer_token.is_empty() {
+            return Err(TdxConfigError::EmptyBearerToken);
+        }
         let mut headers = header::HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
@@ -81,6 +105,7 @@ impl TdxFeedSource {
         );
         let client = Client::builder()
             .default_headers(headers)
+            .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(8))
             .user_agent("via-server/1.0")
             .build()?;
@@ -153,8 +178,15 @@ impl FeedSource for TdxFeedSource {
         let received_at = OffsetDateTime::now_utc();
         let payload: serde_json::Value =
             serde_json::from_slice(&body).map_err(|_| FreshnessReason::RejectedPayload)?;
+        if records(&payload).is_empty() {
+            tracing::warn!(capability = %self.capability, "TDX payload contained no records");
+            return Err(FreshnessReason::RejectedPayload);
+        }
         let normalized_at = OffsetDateTime::now_utc();
         let published_at = newest_update_time(&payload).ok_or(FreshnessReason::RejectedPayload)?;
+        if published_at > normalized_at + MAX_PROVIDER_CLOCK_SKEW {
+            return Err(FreshnessReason::RejectedPayload);
+        }
         let freshness = self.policy.evaluate(
             LiveStatusTimes {
                 measured_at: None,
@@ -174,7 +206,17 @@ impl FeedSource for TdxFeedSource {
                 self.normalize_bike_stations(&payload, received_at, normalized_at)
                     .await
             }
+            TdxFeedFamily::ServiceCondition => {
+                return Err(FreshnessReason::RejectedPayload);
+            }
         };
+        if live_status.is_empty() {
+            tracing::warn!(
+                capability = %self.capability,
+                "TDX payload produced no normalized observations"
+            );
+            return Err(FreshnessReason::RejectedPayload);
+        }
         Ok(FeedRefreshBatch {
             freshness,
             live_status,
@@ -192,12 +234,15 @@ impl TdxFeedSource {
         let mut normalized = Vec::new();
         for record in records(payload) {
             let Some(stop_uid) = string_field(record, "StopUID") else {
+                tracing::warn!(capability = %self.capability, "TDX bus record missing StopUID");
                 continue;
             };
             let Some(service_uid) = string_field(record, "SubRouteUID") else {
+                tracing::warn!(capability = %self.capability, "TDX bus record missing SubRouteUID");
                 continue;
             };
             let Some(published_at) = time_field(record, "UpdateTime") else {
+                tracing::warn!(capability = %self.capability, "TDX bus record missing UpdateTime");
                 continue;
             };
             let Some(boarding_point_id) = self
@@ -205,6 +250,11 @@ impl TdxFeedSource {
                 .resolve("boarding_point", &self.authority_namespace, stop_uid)
                 .await
             else {
+                tracing::warn!(
+                    capability = %self.capability,
+                    entity_kind = "boarding_point",
+                    "TDX record dropped because its identity alias is unknown"
+                );
                 continue;
             };
             let Some(transit_service_id) = self
@@ -212,6 +262,11 @@ impl TdxFeedSource {
                 .resolve("transit_service", &self.authority_namespace, service_uid)
                 .await
             else {
+                tracing::warn!(
+                    capability = %self.capability,
+                    entity_kind = "transit_service",
+                    "TDX record dropped because its identity alias is unknown"
+                );
                 continue;
             };
             let status = record
@@ -259,9 +314,11 @@ impl TdxFeedSource {
         let mut normalized = Vec::new();
         for record in records(payload) {
             let Some(station_uid) = string_field(record, "StationUID") else {
+                tracing::warn!(capability = %self.capability, "TDX bike record missing StationUID");
                 continue;
             };
             let Some(published_at) = time_field(record, "UpdateTime") else {
+                tracing::warn!(capability = %self.capability, "TDX bike record missing UpdateTime");
                 continue;
             };
             let Some(station_id) = self
@@ -269,6 +326,11 @@ impl TdxFeedSource {
                 .resolve("youbike_station", &self.authority_namespace, station_uid)
                 .await
             else {
+                tracing::warn!(
+                    capability = %self.capability,
+                    entity_kind = "youbike_station",
+                    "TDX record dropped because its identity alias is unknown"
+                );
                 continue;
             };
             let service_status = record

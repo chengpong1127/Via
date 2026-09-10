@@ -258,7 +258,7 @@ impl ProviderCapabilities {
         detailed_paths: true,
     };
 
-    fn supports(self, required: Self) -> bool {
+    pub fn supports(self, required: Self) -> bool {
         (!required.correlation || self.correlation)
             && (!required.matrices || self.matrices)
             && (!required.detailed_paths || self.detailed_paths)
@@ -381,17 +381,33 @@ impl StreetRoutingSession {
 
     pub async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, ProviderError> {
         query.validate()?;
-        self.provider
+        let result = self
+            .provider
             .matrix(&self.pinned_status.graph_revision, &query)
-            .await
+            .await?;
+        if result.graph_revision != self.pinned_status.graph_revision {
+            return Err(ProviderError::InconsistentGraphRevision {
+                expected: self.pinned_status.graph_revision.clone(),
+                actual: result.graph_revision,
+            });
+        }
+        Ok(result)
     }
 
     pub async fn detailed_path(
         &self,
         query: DetailedPathQuery,
     ) -> Result<DetailedPath, ProviderError> {
-        self.provider
+        let path = self
+            .provider
             .detailed_path(&self.pinned_status.graph_revision, &query)
-            .await
+            .await?;
+        if path.graph_revision != self.pinned_status.graph_revision {
+            return Err(ProviderError::InconsistentGraphRevision {
+                expected: self.pinned_status.graph_revision.clone(),
+                actual: path.graph_revision,
+            });
+        }
+        Ok(path)
     }
 }
