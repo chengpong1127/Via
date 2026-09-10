@@ -11,7 +11,7 @@ use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
+    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id, taipei_offset},
     planner::{JourneyPlanningService, PlanningError},
     refresh::{RefreshCoordinator, RefreshOutcome},
     snapshot::{InMemorySnapshotStore, NetworkSnapshot, SnapshotStore},
@@ -19,6 +19,7 @@ use crate::{
         GraphRevision, ProviderCapabilities, ProviderCategory, ProviderError,
         StreetRoutingProvider, StreetRoutingSession,
     },
+    transit::TransitNetwork,
 };
 
 #[derive(Clone)]
@@ -66,8 +67,26 @@ pub async fn build_router_with_services(
     refresh_coordinator: Option<RefreshCoordinator>,
     refresh_token: Option<String>,
 ) -> Result<Router, ProviderError> {
+    build_router_with_services_and_network(
+        provider,
+        snapshots,
+        refresh_coordinator,
+        refresh_token,
+        TransitNetwork::default(),
+    )
+    .await
+}
+
+pub async fn build_router_with_services_and_network(
+    provider: Arc<dyn StreetRoutingProvider>,
+    snapshots: Arc<dyn SnapshotStore>,
+    refresh_coordinator: Option<RefreshCoordinator>,
+    refresh_token: Option<String>,
+    transit_network: TransitNetwork,
+) -> Result<Router, ProviderError> {
     let street_routing = StreetRoutingSession::start(provider).await?;
-    let journey_planning = JourneyPlanningService::new(street_routing.clone(), snapshots);
+    let journey_planning = JourneyPlanningService::new(street_routing.clone(), snapshots)
+        .with_transit_network(transit_network);
     let refresh_endpoint = refresh_coordinator
         .zip(refresh_token)
         .map(|(coordinator, token)| RefreshEndpoint { coordinator, token });
@@ -192,7 +211,10 @@ async fn refresh(
     };
     match endpoint
         .coordinator
-        .run(&request.refresh_key, OffsetDateTime::now_utc())
+        .run(
+            &request.refresh_key,
+            OffsetDateTime::now_utc().to_offset(taipei_offset()),
+        )
         .await
     {
         Ok(outcome @ RefreshOutcome::Published { .. })

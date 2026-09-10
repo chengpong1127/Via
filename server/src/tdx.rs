@@ -107,6 +107,12 @@ impl FeedSource for TdxFeedSource {
         &self.capability
     }
 
+    fn freshness_policy(&self, version: &str) -> FreshnessPolicy {
+        let mut policy = self.policy.clone();
+        policy.version = version.into();
+        policy
+    }
+
     async fn refresh(
         &self,
         _refresh_started_at: OffsetDateTime,
@@ -225,6 +231,7 @@ impl TdxFeedSource {
             );
             normalized.push(NormalizedLiveStatus {
                 id: observation_id(&self.capability, stop_uid, service_uid, published_at),
+                capability: self.capability.clone(),
                 received_at,
                 normalized_at,
                 freshness: self.policy.evaluate(
@@ -281,6 +288,7 @@ impl TdxFeedSource {
             );
             normalized.push(NormalizedLiveStatus {
                 id: observation_id(&self.capability, station_uid, "bike", published_at),
+                capability: self.capability.clone(),
                 received_at,
                 normalized_at,
                 freshness: self.policy.evaluate(

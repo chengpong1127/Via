@@ -67,6 +67,7 @@ Optional configuration:
 | `VIA_REFRESH_TOKEN` | Bearer token used only by the external scheduler; required. |
 | `VIA_TDX_BEARER_TOKEN` | TDX access token held only by feed adapters; required. |
 | `VIA_TDX_FEEDS` | JSON array of reviewed TDX feeds with `capability`, `url`, `family`, and `authority_namespace`; required and non-empty. |
+| `VIA_TRANSIT_NETWORK` | Path to the immutable normalized Bus/Metro/YouBike network and timetable JSON artifact; required. |
 | `PORT` | Axum port; defaults to `3000`. |
 
 Database migrations run at startup. The first startup publishes one coherent
@@ -82,13 +83,12 @@ invoke adapters.
 
 ## Current planner boundary
 
-The request path currently constructs direct Walking options. The accepted API,
-normalization, snapshot, refresh, and ranking contracts are implemented, but the
-multimodal Bus/Metro/YouBike candidate generator is not: the routing research
-still leaves the allowed Journey grammar and the production static timetable
-artifact unresolved. Those decisions must be accepted before a McRAPTOR and
-time-dependent rental-graph implementation can be wired into this service
-without inventing product behavior.
+The request path pins one Network Snapshot, then orchestrates direct Walking,
+bounded timetable Bus/Metro rounds, and inventory-gated YouBike access/bicycle/
+egress candidates. Street access, egress, bicycle, matrix, and path calculations
+stay behind the Valhalla provider boundary; timetable lookup uses the immutable
+`TransitNetwork` artifact. The checked-in tests use injected fixtures, while a
+production deployment must publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
 
 ## Tests
 
@@ -99,6 +99,7 @@ cargo test --test planning_contract
 cargo test --test ranking_contract
 cargo test --test refresh_contract
 cargo test --test journey_endpoint
+cargo test --test transit_contract
 cargo test
 ```
 

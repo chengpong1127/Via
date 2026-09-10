@@ -102,7 +102,11 @@
             "uniqueItems": true,
             "items": { "enum": ["bus", "metro", "youbike"] }
           },
-          "locale": { "type": "string" },
+          "locale": {
+            "type": "string",
+            "description": "Well-formed BCP 47 language tag, for example en or zh-Hant-TW.",
+            "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"
+          },
           "departure_setting": { "$ref": "#/components/schemas/DepartureSetting" }
         }
       },

@@ -59,15 +59,15 @@ struct PlanningRequest: Hashable, Sendable {
     let locale: String
 }
 
-enum JourneyClass: Sendable {
-    case reliable
-    case feasible
+enum JourneyClass: String, Equatable, Sendable {
+    case reliable = "reliable"
+    case feasible = "feasible"
 }
 
-enum JourneyLabel: Sendable {
-    case bestNow
-    case fewerTransfers
-    case lessWalking
+enum JourneyLabel: String, Equatable, Sendable {
+    case bestNow = "best_now"
+    case fewerTransfers = "fewer_transfers"
+    case lessWalking = "less_walking"
 
     var titleKey: String {
         switch self {
@@ -78,11 +78,11 @@ enum JourneyLabel: Sendable {
     }
 }
 
-enum LiveStatusState: Sendable {
-    case fresh
-    case degraded
-    case unavailable
-    case notApplicable
+enum LiveStatusState: String, Equatable, Sendable {
+    case fresh = "fresh"
+    case degraded = "degraded"
+    case unavailable = "unavailable"
+    case notApplicable = "not_applicable"
 }
 
 struct LiveStatusSummary: Sendable {

@@ -2,12 +2,14 @@ use std::{env, net::SocketAddr, sync::Arc};
 
 use url::Url;
 use via_server::{
-    app::build_router_with_services,
+    api::taipei_offset,
+    app::build_router_with_services_and_network,
     postgres::PostgresSnapshotStore,
     refresh::RefreshCoordinator,
     snapshot::NetworkSnapshot,
     street::{GraphRevision, ValhallaConfig, ValhallaProvider},
     tdx::{TdxFeedConfig, TdxFeedSource},
+    transit::TransitNetwork,
 };
 
 #[tokio::main]
@@ -40,7 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()?;
     let snapshot_store =
         Arc::new(PostgresSnapshotStore::connect(&database_url, max_database_connections).await?);
-    let now = time::OffsetDateTime::now_utc();
+    let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
+        .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
+    let transit_network: TransitNetwork = serde_json::from_str(
+        &std::fs::read_to_string(&transit_network_path)
+            .map_err(|_| "VIA_TRANSIT_NETWORK could not be read")?,
+    )
+    .map_err(|_| "VIA_TRANSIT_NETWORK is not a valid transit network JSON artifact")?;
+    let now = time::OffsetDateTime::now_utc().to_offset(taipei_offset());
     snapshot_store
         .ensure_initial(NetworkSnapshot {
             id: "initial-snapshot".into(),
@@ -76,9 +85,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     let refresh = RefreshCoordinator::new(snapshot_store.clone(), feed_sources, 4);
-    let router =
-        build_router_with_services(provider, snapshot_store, Some(refresh), Some(refresh_token))
-            .await?;
+    let router = build_router_with_services_and_network(
+        provider,
+        snapshot_store,
+        Some(refresh),
+        Some(refresh_token),
+        transit_network,
+    )
+    .await?;
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()?;

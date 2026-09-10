@@ -21,7 +21,7 @@
   "warnings": [],
   "journey_options": [
     {
-      "id": "option_1",
+      "id": "option_01_fixture_match",
       "matching_key": "match_fixture",
       "class": "reliable",
       "label": "best_now",
@@ -43,7 +43,7 @@
       },
       "legs": [
         {
-          "id": "leg_1",
+          "id": "leg_01_1_fixture_match",
           "mode": "walking",
           "from": {
             "display_name": "Taipei Main Station",

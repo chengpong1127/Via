@@ -1,9 +1,69 @@
 use serde_json::json;
-use time::macros::datetime;
+use time::macros::{date, datetime};
 use via_server::{
-    api::{PlanningRequest, RequestValidationError, SelectedMode},
+    api::{
+        DepartureSetting, PlanningRequest, RequestValidationError, SelectedMode,
+        normalize_to_taipei,
+    },
     live_status::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
 };
+
+#[test]
+fn client_offset_is_normalized_before_service_day_lookup() {
+    let setting = DepartureSetting::DepartAt {
+        time: datetime!(2026-08-31 17:30 UTC),
+    };
+    let effective = setting.effective_search_time(datetime!(2026-09-01 00:00 UTC));
+    assert_eq!(effective, datetime!(2026-09-01 01:30 +08:00));
+    assert_eq!(
+        setting.service_day(
+            datetime!(2026-09-01 00:00 UTC),
+            time::Time::from_hms(4, 0, 0).unwrap()
+        ),
+        date!(2026 - 08 - 31)
+    );
+    assert_eq!(
+        normalize_to_taipei(datetime!(2026-08-31 17:30 UTC)).offset(),
+        time::UtcOffset::from_hms(8, 0, 0).unwrap()
+    );
+}
+
+#[test]
+fn depart_now_depart_at_and_arrive_by_resolve_in_taipei_time() {
+    let now = datetime!(2026-08-31 12:00 UTC);
+    let depart_now = DepartureSetting::DepartNow.resolve(now, 600);
+    assert_eq!(
+        depart_now,
+        (
+            datetime!(2026-08-31 20:00 +08:00),
+            datetime!(2026-08-31 20:10 +08:00)
+        )
+    );
+
+    let depart_at = DepartureSetting::DepartAt {
+        time: datetime!(2026-08-31 12:00 UTC),
+    }
+    .resolve(now, 600);
+    assert_eq!(
+        depart_at,
+        (
+            datetime!(2026-08-31 20:00 +08:00),
+            datetime!(2026-08-31 20:10 +08:00)
+        )
+    );
+
+    let arrive_by = DepartureSetting::ArriveBy {
+        time: datetime!(2026-08-31 12:00 UTC),
+    }
+    .resolve(now, 600);
+    assert_eq!(
+        arrive_by,
+        (
+            datetime!(2026-08-31 19:50 +08:00),
+            datetime!(2026-08-31 20:00 +08:00)
+        )
+    );
+}
 
 #[test]
 fn planning_request_accepts_the_provider_neutral_contract() {

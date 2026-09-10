@@ -2,13 +2,18 @@ use std::{fmt, str::FromStr};
 
 use language_tags::LanguageTag;
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::street::Coordinate;
 
 pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
+pub const TAIPEI_TIME_ZONE: &str = "Asia/Taipei";
+
+pub fn taipei_offset() -> UtcOffset {
+    UtcOffset::from_hms(8, 0, 0).expect("Taipei UTC offset is valid")
+}
 
 pub fn new_request_id() -> String {
     format!("req_{}", uuid::Uuid::new_v4().simple())
@@ -158,8 +163,22 @@ impl DepartureSetting {
 
     pub fn effective_search_time(&self, now: OffsetDateTime) -> OffsetDateTime {
         match self {
-            Self::DepartNow => now,
-            Self::DepartAt { time } | Self::ArriveBy { time } => *time,
+            Self::DepartNow => normalize_to_taipei(now),
+            Self::DepartAt { time } | Self::ArriveBy { time } => normalize_to_taipei(*time),
+        }
+    }
+
+    pub fn local_search_time(&self, now: OffsetDateTime) -> PrimitiveDateTime {
+        let effective = self.effective_search_time(now);
+        effective.date().with_time(effective.time())
+    }
+
+    pub fn service_day(&self, now: OffsetDateTime, boundary: Time) -> Date {
+        let local = self.local_search_time(now);
+        if local.time() < boundary {
+            local.date().previous_day().unwrap_or(local.date())
+        } else {
+            local.date()
         }
     }
 
@@ -170,11 +189,24 @@ impl DepartureSetting {
     ) -> (OffsetDateTime, OffsetDateTime) {
         let duration = time::Duration::seconds(i64::from(duration_seconds));
         match self {
-            Self::DepartNow => (now, now + duration),
-            Self::DepartAt { time } => (*time, *time + duration),
-            Self::ArriveBy { time } => (*time - duration, *time),
+            Self::DepartNow => {
+                let now = normalize_to_taipei(now);
+                (now, now + duration)
+            }
+            Self::DepartAt { time } => {
+                let time = normalize_to_taipei(*time);
+                (time, time + duration)
+            }
+            Self::ArriveBy { time } => {
+                let time = normalize_to_taipei(*time);
+                (time - duration, time)
+            }
         }
     }
+}
+
+pub fn normalize_to_taipei(value: OffsetDateTime) -> OffsetDateTime {
+    value.to_offset(taipei_offset())
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -107,9 +107,17 @@ impl Default for RankingPolicy {
 
 impl RankingPolicy {
     pub fn rank(&self, candidates: Vec<CandidateJourney>) -> Vec<RankedJourney> {
+        self.rank_with_schedule_only(candidates, &HashSet::new())
+    }
+
+    pub fn rank_with_schedule_only(
+        &self,
+        candidates: Vec<CandidateJourney>,
+        schedule_only_keys: &HashSet<String>,
+    ) -> Vec<RankedJourney> {
         let mut eligible: Vec<_> = candidates
             .into_iter()
-            .filter_map(|candidate| self.classify(candidate))
+            .filter_map(|candidate| self.classify(candidate, schedule_only_keys))
             .collect();
 
         eligible = remove_dominated(eligible);
@@ -132,7 +140,11 @@ impl RankingPolicy {
         selected
     }
 
-    fn classify(&self, candidate: CandidateJourney) -> Option<RankedJourney> {
+    fn classify(
+        &self,
+        candidate: CandidateJourney,
+        schedule_only_keys: &HashSet<String>,
+    ) -> Option<RankedJourney> {
         if candidate.blocking_condition
             || candidate
                 .required_live_status
@@ -142,7 +154,11 @@ impl RankingPolicy {
             return None;
         }
 
-        let mut class = JourneyClass::Reliable;
+        let mut class = if schedule_only_keys.contains(&candidate.stable_key) {
+            JourneyClass::Feasible
+        } else {
+            JourneyClass::Reliable
+        };
         let mut reasons = Vec::new();
         for transfer in &candidate.transfers {
             if transfer.available_seconds < transfer.physical_seconds {

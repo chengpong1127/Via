@@ -30,6 +30,10 @@ pub struct NetworkSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedLiveStatus {
     pub id: String,
+    /// Internal source capability used to merge partial refreshes without
+    /// conflating two providers that expose the same value family.
+    #[serde(default)]
+    pub capability: String,
     #[serde(with = "time::serde::rfc3339")]
     pub received_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]

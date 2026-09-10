@@ -1,0 +1,203 @@
+import Foundation
+import Testing
+@testable import Via
+
+@Suite(.serialized)
+struct HTTPJourneyPlannerTests {
+    @Test("Locale normalization accepts common Apple identifiers")
+    func normalizesAppleLocales() {
+        #expect(LocaleNormalization.bcp47("en_US") == "en-US")
+        #expect(LocaleNormalization.bcp47("zh_Hant_TW") == "zh-Hant-TW")
+        #expect(LocaleNormalization.bcp47("en_US@calendar=gregorian") == "en-US")
+    }
+
+    @Test("Apple locale identifiers are normalized to BCP-47 and request JSON matches the API")
+    func requestMatchesContract() async throws {
+        StubURLProtocol.reset(statusCode: 200, body: Self.emptyResult)
+        let planner = HTTPJourneyPlanner(
+            baseURL: URL(string: "https://api.example.test")!,
+            urlSession: Self.stubSession()
+        )
+
+        let request = PlanningRequest(
+            origin: SelectedPlace(
+                displayText: "Origin",
+                coordinate: Coordinate(latitude: 25.04776, longitude: 121.51706)
+            ),
+            destination: SelectedPlace(
+                displayText: "Destination",
+                coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
+            ),
+            selectedModes: [.youbike, .bus],
+            departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000)),
+            locale: "en_US"
+        )
+
+        let result = try await planner.plan(request)
+        #expect(result.options.isEmpty)
+        let body = try #require(StubURLProtocol.lastRequest?.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json["locale"] as? String == "en-US")
+        #expect(json["selected_modes"] as? [String] == ["bus", "youbike"])
+        #expect(json["departure_setting"] as? [String: Any] != nil)
+        #expect(StubURLProtocol.lastRequest?.url?.path == "/v1/journey-plans")
+    }
+
+    @Test("HTTP planner decodes a normal server-authoritative Journey Option")
+    func decodesNormalResult() async throws {
+        StubURLProtocol.reset(statusCode: 200, body: Self.normalResult)
+        let planner = HTTPJourneyPlanner(
+            baseURL: URL(string: "https://api.example.test")!,
+            urlSession: Self.stubSession()
+        )
+
+        let result = try await planner.plan(Self.request())
+
+        #expect(result.options.count == 1)
+        #expect(result.options[0].id == "option_01_fixture_match")
+        #expect(result.options[0].journeyClass == .reliable)
+        #expect(result.options[0].travelModes == [.walking])
+        #expect(result.options[0].legs[0].mode == .walking)
+    }
+
+    @Test("HTTP planner maps the shared error statuses")
+    func mapsErrorStatuses() async {
+        let planner = HTTPJourneyPlanner(
+            baseURL: URL(string: "https://api.example.test")!,
+            urlSession: Self.stubSession()
+        )
+        let request = Self.request()
+
+        for (status, expected) in [
+            (400, JourneyPlanningError.invalidRequest(field: "/origin")),
+            (503, JourneyPlanningError.temporarilyUnavailable),
+            (500, JourneyPlanningError.unexpectedFailure)
+        ] as [(Int, JourneyPlanningError)] {
+            StubURLProtocol.reset(statusCode: status, body: Self.errorBody)
+            do {
+                _ = try await planner.plan(request)
+                Issue.record("expected HTTP \(status) to throw")
+            } catch let error as JourneyPlanningError {
+                #expect(error == expected)
+            } catch {
+                Issue.record("unexpected error: \(error)")
+            }
+        }
+    }
+
+    private static func stubSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private static func request() -> PlanningRequest {
+        PlanningRequest(
+            origin: SelectedPlace(displayText: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
+            destination: SelectedPlace(displayText: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
+            selectedModes: [.bus],
+            departureSetting: .departNow,
+            locale: "en"
+        )
+    }
+
+    private static let emptyResult = Data(#"{
+      "api_version":"1.0",
+      "semantic_catalog_version":"1.0",
+      "request_id":"req_test",
+      "generated_at":"2026-08-29T10:08:00+08:00",
+      "effective_search_time":"2026-08-29T10:08:00+08:00",
+      "time_zone":"Asia/Taipei",
+      "network_snapshot":{
+        "id":"snapshot_test",
+        "created_at":"2026-08-29T10:07:45+08:00",
+        "live_cutoff":"2026-08-29T10:07:40+08:00",
+        "static_network_revision":"static_test",
+        "schedule_revision":"schedule_test",
+        "freshness_policy_version":"1"
+      },
+      "policy_versions":{"freshness":"1","ranking":"1","transfer_safety":"1"},
+      "warnings":[],
+      "empty":{"code":"no_feasible_journey_option","required":true,"parameters":{}}
+    }"#.utf8)
+
+    private static let normalResult = Data(#"{
+      "api_version":"1.0",
+      "semantic_catalog_version":"1.0",
+      "generated_at":"2026-08-29T10:08:00+08:00",
+      "network_snapshot":{
+        "id":"snapshot_test",
+        "created_at":"2026-08-29T10:07:45+08:00",
+        "live_cutoff":"2026-08-29T10:07:40+08:00",
+        "static_network_revision":"static_test",
+        "schedule_revision":"schedule_test"
+      },
+      "journey_options":[{
+        "id":"option_01_fixture_match",
+        "matching_key":"match_fixture",
+        "class":"reliable",
+        "label":"best_now",
+        "departure_time":"2026-08-29T10:08:00+08:00",
+        "arrival_time":"2026-08-29T10:18:00+08:00",
+        "duration_seconds":600,
+        "walking_seconds":600,
+        "transfer_count":0,
+        "travel_modes":["walking"],
+        "live_status_summary":{"state":"not_applicable","observed_at":null},
+        "overview_geometry":{"encoding":"polyline6","points":"??"},
+        "legs":[{
+          "id":"leg_01_1_fixture_match",
+          "mode":"walking",
+          "from":{"display_name":"Origin"},
+          "to":{"display_name":"Destination"},
+          "duration_seconds":600,
+          "guidance":[],
+          "details":{"type":"walking"}
+        }]
+      }]
+    }"#.utf8)
+
+    private static let errorBody = Data(#"{
+      "api_version":"1.0",
+      "semantic_catalog_version":"1.0",
+      "request_id":"req_test",
+      "error":{"code":"invalid_request","required":true,"field":"/origin","parameters":{}}
+    }"#.utf8)
+}
+
+private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var responseStatus = 200
+    private static var responseBody = Data()
+    private(set) static var lastRequest: URLRequest?
+
+    static func reset(statusCode: Int, body: Data) {
+        lock.lock()
+        responseStatus = statusCode
+        responseBody = body
+        lastRequest = nil
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.lastRequest = request
+        let status = Self.responseStatus
+        let body = Self.responseBody
+        Self.lock.unlock()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}

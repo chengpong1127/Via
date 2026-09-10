@@ -126,7 +126,7 @@ final class JourneySession {
             destination: destination,
             selectedModes: selectedModes,
             departureSetting: departureSetting,
-            locale: locale
+            locale: LocaleNormalization.bcp47(locale)
         )
     }
 

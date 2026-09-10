@@ -49,6 +49,7 @@ async fn postgres_is_authoritative_for_lease_and_snapshot_publication() {
     );
     next.live_status.push(NormalizedLiveStatus {
         id: format!("integration-observation-{}", now.unix_timestamp_nanos()),
+        capability: "bus_arrival_taipei".into(),
         received_at: now,
         normalized_at: now,
         freshness: Freshness {
