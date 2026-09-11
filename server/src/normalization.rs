@@ -164,7 +164,7 @@ pub struct ArrivalEstimate {
     pub transmitted_at: OffsetDateTime,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionState {
     Enabled,

@@ -19,7 +19,8 @@ Implemented capabilities:
   partial feed evidence, and retention cleanup;
 - authenticated `POST /internal/v1/refresh` with at most four concurrent feed
   adapters and atomic snapshot publication;
-- `GET /openapi.json` plus shared request, result, empty, and error fixtures;
+- generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
+  plus shared request, result, empty, and error fixtures;
 - coordinate correlation;
 - one-to-many and many-to-one Walking/YouBike matrices;
 - detailed geometry and semantic maneuver facts;
@@ -102,6 +103,13 @@ cargo test --test refresh_contract
 cargo test --test journey_endpoint
 cargo test --test transit_contract
 cargo test
+```
+
+For external tooling, the generated document can also be exported without
+adding a checked-in artifact:
+
+```sh
+cargo run --bin export-openapi > /tmp/via-openapi.json
 ```
 
 The Valhalla contract tests use an isolated local HTTP fixture and do not need

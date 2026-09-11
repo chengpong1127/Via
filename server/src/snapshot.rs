@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use crate::live_status::{Freshness, FreshnessReason};
 use crate::normalization::{ArrivalEstimate, BikeAvailability, ServiceCondition};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct NetworkSnapshot {
     pub id: String,
     #[serde(with = "time::serde::rfc3339")]

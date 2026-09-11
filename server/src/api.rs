@@ -19,12 +19,14 @@ pub fn new_request_id() -> String {
     format!("req_{}", uuid::Uuid::new_v4().simple())
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
+    #[schema(min_items = 1, max_items = 3)]
     pub selected_modes: Vec<SelectedMode>,
+    #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
     pub locale: String,
     pub departure_setting: DepartureSetting,
 }
@@ -52,10 +54,11 @@ impl PlanningRequest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedPlace {
     pub coordinate: RequestCoordinate,
+    #[schema(min_length = 1, max_length = 200)]
     pub display_text: String,
 }
 
@@ -76,10 +79,13 @@ impl SelectedPlace {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
+#[schema(as = Coordinate)]
 #[serde(deny_unknown_fields)]
 pub struct RequestCoordinate {
+    #[schema(minimum = -90.0, maximum = 90.0)]
     pub latitude: f64,
+    #[schema(minimum = -180.0, maximum = 180.0)]
     pub longitude: f64,
 }
 
@@ -110,7 +116,19 @@ impl TryFrom<RequestCoordinate> for Coordinate {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Serialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectedMode {
     Bus,
@@ -121,7 +139,7 @@ pub enum SelectedMode {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TravelMode {
     Walking,
@@ -131,7 +149,7 @@ pub enum TravelMode {
     YouBike,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DepartureSetting {
     DepartNow,

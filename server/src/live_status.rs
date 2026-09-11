@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FreshnessState {
     Fresh,
@@ -10,7 +10,7 @@ pub enum FreshnessState {
     NotApplicable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FreshnessReason {
     Stale,
@@ -23,7 +23,7 @@ pub enum FreshnessReason {
     TimedOut,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Freshness {
     pub state: FreshnessState,
     pub reason: Option<FreshnessReason>,
@@ -32,7 +32,7 @@ pub struct Freshness {
     pub evaluated_at: OffsetDateTime,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct LiveStatusTimes {
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub measured_at: Option<OffsetDateTime>,

@@ -1795,28 +1795,29 @@ fn unreachable_is_handled_before_conversion() -> ! {
     unreachable!("unreachable paths are converted to successful empty results")
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum PlanningOutcome {
     Options(OptionsResult),
     Empty(EmptyResult),
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = JourneyOptionsResult)]
 pub struct OptionsResult {
     #[serde(flatten)]
     pub metadata: ResultMetadata,
     pub journey_options: Vec<JourneyOption>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct EmptyResult {
     #[serde(flatten)]
     pub metadata: ResultMetadata,
     pub empty: SemanticObject,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct ResultMetadata {
     pub api_version: &'static str,
     pub semantic_catalog_version: &'static str,
@@ -1860,14 +1861,14 @@ impl ResultMetadata {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct PolicyVersions {
     pub freshness: String,
     pub ranking: String,
     pub transfer_safety: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct JourneyOption {
     pub id: String,
     pub matching_key: String,
@@ -1889,13 +1890,13 @@ pub struct JourneyOption {
     pub warnings: Vec<Warning>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Geometry {
     pub encoding: &'static str,
     pub points: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Leg {
     pub id: String,
     pub mode: TravelMode,
@@ -1919,7 +1920,7 @@ pub struct Leg {
     pub attribution: Vec<Attribution>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Place {
     pub display_name: String,
     pub coordinate: RequestCoordinate,
@@ -1927,14 +1928,14 @@ pub struct Place {
     pub via_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Guidance {
     pub code: &'static str,
     pub required: bool,
     pub parameters: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Transfer {
     pub from_leg_id: String,
     pub to_leg_id: String,
@@ -1948,7 +1949,7 @@ pub struct Transfer {
     pub warnings: Vec<Warning>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct LiveStatusSummary {
     pub state: FreshnessState,
     pub reasons: Vec<FreshnessReason>,
@@ -1956,7 +1957,7 @@ pub struct LiveStatusSummary {
     pub observed_at: Option<OffsetDateTime>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Warning {
     pub code: &'static str,
     pub required: bool,
@@ -1966,7 +1967,7 @@ pub struct Warning {
     pub source_text_variants: Vec<SourceTextVariant>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LegDetails {
     Walking {
@@ -1999,7 +2000,7 @@ pub enum LegDetails {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct LiveStatusEvidence {
     pub kind: LiveStatusKind,
     pub evidence_type: EvidenceType,
@@ -2014,7 +2015,7 @@ pub struct LiveStatusEvidence {
     pub freshness: crate::live_status::Freshness,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStatusKind {
     ArrivalEstimate,
@@ -2022,14 +2023,14 @@ pub enum LiveStatusKind {
     BikeAvailability,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceType {
     Live,
     ScheduleOnly,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct WarningScope {
     #[serde(rename = "type")]
     pub kind: WarningScopeKind,
@@ -2037,7 +2038,7 @@ pub struct WarningScope {
     pub id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningScopeKind {
     Result,
@@ -2046,14 +2047,14 @@ pub enum WarningScopeKind {
     Transfer,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct SourceTextVariant {
     pub locale: String,
     pub text: String,
     pub attribution: Vec<Attribution>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct SemanticObject {
     pub code: &'static str,
     pub required: bool,

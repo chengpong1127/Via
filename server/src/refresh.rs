@@ -345,7 +345,7 @@ fn failed_source_with_reason(
     )
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum RefreshOutcome {
     Published {
