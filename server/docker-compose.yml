@@ -18,12 +18,17 @@ services:
   valhalla:
     image: ghcr.io/valhalla/valhalla:3.8.3
     command: ["/opt/via/prepare-valhalla.sh"]
+    environment:
+      VALHALLA_OSM_PBF: /real-input/taiwan-latest.osm.pbf
+      VALHALLA_OSM_PBF_SHA256: e05dd2ca18acafe9f9e5a58ef4c9b792824c93ce2dcd11207ac49447ccb13d02
+      VALHALLA_GRAPH_REVISION: valhalla-3.8.3-taiwan-osm-2026-09-10-e05dd2ca18ac
     ports:
       - "127.0.0.1:8002:8002"
     volumes:
       - ./fixtures/valhalla:/fixtures:ro
+      - ./var/valhalla/taiwan-latest.osm.pbf:/real-input/taiwan-latest.osm.pbf:ro
       - ./scripts/prepare-valhalla.sh:/opt/via/prepare-valhalla.sh:ro
-      - ./var/valhalla:/data/valhalla
+      - ./var/valhalla-taiwan:/data/valhalla
     healthcheck:
       test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/status | grep --quiet tileset_last_modified"]
       interval: 2s
