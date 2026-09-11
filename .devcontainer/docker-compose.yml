@@ -44,12 +44,10 @@ services:
     image: ghcr.io/valhalla/valhalla:3.8.3
     command: [ "/opt/via/prepare-valhalla.sh" ]
     environment:
-      VALHALLA_OSM_PBF: ${VALHALLA_OSM_PBF}
-      VALHALLA_OSM_PBF_SHA256: ${VALHALLA_OSM_PBF_SHA256}
-      VALHALLA_GRAPH_REVISION: ${VALHALLA_GRAPH_REVISION}
+      VALHALLA_OSM_PBF: /data/valhalla/taiwan-latest.osm.pbf
+      VALHALLA_OSM_PBF_URL: https://download.geofabrik.de/asia/taiwan-latest.osm.pbf
     volumes:
       - ../server/fixtures/valhalla:/fixtures:ro
-      - ../server/var/valhalla/taiwan-latest.osm.pbf:/real-input/taiwan-latest.osm.pbf:ro
       - ../server/scripts/prepare-valhalla.sh:/opt/via/prepare-valhalla.sh:ro
       - valhalla-data-taiwan:/data/valhalla
     ports:
