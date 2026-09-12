@@ -206,7 +206,7 @@ struct DirectionsPanel: View {
             MessageStateView(
                 symbol: "wifi.exclamationmark",
                 title: "Journey Planning is temporarily unavailable",
-                message: "Via could not get a coherent Network Snapshot.",
+                message: "Via could not get current realtime information. Try again.",
                 actionTitle: "Try again",
                 action: { Task { await session.submit() } }
             )
@@ -259,7 +259,7 @@ private struct LoadingView: View {
             ProgressView()
             VStack(alignment: .leading, spacing: 2) {
                 Text("Finding Journey Options…").font(.headline)
-                Text("Using one coherent Network Snapshot").font(.caption).foregroundStyle(.secondary)
+                Text("Checking schedules and realtime availability").font(.caption).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

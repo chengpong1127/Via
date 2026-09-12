@@ -178,10 +178,7 @@ struct JourneyOption: Identifiable, Sendable {
     let legs: [JourneyLeg]
 }
 
-struct NetworkSnapshot: Sendable {
-    let id: String
-    let createdAt: Date
-    let liveCutoff: Date
+struct NetworkRevision: Sendable {
     let staticNetworkRevision: String
     let scheduleRevision: String
 }
@@ -190,7 +187,7 @@ struct JourneyResult: Sendable {
     let apiVersion: String
     let semanticCatalogVersion: String
     let generatedAt: Date
-    let networkSnapshot: NetworkSnapshot
+    let networkRevision: NetworkRevision
     let options: [JourneyOption]
 }
 

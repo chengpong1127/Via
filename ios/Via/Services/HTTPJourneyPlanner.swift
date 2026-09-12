@@ -210,7 +210,7 @@ private struct ResponsePayload: Decodable {
     let apiVersion: String
     let semanticCatalogVersion: String
     let generatedAt: String
-    let networkSnapshot: ServerNetworkSnapshot
+    let networkRevision: ServerNetworkRevision
     let journeyOptions: [ServerJourneyOption]?
     let empty: ServerEmpty?
 
@@ -218,7 +218,7 @@ private struct ResponsePayload: Decodable {
         case apiVersion = "api_version"
         case semanticCatalogVersion = "semantic_catalog_version"
         case generatedAt = "generated_at"
-        case networkSnapshot = "network_snapshot"
+        case networkRevision = "network_revision"
         case journeyOptions = "journey_options"
         case empty
     }
@@ -230,7 +230,7 @@ private struct ResponsePayload: Decodable {
     func journeyResult() throws -> JourneyResult {
         guard (journeyOptions != nil) != (empty != nil),
               let generatedAt = RFC3339.date(generatedAt),
-              let snapshot = networkSnapshot.domainValue()
+              let revision = networkRevision.domainValue()
         else {
             throw JourneyPlanningError.unsupportedResponse
         }
@@ -239,7 +239,7 @@ private struct ResponsePayload: Decodable {
             apiVersion: apiVersion,
             semanticCatalogVersion: semanticCatalogVersion,
             generatedAt: generatedAt,
-            networkSnapshot: snapshot,
+            networkRevision: revision,
             options: options
         )
     }
@@ -249,29 +249,17 @@ private struct ServerEmpty: Decodable {
     let code: String
 }
 
-private struct ServerNetworkSnapshot: Decodable {
-    let id: String
-    let createdAt: String
-    let liveCutoff: String
+private struct ServerNetworkRevision: Decodable {
     let staticNetworkRevision: String
     let scheduleRevision: String
 
     enum CodingKeys: String, CodingKey {
-        case id
-        case createdAt = "created_at"
-        case liveCutoff = "live_cutoff"
         case staticNetworkRevision = "static_network_revision"
         case scheduleRevision = "schedule_revision"
     }
 
-    func domainValue() -> NetworkSnapshot? {
-        guard let createdAt = RFC3339.date(createdAt),
-              let liveCutoff = RFC3339.date(liveCutoff)
-        else { return nil }
-        return NetworkSnapshot(
-            id: id,
-            createdAt: createdAt,
-            liveCutoff: liveCutoff,
+    func domainValue() -> NetworkRevision? {
+        NetworkRevision(
             staticNetworkRevision: staticNetworkRevision,
             scheduleRevision: scheduleRevision
         )

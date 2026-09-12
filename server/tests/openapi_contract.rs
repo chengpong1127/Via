@@ -26,7 +26,6 @@ fn generated_openapi_covers_the_http_contract() {
         "/metrics",
         "/health/street-routing",
         "/v1/journey-plans",
-        "/internal/v1/refresh",
     ] {
         assert!(openapi["paths"][path].is_object(), "missing route {path}");
     }
@@ -64,39 +63,8 @@ fn generated_openapi_covers_the_http_contract() {
         );
     }
 
-    let refresh = &openapi["paths"]["/internal/v1/refresh"]["post"];
-    assert_eq!(
-        refresh["requestBody"]["content"]["application/json"]["schema"]["$ref"],
-        "#/components/schemas/RefreshRequest"
-    );
-    for status in ["200", "400", "401", "500", "503"] {
-        assert!(
-            refresh["responses"][status].is_object(),
-            "missing refresh status {status}"
-        );
-    }
-    assert_eq!(
-        refresh["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-        "#/components/schemas/RefreshOutcome"
-    );
-    for status in ["400", "401", "500", "503"] {
-        assert_eq!(
-            refresh["responses"][status]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ErrorEnvelope"
-        );
-    }
-    assert_eq!(
-        refresh["security"][0]["refreshBearer"],
-        serde_json::json!([])
-    );
-    assert_eq!(
-        openapi["components"]["securitySchemes"]["refreshBearer"]["type"],
-        "http"
-    );
-    assert_eq!(
-        openapi["components"]["securitySchemes"]["refreshBearer"]["scheme"],
-        "bearer"
-    );
+    assert!(openapi["paths"]["/internal/v1/refresh"].is_null());
+    assert!(openapi["components"]["securitySchemes"]["refreshBearer"].is_null());
 
     for (path, method) in [
         ("/health/live", "get"),
@@ -120,8 +88,6 @@ fn generated_openapi_covers_the_http_contract() {
         "JourneyOptionsResult",
         "EmptyResult",
         "ErrorEnvelope",
-        "RefreshRequest",
-        "RefreshOutcome",
         "ReadinessResponse",
         "HealthResponse",
     ] {

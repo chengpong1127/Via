@@ -24,6 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 utoipa = { version = "5.5", features = ["time"] }
 utoipa-axum = "0.2"
 language-tags = "0.3"
+moka = { version = "0.12", features = ["future"] }
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }

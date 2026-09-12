@@ -1,9 +1,9 @@
 //! Immutable timetable data and the small transit portion of Via's planner.
 //!
-//! This is intentionally independent of TDX (or any other provider). Feed adapters
-//! build these records during a static-network refresh, and a planning request only
-//! reads the pinned revision. The search is a bounded RAPTOR-style round scan: each
-//! round adds at most one transit boarding and retains the parent ride chain.
+//! This is intentionally independent of TDX (or any other provider). Static-data
+//! adapters build these records offline, and a planning request only reads the
+//! immutable revision. The search is a bounded RAPTOR-style round scan: each round
+//! adds at most one transit boarding and retains the parent ride chain.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -215,6 +215,12 @@ pub struct TransitNetwork {
     pub schedule_revision: String,
     #[serde(skip, default)]
     indexes: Arc<OnceLock<TransitIndexes>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct NetworkRevision {
+    pub static_network_revision: String,
+    pub schedule_revision: String,
 }
 
 impl PartialEq for TransitNetwork {
@@ -432,11 +438,11 @@ impl TransitNetwork {
         (&self.static_network_revision, &self.schedule_revision)
     }
 
-    pub fn matches_snapshot(&self, static_revision: &str, schedule_revision: &str) -> bool {
-        !self.static_network_revision.is_empty()
-            && !self.schedule_revision.is_empty()
-            && self.static_network_revision == static_revision
-            && self.schedule_revision == schedule_revision
+    pub fn revision(&self) -> NetworkRevision {
+        NetworkRevision {
+            static_network_revision: self.static_network_revision.clone(),
+            schedule_revision: self.schedule_revision.clone(),
+        }
     }
 
     /// Return spatially nearest stops in deterministic distance/id order.

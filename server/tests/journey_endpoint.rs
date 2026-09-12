@@ -78,7 +78,14 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
     assert_eq!(body["journey_options"][0]["class"], "reliable");
     assert_eq!(body["journey_options"][0]["label"], "best_now");
     assert_eq!(body["journey_options"][0]["legs"][0]["mode"], "walking");
-    assert_eq!(body["network_snapshot"]["id"], "development-snapshot");
+    assert_eq!(
+        body["network_revision"]["static_network_revision"],
+        "development-static"
+    );
+    assert_eq!(
+        body["network_revision"]["schedule_revision"],
+        "development-schedule"
+    );
     let serialized = body.to_string();
     assert!(!serialized.contains("revision-a"));
     assert!(!serialized.contains("fake"));

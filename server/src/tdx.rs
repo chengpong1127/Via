@@ -8,33 +8,27 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use url::Url;
 
 use crate::{
-    live_status::{FreshnessPolicy, FreshnessReason, LiveStatusTimes},
+    live_status::{FreshnessPolicy, LiveStatusTimes},
     normalization::{
         ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BikeShareStationId,
-        BoardingPointId, TransitServiceId,
+        BoardingPointId, LocalizedSourceText, ServiceCondition, ServiceConditionState,
+        TransitServiceId,
     },
-    refresh::{FeedRefreshBatch, FeedSource},
-    snapshot::{LiveStatusValue, NormalizedLiveStatus},
+    realtime::{
+        ArrivalQuery, NormalizedRealtimeValue, RealtimeError, RealtimeProvider, RealtimeValue,
+    },
 };
 
-const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
+const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
+const DEFAULT_BIKE_PATH: &str = "v2/Bike/Availability/Station";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TdxFeedConfig {
-    pub capability: String,
-    pub url: Url,
-    pub family: TdxFeedFamily,
+pub struct TdxRealtimeConfig {
+    pub base_url: Url,
     pub authority_namespace: String,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TdxFeedFamily {
-    BusArrival,
-    BikeAvailability,
-    ServiceCondition,
 }
 
 #[async_trait]
@@ -45,6 +39,15 @@ pub trait IdentityResolver: Send + Sync {
         authority_namespace: &str,
         upstream_key: &str,
     ) -> Option<String>;
+
+    async fn upstream_key(
+        &self,
+        _entity_kind: &str,
+        _authority_namespace: &str,
+        via_id: &str,
+    ) -> Option<String> {
+        Some(via_id.to_owned())
+    }
 }
 
 struct RejectUnknownIdentity;
@@ -54,21 +57,26 @@ impl IdentityResolver for RejectUnknownIdentity {
     async fn resolve(&self, _: &str, _: &str, _: &str) -> Option<String> {
         None
     }
+
+    async fn upstream_key(&self, _: &str, _: &str, _: &str) -> Option<String> {
+        None
+    }
 }
 
-pub struct TdxFeedSource {
-    capability: String,
-    url: Url,
+pub struct TdxRealtimeProvider {
+    base_url: Url,
+    authority_namespace: String,
+    arrival_path: String,
+    bike_path: String,
+    condition_path: Option<String>,
     client: Client,
     policy: FreshnessPolicy,
-    family: TdxFeedFamily,
-    authority_namespace: String,
     identities: Arc<dyn IdentityResolver>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum TdxConfigError {
-    #[error("TDX feed configuration is invalid: {0}")]
+    #[error("TDX realtime configuration is invalid: {0}")]
     InvalidConfiguration(&'static str),
     #[error("TDX bearer token must not be empty")]
     EmptyBearerToken,
@@ -78,21 +86,16 @@ pub enum TdxConfigError {
     Client(#[from] reqwest::Error),
 }
 
-impl TdxFeedSource {
-    pub fn new(config: TdxFeedConfig, bearer_token: &str) -> Result<Self, TdxConfigError> {
-        if config.capability.trim().is_empty() {
-            return Err(TdxConfigError::InvalidConfiguration(
-                "capability must not be empty",
-            ));
-        }
+impl TdxRealtimeProvider {
+    pub fn new(config: TdxRealtimeConfig, bearer_token: &str) -> Result<Self, TdxConfigError> {
         if config.authority_namespace.trim().is_empty() {
             return Err(TdxConfigError::InvalidConfiguration(
                 "authority namespace must not be empty",
             ));
         }
-        if config.url.host_str().is_none() {
+        if config.base_url.host_str().is_none() {
             return Err(TdxConfigError::InvalidConfiguration(
-                "feed URL must include a host",
+                "TDX base URL must include a host",
             ));
         }
         if bearer_token.is_empty() {
@@ -110,10 +113,11 @@ impl TdxFeedSource {
             .user_agent("via-server/1.0")
             .build()?;
         Ok(Self {
-            capability: config.capability,
-            url: config.url,
-            family: config.family,
+            base_url: config.base_url,
             authority_namespace: config.authority_namespace,
+            arrival_path: DEFAULT_ARRIVAL_PATH.into(),
+            bike_path: DEFAULT_BIKE_PATH.into(),
+            condition_path: None,
             client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
             identities: Arc::new(RejectUnknownIdentity),
@@ -124,250 +128,412 @@ impl TdxFeedSource {
         self.identities = identities;
         self
     }
-}
 
-#[async_trait]
-impl FeedSource for TdxFeedSource {
-    fn capability(&self) -> &str {
-        &self.capability
+    pub fn with_endpoint_paths(
+        mut self,
+        arrival_path: impl Into<String>,
+        bike_path: impl Into<String>,
+    ) -> Self {
+        self.arrival_path = arrival_path.into();
+        self.bike_path = bike_path.into();
+        self
     }
 
-    fn freshness_policy(&self, version: &str) -> FreshnessPolicy {
-        let mut policy = self.policy.clone();
-        policy.version = version.into();
-        policy
+    pub fn with_service_condition_path(mut self, path: impl Into<String>) -> Self {
+        self.condition_path = Some(path.into());
+        self
     }
 
-    async fn refresh(
+    fn endpoint(&self, path: &str) -> Result<Url, RealtimeError> {
+        self.base_url
+            .join(path)
+            .map_err(|_| RealtimeError::InvalidConfiguration)
+    }
+
+    async fn get_json(
         &self,
-        _refresh_started_at: OffsetDateTime,
-    ) -> Result<FeedRefreshBatch, FreshnessReason> {
-        let response = self
-            .client
-            .get(self.url.clone())
-            .send()
-            .await
-            .map_err(|error| {
-                if error.is_timeout() {
-                    FreshnessReason::TimedOut
-                } else {
-                    FreshnessReason::SourceError
-                }
-            })?;
+        path: &str,
+        query: &[(String, String)],
+    ) -> Result<serde_json::Value, RealtimeError> {
+        let mut url = self.endpoint(path)?;
+        url.query_pairs_mut().extend_pairs(
+            query
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
+        let response = self.client.get(url).send().await.map_err(|error| {
+            if error.is_timeout() {
+                RealtimeError::TimedOut
+            } else {
+                RealtimeError::TemporarilyUnavailable
+            }
+        })?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(FreshnessReason::RateLimited);
+            return Err(RealtimeError::RateLimited);
         }
         if !response.status().is_success() {
-            return Err(FreshnessReason::SourceError);
+            return Err(RealtimeError::TemporarilyUnavailable);
         }
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_FEED_BYTES as u64)
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
         {
-            return Err(FreshnessReason::RejectedPayload);
+            return Err(RealtimeError::RejectedPayload);
         }
         let mut body = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| FreshnessReason::SourceError)?;
-            if body.len().saturating_add(chunk.len()) > MAX_FEED_BYTES {
-                return Err(FreshnessReason::RejectedPayload);
+            let chunk = chunk.map_err(|_| RealtimeError::TemporarilyUnavailable)?;
+            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                return Err(RealtimeError::RejectedPayload);
             }
             body.extend_from_slice(&chunk);
         }
+        serde_json::from_slice(&body).map_err(|_| RealtimeError::RejectedPayload)
+    }
+
+    async fn upstream_ids(
+        &self,
+        entity_kind: &str,
+        via_ids: impl IntoIterator<Item = String>,
+    ) -> Result<Vec<String>, RealtimeError> {
+        let mut upstream_ids = Vec::new();
+        for via_id in via_ids {
+            let Some(upstream_id) = self
+                .identities
+                .upstream_key(entity_kind, &self.authority_namespace, &via_id)
+                .await
+            else {
+                return Err(RealtimeError::UnknownIdentity);
+            };
+            upstream_ids.push(upstream_id);
+        }
+        upstream_ids.sort();
+        upstream_ids.dedup();
+        Ok(upstream_ids)
+    }
+
+    async fn normalize_payload(
+        &self,
+        payload: &serde_json::Value,
+        family: TdxFamily,
+    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+        let records = records(payload);
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
         let received_at = OffsetDateTime::now_utc();
-        let payload: serde_json::Value =
-            serde_json::from_slice(&body).map_err(|_| FreshnessReason::RejectedPayload)?;
-        if records(&payload).is_empty() {
-            tracing::warn!(capability = %self.capability, "TDX payload contained no records");
-            return Err(FreshnessReason::RejectedPayload);
-        }
         let normalized_at = OffsetDateTime::now_utc();
-        let published_at = newest_update_time(&payload).ok_or(FreshnessReason::RejectedPayload)?;
-        if published_at > normalized_at + MAX_PROVIDER_CLOCK_SKEW {
-            return Err(FreshnessReason::RejectedPayload);
-        }
-        let freshness = self.policy.evaluate(
-            LiveStatusTimes {
-                measured_at: None,
-                published_at: Some(published_at),
+        let mut normalized = Vec::new();
+        let mut saw_published_record = false;
+        for record in records {
+            let Some(published_at) =
+                time_field(record, "UpdateTime").or_else(|| time_field(record, "update_time"))
+            else {
+                continue;
+            };
+            saw_published_record = true;
+            if published_at > normalized_at + MAX_PROVIDER_CLOCK_SKEW {
+                return Err(RealtimeError::RejectedPayload);
+            }
+            let freshness = self.policy.evaluate(
+                LiveStatusTimes {
+                    measured_at: None,
+                    published_at: Some(published_at),
+                    received_at,
+                    normalized_at,
+                },
+                normalized_at,
+                None,
+            );
+            let value = match family {
+                TdxFamily::BusArrival => self.normalize_bus_arrival(record, published_at).await,
+                TdxFamily::BikeAvailability => {
+                    self.normalize_bike_station(record, published_at).await
+                }
+                TdxFamily::ServiceCondition => {
+                    self.normalize_service_condition(record, published_at).await
+                }
+            };
+            let Some((id, value)) = value else { continue };
+            let source_change_at = match &value {
+                RealtimeValue::BikeAvailability(availability) => availability.source_change_at,
+                _ => None,
+            };
+            normalized.push(NormalizedRealtimeValue {
+                id,
                 received_at,
                 normalized_at,
-            },
-            normalized_at,
-            None,
-        );
-        let live_status = match self.family {
-            TdxFeedFamily::BusArrival => {
-                self.normalize_bus_arrivals(&payload, received_at, normalized_at)
-                    .await
-            }
-            TdxFeedFamily::BikeAvailability => {
-                self.normalize_bike_stations(&payload, received_at, normalized_at)
-                    .await
-            }
-            TdxFeedFamily::ServiceCondition => {
-                return Err(FreshnessReason::RejectedPayload);
-            }
-        };
-        if live_status.is_empty() {
-            tracing::warn!(
-                capability = %self.capability,
-                "TDX payload produced no normalized observations"
-            );
-            return Err(FreshnessReason::RejectedPayload);
+                provider_published_at: Some(published_at),
+                source_change_at,
+                freshness: freshness.clone(),
+                value,
+            });
         }
-        Ok(FeedRefreshBatch {
-            freshness,
-            live_status,
-        })
+        if normalized.is_empty() {
+            return Err(if saw_published_record {
+                RealtimeError::UnknownIdentity
+            } else {
+                RealtimeError::RejectedPayload
+            });
+        }
+        Ok(normalized)
+    }
+
+    async fn normalize_bus_arrival(
+        &self,
+        record: &serde_json::Value,
+        published_at: OffsetDateTime,
+    ) -> Option<(String, RealtimeValue)> {
+        let stop_uid = string_field(record, "StopUID")?;
+        let service_uid = string_field(record, "SubRouteUID")?;
+        let boarding_point_id = self
+            .identities
+            .resolve("boarding_point", &self.authority_namespace, stop_uid)
+            .await?;
+        let transit_service_id = self
+            .identities
+            .resolve("transit_service", &self.authority_namespace, service_uid)
+            .await?;
+        let status = record
+            .get("StopStatus")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(u8::MAX);
+        let estimate = record
+            .get("EstimateTime")
+            .and_then(serde_json::Value::as_i64);
+        let value = normalize_n1(
+            TransitServiceId::new(transit_service_id),
+            BoardingPointId::new(boarding_point_id),
+            status,
+            estimate,
+            published_at,
+        );
+        Some((
+            observation_id(
+                &self.authority_namespace,
+                stop_uid,
+                service_uid,
+                published_at,
+            ),
+            RealtimeValue::ArrivalEstimate(value),
+        ))
+    }
+
+    async fn normalize_bike_station(
+        &self,
+        record: &serde_json::Value,
+        published_at: OffsetDateTime,
+    ) -> Option<(String, RealtimeValue)> {
+        let station_uid = string_field(record, "StationUID")?;
+        let station_id = self
+            .identities
+            .resolve("bike_share_station", &self.authority_namespace, station_uid)
+            .await?;
+        let service_status = record
+            .get("ServiceStatus")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(u8::MAX);
+        let source_change_at = time_field(record, "SrcUpdateTime");
+        let received_at = OffsetDateTime::now_utc();
+        let value = normalize_bike_availability(
+            BikeShareStationId::new(station_id),
+            service_status,
+            u32_field(record, "AvailableRentBikes"),
+            u32_field(record, "AvailableReturnBikes"),
+            source_change_at,
+            Some(published_at),
+            received_at,
+        );
+        Some((
+            observation_id(&self.authority_namespace, station_uid, "bike", published_at),
+            RealtimeValue::BikeAvailability(value),
+        ))
+    }
+
+    async fn normalize_service_condition(
+        &self,
+        record: &serde_json::Value,
+        published_at: OffsetDateTime,
+    ) -> Option<(String, RealtimeValue)> {
+        let service_uid =
+            string_field(record, "SubRouteUID").or_else(|| string_field(record, "ServiceUID"))?;
+        let service_id = self
+            .identities
+            .resolve("transit_service", &self.authority_namespace, service_uid)
+            .await?;
+        let status = string_field(record, "Status")
+            .or_else(|| string_field(record, "Condition"))
+            .unwrap_or("disrupted")
+            .to_ascii_lowercase();
+        let state = match status.as_str() {
+            "suspended" | "suspend" => ServiceConditionState::Suspended,
+            "closed" | "close" => ServiceConditionState::Closed,
+            _ => ServiceConditionState::Disrupted,
+        };
+        let source_text_variants = string_field(record, "Message")
+            .or_else(|| string_field(record, "Description"))
+            .map(|text| {
+                vec![LocalizedSourceText {
+                    locale: string_field(record, "Language").unwrap_or("und").into(),
+                    text: text.into(),
+                }]
+            })
+            .unwrap_or_default();
+        let condition = ServiceCondition {
+            state,
+            scope_via_ids: vec![service_id],
+            source_text_variants,
+            effective_from: time_field(record, "EffectiveFrom"),
+            effective_until: time_field(record, "EffectiveUntil"),
+        };
+        Some((
+            observation_id(
+                &self.authority_namespace,
+                service_uid,
+                "condition",
+                published_at,
+            ),
+            RealtimeValue::ServiceCondition(condition),
+        ))
     }
 }
 
-impl TdxFeedSource {
-    async fn normalize_bus_arrivals(
+#[derive(Clone, Copy)]
+enum TdxFamily {
+    BusArrival,
+    BikeAvailability,
+    ServiceCondition,
+}
+
+#[async_trait]
+impl RealtimeProvider for TdxRealtimeProvider {
+    async fn arrival_estimates(
         &self,
-        payload: &serde_json::Value,
-        received_at: OffsetDateTime,
-        normalized_at: OffsetDateTime,
-    ) -> Vec<NormalizedLiveStatus> {
-        let mut normalized = Vec::new();
-        for record in records(payload) {
-            let Some(stop_uid) = string_field(record, "StopUID") else {
-                tracing::warn!(capability = %self.capability, "TDX bus record missing StopUID");
-                continue;
-            };
-            let Some(service_uid) = string_field(record, "SubRouteUID") else {
-                tracing::warn!(capability = %self.capability, "TDX bus record missing SubRouteUID");
-                continue;
-            };
-            let Some(published_at) = time_field(record, "UpdateTime") else {
-                tracing::warn!(capability = %self.capability, "TDX bus record missing UpdateTime");
-                continue;
-            };
-            let Some(boarding_point_id) = self
-                .identities
-                .resolve("boarding_point", &self.authority_namespace, stop_uid)
-                .await
-            else {
-                tracing::warn!(
-                    capability = %self.capability,
-                    entity_kind = "boarding_point",
-                    "TDX record dropped because its identity alias is unknown"
-                );
-                continue;
-            };
-            let Some(transit_service_id) = self
-                .identities
-                .resolve("transit_service", &self.authority_namespace, service_uid)
-                .await
-            else {
-                tracing::warn!(
-                    capability = %self.capability,
-                    entity_kind = "transit_service",
-                    "TDX record dropped because its identity alias is unknown"
-                );
-                continue;
-            };
-            let status = record
-                .get("StopStatus")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u8::try_from(value).ok())
-                .unwrap_or(u8::MAX);
-            let estimate = record
-                .get("EstimateTime")
-                .and_then(serde_json::Value::as_i64);
-            let value = normalize_n1(
-                TransitServiceId::new(transit_service_id),
-                BoardingPointId::new(boarding_point_id),
-                status,
-                estimate,
-                published_at,
-            );
-            normalized.push(NormalizedLiveStatus {
-                id: observation_id(&self.capability, stop_uid, service_uid, published_at),
-                capability: self.capability.clone(),
-                received_at,
-                normalized_at,
-                freshness: self.policy.evaluate(
-                    LiveStatusTimes {
-                        measured_at: None,
-                        published_at: Some(published_at),
-                        received_at,
-                        normalized_at,
-                    },
-                    normalized_at,
-                    None,
-                ),
-                value: LiveStatusValue::ArrivalEstimate(value),
-            });
+        query: ArrivalQuery,
+    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+        if query.transit_service_ids.is_empty() || query.boarding_point_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        normalized
+        let service_via_ids = query
+            .transit_service_ids
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let boarding_via_ids = query
+            .boarding_point_ids
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let service_ids = self
+            .upstream_ids("transit_service", service_via_ids)
+            .await?;
+        let boarding_point_ids = self
+            .upstream_ids("boarding_point", boarding_via_ids)
+            .await?;
+        let query_params = vec![(
+            "$filter".into(),
+            format!(
+                "({}) and ({})",
+                odata_in_filter("SubRouteUID", &service_ids),
+                odata_in_filter("StopUID", &boarding_point_ids)
+            ),
+        )];
+        let payload = self.get_json(&self.arrival_path, &query_params).await?;
+        let values = self
+            .normalize_payload(&payload, TdxFamily::BusArrival)
+            .await?;
+        let requested_services = query
+            .transit_service_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let requested_boarding_points = query
+            .boarding_point_ids
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        Ok(values
+            .into_iter()
+            .filter(|value| {
+                matches!(
+                    &value.value,
+                    RealtimeValue::ArrivalEstimate(arrival)
+                        if requested_services.contains(&arrival.transit_service_id)
+                            && requested_boarding_points.contains(&arrival.boarding_point_id)
+                )
+            })
+            .collect())
     }
 
-    async fn normalize_bike_stations(
+    async fn bike_availability(
         &self,
-        payload: &serde_json::Value,
-        received_at: OffsetDateTime,
-        normalized_at: OffsetDateTime,
-    ) -> Vec<NormalizedLiveStatus> {
-        let mut normalized = Vec::new();
-        for record in records(payload) {
-            let Some(station_uid) = string_field(record, "StationUID") else {
-                tracing::warn!(capability = %self.capability, "TDX bike record missing StationUID");
-                continue;
-            };
-            let Some(published_at) = time_field(record, "UpdateTime") else {
-                tracing::warn!(capability = %self.capability, "TDX bike record missing UpdateTime");
-                continue;
-            };
-            let Some(station_id) = self
-                .identities
-                .resolve("bike_share_station", &self.authority_namespace, station_uid)
-                .await
-            else {
-                tracing::warn!(
-                    capability = %self.capability,
-                    entity_kind = "bike_share_station",
-                    "TDX record dropped because its identity alias is unknown"
-                );
-                continue;
-            };
-            let service_status = record
-                .get("ServiceStatus")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u8::try_from(value).ok())
-                .unwrap_or(u8::MAX);
-            let source_change_at = time_field(record, "SrcUpdateTime");
-            let value = normalize_bike_availability(
-                BikeShareStationId::new(station_id),
-                service_status,
-                u32_field(record, "AvailableRentBikes"),
-                u32_field(record, "AvailableReturnBikes"),
-                source_change_at,
-                Some(published_at),
-                received_at,
-            );
-            normalized.push(NormalizedLiveStatus {
-                id: observation_id(&self.capability, station_uid, "bike", published_at),
-                capability: self.capability.clone(),
-                received_at,
-                normalized_at,
-                freshness: self.policy.evaluate(
-                    LiveStatusTimes {
-                        measured_at: source_change_at,
-                        published_at: Some(published_at),
-                        received_at,
-                        normalized_at,
-                    },
-                    normalized_at,
-                    None,
-                ),
-                value: LiveStatusValue::BikeAvailability(value),
-            });
+        station_ids: &[BikeShareStationId],
+    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+        if station_ids.is_empty() {
+            return Ok(Vec::new());
         }
-        normalized
+        let station_ids = station_ids
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let upstream_ids = self.upstream_ids("bike_share_station", station_ids).await?;
+        let query_params: Vec<(String, String)> = vec![(
+            "$filter".into(),
+            odata_in_filter("StationUID", &upstream_ids),
+        )];
+        let payload = self.get_json(&self.bike_path, &query_params).await?;
+        self.normalize_payload(&payload, TdxFamily::BikeAvailability)
+            .await
     }
+
+    async fn service_conditions(
+        &self,
+        service_ids: &[TransitServiceId],
+    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+        if service_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(path) = &self.condition_path else {
+            return Ok(Vec::new());
+        };
+        let service_via_ids = service_ids
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let upstream_ids = self
+            .upstream_ids("transit_service", service_via_ids)
+            .await?;
+        let query_params: Vec<(String, String)> = vec![(
+            "$filter".into(),
+            odata_in_filter("SubRouteUID", &upstream_ids),
+        )];
+        let payload = self.get_json(path, &query_params).await?;
+        let values = self
+            .normalize_payload(&payload, TdxFamily::ServiceCondition)
+            .await?;
+        Ok(values
+            .into_iter()
+            .filter(|value| {
+                matches!(
+                    &value.value,
+                    RealtimeValue::ServiceCondition(condition)
+                        if condition.scope_via_ids.iter().any(|service_id| {
+                            service_ids.iter().any(|requested| requested.as_str() == service_id)
+                        })
+                )
+            })
+            .collect())
+    }
+}
+
+fn odata_in_filter(field: &str, values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{field} in ({values})")
 }
 
 fn records(payload: &serde_json::Value) -> &[serde_json::Value] {
@@ -401,7 +567,7 @@ fn observation_id(
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
-    digest.update(b"via.live-status.v1\0");
+    digest.update(b"via.realtime.v1\0");
     digest.update(capability.as_bytes());
     digest.update(primary_key.as_bytes());
     digest.update(secondary_key.as_bytes());
@@ -464,38 +630,5 @@ pub fn normalize_bike_availability(
         source_change_at,
         provider_published_at,
         received_at,
-    }
-}
-
-fn newest_update_time(payload: &serde_json::Value) -> Option<OffsetDateTime> {
-    let mut newest = None;
-    collect_update_times(payload, &mut newest);
-    newest
-}
-
-fn collect_update_times(payload: &serde_json::Value, newest: &mut Option<OffsetDateTime>) {
-    match payload {
-        serde_json::Value::Array(values) => {
-            for value in values {
-                collect_update_times(value, newest);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for (key, value) in fields {
-                if matches!(key.as_str(), "UpdateTime" | "update_time") {
-                    if let Some(parsed) = value
-                        .as_str()
-                        .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-                    {
-                        if newest.is_none_or(|current| parsed > current) {
-                            *newest = Some(parsed);
-                        }
-                    }
-                } else if value.is_array() || value.is_object() {
-                    collect_update_times(value, newest);
-                }
-            }
-        }
-        _ => {}
     }
 }

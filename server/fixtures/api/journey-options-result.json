@@ -5,13 +5,9 @@
   "generated_at": "2026-08-31T12:00:00+08:00",
   "effective_search_time": "2026-08-31T12:00:00+08:00",
   "time_zone": "Asia/Taipei",
-  "network_snapshot": {
-    "id": "snapshot_fixture",
-    "created_at": "2026-08-31T11:59:50+08:00",
-    "live_cutoff": "2026-08-31T11:59:45+08:00",
+  "network_revision": {
     "static_network_revision": "static-1",
-    "schedule_revision": "schedule-1",
-    "freshness_policy_version": "1"
+    "schedule_revision": "schedule-1"
   },
   "policy_versions": {
     "freshness": "1",

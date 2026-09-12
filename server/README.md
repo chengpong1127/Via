@@ -1,24 +1,23 @@
 # Via server
 
 The Rust/Axum server owns Via's provider-neutral Journey Planning contract and
-street-routing boundary. A Planning Request pins one immutable Network Snapshot,
-uses no government feed on the request path, and returns a complete result with
+street-routing boundary. A Planning Request reads one immutable `Arc<TransitNetwork>`
+for static schedules, then demand-fetches only the realtime facts needed by its
+scheduled candidates through an in-process async cache. Results use
 `Cache-Control: no-store`.
 
 Implemented capabilities:
 
 - `POST /v1/journey-plans` with strict provider-neutral request validation,
-  redacted errors, full-result refresh semantics, and polyline6 Walking results;
+  redacted errors, complete result replacement, and polyline6 Walking results;
 - deterministic Live Status eligibility, Reliable/Feasible classification,
   Transfer and bike-share boundaries, dominance, ranking, diversity, labels, and
   replay behavior;
 - stable typed network identities, reviewed provider aliases, explicit TDX N1
   status normalization, Service Day handling, and separate bike-share timestamps;
-- PostgreSQL-authoritative immutable Network Snapshots, warm immutable caching,
-  leased and idempotent publication, optimistic publication-version checks,
-  partial feed evidence, and retention cleanup;
-- authenticated `POST /internal/v1/refresh` with at most four concurrent feed
-  adapters and atomic snapshot publication;
+- Moka-backed demand-driven realtime caching with async request coalescing;
+- scoped TDX arrival and BikeShare queries with provider-neutral normalization;
+- PostgreSQL-backed, versioned provider aliases without persisted Live Status;
 - generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
   plus shared request, result, empty, and error fixtures;
 - coordinate correlation;
@@ -60,41 +59,39 @@ Configuration:
 
 | Variable | Meaning |
 | --- | --- |
-| `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and feed URLs. |
+| `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and TDX URLs. |
 | `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
 | `DATABASE_URL` | Pooled PostgreSQL endpoint; required. |
 | `VIA_DATABASE_MAX_CONNECTIONS` | Small per-instance pool size; defaults to `4`. |
-| `VIA_STATIC_NETWORK_REVISION` | Immutable normalized network revision; required on first bootstrap. |
-| `VIA_SCHEDULE_REVISION` | Immutable schedule revision; required on first bootstrap. |
-| `VIA_REFRESH_TOKEN` | Bearer token used only by the external scheduler; required. |
-| `VIA_TDX_BEARER_TOKEN` | TDX access token held only by feed adapters; required. |
-| `VIA_TDX_FEEDS` | JSON array of reviewed TDX feeds with `capability`, `url`, `family`, and `authority_namespace`; required and non-empty. |
+| `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
+| `VIA_TDX_AUTHORITY_NAMESPACE` | Reviewed TDX authority namespace used for alias resolution; required. |
+| `VIA_TDX_BEARER_TOKEN` | TDX access token held only by the realtime adapter; required. |
+| `VIA_TDX_SERVICE_CONDITION_PATH` | Optional scoped TDX service-condition endpoint path. |
+| `VIA_REALTIME_CACHE_TTL_SECONDS` | In-process realtime cache TTL; defaults to 45 seconds. |
 | `VIA_TRANSIT_NETWORK` | Path to the immutable normalized transit and bike-share network and timetable JSON artifact; required. |
 | `PORT` | Axum port; defaults to `3000`. |
 
-Database migrations run at startup. The first startup publishes one coherent
-bootstrap snapshot. Later refreshes acquire a 55-second PostgreSQL lease and
-publish only if their expected publication version still matches. Snapshot and
-observation retention cleanup runs in the same successful publication cycle.
+Database migrations run at startup and maintain only the versioned provider-alias
+registry. Static network and schedule revisions come from the validated immutable
+`VIA_TRANSIT_NETWORK` artifact.
 
-TDX feed adapters enforce an eight-second deadline and 8 MiB response bound,
-translate rate limits and malformed payloads into explicit feed evidence, and
-evaluate Freshness from the provider publication timestamp rather than a station's
-last-change timestamp. Planning Requests never receive feed credentials and never
-invoke adapters.
+The TDX adapter enforces an eight-second deadline and 8 MiB response bound,
+translates rate limits and malformed payloads into explicit realtime failures, and
+evaluates Freshness from the provider publication timestamp rather than a station's
+last-change timestamp. Planning Requests never receive feed credentials.
 
 ## Current planner boundary
 
 Walking is always available for direct journeys and transit/bike-share
 access and egress; clients select only the high-level `transit` and
-`bike_share` categories. The request path pins one Network Snapshot, then
-orchestrates direct Walking,
+`bike_share` categories. The request path orchestrates direct Walking,
 generic bounded timetable Transit rounds, and inventory-gated bike-share access/
 bicycle/egress candidates. Street access, egress, bicycle, matrix, and path
 calculations stay behind the Valhalla provider boundary; timetable lookup uses
-the immutable `TransitNetwork` artifact. The checked-in tests use injected
-fixtures, while a production deployment must publish a reviewed artifact at
-`VIA_TRANSIT_NETWORK`.
+the immutable `TransitNetwork` artifact. After scheduled search narrows the
+candidate set, `RealtimeContext` freezes the required values for the rest of the
+request. The checked-in tests use injected fixtures, while a production deployment
+must publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
 
 ## Tests
 
@@ -103,7 +100,7 @@ cargo test --test provider_contract
 cargo test --test valhalla_contract
 cargo test --test planning_contract
 cargo test --test ranking_contract
-cargo test --test refresh_contract
+cargo test --test realtime_contract
 cargo test --test journey_endpoint
 cargo test --test transit_contract
 cargo test

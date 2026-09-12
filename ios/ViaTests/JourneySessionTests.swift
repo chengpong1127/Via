@@ -65,10 +65,7 @@ struct JourneySessionTests {
             apiVersion: "1.0",
             semanticCatalogVersion: "1.0",
             generatedAt: generatedAt,
-            networkSnapshot: NetworkSnapshot(
-                id: "snapshot",
-                createdAt: generatedAt,
-                liveCutoff: generatedAt,
+            networkRevision: NetworkRevision(
                 staticNetworkRevision: "static-1",
                 scheduleRevision: "schedule-1"
             ),

@@ -9,15 +9,13 @@ use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::{
     api::{JourneyMode, PlanningRequest, RequestCoordinate, new_request_id, normalize_to_taipei},
-    live_status::{FreshnessReason, FreshnessState},
+    live_status::{Freshness, FreshnessReason, FreshnessState},
     normalization::{ArrivalState, BikeShareStationId, BoardingPointId},
     ranking::{
         BikeActionEvidence, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
         RankingReason, TransferEvidence, TransferKind,
     },
-    snapshot::{
-        LiveStatusValue, NetworkSnapshot, NormalizedLiveStatus, SnapshotError, SnapshotStore,
-    },
+    realtime::{ArrivalQuery, NormalizedRealtimeValue, RealtimeProvider, RealtimeValue},
     street::{
         Attribution, Coordinate, DetailedPath, DetailedPathQuery, Maneuver, ManeuverKind,
         MatrixOrientation, MatrixQuery, MatrixReachability, ProviderError, RoutingConstraints,
@@ -31,7 +29,7 @@ use crate::{
 #[derive(Clone)]
 pub struct JourneyPlanningService {
     street_routing: StreetRoutingSession,
-    snapshots: Arc<dyn SnapshotStore>,
+    realtime: Arc<dyn RealtimeProvider>,
     transit_network: Arc<TransitNetwork>,
     ranking: RankingPolicy,
     limits: PlanningLimits,
@@ -60,10 +58,10 @@ impl Default for PlanningLimits {
 }
 
 impl JourneyPlanningService {
-    pub fn new(street_routing: StreetRoutingSession, snapshots: Arc<dyn SnapshotStore>) -> Self {
+    pub fn new(street_routing: StreetRoutingSession, realtime: Arc<dyn RealtimeProvider>) -> Self {
         Self {
             street_routing,
-            snapshots,
+            realtime,
             transit_network: Arc::new(TransitNetwork::default()),
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(
@@ -115,36 +113,15 @@ impl JourneyPlanningService {
 
     async fn plan_inner(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
-        let snapshot = self.snapshots.pin_current().await?;
-        if !self.transit_network.static_network_revision.is_empty()
-            && !self.transit_network.matches_snapshot(
-                &snapshot.static_network_revision,
-                &snapshot.schedule_revision,
-            )
-        {
-            tracing::error!(
-                snapshot_static_revision = %snapshot.static_network_revision,
-                snapshot_schedule_revision = %snapshot.schedule_revision,
-                artifact_static_revision = %self.transit_network.static_network_revision,
-                artifact_schedule_revision = %self.transit_network.schedule_revision,
-                "transit artifact revision does not match pinned Network Snapshot"
-            );
-            return Err(PlanningError::SnapshotUnavailable);
-        }
         let metadata = ResultMetadata::new(
             new_request_id(),
             taipei_now(),
             request_started_at,
-            snapshot.clone(),
+            &self.transit_network,
             &request,
         );
 
-        let context = PlanningContext::new(
-            &request,
-            snapshot.clone(),
-            request_started_at,
-            &self.transit_network,
-        )?;
+        let context = PlanningContext::new(&request, request_started_at, &self.transit_network)?;
         let mut candidates = Vec::new();
         let mut had_transient_failure = false;
 
@@ -225,7 +202,6 @@ impl JourneyPlanningService {
 #[derive(Clone)]
 struct PlanningContext {
     request: PlanningRequest,
-    snapshot: NetworkSnapshot,
     effective_search_time: OffsetDateTime,
     search_start: OffsetDateTime,
     latest_arrival: Option<OffsetDateTime>,
@@ -234,7 +210,6 @@ struct PlanningContext {
 impl PlanningContext {
     fn new(
         request: &PlanningRequest,
-        snapshot: NetworkSnapshot,
         request_started_at: OffsetDateTime,
         transit_network: &TransitNetwork,
     ) -> Result<Self, PlanningError> {
@@ -252,7 +227,6 @@ impl PlanningContext {
         };
         Ok(Self {
             request: request.clone(),
-            snapshot,
             effective_search_time,
             search_start,
             latest_arrival,
@@ -283,6 +257,83 @@ impl PlanningContext {
             Some(latest_arrival) => self.constraints(latest_arrival, RoutingTimeKind::ArriveBy),
             None => self.constraints(self.search_start, RoutingTimeKind::DepartAt),
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RealtimeContext {
+    arrivals: HashMap<
+        (crate::normalization::TransitServiceId, BoardingPointId),
+        Vec<NormalizedRealtimeValue>,
+    >,
+    bikes: HashMap<BikeShareStationId, NormalizedRealtimeValue>,
+    conditions: HashMap<crate::normalization::TransitServiceId, NormalizedRealtimeValue>,
+}
+
+impl RealtimeContext {
+    fn from_values(values: impl IntoIterator<Item = NormalizedRealtimeValue>) -> Self {
+        let mut context = Self::default();
+        for value in values {
+            match &value.value {
+                RealtimeValue::ArrivalEstimate(arrival) => {
+                    context
+                        .arrivals
+                        .entry((
+                            arrival.transit_service_id.clone(),
+                            arrival.boarding_point_id.clone(),
+                        ))
+                        .or_default()
+                        .push(value);
+                }
+                RealtimeValue::BikeAvailability(availability) => {
+                    context.bikes.insert(availability.station_id.clone(), value);
+                }
+                RealtimeValue::ServiceCondition(condition) => {
+                    for service_id in &condition.scope_via_ids {
+                        context.conditions.insert(
+                            crate::normalization::TransitServiceId::new(service_id),
+                            value.clone(),
+                        );
+                    }
+                }
+            }
+        }
+        context
+    }
+
+    fn arrival(
+        &self,
+        service_id: &crate::normalization::TransitServiceId,
+        boarding_point_id: &BoardingPointId,
+    ) -> Option<&NormalizedRealtimeValue> {
+        let values = self
+            .arrivals
+            .get(&(service_id.clone(), boarding_point_id.clone()))?;
+        values
+            .iter()
+            .filter(|value| value.freshness.state != FreshnessState::Unavailable)
+            .filter_map(|value| {
+                let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
+                    return None;
+                };
+                arrival
+                    .predicted_arrival_at
+                    .map(|predicted| (predicted, value))
+            })
+            .min_by_key(|(predicted, _)| *predicted)
+            .map(|(_, value)| value)
+            .or_else(|| values.first())
+    }
+
+    fn bike(&self, station_id: &BikeShareStationId) -> Option<&NormalizedRealtimeValue> {
+        self.bikes.get(station_id)
+    }
+
+    fn condition(
+        &self,
+        service_id: &crate::normalization::TransitServiceId,
+    ) -> Option<&NormalizedRealtimeValue> {
+        self.conditions.get(service_id)
     }
 }
 
@@ -374,6 +425,69 @@ struct EffectiveRide {
 }
 
 impl JourneyPlanningService {
+    async fn collect_transit_realtime(
+        &self,
+        itineraries: &[TransitItinerary],
+    ) -> (RealtimeContext, bool) {
+        let mut service_ids = HashSet::new();
+        let mut arrival_service_ids = HashSet::new();
+        let mut boarding_point_ids = HashSet::new();
+        for itinerary in itineraries.iter().take(self.limits.max_candidates) {
+            for ride in &itinerary.rides {
+                service_ids.insert(ride.service_id.clone());
+                if matches!(ride.transit_mode, TransitMode::Bus) {
+                    arrival_service_ids.insert(ride.service_id.clone());
+                    boarding_point_ids.insert(ride.board_stop_id.clone());
+                }
+            }
+        }
+        let mut values = Vec::new();
+        let mut had_transient_failure = false;
+        if !arrival_service_ids.is_empty() {
+            match self
+                .realtime
+                .arrival_estimates(ArrivalQuery::new(arrival_service_ids, boarding_point_ids))
+                .await
+            {
+                Ok(arrivals) => values.extend(arrivals),
+                Err(error) => {
+                    had_transient_failure |= error.is_transient();
+                    tracing::warn!(error = %error, "realtime arrival enrichment failed");
+                }
+            }
+        }
+        if !service_ids.is_empty() {
+            match self
+                .realtime
+                .service_conditions(&service_ids.into_iter().collect::<Vec<_>>())
+                .await
+            {
+                Ok(conditions) => values.extend(conditions),
+                Err(error) => {
+                    had_transient_failure |= error.is_transient();
+                    tracing::warn!(error = %error, "realtime service-condition enrichment failed");
+                }
+            }
+        }
+        (RealtimeContext::from_values(values), had_transient_failure)
+    }
+
+    async fn collect_bike_realtime(
+        &self,
+        station_ids: Vec<BikeShareStationId>,
+    ) -> (RealtimeContext, bool) {
+        if station_ids.is_empty() {
+            return (RealtimeContext::default(), false);
+        }
+        match self.realtime.bike_availability(&station_ids).await {
+            Ok(values) => (RealtimeContext::from_values(values), false),
+            Err(error) => {
+                tracing::warn!(error = %error, "realtime bike availability enrichment failed");
+                (RealtimeContext::default(), error.is_transient())
+            }
+        }
+    }
+
     async fn street_path(
         &self,
         mode: StreetTravelMode,
@@ -581,6 +695,8 @@ impl JourneyPlanningService {
                 }
             }
         }
+        let (realtime, realtime_failed) = self.collect_transit_realtime(&itineraries).await;
+        had_transient_failure |= realtime_failed;
         let mut candidates = Vec::new();
         for itinerary in itineraries.into_iter().take(self.limits.max_candidates) {
             let Some(first_ride) = itinerary.rides.first() else {
@@ -635,6 +751,7 @@ impl JourneyPlanningService {
                 itinerary,
                 &AccessPath { path: access_path },
                 egress_path,
+                &realtime,
             ) {
                 candidates.push(candidate);
             }
@@ -648,6 +765,7 @@ impl JourneyPlanningService {
         itinerary: TransitItinerary,
         access_path: &AccessPath,
         egress_path: DetailedPath,
+        realtime: &RealtimeContext,
     ) -> Option<GeneratedCandidate> {
         let mut effective_rides = Vec::with_capacity(itinerary.rides.len());
         let trip_signature = itinerary
@@ -658,7 +776,7 @@ impl JourneyPlanningService {
             .join(",");
         for ride in itinerary.rides {
             let service = self.transit_network.service(&ride.service_id)?;
-            let condition = find_service_condition(&context.snapshot, service.id.as_str());
+            let condition = realtime.condition(&service.id);
             let mut effective = EffectiveRide {
                 ride: ride.clone(),
                 departure: ride.scheduled_departure,
@@ -669,7 +787,7 @@ impl JourneyPlanningService {
             };
             if let Some(status) = condition {
                 if status.freshness.state != FreshnessState::Fresh
-                    || service_condition_blocks(status, context.snapshot.live_cutoff)
+                    || service_condition_blocks(status, context.effective_search_time)
                 {
                     return None;
                 }
@@ -683,12 +801,12 @@ impl JourneyPlanningService {
             }
             match ride.transit_mode {
                 TransitMode::Bus => {
-                    let status = find_arrival_status(&context.snapshot, &ride)?;
+                    let status = realtime.arrival(&ride.service_id, &ride.board_stop_id)?;
                     if status.freshness.state == FreshnessState::Unavailable {
                         return None;
                     }
                     effective.required_states.push(status.freshness.state);
-                    let LiveStatusValue::ArrivalEstimate(arrival) = &status.value else {
+                    let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
                         return None;
                     };
                     let predicted = arrival.predicted_arrival_at?;
@@ -718,7 +836,7 @@ impl JourneyPlanningService {
                     if condition.is_none() {
                         effective.schedule_only = true;
                         effective.evidence.push(schedule_only_evidence(
-                            &context.snapshot,
+                            context.effective_search_time,
                             LiveStatusKind::ServiceCondition,
                         ));
                     }
@@ -1039,11 +1157,6 @@ impl JourneyPlanningService {
                 let Some(egress) = egress_metrics.get(&dropoff.0.id).copied() else {
                     continue;
                 };
-                if !usable_bike_station(&context.snapshot, pickup)
-                    || !usable_return_station(&context.snapshot, &dropoff.0)
-                {
-                    continue;
-                }
                 metric_candidates.push(BikeMetricCandidate {
                     pickup_index,
                     dropoff_index,
@@ -1058,6 +1171,19 @@ impl JourneyPlanningService {
                 .then(left.dropoff_index.cmp(&right.dropoff_index))
         });
         metric_candidates.truncate(self.limits.max_candidates);
+        let station_ids = metric_candidates
+            .iter()
+            .flat_map(|candidate| {
+                [
+                    pickups[candidate.pickup_index].0.id.clone(),
+                    dropoffs[candidate.dropoff_index].0.id.clone(),
+                ]
+            })
+            .collect::<HashSet<_>>();
+        let (realtime, realtime_failed) = self
+            .collect_bike_realtime(station_ids.into_iter().collect())
+            .await;
+        had_transient_failure |= realtime_failed;
         let mut candidates = Vec::new();
         for pair in metric_candidates {
             let (pickup, pickup_coordinate) = &pickups[pair.pickup_index];
@@ -1117,6 +1243,7 @@ impl JourneyPlanningService {
                 &access_path,
                 bike_path,
                 egress_path,
+                &realtime,
             ) {
                 candidates.push(candidate);
             }
@@ -1143,34 +1270,6 @@ fn bike_metric_is_sensible(cell: &crate::street::MatrixCell) -> bool {
         .is_some_and(|metric| metric.distance.0 <= 20_000 && metric.duration.0 <= 2 * 60 * 60)
 }
 
-fn usable_bike_station(
-    snapshot: &NetworkSnapshot,
-    station: &crate::transit::BikeShareStation,
-) -> bool {
-    find_bike_status(snapshot, &station.id).is_some_and(|status| {
-        status.freshness.state == FreshnessState::Fresh
-            && bike_value(status).is_some_and(|availability| {
-                availability.rental_state == crate::normalization::ActionState::Enabled
-                    && availability.available_bikes.is_some_and(|count| count > 0)
-            })
-    })
-}
-
-fn usable_return_station(
-    snapshot: &NetworkSnapshot,
-    station: &crate::transit::BikeShareStation,
-) -> bool {
-    find_bike_status(snapshot, &station.id).is_some_and(|status| {
-        status.freshness.state == FreshnessState::Fresh
-            && bike_value(status).is_some_and(|availability| {
-                availability.return_state == crate::normalization::ActionState::Enabled
-                    && availability
-                        .available_return_slots
-                        .is_some_and(|count| count > 0)
-            })
-    })
-}
-
 fn assemble_bike_share_candidate(
     context: &PlanningContext,
     pickup: &crate::transit::BikeShareStation,
@@ -1178,9 +1277,15 @@ fn assemble_bike_share_candidate(
     access_path: &DetailedPath,
     bike_path: DetailedPath,
     egress_path: DetailedPath,
+    realtime: &RealtimeContext,
 ) -> Option<GeneratedCandidate> {
-    let pickup_status = find_bike_status(&context.snapshot, &pickup.id)?;
-    let dropoff_status = find_bike_status(&context.snapshot, &dropoff.id)?;
+    let pickup_status = realtime.bike(&pickup.id)?;
+    let dropoff_status = realtime.bike(&dropoff.id)?;
+    if pickup_status.freshness.state != FreshnessState::Fresh
+        || dropoff_status.freshness.state != FreshnessState::Fresh
+    {
+        return None;
+    }
     let pickup_availability = bike_value(pickup_status)?;
     let dropoff_availability = bike_value(dropoff_status)?;
     let total_travel_seconds = i64::from(access_path.duration.0)
@@ -1572,35 +1677,8 @@ fn transfer_is_reliable(kind: TransferKind, physical: u32, available: u32) -> bo
     available >= physical.saturating_add(buffer)
 }
 
-fn find_arrival_status<'a>(
-    snapshot: &'a NetworkSnapshot,
-    ride: &TransitRide,
-) -> Option<&'a NormalizedLiveStatus> {
-    snapshot.live_status.iter().find(|status| {
-        matches!(
-            &status.value,
-            LiveStatusValue::ArrivalEstimate(arrival)
-                if arrival.transit_service_id == ride.service_id
-                    && arrival.boarding_point_id == ride.board_stop_id
-        )
-    })
-}
-
-fn find_service_condition<'a>(
-    snapshot: &'a NetworkSnapshot,
-    service_id: &str,
-) -> Option<&'a NormalizedLiveStatus> {
-    snapshot.live_status.iter().find(|status| {
-        matches!(
-            &status.value,
-            LiveStatusValue::ServiceCondition(condition)
-                if condition.scope_via_ids.iter().any(|id| id == service_id)
-        )
-    })
-}
-
-fn service_condition_blocks(status: &NormalizedLiveStatus, at: OffsetDateTime) -> bool {
-    let LiveStatusValue::ServiceCondition(condition) = &status.value else {
+fn service_condition_blocks(status: &NormalizedRealtimeValue, at: OffsetDateTime) -> bool {
+    let RealtimeValue::ServiceCondition(condition) = &status.value else {
         return false;
     };
     condition
@@ -1611,22 +1689,9 @@ fn service_condition_blocks(status: &NormalizedLiveStatus, at: OffsetDateTime) -
             .is_none_or(|effective_until| at < effective_until)
 }
 
-fn find_bike_status<'a>(
-    snapshot: &'a NetworkSnapshot,
-    station_id: &BikeShareStationId,
-) -> Option<&'a NormalizedLiveStatus> {
-    snapshot.live_status.iter().find(|status| {
-        matches!(
-            &status.value,
-            LiveStatusValue::BikeAvailability(availability)
-                if &availability.station_id == station_id
-        )
-    })
-}
-
-fn bike_value(status: &NormalizedLiveStatus) -> Option<&crate::normalization::BikeAvailability> {
+fn bike_value(status: &NormalizedRealtimeValue) -> Option<&crate::normalization::BikeAvailability> {
     match &status.value {
-        LiveStatusValue::BikeAvailability(value) => Some(value),
+        RealtimeValue::BikeAvailability(value) => Some(value),
         _ => None,
     }
 }
@@ -1641,7 +1706,7 @@ fn bike_observed_at(
 }
 
 fn status_evidence(
-    status: &NormalizedLiveStatus,
+    status: &NormalizedRealtimeValue,
     kind: LiveStatusKind,
     evidence_type: EvidenceType,
     observed_at: Option<OffsetDateTime>,
@@ -1651,29 +1716,33 @@ fn status_evidence(
         evidence_type,
         observed_at,
         published_at: match &status.value {
-            LiveStatusValue::ArrivalEstimate(arrival) => Some(arrival.transmitted_at),
-            LiveStatusValue::BikeAvailability(availability) => availability.provider_published_at,
-            LiveStatusValue::ServiceCondition(_) => None,
-        },
+            RealtimeValue::ArrivalEstimate(arrival) => Some(arrival.transmitted_at),
+            RealtimeValue::BikeAvailability(availability) => availability.provider_published_at,
+            RealtimeValue::ServiceCondition(_) => status.provider_published_at,
+        }
+        .or(status.provider_published_at),
         received_at: status.received_at,
         evaluated_at: status.freshness.evaluated_at,
         freshness: status.freshness.clone(),
     }
 }
 
-fn schedule_only_evidence(snapshot: &NetworkSnapshot, kind: LiveStatusKind) -> LiveStatusEvidence {
+fn schedule_only_evidence(
+    evaluated_at: OffsetDateTime,
+    kind: LiveStatusKind,
+) -> LiveStatusEvidence {
     LiveStatusEvidence {
         kind,
         evidence_type: EvidenceType::ScheduleOnly,
         observed_at: None,
         published_at: None,
-        received_at: snapshot.live_cutoff,
-        evaluated_at: snapshot.live_cutoff,
-        freshness: crate::live_status::Freshness {
+        received_at: evaluated_at,
+        evaluated_at,
+        freshness: Freshness {
             state: FreshnessState::NotApplicable,
             reason: Some(FreshnessReason::ScheduleOnly),
-            policy_version: snapshot.freshness_policy_version.clone(),
-            evaluated_at: snapshot.live_cutoff,
+            policy_version: "1".into(),
+            evaluated_at,
         },
     }
 }
@@ -1750,15 +1819,8 @@ fn short_digest(value: &str) -> String {
 
 #[derive(Debug)]
 pub enum PlanningError {
-    SnapshotUnavailable,
     TemporarilyUnavailable,
     Internal,
-}
-
-impl From<SnapshotError> for PlanningError {
-    fn from(_: SnapshotError) -> Self {
-        Self::SnapshotUnavailable
-    }
 }
 
 impl From<ProviderError> for PlanningError {
@@ -1813,7 +1875,7 @@ pub struct ResultMetadata {
     #[serde(with = "time::serde::rfc3339")]
     pub effective_search_time: OffsetDateTime,
     pub time_zone: &'static str,
-    pub network_snapshot: NetworkSnapshot,
+    pub network_revision: crate::transit::NetworkRevision,
     pub policy_versions: PolicyVersions,
     pub warnings: Vec<Warning>,
 }
@@ -1823,7 +1885,7 @@ impl ResultMetadata {
         request_id: String,
         generated_at: OffsetDateTime,
         request_started_at: OffsetDateTime,
-        network_snapshot: NetworkSnapshot,
+        transit_network: &TransitNetwork,
         request: &PlanningRequest,
     ) -> Self {
         let effective_search_time = request
@@ -1837,11 +1899,11 @@ impl ResultMetadata {
             effective_search_time,
             time_zone: "Asia/Taipei",
             policy_versions: PolicyVersions {
-                freshness: network_snapshot.freshness_policy_version.clone(),
+                freshness: "1".into(),
                 ranking: "1".into(),
                 transfer_safety: "1".into(),
             },
-            network_snapshot,
+            network_revision: transit_network.revision(),
             warnings: Vec::new(),
         }
     }

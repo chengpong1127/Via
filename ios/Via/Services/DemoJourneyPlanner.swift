@@ -17,10 +17,7 @@ actor DemoJourneyPlanner: JourneyPlanning {
             apiVersion: "1.0",
             semanticCatalogVersion: "1.0",
             generatedAt: generatedAt,
-            networkSnapshot: NetworkSnapshot(
-                id: "demo-snapshot-\(Int(generatedAt.timeIntervalSince1970))",
-                createdAt: generatedAt.addingTimeInterval(-15),
-                liveCutoff: generatedAt.addingTimeInterval(-20),
+            networkRevision: NetworkRevision(
                 staticNetworkRevision: "demo-static-1",
                 scheduleRevision: "demo-schedule-1"
             ),

@@ -1,14 +1,12 @@
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use url::Url;
 use via_server::{
-    api::taipei_offset,
-    app::build_router_with_services_and_network,
-    postgres::PostgresSnapshotStore,
-    refresh::RefreshCoordinator,
-    snapshot::NetworkSnapshot,
+    app::build_router_with_realtime_and_network_and_ttl,
+    postgres::PostgresIdentityResolver,
+    realtime::DEFAULT_REALTIME_CACHE_TTL,
     street::{GraphRevision, ValhallaConfig, ValhallaProvider},
-    tdx::{TdxConfigError, TdxFeedConfig, TdxFeedSource},
+    tdx::{TdxRealtimeConfig, TdxRealtimeProvider},
     transit::TransitNetwork,
 };
 
@@ -52,8 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max_database_connections = env::var("VIA_DATABASE_MAX_CONNECTIONS")
         .unwrap_or_else(|_| "4".into())
         .parse()?;
-    let snapshot_store =
-        Arc::new(PostgresSnapshotStore::connect(&database_url, max_database_connections).await?);
+    let identities =
+        Arc::new(PostgresIdentityResolver::connect(&database_url, max_database_connections).await?);
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = TransitNetwork::from_artifact_json(
@@ -61,61 +59,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|_| "VIA_TRANSIT_NETWORK could not be read")?,
     )
     .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
-    let static_network_revision = env::var("VIA_STATIC_NETWORK_REVISION")
-        .map_err(|_| "VIA_STATIC_NETWORK_REVISION must identify the immutable network")?;
-    let schedule_revision = env::var("VIA_SCHEDULE_REVISION")
-        .map_err(|_| "VIA_SCHEDULE_REVISION must identify the immutable schedule")?;
-    if !transit_network.matches_snapshot(&static_network_revision, &schedule_revision) {
-        return Err(
-            "VIA_TRANSIT_NETWORK revisions must match VIA_STATIC_NETWORK_REVISION and VIA_SCHEDULE_REVISION"
-                .into(),
-        );
-    }
-    let now = time::OffsetDateTime::now_utc().to_offset(taipei_offset());
-    snapshot_store
-        .ensure_initial(NetworkSnapshot {
-            id: "initial-snapshot".into(),
-            created_at: now,
-            live_cutoff: now,
-            static_network_revision,
-            schedule_revision,
-            freshness_policy_version: "1".into(),
-            publication_version: 1,
-            feed_evidence: Vec::new(),
-            live_status: Vec::new(),
-        })
-        .await?;
-    let refresh_token = env::var("VIA_REFRESH_TOKEN")
-        .map_err(|_| "VIA_REFRESH_TOKEN must authenticate scheduler refreshes")?;
-    let feed_configs: Vec<TdxFeedConfig> = serde_json::from_str(
-        &env::var("VIA_TDX_FEEDS")
-            .map_err(|_| "VIA_TDX_FEEDS must be a JSON array of capability and URL objects")?,
-    )?;
-    if feed_configs.is_empty() {
-        return Err("VIA_TDX_FEEDS must configure at least one authoritative feed".into());
-    }
+    transit_network
+        .validate()
+        .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
     let tdx_bearer_token = env::var("VIA_TDX_BEARER_TOKEN")
-        .map_err(|_| "VIA_TDX_BEARER_TOKEN must authenticate authoritative feed requests")?;
-    let feed_sources = feed_configs
-        .into_iter()
-        .map(|config| {
-            if environment == "production" && config.url.scheme() != "https" {
-                return Err(TdxConfigError::InvalidConfiguration(
-                    "TDX feed URLs must use HTTPS in production",
-                ));
-            }
-            TdxFeedSource::new(config, &tdx_bearer_token)
-                .map(|source| source.with_identity_resolver(snapshot_store.clone()))
-                .map(|source| Arc::new(source) as Arc<dyn via_server::refresh::FeedSource>)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let refresh = RefreshCoordinator::new(snapshot_store.clone(), feed_sources, 4);
-    let router = build_router_with_services_and_network(
+        .map_err(|_| "VIA_TDX_BEARER_TOKEN must authenticate realtime requests")?;
+    let tdx_base_url = Url::parse(
+        &env::var("VIA_TDX_BASE_URL")
+            .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?,
+    )?;
+    if environment == "production" && tdx_base_url.scheme() != "https" {
+        return Err("VIA_TDX_BASE_URL must use HTTPS in production".into());
+    }
+    let authority_namespace = env::var("VIA_TDX_AUTHORITY_NAMESPACE")
+        .map_err(|_| "VIA_TDX_AUTHORITY_NAMESPACE must identify the TDX authority")?;
+    let mut realtime = TdxRealtimeProvider::new(
+        TdxRealtimeConfig {
+            base_url: tdx_base_url,
+            authority_namespace,
+        },
+        &tdx_bearer_token,
+    )?
+    .with_identity_resolver(identities);
+    if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
+        realtime = realtime.with_service_condition_path(path);
+    }
+    let cache_ttl = env::var("VIA_REALTIME_CACHE_TTL_SECONDS")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_REALTIME_CACHE_TTL);
+    let router = build_router_with_realtime_and_network_and_ttl(
         provider,
-        snapshot_store,
-        Some(refresh),
-        Some(refresh_token),
+        Arc::new(realtime),
         transit_network,
+        cache_ttl,
     )
     .await?;
     let port = env::var("PORT")

@@ -4,13 +4,12 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderValue, StatusCode, header::CACHE_CONTROL},
+    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
-use time::{OffsetDateTime, UtcOffset};
 use utoipa::{
     openapi::schema::{ArrayItems, Object, Schema, Type},
     openapi::{InfoBuilder, OpenApi, RefOr},
@@ -18,11 +17,10 @@ use utoipa::{
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id, taipei_offset},
+    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     observability::OperationalMetrics,
     planner::{JourneyPlanningService, PlanningError, PlanningOutcome},
-    refresh::{RefreshCoordinator, RefreshOutcome},
-    snapshot::{InMemorySnapshotStore, NetworkSnapshot, SnapshotStore},
+    realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
     street::{
         GraphRevision, ProviderCapabilities, ProviderCategory, ProviderError,
         StreetRoutingProvider, StreetRoutingSession,
@@ -34,74 +32,70 @@ use crate::{
 struct AppState {
     street_routing: StreetRoutingSession,
     journey_planning: JourneyPlanningService,
-    refresh: Option<RefreshEndpoint>,
-    snapshots: Arc<dyn SnapshotStore>,
     transit_network: Arc<TransitNetwork>,
     metrics: OperationalMetrics,
+    realtime_metrics: crate::realtime::RealtimeMetrics,
     openapi: OpenApi,
-}
-
-#[derive(Clone)]
-struct RefreshEndpoint {
-    coordinator: RefreshCoordinator,
-    token: String,
 }
 
 pub async fn build_router(
     provider: Arc<dyn StreetRoutingProvider>,
 ) -> Result<Router, ProviderError> {
-    let now = OffsetDateTime::now_utc()
-        .to_offset(UtcOffset::from_hms(8, 0, 0).expect("Taipei UTC offset is valid"));
-    let snapshots = Arc::new(InMemorySnapshotStore::new(NetworkSnapshot {
-        id: "development-snapshot".into(),
-        created_at: now,
-        live_cutoff: now,
-        static_network_revision: "development-static".into(),
-        schedule_revision: "development-schedule".into(),
-        freshness_policy_version: "1".into(),
-        publication_version: 1,
-        feed_evidence: Vec::new(),
-        live_status: Vec::new(),
-    }));
-    build_router_with_store(provider, snapshots).await
-}
-
-pub async fn build_router_with_store(
-    provider: Arc<dyn StreetRoutingProvider>,
-    snapshots: Arc<dyn SnapshotStore>,
-) -> Result<Router, ProviderError> {
-    build_router_with_services(provider, snapshots, None, None).await
-}
-
-pub async fn build_router_with_services(
-    provider: Arc<dyn StreetRoutingProvider>,
-    snapshots: Arc<dyn SnapshotStore>,
-    refresh_coordinator: Option<RefreshCoordinator>,
-    refresh_token: Option<String>,
-) -> Result<Router, ProviderError> {
-    build_router_with_services_and_network(
+    build_router_with_realtime_and_network(
         provider,
-        snapshots,
-        refresh_coordinator,
-        refresh_token,
-        TransitNetwork::default(),
+        Arc::new(NullRealtimeProvider),
+        TransitNetwork::default().with_revisions("development-static", "development-schedule"),
     )
     .await
 }
 
-pub async fn build_router_with_services_and_network(
+pub async fn build_router_with_realtime(
     provider: Arc<dyn StreetRoutingProvider>,
-    snapshots: Arc<dyn SnapshotStore>,
-    refresh_coordinator: Option<RefreshCoordinator>,
-    refresh_token: Option<String>,
+    realtime: Arc<dyn RealtimeProvider>,
+) -> Result<Router, ProviderError> {
+    build_router_with_realtime_and_network(provider, realtime, TransitNetwork::default()).await
+}
+
+pub async fn build_router_with_network(
+    provider: Arc<dyn StreetRoutingProvider>,
     transit_network: TransitNetwork,
 ) -> Result<Router, ProviderError> {
+    build_router_with_realtime_and_network(
+        provider,
+        Arc::new(NullRealtimeProvider),
+        transit_network,
+    )
+    .await
+}
+
+pub async fn build_router_with_realtime_and_network(
+    provider: Arc<dyn StreetRoutingProvider>,
+    realtime: Arc<dyn RealtimeProvider>,
+    transit_network: TransitNetwork,
+) -> Result<Router, ProviderError> {
+    build_router_with_realtime_and_network_and_ttl(
+        provider,
+        realtime,
+        transit_network,
+        crate::realtime::DEFAULT_REALTIME_CACHE_TTL,
+    )
+    .await
+}
+
+pub async fn build_router_with_realtime_and_network_and_ttl(
+    provider: Arc<dyn StreetRoutingProvider>,
+    realtime: Arc<dyn RealtimeProvider>,
+    transit_network: TransitNetwork,
+    realtime_cache_ttl: std::time::Duration,
+) -> Result<Router, ProviderError> {
     let street_routing = StreetRoutingSession::start(provider).await?;
-    let journey_planning = JourneyPlanningService::new(street_routing.clone(), snapshots.clone())
+    let realtime = Arc::new(CachedRealtimeProvider::with_ttl(
+        realtime,
+        realtime_cache_ttl,
+    ));
+    let realtime_metrics = realtime.metrics();
+    let journey_planning = JourneyPlanningService::new(street_routing.clone(), realtime)
         .with_transit_network(transit_network.clone());
-    let refresh_endpoint = refresh_coordinator
-        .zip(refresh_token)
-        .map(|(coordinator, token)| RefreshEndpoint { coordinator, token });
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
@@ -109,10 +103,9 @@ pub async fn build_router_with_services_and_network(
         .with_state(AppState {
             street_routing,
             journey_planning,
-            refresh: refresh_endpoint,
-            snapshots,
             transit_network: Arc::new(transit_network),
             metrics: OperationalMetrics::default(),
+            realtime_metrics,
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -126,7 +119,6 @@ fn documented_router() -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(metrics))
         .routes(utoipa_axum::routes!(street_routing_health))
         .routes(utoipa_axum::routes!(journey_plan))
-        .routes(utoipa_axum::routes!(refresh))
 }
 
 pub fn openapi_document() -> OpenApi {
@@ -141,18 +133,6 @@ fn configure_openapi(mut document: OpenApi) -> OpenApi {
             "Provider-neutral Journey Planning and service health API.",
         ))
         .build();
-    let components = document
-        .components
-        .get_or_insert_with(utoipa::openapi::Components::new);
-    components.add_security_scheme(
-        "refreshBearer",
-        utoipa::openapi::security::SecurityScheme::Http(
-            utoipa::openapi::security::HttpBuilder::new()
-                .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
-                .description(Some("Bearer token for the internal refresh scheduler."))
-                .build(),
-        ),
-    );
     apply_schema_constraints(&mut document);
     document
 }
@@ -353,7 +333,11 @@ async fn metrics(State(state): State<AppState>) -> Response {
             ("content-type", "text/plain; version=0.0.4"),
             ("cache-control", "no-store"),
         ],
-        state.metrics.prometheus(),
+        format!(
+            "{}{}",
+            state.metrics.prometheus(),
+            state.realtime_metrics.prometheus()
+        ),
     ))
 }
 
@@ -361,7 +345,7 @@ async fn metrics(State(state): State<AppState>) -> Response {
 struct ReadinessResponse {
     ready: bool,
     street_routing: bool,
-    network_snapshot: bool,
+    static_network: bool,
     transit_artifact: bool,
 }
 
@@ -370,7 +354,7 @@ struct ReadinessResponse {
     path = "/health/ready",
     operation_id = "getReadiness",
     summary = "Check planning readiness",
-    description = "Reports whether the street-routing provider, Network Snapshot, and transit artifact are ready for planning.",
+    description = "Reports whether street routing and the immutable static transit artifact are ready for planning.",
     responses(
         (status = 200, description = "All planning dependencies are ready", body = ReadinessResponse,
             headers(("Cache-Control" = String, description = "Always no-store."))),
@@ -388,21 +372,17 @@ async fn readiness(State(state): State<AppState>) -> Response {
                 && status.graph_revision == state.street_routing.pinned_status().graph_revision
                 && status.capabilities.supports(ProviderCapabilities::REQUIRED)
         });
-    let snapshot = state.snapshots.pin_current().await.ok();
-    let network_snapshot = snapshot
-        .as_ref()
-        .is_some_and(|snapshot| snapshot.publication_version > 0 && !snapshot.id.trim().is_empty());
-    let transit_artifact = state.transit_network.validate().is_ok()
-        && snapshot.as_ref().is_some_and(|snapshot| {
-            state.transit_network.matches_snapshot(
-                &snapshot.static_network_revision,
-                &snapshot.schedule_revision,
-            )
-        });
+    let static_network = !state
+        .transit_network
+        .static_network_revision
+        .trim()
+        .is_empty()
+        && !state.transit_network.schedule_revision.trim().is_empty();
+    let transit_artifact = state.transit_network.validate().is_ok();
     let body = ReadinessResponse {
-        ready: street_routing && network_snapshot && transit_artifact,
+        ready: street_routing && static_network && transit_artifact,
         street_routing,
-        network_snapshot,
+        static_network,
         transit_artifact,
     };
     no_store((
@@ -480,7 +460,7 @@ async fn street_routing_health(State(state): State<AppState>) -> Response {
     path = "/v1/journey-plans",
     operation_id = "createJourneyPlan",
     summary = "Plan a journey",
-    description = "Calculates provider-neutral Journey Options from one coherent Network Snapshot.",
+    description = "Calculates provider-neutral Journey Options from one immutable static network revision, with demand-driven realtime enrichment.",
     request_body(content = PlanningRequest, description = "Planning Request to evaluate.", content_type = "application/json"),
     responses(
         (status = 200, description = "A complete Journey Planning result or a successful empty result", body = PlanningOutcome,
@@ -518,7 +498,7 @@ async fn journey_plan(
             }
             no_store((StatusCode::OK, Json(outcome)))
         }
-        Err(PlanningError::SnapshotUnavailable | PlanningError::TemporarilyUnavailable) => {
+        Err(PlanningError::TemporarilyUnavailable) => {
             state.metrics.record_planning_failure();
             error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -531,95 +511,6 @@ async fn journey_plan(
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }
     }
-}
-
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-struct RefreshRequest {
-    #[schema(min_length = 1, max_length = 128, pattern = "^[A-Za-z0-9_.:-]+$")]
-    refresh_key: String,
-}
-
-#[utoipa::path(
-    post,
-    path = "/internal/v1/refresh",
-    operation_id = "refreshNetworkSnapshot",
-    summary = "Refresh the Network Snapshot",
-    description = "Publishes one idempotent, coherent Network Snapshot from the configured feed sources.",
-    request_body(content = RefreshRequest, description = "Scheduler refresh key.", content_type = "application/json"),
-    security(("refreshBearer" = [])),
-    responses(
-        (status = 200, description = "The refresh was published or had already been handled", body = RefreshOutcome,
-            headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 400, description = "The refresh key is invalid", body = ErrorEnvelope,
-            headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 401, description = "The scheduler Bearer token is missing or invalid", body = ErrorEnvelope,
-            headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 500, description = "Refresh publication failed", body = ErrorEnvelope,
-            headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 503, description = "The refresh endpoint is not configured", body = ErrorEnvelope,
-            headers(("Cache-Control" = String, description = "Always no-store.")))
-    )
-)]
-async fn refresh(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    request: Result<Json<RefreshRequest>, JsonRejection>,
-) -> Response {
-    let Some(endpoint) = state.refresh else {
-        return error_response(StatusCode::SERVICE_UNAVAILABLE, "refresh_unavailable", None);
-    };
-    let authorized = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|provided| secure_eq(provided.as_bytes(), endpoint.token.as_bytes()));
-    if !authorized {
-        return error_response(StatusCode::UNAUTHORIZED, "unauthorized_refresh", None);
-    }
-    let request = match request {
-        Ok(Json(request)) if valid_refresh_key(&request.refresh_key) => request,
-        _ => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_refresh_key",
-                Some("/refresh_key"),
-            );
-        }
-    };
-    match endpoint
-        .coordinator
-        .run(
-            &request.refresh_key,
-            OffsetDateTime::now_utc().to_offset(taipei_offset()),
-        )
-        .await
-    {
-        Ok(outcome @ RefreshOutcome::Published { .. })
-        | Ok(outcome @ RefreshOutcome::AlreadyHandled) => no_store((StatusCode::OK, Json(outcome))),
-        Err(_) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "refresh_publication_failed",
-            None,
-        ),
-    }
-}
-
-fn valid_refresh_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 128
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
-}
-
-fn secure_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    for index in 0..left.len().max(right.len()) {
-        difference |= usize::from(left.get(index).copied().unwrap_or_default())
-            ^ usize::from(right.get(index).copied().unwrap_or_default());
-    }
-    difference == 0
 }
 
 #[derive(Serialize, utoipa::ToSchema)]

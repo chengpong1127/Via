@@ -109,13 +109,9 @@ struct HTTPJourneyPlannerTests {
       "generated_at":"2026-08-29T10:08:00+08:00",
       "effective_search_time":"2026-08-29T10:08:00+08:00",
       "time_zone":"Asia/Taipei",
-      "network_snapshot":{
-        "id":"snapshot_test",
-        "created_at":"2026-08-29T10:07:45+08:00",
-        "live_cutoff":"2026-08-29T10:07:40+08:00",
+      "network_revision":{
         "static_network_revision":"static_test",
-        "schedule_revision":"schedule_test",
-        "freshness_policy_version":"1"
+        "schedule_revision":"schedule_test"
       },
       "policy_versions":{"freshness":"1","ranking":"1","transfer_safety":"1"},
       "warnings":[],
@@ -126,10 +122,7 @@ struct HTTPJourneyPlannerTests {
       "api_version":"1.0",
       "semantic_catalog_version":"1.0",
       "generated_at":"2026-08-29T10:08:00+08:00",
-      "network_snapshot":{
-        "id":"snapshot_test",
-        "created_at":"2026-08-29T10:07:45+08:00",
-        "live_cutoff":"2026-08-29T10:07:40+08:00",
+      "network_revision":{
         "static_network_revision":"static_test",
         "schedule_revision":"schedule_test"
       },
