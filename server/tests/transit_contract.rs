@@ -181,3 +181,70 @@ fn rail_service_participates_in_generic_transit_search() {
             .any(|ride| ride.transit_mode == TransitMode::Rail)
     }));
 }
+
+#[test]
+fn high_speed_rail_uses_the_same_generic_transit_search() {
+    let mut network = network();
+    network.services.push(TransitService::new(
+        TransitServiceId::new("hsr-1"),
+        TransitMode::HighSpeedRail,
+        "High Speed Rail",
+        "C",
+        vec![BoardingPointId::new("a"), BoardingPointId::new("c")],
+    ));
+    network.trips.push(trip(
+        "run-hsr",
+        "hsr-1",
+        &[
+            (26 * 3600 + 420, 26 * 3600 + 420),
+            (26 * 3600 + 1_020, 26 * 3600 + 1_020),
+        ],
+    ));
+    let query_time: OffsetDateTime = datetime!(2026-09-01 01:30 +08:00);
+    let access = vec![TransitAccess::new(
+        BoardingPointId::new("a"),
+        query_time,
+        query_time,
+    )];
+
+    let itineraries = network.itineraries(
+        &access,
+        TransitQuery::DepartAfter {
+            earliest_departure: query_time,
+        },
+        &[JourneyMode::Transit],
+    );
+
+    assert!(itineraries.iter().any(|itinerary| {
+        itinerary
+            .rides
+            .iter()
+            .any(|ride| ride.transit_mode == TransitMode::HighSpeedRail)
+    }));
+}
+
+#[test]
+fn bus_topology_remains_discoverable_when_representative_trip_is_not_active_today() {
+    let network = network();
+    let query_time: OffsetDateTime = datetime!(2026-09-01 10:00 +08:00);
+    let access = vec![TransitAccess::new(
+        BoardingPointId::new("a"),
+        query_time,
+        query_time,
+    )];
+
+    let itineraries = network.itineraries(
+        &access,
+        TransitQuery::ArriveBy {
+            latest_arrival: query_time,
+        },
+        &[JourneyMode::Transit],
+    );
+
+    assert!(itineraries.iter().any(|itinerary| {
+        itinerary
+            .rides
+            .iter()
+            .any(|ride| ride.transit_mode == TransitMode::Bus)
+    }));
+}

@@ -148,7 +148,7 @@ impl ScheduledTrip {
         self
     }
 
-    fn runs_on(&self, service_day: Date) -> bool {
+    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
         if self.removed_service_days.contains(&service_day) {
             return false;
         }
@@ -483,6 +483,12 @@ impl TransitNetwork {
         self.services.iter().find(|service| &service.id == id)
     }
 
+    pub fn bike_share_station(&self, id: &BikeShareStationId) -> Option<&BikeShareStation> {
+        self.bike_share_stations
+            .iter()
+            .find(|station| &station.id == id)
+    }
+
     pub fn service_day(&self, instant: OffsetDateTime) -> Date {
         let local = normalize_to_taipei(instant);
         let local = local.date().with_time(local.time());
@@ -509,6 +515,27 @@ impl TransitNetwork {
         query: TransitQuery,
         selected_modes: &[JourneyMode],
     ) -> Vec<TransitItinerary> {
+        self.itineraries_for_services(
+            access,
+            query,
+            selected_modes,
+            None,
+            DEFAULT_MAX_TRANSFERS,
+            64,
+        )
+    }
+
+    /// Generate a bounded static transit backbone for a selected set of
+    /// provider-neutral services. Timing is resolved by the planner later.
+    pub fn itineraries_for_services(
+        &self,
+        access: &[TransitAccess],
+        query: TransitQuery,
+        selected_modes: &[JourneyMode],
+        service_ids: Option<&HashSet<TransitServiceId>>,
+        max_transfers: usize,
+        max_itineraries: usize,
+    ) -> Vec<TransitItinerary> {
         if access.is_empty() {
             return Vec::new();
         }
@@ -523,7 +550,10 @@ impl TransitNetwork {
             .services
             .iter()
             .enumerate()
-            .filter(|_| selected_modes.contains(&JourneyMode::Transit))
+            .filter(|(index, _)| {
+                selected_modes.contains(&JourneyMode::Transit)
+                    && service_ids.is_none_or(|ids| ids.contains(&self.services[*index].id))
+            })
             .map(|(index, _)| index)
             .collect::<HashSet<_>>();
 
@@ -539,7 +569,7 @@ impl TransitNetwork {
             .collect::<Vec<_>>();
         let mut results = Vec::new();
 
-        for _round in 0..=DEFAULT_MAX_TRANSFERS {
+        for _round in 0..=max_transfers {
             let mut next = Vec::new();
             for label in &frontier {
                 let earliest_seconds = seconds_since_service_day(
@@ -553,48 +583,74 @@ impl TransitNetwork {
                     .into_iter()
                     .flatten()
                     .skip_while(|departure| departure.departure_seconds < earliest_seconds)
+                    .filter(|departure| selected_service_indexes.contains(&departure.service_index))
+                    .take(32)
                 {
                     let trip = &self.trips[departure.trip_index];
                     if !trip.runs_on(service_day) {
                         continue;
                     }
-                    if !selected_service_indexes.contains(&departure.service_index)
-                        || !services_seen.insert(departure.service_index)
-                    {
+                    if !services_seen.insert(departure.service_index) {
                         continue;
                     }
                     let service = &self.services[departure.service_index];
-                    for alight_index in (departure.stop_index + 1)..service.pattern.len() {
-                        let departure_at = self.service_day_start(service_day)
-                            + time::Duration::seconds(i64::from(
-                                trip.stop_times[departure.stop_index].departure_seconds,
-                            ));
-                        let arrival_at = self.service_day_start(service_day)
-                            + time::Duration::seconds(i64::from(
-                                trip.stop_times[alight_index].arrival_seconds,
-                            ));
-                        let ride = TransitRide {
-                            transit_mode: service.transit_mode,
-                            service_id: service.id.clone(),
-                            trip_id: trip.id.clone(),
-                            board_stop_id: service.pattern[departure.stop_index].clone(),
-                            alight_stop_id: service.pattern[alight_index].clone(),
-                            scheduled_departure: departure_at,
-                            scheduled_arrival: arrival_at,
-                        };
-                        let mut rides = label.rides.clone();
-                        rides.push(ride);
-                        let candidate = TransitLabel {
-                            stop_id: service.pattern[alight_index].clone(),
-                            available_at: arrival_at,
-                            arrival_at,
-                            access_departure_at: label.access_departure_at,
-                            rides,
-                        };
-                        if candidate.rides.len() <= DEFAULT_MAX_TRANSFERS + 1 {
-                            results_or_next(query, service_day, candidate, &mut results, &mut next);
-                        }
+                    self.append_service_candidates(
+                        ServiceCandidateInput {
+                            service_day,
+                            query,
+                            label,
+                            service,
+                            trip,
+                            board_index: departure.stop_index,
+                            max_transfers,
+                        },
+                        &mut results,
+                        &mut next,
+                    );
+                }
+
+                // Bus static data is topology plus a representative ride shape. A
+                // bus must still reach the timing resolver when no static trip is
+                // active on this service day; its boarding time comes from the
+                // scoped realtime query later.
+                for (service_index, service) in self.services.iter().enumerate() {
+                    if service.transit_mode != TransitMode::Bus
+                        || !selected_service_indexes.contains(&service_index)
+                        || services_seen.contains(&service_index)
+                    {
+                        continue;
                     }
+                    let Some(board_index) = service
+                        .pattern
+                        .iter()
+                        .position(|stop_id| stop_id == &label.stop_id)
+                    else {
+                        continue;
+                    };
+                    let Some(trip) = indexes
+                        .trips_by_service
+                        .get(&service_index)
+                        .into_iter()
+                        .flatten()
+                        .map(|trip_index| &self.trips[*trip_index])
+                        .find(|trip| trip.stop_times.len() == service.pattern.len())
+                    else {
+                        continue;
+                    };
+                    services_seen.insert(service_index);
+                    self.append_service_candidates(
+                        ServiceCandidateInput {
+                            service_day,
+                            query,
+                            label,
+                            service,
+                            trip,
+                            board_index,
+                            max_transfers,
+                        },
+                        &mut results,
+                        &mut next,
+                    );
                 }
             }
             let mut transferred = Vec::new();
@@ -635,8 +691,108 @@ impl TransitNetwork {
         results.dedup_by(|left, right| {
             left.rides == right.rides && left.access_departure_at == right.access_departure_at
         });
-        results.truncate(64);
+        results.truncate(max_itineraries.max(1));
         results
+    }
+
+    /// Resolve a scheduled ride from its canonical service and trip identity.
+    pub fn scheduled_ride(
+        &self,
+        service_day: Date,
+        service_id: &TransitServiceId,
+        trip_id: &ScheduledRunId,
+        board_stop_id: &BoardingPointId,
+        alight_stop_id: &BoardingPointId,
+    ) -> Option<TransitRide> {
+        let service = self.service(service_id)?;
+        let trip = self
+            .trips
+            .iter()
+            .find(|trip| &trip.id == trip_id && &trip.service_id == service_id)?;
+        if !trip.runs_on(service_day) {
+            return None;
+        }
+        let board_index = service
+            .pattern
+            .iter()
+            .position(|stop_id| stop_id == board_stop_id)?;
+        let alight_index = service
+            .pattern
+            .iter()
+            .enumerate()
+            .skip(board_index + 1)
+            .find_map(|(index, stop_id)| (stop_id == alight_stop_id).then_some(index))?;
+        let service_day_start = self.service_day_start(service_day);
+        Some(TransitRide {
+            transit_mode: service.transit_mode,
+            service_id: service.id.clone(),
+            trip_id: trip.id.clone(),
+            board_stop_id: board_stop_id.clone(),
+            alight_stop_id: alight_stop_id.clone(),
+            scheduled_departure: service_day_start
+                + time::Duration::seconds(i64::from(
+                    trip.stop_times[board_index].departure_seconds,
+                )),
+            scheduled_arrival: service_day_start
+                + time::Duration::seconds(i64::from(trip.stop_times[alight_index].arrival_seconds)),
+        })
+    }
+
+    fn append_service_candidates(
+        &self,
+        input: ServiceCandidateInput<'_>,
+        results: &mut Vec<TransitItinerary>,
+        next: &mut Vec<TransitLabel>,
+    ) {
+        for alight_index in (input.board_index + 1)..input.service.pattern.len() {
+            let departure_at = self.service_day_start(input.service_day)
+                + time::Duration::seconds(i64::from(
+                    input.trip.stop_times[input.board_index].departure_seconds,
+                ));
+            let arrival_at = self.service_day_start(input.service_day)
+                + time::Duration::seconds(i64::from(
+                    input.trip.stop_times[alight_index].arrival_seconds,
+                ));
+            let ride = TransitRide {
+                transit_mode: input.service.transit_mode,
+                service_id: input.service.id.clone(),
+                trip_id: input.trip.id.clone(),
+                board_stop_id: input.service.pattern[input.board_index].clone(),
+                alight_stop_id: input.service.pattern[alight_index].clone(),
+                scheduled_departure: departure_at,
+                scheduled_arrival: arrival_at,
+            };
+            let mut rides = input.label.rides.clone();
+            rides.push(ride);
+            let candidate = TransitLabel {
+                stop_id: input.service.pattern[alight_index].clone(),
+                available_at: arrival_at,
+                arrival_at,
+                access_departure_at: input.label.access_departure_at,
+                rides,
+            };
+            if candidate.rides.len() <= input.max_transfers + 1 {
+                let result_query = match (input.service.transit_mode, input.query) {
+                    // Static bus times provide a ride shape only. A realtime
+                    // arrival may be usable even when that representative
+                    // timetable would fall outside an ArriveBy window.
+                    (TransitMode::Bus, TransitQuery::ArriveBy { .. }) => {
+                        TransitQuery::DepartAfter {
+                            earliest_departure: self.service_day_start(input.service_day),
+                        }
+                    }
+                    _ => input.query,
+                };
+                results_or_next(
+                    result_query,
+                    input.service_day,
+                    candidate,
+                    input.max_transfers,
+                    results,
+                    next,
+                );
+            }
+        }
     }
 
     fn indexes(&self) -> &TransitIndexes {
@@ -651,6 +807,16 @@ struct TransitLabel {
     arrival_at: OffsetDateTime,
     access_departure_at: OffsetDateTime,
     rides: Vec<TransitRide>,
+}
+
+struct ServiceCandidateInput<'a> {
+    service_day: Date,
+    query: TransitQuery,
+    label: &'a TransitLabel,
+    service: &'a TransitService,
+    trip: &'a ScheduledTrip,
+    board_index: usize,
+    max_transfers: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -894,6 +1060,7 @@ fn results_or_next(
     query: TransitQuery,
     service_day: Date,
     candidate: TransitLabel,
+    max_transfers: usize,
     results: &mut Vec<TransitItinerary>,
     next: &mut Vec<TransitLabel>,
 ) {
@@ -909,7 +1076,7 @@ fn results_or_next(
             rides: candidate.rides.clone(),
         });
     }
-    if candidate.rides.len() <= DEFAULT_MAX_TRANSFERS {
+    if candidate.rides.len() <= max_transfers {
         next.push(candidate);
     }
 }

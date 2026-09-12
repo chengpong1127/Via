@@ -94,8 +94,10 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
         realtime_cache_ttl,
     ));
     let realtime_metrics = realtime.metrics();
+    let metrics = OperationalMetrics::default();
     let journey_planning = JourneyPlanningService::new(street_routing.clone(), realtime)
-        .with_transit_network(transit_network.clone());
+        .with_transit_network(transit_network.clone())
+        .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
@@ -104,7 +106,7 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
             street_routing,
             journey_planning,
             transit_network: Arc::new(transit_network),
-            metrics: OperationalMetrics::default(),
+            metrics,
             realtime_metrics,
             openapi,
         })
