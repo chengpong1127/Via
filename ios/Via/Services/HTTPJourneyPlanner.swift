@@ -115,7 +115,7 @@ private struct RequestPayload: Encodable {
     init(request: PlanningRequest) {
         origin = PlacePayload(place: request.origin)
         destination = PlacePayload(place: request.destination)
-        selectedModes = TravelMode.selectable
+        selectedModes = JourneyMode.selectable
             .filter(request.selectedModes.contains)
             .map(\.rawValue)
         locale = LocaleNormalization.bcp47(request.locale)
@@ -316,8 +316,8 @@ private struct ServerJourneyOption: Decodable {
               let liveStatusSummary = liveStatusSummary.domainValue(),
               let overview = overviewGeometry.coordinates()
         else { throw JourneyPlanningError.unsupportedResponse }
-        let travelModes = try travelModes.map { rawValue -> TravelMode in
-            guard let mode = TravelMode(rawValue: rawValue) else {
+        let travelModes = try travelModes.map { rawValue -> JourneyMode in
+            guard let mode = JourneyMode(rawValue: rawValue) else {
                 throw JourneyPlanningError.unsupportedResponse
             }
             return mode
@@ -394,15 +394,44 @@ private struct ServerLeg: Decodable {
     }
 
     func domainValue() throws -> JourneyLeg {
-        guard let mode = TravelMode(rawValue: mode) else {
+        guard let mode = JourneyMode(rawValue: mode) else {
             throw JourneyPlanningError.unsupportedResponse
         }
         let title: String
+        let transit: TransitLegMetadata?
         switch mode {
-        case .walking: title = "Walk"
-        case .bus: title = details.serviceLabel ?? "Bus"
-        case .metro: title = details.lineLabel ?? "Metro"
-        case .youbike: title = "YouBike"
+        case .walking:
+            guard details.type == "walking" else {
+                throw JourneyPlanningError.unsupportedResponse
+            }
+            title = "Walk"
+            transit = nil
+        case .bikeShare:
+            guard details.type == "bike_share" else {
+                throw JourneyPlanningError.unsupportedResponse
+            }
+            title = "Bike share"
+            transit = nil
+        case .transit:
+            guard details.type == "transit" else {
+                throw JourneyPlanningError.unsupportedResponse
+            }
+            guard let transitMode = details.transitMode.flatMap(TransitMode.init(rawValue:)),
+                  let serviceID = details.serviceID,
+                  let boardingPointID = details.boardingPointID,
+                  let alightingPointID = details.alightingPointID
+            else {
+                throw JourneyPlanningError.unsupportedResponse
+            }
+            title = details.serviceLabel ?? transitMode.titleKey
+            transit = TransitLegMetadata(
+                mode: transitMode,
+                serviceID: serviceID,
+                serviceLabel: details.serviceLabel ?? transitMode.titleKey,
+                headsign: details.headsign ?? "",
+                boardingPointID: boardingPointID,
+                alightingPointID: alightingPointID
+            )
         }
         let subtitle = "\(from.displayName) → \(to.displayName)"
         let guidance = guidance.map { instruction in
@@ -417,20 +446,29 @@ private struct ServerLeg: Decodable {
             title: title,
             subtitle: subtitle,
             durationSeconds: durationSeconds,
-            guidance: guidance
+            guidance: guidance,
+            transit: transit
         )
     }
 }
 
 private struct ServerDetails: Decodable {
     let type: String
+    let transitMode: String?
+    let serviceID: String?
+    let boardingPointID: String?
+    let alightingPointID: String?
     let serviceLabel: String?
-    let lineLabel: String?
+    let headsign: String?
 
     enum CodingKeys: String, CodingKey {
         case type
+        case transitMode = "transit_mode"
+        case serviceID = "via_service_id"
+        case boardingPointID = "via_boarding_point_id"
+        case alightingPointID = "via_alighting_point_id"
         case serviceLabel = "service_label"
-        case lineLabel = "line_label"
+        case headsign
     }
 }
 

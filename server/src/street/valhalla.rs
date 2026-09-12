@@ -566,7 +566,7 @@ fn outcome_for(error: &ProviderError) -> OperationOutcome {
 fn costing(travel_mode: StreetTravelMode) -> &'static str {
     match travel_mode {
         StreetTravelMode::Walking => "pedestrian",
-        StreetTravelMode::YouBike => "bicycle",
+        StreetTravelMode::Bicycle => "bicycle",
     }
 }
 

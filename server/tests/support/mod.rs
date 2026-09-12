@@ -25,7 +25,7 @@ pub async fn assert_provider_contract(
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::OneToMany,
             constraints: Default::default(),
-            travel_mode: StreetTravelMode::YouBike,
+            travel_mode: StreetTravelMode::Bicycle,
             sources: vec![fixture.origin],
             targets: vec![fixture.destination, fixture.unreachable],
         })
@@ -64,7 +64,7 @@ pub async fn assert_provider_contract(
 
     let path = session
         .detailed_path(DetailedPathQuery {
-            travel_mode: StreetTravelMode::YouBike,
+            travel_mode: StreetTravelMode::Bicycle,
             constraints: Default::default(),
             origin: fixture.origin,
             destination: fixture.destination,

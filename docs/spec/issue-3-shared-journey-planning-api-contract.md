@@ -39,7 +39,7 @@ Every response uses `Cache-Control: no-store`. Planning Requests, Journey Option
     },
     "display_text": "Taipei 101"
   },
-  "selected_modes": ["bus", "metro", "youbike"],
+  "selected_modes": ["bike_share", "transit"],
   "locale": "zh-Hant-TW",
   "departure_setting": {
     "type": "depart_now"
@@ -59,15 +59,14 @@ Every response uses `Cache-Control: no-store`. Planning Requests, Journey Option
 
 The client creates this object only after the rider selects a place. It never sends raw search text, autocomplete history, map browsing, unused candidates, provider place identifiers, device identifiers, or a native `MKMapItem`/Android equivalent.
 
-The server must not snap a coordinate and then silently replace `display_text`. Any server-derived Stop Place, Boarding Point, or YouBike Station appears separately in the result with a stable Via ID.
+The server must not snap a coordinate and then silently replace `display_text`. Any server-derived Stop Place, Boarding Point, or bike-share station appears separately in the result with a stable Via ID.
 
-### Travel Mode filters
+### Journey Mode filters
 
 `selected_modes` is a non-empty set serialized as an array in canonical order:
 
-1. `bus`
-2. `metro`
-3. `youbike`
+1. `bike_share`
+2. `transit`
 
 Duplicates or unknown values make the request invalid. Walking is always available as a connector and is never accepted as a filter. The server treats the selected modes as the allowed set, not preferences: a Journey Option can use any selected subset, but it cannot use an unselected non-Walking mode.
 
@@ -180,14 +179,14 @@ Every Leg carries geometry. A Journey Option can additionally carry an overview 
 Every Leg contains:
 
 - response-local opaque `id`;
-- `mode`: `walking`, `bus`, `metro`, or `youbike`;
+- `mode`: `walking`, `bike_share`, or `transit`;
 - `from` and `to` rider-relevant places, each with a display name, coordinate, place kind, and optional stable opaque Via ID;
 - calculated `departure_time` and `arrival_time`;
 - nullable `scheduled_departure_time` and `scheduled_arrival_time` where a schedule exists;
 - `duration_seconds` and `distance_metres`;
 - `geometry`;
 - ordered `guidance`;
-- mode-specific `details` whose discriminator equals `mode`;
+- mode-specific `details`; transit details contain a `transit_mode` subtype;
 - scoped `live_status` evidence; and
 - scoped `warnings` and public attribution.
 
@@ -198,9 +197,8 @@ Calculated, scheduled, and live-estimated values are distinct fields. A client n
 | Mode | Required rider-relevant details |
 | --- | --- |
 | `walking` | Start/end entrance or side-of-street facts when known. No Live Status requirement. |
-| `bus` | Stable Via service and Boarding Point IDs, public service label, headsign, boarding/alighting names and coordinates, stop count when known, and normalized Arrival Estimate/Service Condition evidence. |
-| `metro` | Stable Via line and Boarding Point IDs, public line label, direction/headsign, boarding/alighting names and coordinates, and normalized Service Condition evidence. Schedule/frequency calculation is not mislabeled as a future Arrival Estimate. |
-| `youbike` | Stable Via pickup and return station IDs, names and coordinates, pickup and return action states, actual available-bike and return-slot counts, and Bike Availability evidence. |
+| `transit` | `transit_mode` is `bus`, `metro`, `rail`, or `high_speed_rail`; stable Via service and Boarding Point IDs, public service label, headsign, boarding/alighting names and coordinates, stop count when known, and normalized live/schedule evidence. |
+| `bike_share` | Stable Via pickup and return station IDs, names and coordinates, pickup and return action states, actual available-bike and return-slot counts, and Bike Availability evidence. |
 
 Stable Via IDs are typed and opaque. Provider aliases, raw TDX/city codes, raw provider statuses, endpoint names, and ingestion details never cross this boundary.
 
@@ -256,9 +254,9 @@ The contract never exposes a generic ambiguous `updated_at`. `normalized_at` is 
 
 Required Live Status that is degraded or unavailable suppresses the affected Journey Option. `degraded` and `unavailable` remain representable for noncritical warnings and for clients truthfully aging a retained result after refresh failure. `not_applicable` covers scheduled/calculated facts, such as Walking or an operator capability that does not provide a future Arrival Estimate.
 
-### Actual YouBike availability
+### Actual bike-share availability
 
-A YouBike Leg returns pickup and return evidence separately:
+A bike-share Leg returns pickup and return evidence separately:
 
 ```json
 {
@@ -313,7 +311,7 @@ When calculation succeeds but no feasible Journey Option remains, HTTP `200` ret
     "code": "no_feasible_journey_option",
     "required": true,
     "parameters": {
-      "selected_modes": ["bus", "metro"]
+      "selected_modes": ["transit"]
     }
   }
 }
@@ -389,14 +387,14 @@ Fixtures must cover at least:
 
 - both supported Via locales and operator-text fallback;
 - all departure-setting variants;
-- every Travel Mode alone and in combinations, with Walking connectors;
+- every selectable Journey Mode alone and in combinations, with implicit Walking connectors;
 - one, two, and three ordered Journey Options;
 - Reliable and Feasible classes, labels, and ranking reasons;
 - every Leg type and explicit Transfers;
 - polyline6 decoding and coordinate order on both platforms;
 - scheduled versus live-estimated transit times;
 - fresh, degraded, unavailable, and not-applicable evidence;
-- YouBike zero, unknown, one, two, and three-or-more pickup/return counts plus disabled actions;
+- bike-share zero, unknown, one, two, and three-or-more pickup/return counts plus disabled actions;
 - scoped required and optional warnings;
 - every Guidance, empty, and error code in Traditional Chinese and English;
 - unknown optional and required semantic codes;
@@ -412,10 +410,10 @@ The shared contract is conformant only when repeatable checks prove that:
 - no provider place ID, raw search text, native-framework type, raw feed status, or provider alias crosses the boundary;
 - request and response data is absent from logs, traces, retained history, and shared caches;
 - iOS and Android render equivalent facts, states, actions, and recovery paths from the same fixtures;
-- neither client ranks Journey Options, evaluates Freshness, synthesizes YouBike counts, or interprets raw operator states;
+- neither client ranks Journey Options, evaluates Freshness, synthesizes bike-share counts, or interprets raw operator states;
 - all Journey Options in one response use one Network Snapshot and one set of policy versions;
 - scheduled, calculated, and live-estimated facts remain distinguishable;
-- zero and unknown YouBike counts never collapse into one another;
+- zero and unknown bike-share counts never collapse into one another;
 - every required semantic code has supported Traditional Chinese and English client resources before release;
 - an unknown required semantic code fails safely instead of being guessed;
 - refresh replaces the complete result atomically and never presents retained Live Status as newly fresh; and
@@ -426,6 +424,6 @@ The shared contract is conformant only when repeatable checks prove that:
 - Swift/MapKit and Kotlin clients can render the same Journey Options without sharing framework types or duplicating server rules.
 - Provider adapters and identity churn remain behind Via's normalization boundary.
 - Client-owned translation preserves native quality while semantic catalog tests prevent behavioral drift.
-- Explicit Network Snapshot, Freshness, and actual YouBike evidence make Via's Reliable/Feasible claims auditable in ways the reviewed hosted map APIs do not.
+- Explicit Network Snapshot, Freshness, and actual bike-share evidence make Via's Reliable/Feasible claims auditable in ways the reviewed hosted map APIs do not.
 - Full-request refresh is less incremental than Leg mutation, but it preserves one coherent result and a simple privacy boundary.
 - The closest external structural precedent and the deliberate departures are recorded in [the issue #3 API research](../research/issue-3-existing-map-api-contracts.md).

@@ -10,8 +10,8 @@ use url::Url;
 use crate::{
     live_status::{FreshnessPolicy, FreshnessReason, LiveStatusTimes},
     normalization::{
-        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BoardingPointId,
-        TransitServiceId, YouBikeStationId,
+        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BikeShareStationId,
+        BoardingPointId, TransitServiceId,
     },
     refresh::{FeedRefreshBatch, FeedSource},
     snapshot::{LiveStatusValue, NormalizedLiveStatus},
@@ -323,12 +323,12 @@ impl TdxFeedSource {
             };
             let Some(station_id) = self
                 .identities
-                .resolve("youbike_station", &self.authority_namespace, station_uid)
+                .resolve("bike_share_station", &self.authority_namespace, station_uid)
                 .await
             else {
                 tracing::warn!(
                     capability = %self.capability,
-                    entity_kind = "youbike_station",
+                    entity_kind = "bike_share_station",
                     "TDX record dropped because its identity alias is unknown"
                 );
                 continue;
@@ -340,7 +340,7 @@ impl TdxFeedSource {
                 .unwrap_or(u8::MAX);
             let source_change_at = time_field(record, "SrcUpdateTime");
             let value = normalize_bike_availability(
-                YouBikeStationId::new(station_id),
+                BikeShareStationId::new(station_id),
                 service_status,
                 u32_field(record, "AvailableRentBikes"),
                 u32_field(record, "AvailableReturnBikes"),
@@ -442,7 +442,7 @@ pub fn normalize_n1(
 
 #[allow(clippy::too_many_arguments)]
 pub fn normalize_bike_availability(
-    station_id: YouBikeStationId,
+    station_id: BikeShareStationId,
     service_status: u8,
     available_bikes: Option<u32>,
     available_return_slots: Option<u32>,

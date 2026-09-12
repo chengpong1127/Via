@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ModeBadge: View {
-    let mode: TravelMode
+    let mode: JourneyMode
     var compact = false
 
     var body: some View {
@@ -22,9 +22,8 @@ struct ModeBadge: View {
 
     private var color: Color {
         switch mode {
-        case .bus: .blue
-        case .metro: .purple
-        case .youbike: .green
+        case .transit: .purple
+        case .bikeShare: .green
         case .walking: .gray
         }
     }

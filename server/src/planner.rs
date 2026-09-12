@@ -8,12 +8,9 @@ use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::{
-        PlanningRequest, RequestCoordinate, SelectedMode, TravelMode, new_request_id,
-        normalize_to_taipei,
-    },
+    api::{JourneyMode, PlanningRequest, RequestCoordinate, new_request_id, normalize_to_taipei},
     live_status::{FreshnessReason, FreshnessState},
-    normalization::{ArrivalState, BoardingPointId, YouBikeStationId},
+    normalization::{ArrivalState, BikeShareStationId, BoardingPointId},
     ranking::{
         BikeActionEvidence, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
         RankingReason, TransferEvidence, TransferKind,
@@ -46,7 +43,7 @@ pub struct PlanningLimits {
     pub request_timeout: std::time::Duration,
     pub max_concurrent_requests: usize,
     pub max_transit_access_stops: usize,
-    pub max_youbike_stations: usize,
+    pub max_bike_share_stations: usize,
     pub max_candidates: usize,
 }
 
@@ -56,7 +53,7 @@ impl Default for PlanningLimits {
             request_timeout: std::time::Duration::from_secs(5),
             max_concurrent_requests: 32,
             max_transit_access_stops: 24,
-            max_youbike_stations: 12,
+            max_bike_share_stations: 12,
             max_candidates: 16,
         }
     }
@@ -90,7 +87,7 @@ impl JourneyPlanningService {
         let limits = PlanningLimits {
             max_concurrent_requests: limits.max_concurrent_requests.max(1),
             max_transit_access_stops: limits.max_transit_access_stops.max(1),
-            max_youbike_stations: limits.max_youbike_stations.max(1),
+            max_bike_share_stations: limits.max_bike_share_stations.max(1),
             max_candidates: limits.max_candidates.max(1),
             ..limits
         };
@@ -165,7 +162,7 @@ impl JourneyPlanningService {
         had_global_failure |= transit_global_failure;
 
         let (bike_candidates, bike_failed, bike_global_failure) =
-            self.generate_youbike(&context).await;
+            self.generate_bike_share(&context).await;
         candidates.extend(bike_candidates);
         had_transient_failure |= bike_failed;
         had_global_failure |= bike_global_failure;
@@ -465,8 +462,7 @@ impl JourneyPlanningService {
         if !context
             .request
             .selected_modes
-            .iter()
-            .any(|mode| matches!(mode, SelectedMode::Bus | SelectedMode::Metro))
+            .contains(&JourneyMode::Transit)
         {
             return (Vec::new(), false, false);
         }
@@ -685,7 +681,7 @@ impl JourneyPlanningService {
                     None,
                 ));
             }
-            match ride.mode {
+            match ride.transit_mode {
                 TransitMode::Bus => {
                     let status = find_arrival_status(&context.snapshot, &ride)?;
                     if status.freshness.state == FreshnessState::Unavailable {
@@ -715,7 +711,7 @@ impl JourneyPlanningService {
                         Some(arrival.transmitted_at),
                     ));
                 }
-                TransitMode::Metro => {
+                TransitMode::Metro | TransitMode::Rail | TransitMode::HighSpeedRail => {
                     if service.service_condition_required && condition.is_none() {
                         return None;
                     }
@@ -765,7 +761,7 @@ impl JourneyPlanningService {
         let mut live_evidence = Vec::new();
         let mut required_states = Vec::new();
         let mut schedule_only = false;
-        let mut travel_modes = vec![TravelMode::Walking];
+        let mut travel_modes = vec![JourneyMode::Walking];
         let mut main_service_sequence = Vec::new();
 
         for (index, effective) in effective_rides.iter().enumerate() {
@@ -780,7 +776,7 @@ impl JourneyPlanningService {
                 alighting,
                 effective,
             ));
-            push_unique_mode(&mut travel_modes, travel_mode_for(service.mode));
+            push_unique_mode(&mut travel_modes, travel_mode_for(service.transit_mode));
             main_service_sequence.push(service.id.as_str().to_owned());
             required_states.extend(effective.required_states.iter().copied());
             live_evidence.extend(effective.evidence.iter().cloned());
@@ -798,8 +794,8 @@ impl JourneyPlanningService {
                 if available < physical {
                     return None;
                 }
-                let kind = if matches!(previous.ride.mode, TransitMode::Metro)
-                    && matches!(effective.ride.mode, TransitMode::Metro)
+                let kind = if matches!(previous.ride.transit_mode, TransitMode::Metro)
+                    && matches!(effective.ride.transit_mode, TransitMode::Metro)
                 {
                     TransferKind::MetroToMetro
                 } else {
@@ -846,7 +842,7 @@ impl JourneyPlanningService {
             arrival_time,
             &egress_path,
         ));
-        push_unique_mode(&mut travel_modes, TravelMode::Walking);
+        push_unique_mode(&mut travel_modes, JourneyMode::Walking);
 
         let departure_time = access_departure;
         let duration_seconds = seconds_between(departure_time, arrival_time)?;
@@ -898,14 +894,14 @@ impl JourneyPlanningService {
         })
     }
 
-    async fn generate_youbike(
+    async fn generate_bike_share(
         &self,
         context: &PlanningContext,
     ) -> (Vec<GeneratedCandidate>, bool, bool) {
         if !context
             .request
             .selected_modes
-            .contains(&SelectedMode::YouBike)
+            .contains(&JourneyMode::BikeShare)
         {
             return (Vec::new(), false, false);
         }
@@ -917,9 +913,9 @@ impl JourneyPlanningService {
         };
         let pickups = self
             .transit_network
-            .nearest_youbike_stations(
+            .nearest_bike_share_stations(
                 context.request.origin.coordinate,
-                self.limits.max_youbike_stations,
+                self.limits.max_bike_share_stations,
             )
             .into_iter()
             .filter_map(|station| {
@@ -930,9 +926,9 @@ impl JourneyPlanningService {
             .collect::<Vec<_>>();
         let dropoffs = self
             .transit_network
-            .nearest_youbike_stations(
+            .nearest_bike_share_stations(
                 context.request.destination.coordinate,
-                self.limits.max_youbike_stations,
+                self.limits.max_bike_share_stations,
             )
             .into_iter()
             .filter_map(|station| {
@@ -1012,7 +1008,7 @@ impl JourneyPlanningService {
                 .street_routing
                 .matrix(MatrixQuery {
                     orientation: MatrixOrientation::OneToMany,
-                    travel_mode: StreetTravelMode::YouBike,
+                    travel_mode: StreetTravelMode::Bicycle,
                     sources: vec![*pickup_coordinate],
                     targets: dropoffs.iter().map(|(_, coordinate)| *coordinate).collect(),
                     constraints: context.constraints(
@@ -1081,7 +1077,7 @@ impl JourneyPlanningService {
             };
             let bike_attempt = self
                 .street_path(
-                    StreetTravelMode::YouBike,
+                    StreetTravelMode::Bicycle,
                     *pickup_coordinate,
                     *dropoff_coordinate,
                     context.constraints(
@@ -1114,7 +1110,7 @@ impl JourneyPlanningService {
             let PathAttempt::Found(egress_path) = egress_attempt else {
                 continue;
             };
-            if let Some(candidate) = assemble_youbike_candidate(
+            if let Some(candidate) = assemble_bike_share_candidate(
                 context,
                 pickup,
                 dropoff,
@@ -1149,7 +1145,7 @@ fn bike_metric_is_sensible(cell: &crate::street::MatrixCell) -> bool {
 
 fn usable_bike_station(
     snapshot: &NetworkSnapshot,
-    station: &crate::transit::YouBikeStation,
+    station: &crate::transit::BikeShareStation,
 ) -> bool {
     find_bike_status(snapshot, &station.id).is_some_and(|status| {
         status.freshness.state == FreshnessState::Fresh
@@ -1162,7 +1158,7 @@ fn usable_bike_station(
 
 fn usable_return_station(
     snapshot: &NetworkSnapshot,
-    station: &crate::transit::YouBikeStation,
+    station: &crate::transit::BikeShareStation,
 ) -> bool {
     find_bike_status(snapshot, &station.id).is_some_and(|status| {
         status.freshness.state == FreshnessState::Fresh
@@ -1175,10 +1171,10 @@ fn usable_return_station(
     })
 }
 
-fn assemble_youbike_candidate(
+fn assemble_bike_share_candidate(
     context: &PlanningContext,
-    pickup: &crate::transit::YouBikeStation,
-    dropoff: &crate::transit::YouBikeStation,
+    pickup: &crate::transit::BikeShareStation,
+    dropoff: &crate::transit::BikeShareStation,
     access_path: &DetailedPath,
     bike_path: DetailedPath,
     egress_path: DetailedPath,
@@ -1255,7 +1251,7 @@ fn assemble_youbike_candidate(
             &egress_path,
         ),
     ];
-    let matching_key = youbike_matching_key(&pickup.id, &dropoff.id);
+    let matching_key = bike_share_matching_key(&pickup.id, &dropoff.id);
     let stable_key = format!("{}:{}", matching_key, departure_time.unix_timestamp());
     let walking_seconds = access_path.duration.0 + egress_path.duration.0;
     let duration_seconds = seconds_between(departure_time, arrival_time)?;
@@ -1270,7 +1266,7 @@ fn assemble_youbike_candidate(
         duration_seconds,
         walking_seconds,
         transfer_count: 0,
-        travel_modes: vec![TravelMode::Walking, TravelMode::YouBike],
+        travel_modes: vec![JourneyMode::Walking, JourneyMode::BikeShare],
         live_status_summary: summary_from_evidence(&[pickup_evidence, dropoff_evidence]),
         overview_geometry: overview_geometry(&legs),
         legs,
@@ -1284,7 +1280,7 @@ fn assemble_youbike_candidate(
             arrival_epoch_seconds: arrival_time.unix_timestamp(),
             walking_seconds,
             transfer_count: 0,
-            main_service_sequence: vec![format!("youbike:{}", pickup.id.as_str())],
+            main_service_sequence: vec![format!("bike_share:{}", pickup.id.as_str())],
             required_live_status: vec![
                 pickup_status.freshness.state,
                 dropoff_status.freshness.state,
@@ -1343,7 +1339,7 @@ fn walking_leg(
 ) -> Leg {
     Leg {
         id,
-        mode: TravelMode::Walking,
+        mode: JourneyMode::Walking,
         from: from.place(),
         to: to.place(),
         departure_time,
@@ -1395,28 +1391,21 @@ fn transit_leg(
     alighting: &crate::transit::TransitStop,
     effective: &EffectiveRide,
 ) -> Leg {
-    let mode = travel_mode_for(service.mode);
-    let details = match service.mode {
-        TransitMode::Bus => LegDetails::Bus {
-            via_service_id: service.id.as_str().into(),
-            via_boarding_point_id: boarding.id.as_str().into(),
-            via_alighting_point_id: alighting.id.as_str().into(),
-            service_label: service.label.clone(),
-            headsign: service.headsign.clone(),
-            stop_count: None,
-        },
-        TransitMode::Metro => LegDetails::Metro {
-            via_line_id: service.id.as_str().into(),
-            via_boarding_point_id: boarding.id.as_str().into(),
-            via_alighting_point_id: alighting.id.as_str().into(),
-            line_label: service.label.clone(),
-            headsign: service.headsign.clone(),
-        },
+    let mode = JourneyMode::Transit;
+    let details = LegDetails::Transit {
+        transit_mode: service.transit_mode,
+        via_service_id: service.id.as_str().into(),
+        via_boarding_point_id: boarding.id.as_str().into(),
+        via_alighting_point_id: alighting.id.as_str().into(),
+        service_label: service.label.clone(),
+        headsign: service.headsign.clone(),
+        stop_count: None,
     };
-    let guidance_code = if matches!(service.mode, TransitMode::Bus) {
-        "board_bus"
-    } else {
-        "board_metro"
+    let guidance_code = match service.transit_mode {
+        TransitMode::Bus => "board_bus",
+        TransitMode::Metro => "board_metro",
+        TransitMode::Rail => "board_rail",
+        TransitMode::HighSpeedRail => "board_high_speed_rail",
     };
     Leg {
         id,
@@ -1448,18 +1437,15 @@ fn transit_leg(
     }
 }
 
-fn travel_mode_for(mode: TransitMode) -> TravelMode {
-    match mode {
-        TransitMode::Bus => TravelMode::Bus,
-        TransitMode::Metro => TravelMode::Metro,
-    }
+fn travel_mode_for(_mode: TransitMode) -> JourneyMode {
+    JourneyMode::Transit
 }
 
 #[allow(clippy::too_many_arguments)]
 fn bike_leg(
     id: String,
-    pickup: &crate::transit::YouBikeStation,
-    dropoff: &crate::transit::YouBikeStation,
+    pickup: &crate::transit::BikeShareStation,
+    dropoff: &crate::transit::BikeShareStation,
     departure_time: OffsetDateTime,
     arrival_time: OffsetDateTime,
     path: &DetailedPath,
@@ -1469,7 +1455,7 @@ fn bike_leg(
 ) -> Leg {
     Leg {
         id,
-        mode: TravelMode::YouBike,
+        mode: JourneyMode::BikeShare,
         from: bike_place(pickup),
         to: bike_place(dropoff),
         departure_time,
@@ -1483,7 +1469,7 @@ fn bike_leg(
             points: encode_polyline6(&path.geometry),
         },
         guidance: vec![Guidance {
-            code: "rent_youbike",
+            code: "rent_bike_share",
             required: true,
             parameters: BTreeMap::from([
                 ("pickup_station_name".into(), serde_json::json!(pickup.name)),
@@ -1493,7 +1479,7 @@ fn bike_leg(
                 ),
             ]),
         }],
-        details: LegDetails::YouBike {
+        details: LegDetails::BikeShare {
             via_pickup_station_id: pickup.id.as_str().into(),
             via_return_station_id: dropoff.id.as_str().into(),
             pickup_state: pickup_availability.rental_state,
@@ -1520,11 +1506,11 @@ fn stop_place_for_ride(network: &TransitNetwork, id: &BoardingPointId) -> Option
     network.stop(id).map(transit_place)
 }
 
-fn bike_place(station: &crate::transit::YouBikeStation) -> Place {
+fn bike_place(station: &crate::transit::BikeShareStation) -> Place {
     Place {
         display_name: station.name.clone(),
         coordinate: station.coordinate,
-        kind: "youbike_station",
+        kind: "bike_share_station",
         via_id: Some(station.id.as_str().into()),
     }
 }
@@ -1572,7 +1558,7 @@ fn seconds_between(from: OffsetDateTime, to: OffsetDateTime) -> Option<u32> {
     u32::try_from((to - from).whole_seconds()).ok()
 }
 
-fn push_unique_mode(modes: &mut Vec<TravelMode>, mode: TravelMode) {
+fn push_unique_mode(modes: &mut Vec<JourneyMode>, mode: JourneyMode) {
     if !modes.contains(&mode) {
         modes.push(mode);
     }
@@ -1627,7 +1613,7 @@ fn service_condition_blocks(status: &NormalizedLiveStatus, at: OffsetDateTime) -
 
 fn find_bike_status<'a>(
     snapshot: &'a NetworkSnapshot,
-    station_id: &YouBikeStationId,
+    station_id: &BikeShareStationId,
 ) -> Option<&'a NormalizedLiveStatus> {
     snapshot.live_status.iter().find(|status| {
         matches!(
@@ -1748,9 +1734,9 @@ fn transit_matching_key(
     ))
 }
 
-fn youbike_matching_key(pickup: &YouBikeStationId, dropoff: &YouBikeStationId) -> String {
+fn bike_share_matching_key(pickup: &BikeShareStationId, dropoff: &BikeShareStationId) -> String {
     short_digest(&format!(
-        "youbike:v1:{}:{}",
+        "bike_share:v1:{}:{}",
         pickup.as_str(),
         dropoff.as_str()
     ))
@@ -1882,7 +1868,7 @@ pub struct JourneyOption {
     pub duration_seconds: u32,
     pub walking_seconds: u32,
     pub transfer_count: u32,
-    pub travel_modes: Vec<TravelMode>,
+    pub travel_modes: Vec<JourneyMode>,
     pub live_status_summary: LiveStatusSummary,
     pub overview_geometry: Geometry,
     pub legs: Vec<Leg>,
@@ -1899,7 +1885,7 @@ pub struct Geometry {
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Leg {
     pub id: String,
-    pub mode: TravelMode,
+    pub mode: JourneyMode,
     pub from: Place,
     pub to: Place,
     #[serde(with = "time::serde::rfc3339")]
@@ -1974,7 +1960,8 @@ pub enum LegDetails {
         start_fact: Option<String>,
         end_fact: Option<String>,
     },
-    Bus {
+    Transit {
+        transit_mode: TransitMode,
         via_service_id: String,
         via_boarding_point_id: String,
         via_alighting_point_id: String,
@@ -1982,15 +1969,7 @@ pub enum LegDetails {
         headsign: String,
         stop_count: Option<u32>,
     },
-    Metro {
-        via_line_id: String,
-        via_boarding_point_id: String,
-        via_alighting_point_id: String,
-        line_label: String,
-        headsign: String,
-    },
-    #[serde(rename = "youbike")]
-    YouBike {
+    BikeShare {
         via_pickup_station_id: String,
         via_return_station_id: String,
         pickup_state: crate::normalization::ActionState,
@@ -2075,7 +2054,7 @@ fn walking_option(
     };
     let leg = Leg {
         id: "candidate_leg_0".into(),
-        mode: TravelMode::Walking,
+        mode: JourneyMode::Walking,
         from: Place {
             display_name: request.origin.display_text.clone(),
             coordinate: request.origin.coordinate,
@@ -2118,7 +2097,7 @@ fn walking_option(
         duration_seconds: path.duration.0,
         walking_seconds: path.duration.0,
         transfer_count: 0,
-        travel_modes: vec![TravelMode::Walking],
+        travel_modes: vec![JourneyMode::Walking],
         live_status_summary: LiveStatusSummary {
             state: FreshnessState::NotApplicable,
             reasons: Vec::new(),
@@ -2242,14 +2221,14 @@ fn taipei_now() -> OffsetDateTime {
     OffsetDateTime::now_utc().to_offset(UtcOffset::from_hms(8, 0, 0).unwrap())
 }
 
-pub fn selected_modes_as_strings(modes: &[SelectedMode]) -> Vec<&'static str> {
+pub fn selected_modes_as_strings(modes: &[JourneyMode]) -> Vec<&'static str> {
     modes
         .iter()
         .map(|mode| match mode {
-            SelectedMode::Bus => "bus",
-            SelectedMode::Metro => "metro",
-            SelectedMode::YouBike => "youbike",
-            SelectedMode::Unknown => "unknown",
+            JourneyMode::Walking => "walking",
+            JourneyMode::BikeShare => "bike_share",
+            JourneyMode::Transit => "transit",
+            JourneyMode::Unknown => "unknown",
         })
         .collect()
 }

@@ -50,13 +50,13 @@ async fn fake_passes_the_shared_provider_contract_suite() {
     };
     let provider = FakeProvider::builder(GraphRevision::new("revision-a"))
         .matrix_leg(
-            StreetTravelMode::YouBike,
+            StreetTravelMode::Bicycle,
             taipei_main(),
             taipei_101(),
             Seconds(620),
             Metres(3_900),
         )
-        .unreachable_leg(StreetTravelMode::YouBike, taipei_main(), daan_park())
+        .unreachable_leg(StreetTravelMode::Bicycle, taipei_main(), daan_park())
         .matrix_leg(
             StreetTravelMode::Walking,
             taipei_main(),
@@ -71,7 +71,7 @@ async fn fake_passes_the_shared_provider_contract_suite() {
             Seconds(600),
             Metres(2_000),
         )
-        .path(StreetTravelMode::YouBike, taipei_main(), taipei_101(), path)
+        .path(StreetTravelMode::Bicycle, taipei_main(), taipei_101(), path)
         .build();
     let session = StreetRoutingSession::start(Arc::new(provider))
         .await
@@ -148,14 +148,14 @@ async fn provider_contract_supports_one_to_many_and_unreachable_cells() {
 async fn provider_contract_supports_many_to_one_youbike_matrices() {
     let provider = FakeProvider::builder(GraphRevision::new("taipei-2026-08-30"))
         .matrix_leg(
-            StreetTravelMode::YouBike,
+            StreetTravelMode::Bicycle,
             taipei_main(),
             taipei_101(),
             Seconds(620),
             Metres(3_900),
         )
         .matrix_leg(
-            StreetTravelMode::YouBike,
+            StreetTravelMode::Bicycle,
             daan_park(),
             taipei_101(),
             Seconds(310),
@@ -170,7 +170,7 @@ async fn provider_contract_supports_many_to_one_youbike_matrices() {
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::ManyToOne,
             constraints: Default::default(),
-            travel_mode: StreetTravelMode::YouBike,
+            travel_mode: StreetTravelMode::Bicycle,
             sources: vec![taipei_main(), daan_park()],
             targets: vec![taipei_101()],
         })
@@ -203,7 +203,7 @@ async fn provider_contract_returns_provider_neutral_geometry_and_maneuvers() {
     };
     let provider = FakeProvider::builder(GraphRevision::new("taipei-2026-08-30"))
         .path(
-            StreetTravelMode::YouBike,
+            StreetTravelMode::Bicycle,
             taipei_main(),
             taipei_101(),
             path.clone(),
@@ -215,7 +215,7 @@ async fn provider_contract_returns_provider_neutral_geometry_and_maneuvers() {
 
     let actual = session
         .detailed_path(DetailedPathQuery {
-            travel_mode: StreetTravelMode::YouBike,
+            travel_mode: StreetTravelMode::Bicycle,
             constraints: Default::default(),
             origin: taipei_main(),
             destination: taipei_101(),

@@ -15,4 +15,4 @@ The app uses `HTTPJourneyPlanner` at the app root and calls `POST /v1/journey-pl
 
 `DemoJourneyPlanner` remains available for previews and deterministic tests. It is not injected into the real app.
 
-The demo never persists selected places, coordinates, Journey Options, Legs, or Live Status. Only the three Travel Mode filters are stored as local preferences.
+The demo never persists selected places, coordinates, Journey Options, Legs, or Live Status. Only the two selectable Journey Mode filters are stored as local preferences; Walking is implicit.

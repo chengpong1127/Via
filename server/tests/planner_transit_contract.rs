@@ -13,8 +13,8 @@ use via_server::{
     app::build_router_with_services_and_network,
     live_status::{Freshness, FreshnessState},
     normalization::{
-        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BoardingPointId,
-        ScheduledRunId, TransitServiceId, YouBikeStationId,
+        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BikeShareStationId,
+        BoardingPointId, ScheduledRunId, TransitServiceId,
     },
     snapshot::{InMemorySnapshotStore, LiveStatusValue, NetworkSnapshot, NormalizedLiveStatus},
     street::{
@@ -22,8 +22,8 @@ use via_server::{
         Seconds, StreetTravelMode,
     },
     transit::{
-        ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService, TransitStop,
-        YouBikeStation,
+        BikeShareStation, ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork,
+        TransitService, TransitStop,
     },
 };
 
@@ -52,7 +52,7 @@ fn request() -> Value {
             "coordinate": {"latitude": 25.020, "longitude": 121.520},
             "display_text": "Destination"
         },
-        "selected_modes": ["metro"],
+        "selected_modes": ["transit"],
         "locale": "en",
         "departure_setting": {"type": "depart_at", "time": "2026-08-31T10:00:00+08:00"}
     })
@@ -203,8 +203,10 @@ async fn transit_candidate_uses_access_timetable_egress_and_schedule_class() {
     assert_eq!(body["journey_options"].as_array().unwrap().len(), 1);
     let option = &body["journey_options"][0];
     assert_eq!(option["class"], "feasible");
-    assert_eq!(option["travel_modes"], json!(["walking", "metro"]));
-    assert_eq!(option["legs"][1]["mode"], "metro");
+    assert_eq!(option["travel_modes"], json!(["walking", "transit"]));
+    assert_eq!(option["legs"][1]["mode"], "transit");
+    assert_eq!(option["legs"][1]["details"]["type"], "transit");
+    assert_eq!(option["legs"][1]["details"]["transit_mode"], "metro");
     assert!(option["id"].as_str().unwrap().len() > "option_1".len());
     assert_ne!(option["legs"][0]["id"], "leg_1");
     assert_eq!(body["effective_search_time"], "2026-08-31T10:00:00+08:00");
@@ -274,7 +276,7 @@ async fn bus_candidate_uses_fresh_arrival_estimate_and_delay() {
     .await
     .unwrap();
     let mut bus_request = request();
-    bus_request["selected_modes"] = json!(["bus"]);
+    bus_request["selected_modes"] = json!(["transit"]);
     let response = app
         .oneshot(
             Request::builder()
@@ -291,7 +293,8 @@ async fn bus_candidate_uses_fresh_arrival_estimate_and_delay() {
 
     let option = &body["journey_options"][0];
     assert_eq!(option["class"], "reliable");
-    assert_eq!(option["legs"][1]["mode"], "bus");
+    assert_eq!(option["legs"][1]["mode"], "transit");
+    assert_eq!(option["legs"][1]["details"]["transit_mode"], "bus");
     assert_eq!(
         option["legs"][1]["departure_time"],
         "2026-08-31T10:12:00+08:00"
@@ -317,7 +320,7 @@ async fn youbike_candidate_uses_actual_fresh_station_counts() {
             path(revision.clone(), origin, pickup, 60),
         )
         .path(
-            StreetTravelMode::YouBike,
+            StreetTravelMode::Bicycle,
             pickup,
             dropoff,
             path(revision.clone(), pickup, dropoff, 600),
@@ -350,16 +353,16 @@ async fn youbike_candidate_uses_actual_fresh_station_counts() {
         Vec::new(),
         Vec::new(),
         vec![
-            YouBikeStation::new(
-                YouBikeStationId::new("station-pickup"),
+            BikeShareStation::new(
+                BikeShareStationId::new("station-pickup"),
                 "Pickup Station",
                 RequestCoordinate {
                     latitude: 25.005,
                     longitude: 121.505,
                 },
             ),
-            YouBikeStation::new(
-                YouBikeStationId::new("station-dropoff"),
+            BikeShareStation::new(
+                BikeShareStationId::new("station-dropoff"),
                 "Dropoff Station",
                 RequestCoordinate {
                     latitude: 25.010,
@@ -378,7 +381,7 @@ async fn youbike_candidate_uses_actual_fresh_station_counts() {
     .await
     .unwrap();
     let mut bike_request = request();
-    bike_request["selected_modes"] = json!(["youbike"]);
+    bike_request["selected_modes"] = json!(["bike_share"]);
     let response = app
         .oneshot(
             Request::builder()
@@ -395,7 +398,9 @@ async fn youbike_candidate_uses_actual_fresh_station_counts() {
 
     let option = &body["journey_options"][0];
     assert_eq!(option["class"], "feasible");
-    assert_eq!(option["travel_modes"], json!(["walking", "youbike"]));
+    assert_eq!(option["travel_modes"], json!(["walking", "bike_share"]));
+    assert_eq!(option["legs"][1]["mode"], "bike_share");
+    assert_eq!(option["legs"][1]["details"]["type"], "bike_share");
     assert_eq!(option["legs"][1]["details"]["available_bikes"], 2);
     assert_eq!(option["legs"][1]["details"]["available_return_slots"], 2);
 }
@@ -458,7 +463,7 @@ fn bike_status(
             evaluated_at: now,
         },
         value: LiveStatusValue::BikeAvailability(BikeAvailability {
-            station_id: YouBikeStationId::new(station_id),
+            station_id: BikeShareStationId::new(station_id),
             rental_state: ActionState::Enabled,
             return_state: ActionState::Enabled,
             available_bikes: Some(available_bikes),

@@ -75,7 +75,7 @@ impl fmt::Display for GraphRevision {
 #[serde(rename_all = "snake_case")]
 pub enum StreetTravelMode {
     Walking,
-    YouBike,
+    Bicycle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

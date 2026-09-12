@@ -82,7 +82,7 @@ struct JourneySessionTests {
                 durationSeconds: 600,
                 walkingSeconds: 120,
                 transferCount: 0,
-                travelModes: [.walking, .metro],
+                travelModes: [.walking, .transit],
                 liveStatusSummary: LiveStatusSummary(state: .fresh, observedAt: .now),
                 overview: [],
                 legs: []

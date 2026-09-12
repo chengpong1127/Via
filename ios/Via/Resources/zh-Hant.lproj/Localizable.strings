@@ -1,7 +1,10 @@
 "Directions" = "路線";
 "Bus" = "公車";
 "Metro" = "捷運";
-"YouBike" = "YouBike";
+"Transit" = "大眾運輸";
+"Bike share" = "共享單車";
+"Rail" = "鐵路";
+"High-speed rail" = "高速鐵路";
 "Walk" = "步行";
 "From" = "起點";
 "To" = "目的地";
@@ -16,7 +19,7 @@
 "Leave in 15 minutes" = "15 分鐘後出發";
 "Arrive in 45 minutes" = "45 分鐘後抵達";
 "No matching Journey Options" = "找不到符合的行程選項";
-"Try another combination of Bus, Metro, or YouBike." = "請嘗試其他公車、捷運或 YouBike 組合。";
+"Try another combination of Transit or Bike share." = "請嘗試其他大眾運輸或共享單車組合。";
 "Refresh unavailable. Showing the previous result." = "目前無法重新整理，繼續顯示先前的結果。";
 "Search Taipei and New Taipei" = "搜尋台北與新北地點";
 "Your search stays on this device. Only the place you choose is sent in a Planning Request." = "搜尋內容只留在此裝置上，只有你選取的地點會隨規劃請求送出。";

@@ -24,8 +24,8 @@ pub fn new_request_id() -> String {
 pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
-    #[schema(min_items = 1, max_items = 3)]
-    pub selected_modes: Vec<SelectedMode>,
+    #[schema(min_items = 1, max_items = 2)]
+    pub selected_modes: Vec<JourneyMode>,
     #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
     pub locale: String,
     pub departure_setting: DepartureSetting,
@@ -36,7 +36,8 @@ impl PlanningRequest {
         self.origin.validate("/origin")?;
         self.destination.validate("/destination")?;
         if self.selected_modes.is_empty()
-            || self.selected_modes.contains(&SelectedMode::Unknown)
+            || self.selected_modes.contains(&JourneyMode::Unknown)
+            || self.selected_modes.contains(&JourneyMode::Walking)
             || self
                 .selected_modes
                 .windows(2)
@@ -130,23 +131,12 @@ impl TryFrom<RequestCoordinate> for Coordinate {
     utoipa::ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum SelectedMode {
-    Bus,
-    Metro,
-    #[serde(rename = "youbike")]
-    YouBike,
+pub enum JourneyMode {
+    Walking,
+    BikeShare,
+    Transit,
     #[serde(other)]
     Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, Hash, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TravelMode {
-    Walking,
-    Bus,
-    Metro,
-    #[serde(rename = "youbike")]
-    YouBike,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]

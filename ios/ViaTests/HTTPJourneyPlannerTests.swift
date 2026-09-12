@@ -28,7 +28,7 @@ struct HTTPJourneyPlannerTests {
                 displayText: "Destination",
                 coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
             ),
-            selectedModes: [.youbike, .bus],
+            selectedModes: [.bikeShare, .transit],
             departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000)),
             locale: "en_US"
         )
@@ -38,7 +38,7 @@ struct HTTPJourneyPlannerTests {
         let body = try #require(StubURLProtocol.lastRequest?.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["locale"] as? String == "en-US")
-        #expect(json["selected_modes"] as? [String] == ["bus", "youbike"])
+        #expect(json["selected_modes"] as? [String] == ["bike_share", "transit"])
         #expect(json["departure_setting"] as? [String: Any] != nil)
         #expect(StubURLProtocol.lastRequest?.url?.path == "/v1/journey-plans")
     }
@@ -56,8 +56,9 @@ struct HTTPJourneyPlannerTests {
         #expect(result.options.count == 1)
         #expect(result.options[0].id == "option_01_fixture_match")
         #expect(result.options[0].journeyClass == .reliable)
-        #expect(result.options[0].travelModes == [.walking])
-        #expect(result.options[0].legs[0].mode == .walking)
+        #expect(result.options[0].travelModes == [.walking, .transit])
+        #expect(result.options[0].legs[0].mode == .transit)
+        #expect(result.options[0].legs[0].transit?.mode == .metro)
     }
 
     @Test("HTTP planner maps the shared error statuses")
@@ -95,7 +96,7 @@ struct HTTPJourneyPlannerTests {
         PlanningRequest(
             origin: SelectedPlace(displayText: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
             destination: SelectedPlace(displayText: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
-            selectedModes: [.bus],
+            selectedModes: [.transit],
             departureSetting: .departNow,
             locale: "en"
         )
@@ -142,17 +143,17 @@ struct HTTPJourneyPlannerTests {
         "duration_seconds":600,
         "walking_seconds":600,
         "transfer_count":0,
-        "travel_modes":["walking"],
+        "travel_modes":["walking","transit"],
         "live_status_summary":{"state":"not_applicable","observed_at":null},
         "overview_geometry":{"encoding":"polyline6","points":"??"},
         "legs":[{
           "id":"leg_01_1_fixture_match",
-          "mode":"walking",
+          "mode":"transit",
           "from":{"display_name":"Origin"},
           "to":{"display_name":"Destination"},
           "duration_seconds":600,
           "guidance":[],
-          "details":{"type":"walking"}
+          "details":{"type":"transit","transit_mode":"metro","via_service_id":"metro-1","via_boarding_point_id":"stop-1","via_alighting_point_id":"stop-2","service_label":"Blue Line","headsign":"Taipei City Hall"}
         }]
       }]
     }"#.utf8)

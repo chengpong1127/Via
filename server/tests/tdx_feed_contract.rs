@@ -61,7 +61,7 @@ async fn tdx_feed_uses_provider_publication_time_for_freshness() {
     )
     .unwrap()
     .with_identity_resolver(Arc::new(FixtureIdentities(HashMap::from([(
-        ("youbike_station", "provider-id-stays-in-adapter"),
+        ("bike_share_station", "provider-id-stays-in-adapter"),
         "via_youbike_1",
     )]))));
 

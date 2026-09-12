@@ -135,11 +135,19 @@ fn generated_openapi_covers_the_http_contract() {
     assert!(planning_properties["selected_modes"].is_object());
     assert!(planning_properties["departure_setting"].is_object());
     assert_eq!(planning_properties["selected_modes"]["minItems"], 1);
-    assert_eq!(planning_properties["selected_modes"]["maxItems"], 3);
+    assert_eq!(planning_properties["selected_modes"]["maxItems"], 2);
     assert_eq!(planning_properties["selected_modes"]["uniqueItems"], true);
     assert_eq!(
-        openapi["components"]["schemas"]["SelectedMode"]["enum"],
-        serde_json::json!(["bus", "metro", "youbike"])
+        planning_properties["selected_modes"]["items"]["enum"],
+        serde_json::json!(["bike_share", "transit"])
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["JourneyMode"]["enum"],
+        serde_json::json!(["walking", "bike_share", "transit"])
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["TransitMode"]["enum"],
+        serde_json::json!(["bus", "metro", "rail", "high_speed_rail"])
     );
     assert!(openapi["components"]["schemas"]["DepartureSetting"]["oneOf"].is_array());
     assert!(openapi["components"]["schemas"]["LegDetails"].is_object());

@@ -49,7 +49,7 @@ struct JourneyDetailsView: View {
 
     private func legView(_ leg: JourneyLeg) -> some View {
         HStack(alignment: .top, spacing: 13) {
-            Image(systemName: leg.mode.symbolName)
+            Image(systemName: leg.symbolName)
                 .font(.headline)
                 .foregroundStyle(.white)
                 .frame(width: 39, height: 39)

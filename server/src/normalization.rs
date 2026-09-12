@@ -24,7 +24,7 @@ macro_rules! opaque_id {
 opaque_id!(OperatorId);
 opaque_id!(StopPlaceId);
 opaque_id!(BoardingPointId);
-opaque_id!(YouBikeStationId);
+opaque_id!(BikeShareStationId);
 opaque_id!(TransitServiceId);
 opaque_id!(ServicePatternId);
 opaque_id!(ScheduledRunId);
@@ -35,7 +35,7 @@ pub enum EntityId {
     Operator(OperatorId),
     StopPlace(StopPlaceId),
     BoardingPoint(BoardingPointId),
-    YouBikeStation(YouBikeStationId),
+    BikeShareStation(BikeShareStationId),
     TransitService(TransitServiceId),
     ServicePattern(ServicePatternId),
     ScheduledRun(ScheduledRunId),
@@ -174,7 +174,7 @@ pub enum ActionState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BikeAvailability {
-    pub station_id: YouBikeStationId,
+    pub station_id: BikeShareStationId,
     pub rental_state: ActionState,
     pub return_state: ActionState,
     pub available_bikes: Option<u32>,

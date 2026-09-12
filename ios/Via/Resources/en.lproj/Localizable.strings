@@ -1,7 +1,10 @@
 "Directions" = "Directions";
 "Bus" = "Bus";
 "Metro" = "Metro";
-"YouBike" = "YouBike";
+"Transit" = "Transit";
+"Bike share" = "Bike share";
+"Rail" = "Rail";
+"High-speed rail" = "High-speed rail";
 "Walk" = "Walk";
 "From" = "From";
 "To" = "To";
@@ -16,7 +19,7 @@
 "Leave in 15 minutes" = "Leave in 15 minutes";
 "Arrive in 45 minutes" = "Arrive in 45 minutes";
 "No matching Journey Options" = "No matching Journey Options";
-"Try another combination of Bus, Metro, or YouBike." = "Try another combination of Bus, Metro, or YouBike.";
+"Try another combination of Transit or Bike share." = "Try another combination of Transit or Bike share.";
 "Refresh unavailable. Showing the previous result." = "Refresh unavailable. Showing the previous result.";
 "Search Taipei and New Taipei" = "Search Taipei and New Taipei";
 "Your search stays on this device. Only the place you choose is sent in a Planning Request." = "Your search stays on this device. Only the place you choose is sent in a Planning Request.";

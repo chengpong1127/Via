@@ -162,7 +162,7 @@ async fn valhalla_adapter_normalizes_all_provider_contract_capabilities() {
                 }),
                 max_distance: Some(via_server::street::Metres(5_000)),
             },
-            travel_mode: StreetTravelMode::YouBike,
+            travel_mode: StreetTravelMode::Bicycle,
             sources: vec![origin],
             targets: vec![destination, unreachable],
         })

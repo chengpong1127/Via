@@ -1,6 +1,6 @@
 use time::{OffsetDateTime, Weekday, macros::datetime};
 use via_server::{
-    api::{RequestCoordinate, SelectedMode},
+    api::{JourneyMode, RequestCoordinate},
     normalization::{BoardingPointId, ScheduledRunId, TransitServiceId},
     transit::{
         ScheduledStopTime, ScheduledTrip, TransitAccess, TransitMode, TransitNetwork, TransitQuery,
@@ -88,7 +88,7 @@ fn after_midnight_query_uses_previous_service_day_and_can_transfer() {
         TransitQuery::DepartAfter {
             earliest_departure: query_time,
         },
-        &[SelectedMode::Bus, SelectedMode::Metro],
+        &[JourneyMode::Transit],
     );
 
     assert!(
@@ -103,7 +103,7 @@ fn after_midnight_query_uses_previous_service_day_and_can_transfer() {
 }
 
 #[test]
-fn selected_modes_are_applied_before_timetable_search() {
+fn transit_selection_uses_one_generic_path_for_bus_and_metro() {
     let network = network();
     let query_time: OffsetDateTime = datetime!(2026-09-01 01:30 +08:00);
     let access = vec![TransitAccess::new(
@@ -117,7 +117,7 @@ fn selected_modes_are_applied_before_timetable_search() {
         TransitQuery::DepartAfter {
             earliest_departure: query_time,
         },
-        &[SelectedMode::Bus],
+        &[JourneyMode::Transit],
     );
 
     assert!(!itineraries.is_empty());
@@ -125,6 +125,59 @@ fn selected_modes_are_applied_before_timetable_search() {
         itinerary
             .rides
             .iter()
-            .all(|ride| ride.mode == TransitMode::Bus)
+            .all(|ride| matches!(ride.transit_mode, TransitMode::Bus | TransitMode::Metro))
+    }));
+    assert!(
+        itineraries
+            .iter()
+            .flat_map(|itinerary| &itinerary.rides)
+            .any(|ride| ride.transit_mode == TransitMode::Bus)
+    );
+    assert!(
+        itineraries
+            .iter()
+            .flat_map(|itinerary| &itinerary.rides)
+            .any(|ride| ride.transit_mode == TransitMode::Metro)
+    );
+}
+
+#[test]
+fn rail_service_participates_in_generic_transit_search() {
+    let mut network = network();
+    network.services.push(TransitService::new(
+        TransitServiceId::new("rail-1"),
+        TransitMode::Rail,
+        "Coastal Rail",
+        "C",
+        vec![BoardingPointId::new("a"), BoardingPointId::new("c")],
+    ));
+    network.trips.push(trip(
+        "run-rail",
+        "rail-1",
+        &[
+            (26 * 3600 + 300, 26 * 3600 + 300),
+            (26 * 3600 + 900, 26 * 3600 + 900),
+        ],
+    ));
+    let query_time: OffsetDateTime = datetime!(2026-09-01 01:30 +08:00);
+    let access = vec![TransitAccess::new(
+        BoardingPointId::new("a"),
+        query_time,
+        query_time,
+    )];
+
+    let itineraries = network.itineraries(
+        &access,
+        TransitQuery::DepartAfter {
+            earliest_departure: query_time,
+        },
+        &[JourneyMode::Transit],
+    );
+
+    assert!(itineraries.iter().any(|itinerary| {
+        itinerary
+            .rides
+            .iter()
+            .any(|ride| ride.transit_mode == TransitMode::Rail)
     }));
 }

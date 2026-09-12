@@ -14,8 +14,8 @@ use std::{
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
 use crate::{
-    api::{RequestCoordinate, SelectedMode, normalize_to_taipei, taipei_offset},
-    normalization::{BoardingPointId, ScheduledRunId, TransitServiceId, YouBikeStationId},
+    api::{JourneyMode, RequestCoordinate, normalize_to_taipei, taipei_offset},
+    normalization::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId},
 };
 
 pub const DEFAULT_MAX_TRANSFERS: usize = 2;
@@ -26,22 +26,13 @@ pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TransitMode {
     Bus,
     Metro,
-}
-
-impl TransitMode {
-    fn is_selected(self, selected_modes: &[SelectedMode]) -> bool {
-        selected_modes.iter().any(|mode| {
-            matches!(
-                (self, mode),
-                (Self::Bus, SelectedMode::Bus) | (Self::Metro, SelectedMode::Metro)
-            )
-        })
-    }
+    Rail,
+    HighSpeedRail,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,7 +59,7 @@ impl TransitStop {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TransitService {
     pub id: TransitServiceId,
-    pub mode: TransitMode,
+    pub transit_mode: TransitMode,
     pub label: String,
     pub headsign: String,
     pub pattern: Vec<BoardingPointId>,
@@ -80,14 +71,14 @@ pub struct TransitService {
 impl TransitService {
     pub fn new(
         id: TransitServiceId,
-        mode: TransitMode,
+        transit_mode: TransitMode,
         label: impl Into<String>,
         headsign: impl Into<String>,
         pattern: Vec<BoardingPointId>,
     ) -> Self {
         Self {
             id,
-            mode,
+            transit_mode,
             label: label.into(),
             headsign: headsign.into(),
             pattern,
@@ -167,8 +158,8 @@ impl ScheduledTrip {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct YouBikeStation {
-    pub id: YouBikeStationId,
+pub struct BikeShareStation {
+    pub id: BikeShareStationId,
     pub name: String,
     pub coordinate: RequestCoordinate,
 }
@@ -190,9 +181,9 @@ impl TransferEdge {
     }
 }
 
-impl YouBikeStation {
+impl BikeShareStation {
     pub fn new(
-        id: YouBikeStationId,
+        id: BikeShareStationId,
         name: impl Into<String>,
         coordinate: RequestCoordinate,
     ) -> Self {
@@ -210,7 +201,7 @@ pub struct TransitNetwork {
     pub stops: Vec<TransitStop>,
     pub services: Vec<TransitService>,
     pub trips: Vec<ScheduledTrip>,
-    pub youbike_stations: Vec<YouBikeStation>,
+    pub bike_share_stations: Vec<BikeShareStation>,
     /// Explicit movement time between distinct Boarding Points. Same-point
     /// transfers use `default_transfer_seconds` for backwards-compatible
     /// interchange dwell time; distinct points must be listed here.
@@ -232,7 +223,7 @@ impl PartialEq for TransitNetwork {
             && self.stops == other.stops
             && self.services == other.services
             && self.trips == other.trips
-            && self.youbike_stations == other.youbike_stations
+            && self.bike_share_stations == other.bike_share_stations
             && self.transfer_edges == other.transfer_edges
             && self.default_transfer_seconds == other.default_transfer_seconds
             && self.static_network_revision == other.static_network_revision
@@ -258,14 +249,14 @@ impl TransitNetwork {
         stops: Vec<TransitStop>,
         services: Vec<TransitService>,
         trips: Vec<ScheduledTrip>,
-        youbike_stations: Vec<YouBikeStation>,
+        bike_share_stations: Vec<BikeShareStation>,
     ) -> Self {
         Self {
             service_day_boundary,
             stops,
             services,
             trips,
-            youbike_stations,
+            bike_share_stations,
             transfer_edges: Vec::new(),
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
@@ -374,7 +365,7 @@ impl TransitNetwork {
             }
         }
         let mut station_ids = HashSet::new();
-        for station in &self.youbike_stations {
+        for station in &self.bike_share_stations {
             if !station_ids.insert(station.id.clone()) {
                 return Err(TransitNetworkValidationError::DuplicateStation(
                     station.id.clone(),
@@ -410,7 +401,7 @@ impl TransitNetwork {
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.trips
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
-        self.youbike_stations
+        self.bike_share_stations
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
@@ -455,14 +446,14 @@ impl TransitNetwork {
         nearest_from_grid(&self.indexes().stop_grid, &self.stops, coordinate, limit)
     }
 
-    pub fn nearest_youbike_stations(
+    pub fn nearest_bike_share_stations(
         &self,
         coordinate: RequestCoordinate,
         limit: usize,
-    ) -> Vec<&YouBikeStation> {
+    ) -> Vec<&BikeShareStation> {
         nearest_from_grid(
             &self.indexes().station_grid,
-            &self.youbike_stations,
+            &self.bike_share_stations,
             coordinate,
             limit,
         )
@@ -500,7 +491,8 @@ impl TransitNetwork {
         PrimitiveDateTime::new(service_day, Time::MIDNIGHT).assume_offset(taipei_offset())
     }
 
-    /// Generate timetable parent chains for the selected Bus/Metro modes.
+    /// Generate timetable parent chains for every service in the active transit
+    /// network when the request enables the top-level Transit mode.
     ///
     /// `access` contains the time at which a rider can reach each Boarding Point.
     /// The caller supplies that access through the street-routing boundary, keeping
@@ -509,7 +501,7 @@ impl TransitNetwork {
         &self,
         access: &[TransitAccess],
         query: TransitQuery,
-        selected_modes: &[SelectedMode],
+        selected_modes: &[JourneyMode],
     ) -> Vec<TransitItinerary> {
         if access.is_empty() {
             return Vec::new();
@@ -525,7 +517,7 @@ impl TransitNetwork {
             .services
             .iter()
             .enumerate()
-            .filter(|(_, service)| service.mode.is_selected(selected_modes))
+            .filter(|_| selected_modes.contains(&JourneyMode::Transit))
             .map(|(index, _)| index)
             .collect::<HashSet<_>>();
 
@@ -576,7 +568,7 @@ impl TransitNetwork {
                                 trip.stop_times[alight_index].arrival_seconds,
                             ));
                         let ride = TransitRide {
-                            mode: service.mode,
+                            transit_mode: service.transit_mode,
                             service_id: service.id.clone(),
                             trip_id: trip.id.clone(),
                             board_stop_id: service.pattern[departure.stop_index].clone(),
@@ -679,7 +671,7 @@ impl TransitIndexes {
         for (index, stop) in network.stops.iter().enumerate() {
             indexes.stop_grid.insert(stop.coordinate, index);
         }
-        for (index, station) in network.youbike_stations.iter().enumerate() {
+        for (index, station) in network.bike_share_stations.iter().enumerate() {
             indexes.station_grid.insert(station.coordinate, index);
         }
         for (service_index, service) in network.services.iter().enumerate() {
@@ -785,7 +777,7 @@ impl SpatialPoint for TransitStop {
     }
 }
 
-impl SpatialPoint for YouBikeStation {
+impl SpatialPoint for BikeShareStation {
     fn coordinate(&self) -> RequestCoordinate {
         self.coordinate
     }
@@ -958,10 +950,10 @@ pub enum TransitNetworkValidationError {
     DuplicateService(TransitServiceId),
     #[error("duplicate Scheduled Trip {0:?}")]
     DuplicateTrip(ScheduledRunId),
-    #[error("duplicate YouBike Station {0:?}")]
-    DuplicateStation(YouBikeStationId),
-    #[error("invalid coordinate for YouBike Station {0:?}")]
-    InvalidStationCoordinate(YouBikeStationId),
+    #[error("duplicate bike-share station {0:?}")]
+    DuplicateStation(BikeShareStationId),
+    #[error("invalid coordinate for bike-share station {0:?}")]
+    InvalidStationCoordinate(BikeShareStationId),
     #[error("Transit Service {0:?} has fewer than two Boarding Points")]
     PatternTooShort(TransitServiceId),
     #[error("Transit Service {0:?} references an unknown Boarding Point")]
@@ -1016,7 +1008,7 @@ pub enum TransitQuery {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitRide {
-    pub mode: TransitMode,
+    pub transit_mode: TransitMode,
     pub service_id: TransitServiceId,
     pub trip_id: ScheduledRunId,
     pub board_stop_id: BoardingPointId,

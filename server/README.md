@@ -10,10 +10,10 @@ Implemented capabilities:
 - `POST /v1/journey-plans` with strict provider-neutral request validation,
   redacted errors, full-result refresh semantics, and polyline6 Walking results;
 - deterministic Live Status eligibility, Reliable/Feasible classification,
-  Transfer and YouBike boundaries, dominance, ranking, diversity, labels, and
+  Transfer and bike-share boundaries, dominance, ranking, diversity, labels, and
   replay behavior;
 - stable typed network identities, reviewed provider aliases, explicit TDX N1
-  status normalization, Service Day handling, and separate YouBike timestamps;
+  status normalization, Service Day handling, and separate bike-share timestamps;
 - PostgreSQL-authoritative immutable Network Snapshots, warm immutable caching,
   leased and idempotent publication, optimistic publication-version checks,
   partial feed evidence, and retention cleanup;
@@ -22,7 +22,7 @@ Implemented capabilities:
 - generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
   plus shared request, result, empty, and error fixtures;
 - coordinate correlation;
-- one-to-many and many-to-one Walking/YouBike matrices;
+- one-to-many and many-to-one Walking/bike-share matrices;
 - detailed geometry and semantic maneuver facts;
 - immutable graph-revision pinning and startup capability checks;
 - normalized provider errors, strict timeout/concurrency/location/body bounds;
@@ -69,7 +69,7 @@ Configuration:
 | `VIA_REFRESH_TOKEN` | Bearer token used only by the external scheduler; required. |
 | `VIA_TDX_BEARER_TOKEN` | TDX access token held only by feed adapters; required. |
 | `VIA_TDX_FEEDS` | JSON array of reviewed TDX feeds with `capability`, `url`, `family`, and `authority_namespace`; required and non-empty. |
-| `VIA_TRANSIT_NETWORK` | Path to the immutable normalized Bus/Metro/YouBike network and timetable JSON artifact; required. |
+| `VIA_TRANSIT_NETWORK` | Path to the immutable normalized transit and bike-share network and timetable JSON artifact; required. |
 | `PORT` | Axum port; defaults to `3000`. |
 
 Database migrations run at startup. The first startup publishes one coherent
@@ -85,12 +85,16 @@ invoke adapters.
 
 ## Current planner boundary
 
-The request path pins one Network Snapshot, then orchestrates direct Walking,
-bounded timetable Bus/Metro rounds, and inventory-gated YouBike access/bicycle/
-egress candidates. Street access, egress, bicycle, matrix, and path calculations
-stay behind the Valhalla provider boundary; timetable lookup uses the immutable
-`TransitNetwork` artifact. The checked-in tests use injected fixtures, while a
-production deployment must publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
+Walking is always available for direct journeys and transit/bike-share
+access and egress; clients select only the high-level `transit` and
+`bike_share` categories. The request path pins one Network Snapshot, then
+orchestrates direct Walking,
+generic bounded timetable Transit rounds, and inventory-gated bike-share access/
+bicycle/egress candidates. Street access, egress, bicycle, matrix, and path
+calculations stay behind the Valhalla provider boundary; timetable lookup uses
+the immutable `TransitNetwork` artifact. The checked-in tests use injected
+fixtures, while a production deployment must publish a reviewed artifact at
+`VIA_TRANSIT_NETWORK`.
 
 ## Tests
 

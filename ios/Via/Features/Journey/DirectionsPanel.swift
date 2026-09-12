@@ -60,7 +60,7 @@ struct DirectionsPanel: View {
     private var modeFilters: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(TravelMode.selectable) { mode in
+                ForEach(JourneyMode.selectable) { mode in
                     Button {
                         session.toggle(mode)
                         session.returnToEditing()
@@ -190,7 +190,7 @@ struct DirectionsPanel: View {
             MessageStateView(
                 symbol: "signpost.right.and.left",
                 title: "No matching Journey Options",
-                message: "Try another combination of Bus, Metro, or YouBike.",
+                message: "Try another combination of Transit or Bike share.",
                 actionTitle: "Edit request",
                 action: session.returnToEditing
             )

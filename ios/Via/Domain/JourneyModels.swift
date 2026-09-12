@@ -16,22 +16,44 @@ struct SelectedPlace: Hashable, Identifiable, Sendable {
     let coordinate: Coordinate
 }
 
-enum TravelMode: String, CaseIterable, Hashable, Identifiable, Sendable {
-    case bus
-    case metro
-    case youbike
+enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case walking
+    case bikeShare = "bike_share"
+    case transit
 
     var id: Self { self }
 
-    static let selectable: [TravelMode] = [.bus, .metro, .youbike]
+    static let selectable: [JourneyMode] = [.bikeShare, .transit]
+
+    var titleKey: String {
+        switch self {
+        case .transit: "Transit"
+        case .bikeShare: "Bike share"
+        case .walking: "Walk"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .transit: "tram.fill"
+        case .bikeShare: "bicycle"
+        case .walking: "figure.walk"
+        }
+    }
+}
+
+enum TransitMode: String, CaseIterable, Hashable, Sendable {
+    case bus
+    case metro
+    case rail
+    case highSpeedRail = "high_speed_rail"
 
     var titleKey: String {
         switch self {
         case .bus: "Bus"
         case .metro: "Metro"
-        case .youbike: "YouBike"
-        case .walking: "Walk"
+        case .rail: "Rail"
+        case .highSpeedRail: "High-speed rail"
         }
     }
 
@@ -39,8 +61,8 @@ enum TravelMode: String, CaseIterable, Hashable, Identifiable, Sendable {
         switch self {
         case .bus: "bus.fill"
         case .metro: "tram.fill"
-        case .youbike: "bicycle"
-        case .walking: "figure.walk"
+        case .rail: "train.side.front.car"
+        case .highSpeedRail: "train.side.front.car"
         }
     }
 }
@@ -54,7 +76,7 @@ enum DepartureSetting: Hashable, Sendable {
 struct PlanningRequest: Hashable, Sendable {
     let origin: SelectedPlace
     let destination: SelectedPlace
-    let selectedModes: Set<TravelMode>
+    let selectedModes: Set<JourneyMode>
     let departureSetting: DepartureSetting
     let locale: String
 }
@@ -96,13 +118,48 @@ struct GuidanceInstruction: Identifiable, Sendable {
     let detail: String?
 }
 
+struct TransitLegMetadata: Sendable {
+    let mode: TransitMode
+    let serviceID: String
+    let serviceLabel: String
+    let headsign: String
+    let boardingPointID: String
+    let alightingPointID: String
+}
+
 struct JourneyLeg: Identifiable, Sendable {
     let id: String
-    let mode: TravelMode
+    let mode: JourneyMode
     let title: String
     let subtitle: String
     let durationSeconds: Int
     let guidance: [GuidanceInstruction]
+    let transit: TransitLegMetadata?
+
+    init(
+        id: String,
+        mode: JourneyMode,
+        title: String,
+        subtitle: String,
+        durationSeconds: Int,
+        guidance: [GuidanceInstruction],
+        transit: TransitLegMetadata? = nil
+    ) {
+        self.id = id
+        self.mode = mode
+        self.title = title
+        self.subtitle = subtitle
+        self.durationSeconds = durationSeconds
+        self.guidance = guidance
+        self.transit = transit
+    }
+
+    var symbolName: String {
+        if mode == .transit, let transit {
+            return transit.mode.symbolName
+        }
+        return mode.symbolName
+    }
 }
 
 struct JourneyOption: Identifiable, Sendable {
@@ -115,7 +172,7 @@ struct JourneyOption: Identifiable, Sendable {
     let durationSeconds: Int
     let walkingSeconds: Int
     let transferCount: Int
-    let travelModes: [TravelMode]
+    let travelModes: [JourneyMode]
     let liveStatusSummary: LiveStatusSummary
     let overview: [Coordinate]
     let legs: [JourneyLeg]

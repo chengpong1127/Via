@@ -11,7 +11,10 @@ use axum::{
 };
 use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
-use utoipa::{openapi::InfoBuilder, openapi::OpenApi};
+use utoipa::{
+    openapi::schema::{ArrayItems, Object, Schema, Type},
+    openapi::{InfoBuilder, OpenApi, RefOr},
+};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
@@ -159,8 +162,8 @@ fn configure_openapi(mut document: OpenApi) -> OpenApi {
 fn apply_schema_constraints(document: &mut OpenApi) {
     set_schema_enum(
         document,
-        "SelectedMode",
-        ["bus", "metro", "youbike"].map(serde_json::Value::from),
+        "JourneyMode",
+        ["walking", "bike_share", "transit"].map(serde_json::Value::from),
     );
     set_schema_property_enum(
         document,
@@ -229,6 +232,12 @@ fn apply_schema_constraints(document: &mut OpenApi) {
         ["polyline6"].map(serde_json::Value::from),
     );
     set_schema_property_unique_items(document, "PlanningRequest", "selected_modes");
+    set_schema_property_items_enum(
+        document,
+        "PlanningRequest",
+        "selected_modes",
+        ["bike_share", "transit"].map(serde_json::Value::from),
+    );
 }
 
 fn set_schema_enum<I>(document: &mut OpenApi, schema_name: &str, values: I)
@@ -276,6 +285,26 @@ fn set_schema_property_unique_items(
             schema.properties.get_mut(property_name)
     {
         property.unique_items = true;
+    }
+}
+
+fn set_schema_property_items_enum<I>(
+    document: &mut OpenApi,
+    schema_name: &str,
+    property_name: &str,
+    values: I,
+) where
+    I: IntoIterator<Item = serde_json::Value>,
+{
+    if let Some(RefOr::T(Schema::Object(schema))) = document
+        .components
+        .as_mut()
+        .and_then(|components| components.schemas.get_mut(schema_name))
+        && let Some(RefOr::T(Schema::Array(property))) = schema.properties.get_mut(property_name)
+    {
+        let mut item_schema = Object::with_type(Type::String);
+        item_schema.enum_values = Some(values.into_iter().collect());
+        property.items = ArrayItems::RefOrSchema(Box::new(RefOr::T(Schema::Object(item_schema))));
     }
 }
 

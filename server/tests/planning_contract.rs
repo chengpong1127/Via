@@ -2,8 +2,7 @@ use serde_json::json;
 use time::macros::{date, datetime};
 use via_server::{
     api::{
-        DepartureSetting, PlanningRequest, RequestValidationError, SelectedMode,
-        normalize_to_taipei,
+        DepartureSetting, JourneyMode, PlanningRequest, RequestValidationError, normalize_to_taipei,
     },
     live_status::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
 };
@@ -76,7 +75,7 @@ fn planning_request_accepts_the_provider_neutral_contract() {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["bus", "metro", "youbike"],
+        "selected_modes": ["bike_share", "transit"],
         "locale": "zh-Hant-TW",
         "departure_setting": {"type": "depart_now"}
     }))
@@ -85,11 +84,7 @@ fn planning_request_accepts_the_provider_neutral_contract() {
     request.validate().unwrap();
     assert_eq!(
         request.selected_modes,
-        vec![
-            SelectedMode::Bus,
-            SelectedMode::Metro,
-            SelectedMode::YouBike
-        ]
+        vec![JourneyMode::BikeShare, JourneyMode::Transit]
     );
 }
 
@@ -104,7 +99,7 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["metro", "bus"],
+        "selected_modes": ["transit", "bike_share"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
@@ -114,6 +109,28 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
     assert_eq!(error.field(), "/selected_modes");
     assert_eq!(error.code(), "invalid_selected_modes");
     assert!(!error.to_string().contains("Taipei Main Station"));
+}
+
+#[test]
+fn walking_is_implicit_and_cannot_be_selected_as_a_filter() {
+    let request: PlanningRequest = serde_json::from_value(json!({
+        "origin": {
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "display_text": "Origin"
+        },
+        "destination": {
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "display_text": "Destination"
+        },
+        "selected_modes": ["walking"],
+        "locale": "en",
+        "departure_setting": {"type": "depart_now"}
+    }))
+    .unwrap();
+
+    let error = request.validate().unwrap_err();
+    assert_eq!(error.code(), "invalid_selected_modes");
+    assert_eq!(error.field(), "/selected_modes");
 }
 
 #[test]

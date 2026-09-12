@@ -1,6 +1,6 @@
 use time::{OffsetDateTime, Weekday, macros::datetime};
 use via_server::{
-    api::{RequestCoordinate, SelectedMode},
+    api::{JourneyMode, RequestCoordinate},
     normalization::{BoardingPointId, ScheduledRunId, TransitServiceId},
     transit::{
         ScheduledStopTime, ScheduledTrip, TransferEdge, TransitAccess, TransitMode, TransitNetwork,
@@ -104,7 +104,7 @@ fn explicit_transfer_edges_connect_distinct_boarding_points() {
         TransitQuery::DepartAfter {
             earliest_departure: query_time,
         },
-        &[SelectedMode::Bus, SelectedMode::Metro],
+        &[JourneyMode::Transit],
     );
     assert!(
         itineraries
