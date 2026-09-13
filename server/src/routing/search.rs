@@ -6,8 +6,11 @@ use std::collections::{HashMap, VecDeque};
 
 use time::{Duration, OffsetDateTime};
 
-use super::multimodal_graph::{CandidateEdge, CandidateNode, MultimodalGraph};
-use crate::normalization::TransitServiceId;
+use super::graph::{RouteEdge, RouteGraph, RouteNode};
+use crate::domain::{
+    ids::TransitServiceId,
+    realtime::{ActionState, FreshnessState},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchLimits {
@@ -21,14 +24,14 @@ pub struct SearchLimits {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchLabel {
-    pub node: CandidateNode,
+    pub node: RouteNode,
     pub arrival_time: OffsetDateTime,
     pub departure_time: OffsetDateTime,
     pub walking_seconds: u32,
     pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub bike_share_expansions: usize,
-    pub required_freshness_states: Vec<crate::live_status::FreshnessState>,
+    pub required_freshness_states: Vec<FreshnessState>,
     pub schedule_only: bool,
     pub last_edge_was_transit: bool,
     pub edge_ids: Vec<usize>,
@@ -48,13 +51,13 @@ pub struct SearchResult {
 }
 
 pub fn search(
-    graph: &MultimodalGraph,
+    graph: &RouteGraph,
     departure_time: OffsetDateTime,
     latest_arrival: Option<OffsetDateTime>,
     limits: &SearchLimits,
 ) -> SearchResult {
     let start = SearchLabel {
-        node: CandidateNode::Origin,
+        node: RouteNode::Origin,
         arrival_time: departure_time,
         departure_time,
         walking_seconds: 0,
@@ -66,8 +69,8 @@ pub fn search(
         last_edge_was_transit: false,
         edge_ids: Vec::new(),
     };
-    let mut labels: HashMap<CandidateNode, Vec<SearchLabel>> = HashMap::new();
-    labels.insert(CandidateNode::Origin, vec![start.clone()]);
+    let mut labels: HashMap<RouteNode, Vec<SearchLabel>> = HashMap::new();
+    labels.insert(RouteNode::Origin, vec![start.clone()]);
     let mut pending = VecDeque::from([start]);
     let mut stats = SearchStats::default();
     let mut journeys = Vec::new();
@@ -91,7 +94,7 @@ pub fn search(
                     stats.labels_dominated_or_pruned.saturating_add(1);
                 continue;
             }
-            if next.node == CandidateNode::Destination {
+            if next.node == RouteNode::Destination {
                 if latest_arrival.is_none_or(|latest| next.arrival_time <= latest) {
                     journeys.push(next.clone());
                 }
@@ -146,8 +149,8 @@ pub fn dominates(left: &SearchLabel, right: &SearchLabel) -> bool {
 }
 
 fn insert_label(
-    graph: &MultimodalGraph,
-    labels: &mut HashMap<CandidateNode, Vec<SearchLabel>>,
+    graph: &RouteGraph,
+    labels: &mut HashMap<RouteNode, Vec<SearchLabel>>,
     candidate: SearchLabel,
     limits: &SearchLimits,
     stats: &mut SearchStats,
@@ -177,9 +180,9 @@ fn insert_label(
 }
 
 fn traverse(
-    graph: &MultimodalGraph,
+    graph: &RouteGraph,
     label: &SearchLabel,
-    edge: &CandidateEdge,
+    edge: &RouteEdge,
     edge_id: usize,
     limits: &SearchLimits,
 ) -> Option<SearchLabel> {
@@ -187,26 +190,19 @@ fn traverse(
     next.node = edge.to().clone();
     next.edge_ids.push(edge_id);
     match edge {
-        CandidateEdge::Walking { metric, .. } => {
+        RouteEdge::Walk { metric, .. } => {
             next.last_edge_was_transit = false;
             next.arrival_time += Duration::seconds(i64::from(metric.duration_seconds));
             next.walking_seconds = next.walking_seconds.saturating_add(metric.duration_seconds);
         }
-        CandidateEdge::Transfer {
-            duration_seconds, ..
-        } => {
-            next.last_edge_was_transit = false;
-            next.arrival_time += Duration::seconds(i64::from(*duration_seconds));
-        }
-        CandidateEdge::BikeShare {
+        RouteEdge::Bike {
             metric,
             availability,
             ..
         } => {
             next.last_edge_was_transit = false;
-            if availability.pickup.rental_state != crate::normalization::ActionState::Enabled
-                || availability.return_station.return_state
-                    != crate::normalization::ActionState::Enabled
+            if availability.pickup.rental_state != ActionState::Enabled
+                || availability.return_station.return_state != ActionState::Enabled
                 || availability
                     .pickup
                     .available_bikes
@@ -227,7 +223,7 @@ fn traverse(
                 return None;
             }
         }
-        CandidateEdge::Transit { ride, .. } => {
+        RouteEdge::Transit { ride, .. } => {
             let previous_service = previous_transit_service(graph, label);
             if label.last_edge_was_transit
                 && previous_service.is_some_and(|service| service != &ride.ride.service_id)
@@ -256,18 +252,18 @@ fn traverse(
 }
 
 fn previous_transit_service<'a>(
-    graph: &'a MultimodalGraph,
+    graph: &'a RouteGraph,
     label: &SearchLabel,
 ) -> Option<&'a TransitServiceId> {
     label.edge_ids.iter().rev().find_map(|edge_id| {
-        let CandidateEdge::Transit { ride, .. } = graph.edges.get(*edge_id)? else {
+        let RouteEdge::Transit { ride, .. } = graph.edges.get(*edge_id)? else {
             return None;
         };
         Some(&ride.ride.service_id)
     })
 }
 
-fn same_transit_context(graph: &MultimodalGraph, left: &SearchLabel, right: &SearchLabel) -> bool {
+fn same_transit_context(graph: &RouteGraph, left: &SearchLabel, right: &SearchLabel) -> bool {
     previous_transit_service(graph, left) == previous_transit_service(graph, right)
 }
 

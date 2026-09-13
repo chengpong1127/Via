@@ -1,6 +1,6 @@
 use time::{Duration, OffsetDateTime};
-use via_server::postgres::{PostgresIdentityResolver, ProviderAliasRecord};
-use via_server::tdx::IdentityResolver;
+use via_server::providers::postgres::{PostgresIdentityResolver, ProviderAliasRecord};
+use via_server::providers::tdx::IdentityResolver;
 
 #[tokio::test]
 #[ignore = "requires VIA_TEST_DATABASE_URL pointing to disposable PostgreSQL"]

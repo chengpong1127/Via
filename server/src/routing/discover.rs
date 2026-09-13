@@ -1,4 +1,4 @@
-//! Phase 1: find the small, deterministic transit backbone relevant to one
+//! Phase 1: find the small, deterministic transit topology relevant to one
 //! Planning Request.  This module deliberately knows nothing about BikeShare
 //! stations or realtime values.
 
@@ -6,15 +6,20 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::{
     api::PlanningRequest,
-    normalization::TransitServiceId,
-    routing::engine::{
-        PlanningContext, PlanningLimits, StreetMetric, planner_coordinate, street_metric,
+    domain::transit::{TransferEdge, TransitAccess, TransitNetwork, TransitTopologyItinerary},
+    domain::{
+        ids::{BoardingPointId, TransitServiceId},
+        journey::JourneyMode,
+        location::RequestCoordinate,
+        transit::TransitRide,
     },
+    routing::service::{PlanningContext, RoutingLimits, planner_coordinate, street_metric},
     street::{
         MatrixOrientation, MatrixQuery, ProviderError, StreetRoutingSession, StreetTravelMode,
     },
-    transit::{TransferEdge, TransitAccess, TransitNetwork, TransitTopologyItinerary},
 };
+
+use super::graph::StreetMetric;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitAccessCandidate {
@@ -24,13 +29,13 @@ pub struct TransitAccessCandidate {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransitEgressCandidate {
-    pub stop_id: crate::normalization::BoardingPointId,
+    pub stop_id: BoardingPointId,
     pub metric: StreetMetric,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TransitCandidateNetwork {
-    pub boarding_points: Vec<crate::normalization::BoardingPointId>,
+pub struct DiscoveryResult {
+    pub boarding_points: Vec<BoardingPointId>,
     pub services: Vec<TransitServiceId>,
     pub transfer_edges: Vec<TransferEdge>,
     pub origin_access: Vec<TransitAccessCandidate>,
@@ -42,26 +47,20 @@ pub struct TransitCandidateNetwork {
     pub direct_walking: Option<StreetMetric>,
 }
 
-impl TransitCandidateNetwork {
+impl DiscoveryResult {
     pub fn is_empty(&self) -> bool {
         self.services.is_empty()
             || self.origin_access.is_empty()
             || self.destination_egress.is_empty()
     }
 
-    pub fn access_for(
-        &self,
-        stop_id: &crate::normalization::BoardingPointId,
-    ) -> Option<&TransitAccessCandidate> {
+    pub fn access_for(&self, stop_id: &BoardingPointId) -> Option<&TransitAccessCandidate> {
         self.origin_access
             .iter()
             .find(|access| &access.access.stop_id == stop_id)
     }
 
-    pub fn egress_for(
-        &self,
-        stop_id: &crate::normalization::BoardingPointId,
-    ) -> Option<&TransitEgressCandidate> {
+    pub fn egress_for(&self, stop_id: &BoardingPointId) -> Option<&TransitEgressCandidate> {
         self.destination_egress
             .iter()
             .find(|egress| &egress.stop_id == stop_id)
@@ -69,12 +68,12 @@ impl TransitCandidateNetwork {
 }
 
 #[derive(Clone)]
-pub struct TransitCandidateDiscovery<'a> {
+pub struct Discovery<'a> {
     street_routing: &'a StreetRoutingSession,
     network: &'a TransitNetwork,
 }
 
-impl<'a> TransitCandidateDiscovery<'a> {
+impl<'a> Discovery<'a> {
     pub fn new(street_routing: &'a StreetRoutingSession, network: &'a TransitNetwork) -> Self {
         Self {
             street_routing,
@@ -86,13 +85,10 @@ impl<'a> TransitCandidateDiscovery<'a> {
         &self,
         request: &PlanningRequest,
         context: &PlanningContext,
-        limits: &PlanningLimits,
-    ) -> Result<TransitCandidateNetwork, ProviderError> {
-        if !request
-            .selected_modes
-            .contains(&crate::api::JourneyMode::Transit)
-        {
-            return Ok(TransitCandidateNetwork::default());
+        limits: &RoutingLimits,
+    ) -> Result<DiscoveryResult, ProviderError> {
+        if !request.selected_modes.contains(&JourneyMode::Transit) {
+            return Ok(DiscoveryResult::default());
         }
         let origin = planner_coordinate(request.origin.coordinate)?;
         let destination = planner_coordinate(request.destination.coordinate)?;
@@ -124,7 +120,7 @@ impl<'a> TransitCandidateDiscovery<'a> {
             .map(|stop| (stop.id.clone(), stop.coordinate))
             .collect::<Vec<_>>();
         if origin_pool.is_empty() || destination_pool.is_empty() {
-            return Ok(TransitCandidateNetwork::default());
+            return Ok(DiscoveryResult::default());
         }
 
         let origin_coordinates = origin_pool
@@ -213,10 +209,10 @@ impl<'a> TransitCandidateDiscovery<'a> {
         origin_access.truncate(limits.max_candidate_stops.max(1));
         destination_egress.truncate(limits.max_candidate_stops.max(1));
         if origin_access.is_empty() || destination_egress.is_empty() {
-            return Ok(TransitCandidateNetwork {
+            return Ok(DiscoveryResult {
                 origin_access,
                 destination_egress,
-                ..TransitCandidateNetwork::default()
+                ..DiscoveryResult::default()
             });
         }
 
@@ -278,7 +274,7 @@ impl<'a> TransitCandidateDiscovery<'a> {
         });
         transfer_edges.dedup();
 
-        Ok(TransitCandidateNetwork {
+        Ok(DiscoveryResult {
             boarding_points,
             services: service_set.into_iter().collect::<Vec<_>>(),
             transfer_edges,
@@ -293,8 +289,8 @@ impl<'a> TransitCandidateDiscovery<'a> {
     fn relevant_services(
         &self,
         origin_access: &[TransitAccessCandidate],
-        egress_ids: &HashSet<crate::normalization::BoardingPointId>,
-        limits: &PlanningLimits,
+        egress_ids: &HashSet<BoardingPointId>,
+        limits: &RoutingLimits,
     ) -> (Vec<TransitServiceId>, Vec<TransferEdge>) {
         let max_transfers = limits.max_transfer_count as usize;
         let max_states = limits.max_topology_search_states;
@@ -303,7 +299,7 @@ impl<'a> TransitCandidateDiscovery<'a> {
         let max_services = limits.max_candidate_services;
         #[derive(Clone)]
         struct State {
-            stop_id: crate::normalization::BoardingPointId,
+            stop_id: BoardingPointId,
             current_service: Option<TransitServiceId>,
             transfers: usize,
             stops_visited: usize,
@@ -446,20 +442,20 @@ impl<'a> TransitCandidateDiscovery<'a> {
 
     fn topology_itineraries(
         &self,
-        geographic_bounds: (crate::api::RequestCoordinate, crate::api::RequestCoordinate),
+        geographic_bounds: (RequestCoordinate, RequestCoordinate),
         origin_access: &[TransitAccessCandidate],
-        egress_ids: &HashSet<crate::normalization::BoardingPointId>,
+        egress_ids: &HashSet<BoardingPointId>,
         service_ids: &HashSet<TransitServiceId>,
         service_day: time::Date,
-        limits: &PlanningLimits,
+        limits: &RoutingLimits,
     ) -> Vec<TransitTopologyItinerary> {
         #[derive(Clone)]
         struct State {
-            stop_id: crate::normalization::BoardingPointId,
+            stop_id: BoardingPointId,
             current_service: Option<TransitServiceId>,
             transfers: usize,
             stops_visited: usize,
-            rides: Vec<crate::transit::TransitRide>,
+            rides: Vec<TransitRide>,
         }
 
         let mut services = self.network.services.iter().collect::<Vec<_>>();
@@ -591,7 +587,7 @@ impl<'a> TransitCandidateDiscovery<'a> {
     }
 }
 
-impl TransitCandidateNetwork {
+impl DiscoveryResult {
     fn sorted(mut self) -> Self {
         self.services
             .sort_by(|left, right| left.as_str().cmp(right.as_str()));
@@ -600,7 +596,7 @@ impl TransitCandidateNetwork {
     }
 }
 
-fn topology_signature(rides: &[crate::transit::TransitRide]) -> String {
+fn topology_signature(rides: &[TransitRide]) -> String {
     rides
         .iter()
         .map(|ride| {
@@ -615,20 +611,14 @@ fn topology_signature(rides: &[crate::transit::TransitRide]) -> String {
         .join(",")
 }
 
-fn geographic_distance_metres(
-    from: crate::api::RequestCoordinate,
-    to: crate::api::RequestCoordinate,
-) -> u64 {
+fn geographic_distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u64 {
     let latitude = ((from.latitude + to.latitude) / 2.0).to_radians();
     let north = (to.latitude - from.latitude) * 111_320.0;
     let east = (to.longitude - from.longitude) * 111_320.0 * latitude.cos();
     north.hypot(east).max(0.0).round() as u64
 }
 
-fn topology_geographic_distance(
-    network: &TransitNetwork,
-    rides: &[crate::transit::TransitRide],
-) -> u64 {
+fn topology_geographic_distance(network: &TransitNetwork, rides: &[TransitRide]) -> u64 {
     rides
         .iter()
         .filter_map(|ride| {
@@ -649,9 +639,9 @@ mod tests {
     use super::*;
     use crate::{
         api::RequestCoordinate,
-        normalization::BoardingPointId,
+        domain::ids::BoardingPointId,
+        domain::transit::{TransitService, TransitStop},
         street::{FakeProvider, GraphRevision},
-        transit::{TransitService, TransitStop},
     };
 
     fn topology_network(service_count: usize) -> TransitNetwork {
@@ -673,7 +663,7 @@ mod tests {
         for index in 0..service_count {
             services.push(TransitService::new(
                 TransitServiceId::new(format!("service-{index:02}")),
-                crate::transit::TransitMode::Metro,
+                crate::domain::transit::TransitMode::Metro,
                 format!("Service {index}"),
                 "D",
                 vec![a.clone(), d.clone()],
@@ -681,14 +671,14 @@ mod tests {
         }
         services.push(TransitService::new(
             TransitServiceId::new("connector-a"),
-            crate::transit::TransitMode::Metro,
+            crate::domain::transit::TransitMode::Metro,
             "Connector A",
             "B",
             vec![a.clone(), b.clone()],
         ));
         services.push(TransitService::new(
             TransitServiceId::new("connector-b"),
-            crate::transit::TransitMode::Metro,
+            crate::domain::transit::TransitMode::Metro,
             "Connector B",
             "D",
             vec![c.clone(), d],
@@ -718,7 +708,7 @@ mod tests {
         let street = StreetRoutingSession::start(Arc::new(provider))
             .await
             .unwrap();
-        let discovery = TransitCandidateDiscovery::new(&street, &network);
+        let discovery = Discovery::new(&street, &network);
         let access = vec![TransitAccessCandidate {
             access: TransitAccess::new(
                 BoardingPointId::new("a"),
@@ -731,13 +721,13 @@ mod tests {
             },
         }];
         let destination = HashSet::from([BoardingPointId::new("d")]);
-        let limits = PlanningLimits {
+        let limits = RoutingLimits {
             max_transfer_count: 1,
             max_candidate_states: 16,
             max_candidate_stops: 8,
             max_services_per_stop: 3,
             max_candidate_services: 5,
-            ..PlanningLimits::default()
+            ..RoutingLimits::default()
         };
         let first = discovery.relevant_services(&access, &destination, &limits);
         let second = discovery.relevant_services(&access, &destination, &limits);

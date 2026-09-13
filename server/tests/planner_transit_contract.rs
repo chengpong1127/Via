@@ -9,21 +9,23 @@ use tower::ServiceExt;
 use via_server::{
     api::RequestCoordinate,
     app::{build_router_with_network, build_router_with_realtime_and_network},
-    live_status::{Freshness, FreshnessReason, FreshnessState},
-    normalization::{
-        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BikeShareStationId,
-        BoardingPointId, ScheduledRunId, TransitServiceId,
+    domain::{
+        ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId},
+        realtime::{
+            ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, Freshness,
+            FreshnessReason, FreshnessState,
+        },
+        transit::{
+            BikeShareStation, ScheduledStopTime, ScheduledTrip, TransferEdge, TransitMode,
+            TransitNetwork, TransitService, TransitStop,
+        },
     },
-    realtime::{
+    providers::realtime::{
         ArrivalQuery, NormalizedRealtimeValue, RealtimeError, RealtimeProvider, RealtimeValue,
     },
     street::{
         Coordinate, DetailedPath, FakeProvider, GraphRevision, Maneuver, Metres, ProviderError,
         Seconds, StreetTravelMode,
-    },
-    transit::{
-        BikeShareStation, ScheduledStopTime, ScheduledTrip, TransferEdge, TransitMode,
-        TransitNetwork, TransitService, TransitStop,
     },
 };
 
@@ -285,8 +287,8 @@ async fn stale_optional_service_condition_does_not_remove_schedule_route() {
         .build();
     let now = datetime!(2026-08-31 10:00 +08:00);
     let mut stale = normalized(
-        RealtimeValue::ServiceCondition(via_server::normalization::ServiceCondition {
-            state: via_server::normalization::ServiceConditionState::Disrupted,
+        RealtimeValue::ServiceCondition(via_server::domain::realtime::ServiceCondition {
+            state: via_server::domain::realtime::ServiceConditionState::Disrupted,
             scope_via_ids: vec!["via_metro_blue".into()],
             source_text_variants: Vec::new(),
             effective_from: None,

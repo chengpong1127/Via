@@ -1,9 +1,9 @@
 use time::macros::{date, datetime};
-use via_server::normalization::{
-    AliasKey, AliasRegistry, ArrivalState, BoardingPointId, EntityId, Provider, ServiceDayPolicy,
-    TransitServiceId,
+use via_server::domain::{
+    ids::{AliasKey, AliasRegistry, BoardingPointId, EntityId, Provider, TransitServiceId},
+    realtime::{ArrivalState, ServiceDayPolicy},
 };
-use via_server::tdx::normalize_n1;
+use via_server::providers::tdx::normalize_n1;
 
 #[test]
 fn reviewed_alias_change_preserves_via_identity() {

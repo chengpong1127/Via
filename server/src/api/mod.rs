@@ -2,10 +2,12 @@ use std::{fmt, str::FromStr};
 
 use language_tags::LanguageTag;
 use serde::{Deserialize, Serialize};
-use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::street::Coordinate;
+
+pub use crate::domain::location::RequestCoordinate;
 
 pub mod models;
 
@@ -13,9 +15,7 @@ pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
 pub const TAIPEI_TIME_ZONE: &str = "Asia/Taipei";
 
-pub fn taipei_offset() -> UtcOffset {
-    UtcOffset::from_hms(8, 0, 0).expect("Taipei UTC offset is valid")
-}
+pub use crate::domain::{normalize_to_taipei, taipei_offset};
 
 pub fn new_request_id() -> String {
     format!("req_{}", uuid::Uuid::new_v4().simple())
@@ -67,7 +67,22 @@ pub struct SelectedPlace {
 
 impl SelectedPlace {
     fn validate(&self, pointer: &str) -> Result<(), RequestValidationError> {
-        self.coordinate.validate(pointer)?;
+        if !self.coordinate.latitude.is_finite()
+            || !(-90.0..=90.0).contains(&self.coordinate.latitude)
+        {
+            return Err(RequestValidationError::new(
+                "invalid_coordinate",
+                format!("{pointer}/coordinate/latitude"),
+            ));
+        }
+        if !self.coordinate.longitude.is_finite()
+            || !(-180.0..=180.0).contains(&self.coordinate.longitude)
+        {
+            return Err(RequestValidationError::new(
+                "invalid_coordinate",
+                format!("{pointer}/coordinate/longitude"),
+            ));
+        }
         if self.display_text.trim() != self.display_text
             || self.display_text.is_empty()
             || self.display_text.chars().count() > 200
@@ -76,34 +91,6 @@ impl SelectedPlace {
             return Err(RequestValidationError::new(
                 "invalid_display_text",
                 format!("{pointer}/display_text"),
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
-#[schema(as = Coordinate)]
-#[serde(deny_unknown_fields)]
-pub struct RequestCoordinate {
-    #[schema(minimum = -90.0, maximum = 90.0)]
-    pub latitude: f64,
-    #[schema(minimum = -180.0, maximum = 180.0)]
-    pub longitude: f64,
-}
-
-impl RequestCoordinate {
-    fn validate(&self, pointer: &str) -> Result<(), RequestValidationError> {
-        if !self.latitude.is_finite() || !(-90.0..=90.0).contains(&self.latitude) {
-            return Err(RequestValidationError::new(
-                "invalid_coordinate",
-                format!("{pointer}/coordinate/latitude"),
-            ));
-        }
-        if !self.longitude.is_finite() || !(-180.0..=180.0).contains(&self.longitude) {
-            return Err(RequestValidationError::new(
-                "invalid_coordinate",
-                format!("{pointer}/coordinate/longitude"),
             ));
         }
         Ok(())
@@ -193,10 +180,6 @@ impl DepartureSetting {
             }
         }
     }
-}
-
-pub fn normalize_to_taipei(value: OffsetDateTime) -> OffsetDateTime {
-    value.to_offset(taipei_offset())
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]

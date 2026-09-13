@@ -13,11 +13,11 @@ use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{
-    live_status::{Freshness, FreshnessReason},
-    normalization::{
-        ArrivalEstimate, BikeAvailability, BikeShareStationId, BoardingPointId, ServiceCondition,
-        TransitServiceId,
+use crate::domain::{
+    ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+    realtime::{
+        ArrivalEstimate, BikeAvailability, Freshness, FreshnessReason, FreshnessState,
+        ServiceCondition,
     },
 };
 
@@ -61,10 +61,10 @@ impl RealtimeMetrics {
     fn observe_values(&self, values: &[NormalizedRealtimeValue]) {
         for value in values {
             let counter = match value.freshness.state {
-                crate::live_status::FreshnessState::Fresh => &self.fresh_values,
-                crate::live_status::FreshnessState::Degraded => &self.degraded_values,
-                crate::live_status::FreshnessState::Unavailable => &self.unavailable_values,
-                crate::live_status::FreshnessState::NotApplicable => &self.not_applicable_values,
+                FreshnessState::Fresh => &self.fresh_values,
+                FreshnessState::Degraded => &self.degraded_values,
+                FreshnessState::Unavailable => &self.unavailable_values,
+                FreshnessState::NotApplicable => &self.not_applicable_values,
             };
             counter.fetch_add(1, Ordering::Relaxed);
         }

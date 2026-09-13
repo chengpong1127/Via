@@ -5,9 +5,9 @@ use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get}
 use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    normalization::{BikeShareStationId, BoardingPointId, TransitServiceId},
-    realtime::{ArrivalQuery, RealtimeError, RealtimeProvider, RealtimeValue},
-    tdx::{IdentityResolver, TdxRealtimeConfig, TdxRealtimeProvider},
+    domain::ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+    providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider, RealtimeValue},
+    providers::tdx::{IdentityResolver, TdxRealtimeConfig, TdxRealtimeProvider},
 };
 
 #[derive(Clone)]
@@ -164,8 +164,8 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
             .map(|value| value.freshness.state)
             .collect::<Vec<_>>(),
         vec![
-            via_server::live_status::FreshnessState::Fresh,
-            via_server::live_status::FreshnessState::Unavailable
+            via_server::domain::realtime::FreshnessState::Fresh,
+            via_server::domain::realtime::FreshnessState::Unavailable
         ]
     );
 }
@@ -214,7 +214,7 @@ async fn tdx_bike_availability_is_normalized_inside_the_adapter() {
     assert_eq!(availability.available_return_slots, Some(9));
     assert_eq!(
         values[0].freshness.state,
-        via_server::live_status::FreshnessState::Fresh
+        via_server::domain::realtime::FreshnessState::Fresh
     );
 }
 
@@ -267,7 +267,7 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
     };
     assert_eq!(
         condition.state,
-        via_server::normalization::ServiceConditionState::Suspended
+        via_server::domain::realtime::ServiceConditionState::Suspended
     );
     assert_eq!(condition.scope_via_ids, vec!["via-service"]);
     assert_eq!(condition.source_text_variants[0].text, "Service paused");

@@ -1,7 +1,8 @@
 use time::{OffsetDateTime, Weekday, macros::datetime};
-use via_server::{
-    api::{JourneyMode, RequestCoordinate},
-    normalization::{BoardingPointId, ScheduledRunId, TransitServiceId},
+use via_server::domain::{
+    ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+    journey::JourneyMode,
+    location::RequestCoordinate,
     transit::{
         ScheduledStopTime, ScheduledTrip, TransitAccess, TransitMode, TransitNetwork, TransitQuery,
         TransitService, TransitStop,

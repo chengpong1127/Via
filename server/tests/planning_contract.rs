@@ -4,7 +4,7 @@ use via_server::{
     api::{
         DepartureSetting, JourneyMode, PlanningRequest, RequestValidationError, normalize_to_taipei,
     },
-    live_status::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
+    domain::realtime::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
 };
 
 #[test]

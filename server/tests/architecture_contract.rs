@@ -1,0 +1,106 @@
+use std::{fs, path::PathBuf};
+
+fn source(path: &str) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(root.join(path)).unwrap_or_else(|error| {
+        panic!("failed to read {path}: {error}");
+    })
+}
+
+fn source_tree(path: &str) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
+    let mut files = fs::read_dir(&root)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| fs::read_to_string(path).expect("source file should be readable"))
+        .collect()
+}
+
+#[test]
+fn legacy_architecture_modules_are_gone() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    for path in [
+        "planner.rs",
+        "normalization.rs",
+        "ranking.rs",
+        "postgres.rs",
+        "tdx.rs",
+        "transit.rs",
+        "live_status.rs",
+        "routing/engine",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "legacy path still exists: {path}"
+        );
+    }
+}
+
+#[test]
+fn domain_is_provider_and_transport_neutral() {
+    let domain = source_tree("src/domain");
+    for dependency in [
+        "crate::api",
+        "crate::providers",
+        "crate::routing",
+        "crate::street",
+    ] {
+        assert!(
+            !domain.contains(dependency),
+            "domain must not depend on {dependency}"
+        );
+    }
+}
+
+#[test]
+fn routing_uses_provider_traits_instead_of_concrete_adapters() {
+    let routing = source_tree("src/routing");
+    for dependency in [
+        "crate::providers::tdx",
+        "crate::providers::valhalla",
+        "crate::providers::postgres",
+    ] {
+        assert!(
+            !routing.contains(dependency),
+            "routing must not depend on concrete adapter {dependency}"
+        );
+    }
+}
+
+#[test]
+fn canonical_domain_types_and_route_graph_have_single_definitions() {
+    let journey = source("src/domain/journey.rs");
+    let graph = source("src/routing/graph.rs");
+    assert_eq!(journey.matches("enum JourneyMode").count(), 1);
+    assert_eq!(graph.matches("struct RouteGraph").count(), 1);
+    assert!(journey.contains("pub enum JourneyMode"));
+    assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
+    assert!(graph.contains("pub struct RouteGraph"));
+}
+
+#[test]
+fn direct_walking_is_a_real_graph_edge_without_geographic_fallback() {
+    let graph = source("src/routing/graph.rs");
+    let discovery = source("src/routing/discover.rs");
+    let service = source("src/routing/service.rs");
+    assert!(graph.contains("RouteEdge::Walk"));
+    assert!(graph.contains("candidate.direct_walking"));
+    assert!(service.contains("discover_direct_walking"));
+    assert!(!service.contains("walking_option"));
+    assert!(!discovery.contains("transit_leg_distance_metres"));
+    assert!(!service.contains("direct_walking.or_else"));
+}
+
+#[test]
+fn transfer_connectors_are_walk_edges() {
+    let graph = source("src/routing/graph.rs");
+    assert!(graph.contains("fn add_transfer"));
+    assert!(graph.contains("RouteEdge::Walk {"));
+    assert!(!graph.contains("RouteEdge::Transfer"));
+}

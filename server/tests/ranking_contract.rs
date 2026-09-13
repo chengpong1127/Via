@@ -1,10 +1,10 @@
-use via_server::normalization::ActionState;
-use via_server::{
-    live_status::FreshnessState,
+use via_server::domain::realtime::ActionState;
+use via_server::domain::{
     ranking::{
         BikeActionEvidence, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
         TransferEvidence, TransferKind,
     },
+    realtime::FreshnessState,
 };
 
 fn candidate(key: &str, arrival: i64) -> CandidateJourney {

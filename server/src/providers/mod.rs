@@ -4,6 +4,7 @@
 //! modules are the only stable public entry points for concrete adapters.
 
 pub mod postgres;
+pub mod realtime;
 pub mod tdx;
 
 pub mod valhalla;

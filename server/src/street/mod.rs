@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::PrimitiveDateTime;
 
+pub use crate::domain::journey::Attribution;
+
 const MAX_MATRIX_SOURCES: usize = 32;
 const MAX_MATRIX_TARGETS: usize = 32;
 const MAX_CORRELATION_COORDINATES: usize = 64;
@@ -224,13 +226,6 @@ impl Maneuver {
             roundabout_exit: None,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct Attribution {
-    pub text: String,
-    pub url: String,
-    pub licence: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]

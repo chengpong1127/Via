@@ -1,5 +1,5 @@
-//! Phase 2: resolve the departures needed by the relevant transit backbone.
-//! The resolver is mode-generic at the planner boundary; only this module
+//! Phase 2: resolve departures for the discovered transit topology.
+//! The resolver is mode-generic at the routing boundary; only this module
 //! knows that buses need Arrival Estimates while rail-like services use the
 //! immutable schedule.
 
@@ -9,21 +9,23 @@ use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
 
 use crate::{
-    live_status::FreshnessState,
-    normalization::{ArrivalState, BoardingPointId, TransitServiceId},
-    realtime::{NormalizedRealtimeValue, RealtimeValue},
-    transit::{
+    domain::transit::{
         TransitItinerary, TransitMode, TransitNetwork, TransitRide, TransitService,
         TransitTopologyItinerary,
     },
+    domain::{
+        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        realtime::{ArrivalState, FreshnessState},
+    },
+    providers::realtime::{NormalizedRealtimeValue, RealtimeValue},
 };
 
-use super::{PlanningContext, candidate_discovery::TransitCandidateNetwork};
+use super::{discover::DiscoveryResult, service::PlanningContext};
 
 #[derive(Clone, Debug, Default)]
 pub struct RealtimeContext {
     arrivals: HashMap<(TransitServiceId, BoardingPointId), Vec<NormalizedRealtimeValue>>,
-    bikes: HashMap<crate::normalization::BikeShareStationId, NormalizedRealtimeValue>,
+    bikes: HashMap<BikeShareStationId, NormalizedRealtimeValue>,
     conditions: HashMap<TransitServiceId, NormalizedRealtimeValue>,
 }
 
@@ -117,14 +119,11 @@ impl RealtimeContext {
             .collect()
     }
 
-    pub fn bike(
-        &self,
-        station_id: &crate::normalization::BikeShareStationId,
-    ) -> Option<&NormalizedRealtimeValue> {
+    pub fn bike(&self, station_id: &BikeShareStationId) -> Option<&NormalizedRealtimeValue> {
         self.bikes.get(station_id)
     }
 
-    pub fn station_ids(&self) -> impl Iterator<Item = &crate::normalization::BikeShareStationId> {
+    pub fn station_ids(&self) -> impl Iterator<Item = &BikeShareStationId> {
         self.bikes.keys()
     }
 
@@ -270,17 +269,17 @@ pub struct TimedTransitItinerary {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct TimedTransitBackbone {
+pub struct TransitTiming {
     pub itineraries: Vec<TimedTransitItinerary>,
 }
 
-pub(crate) async fn resolve_backbone(
+pub(crate) async fn resolve_timing(
     network: &TransitNetwork,
-    candidate: &TransitCandidateNetwork,
-    static_itineraries: &[crate::transit::TransitItinerary],
+    candidate: &DiscoveryResult,
+    static_itineraries: &[crate::domain::transit::TransitItinerary],
     realtime: &RealtimeContext,
     context: &PlanningContext,
-) -> TimedTransitBackbone {
+) -> TransitTiming {
     let resolver = NetworkTransitDepartureResolver::new(network);
     let mut timed = Vec::new();
     for itinerary in static_itineraries {
@@ -290,7 +289,7 @@ pub(crate) async fn resolve_backbone(
         let Some(_access) = candidate.access_for(&first.board_stop_id) else {
             continue;
         };
-        // Keep the static backbone broad enough to include a departure that a
+        // Keep the static timing pool broad enough to include a departure that a
         // local BikeShare connector can catch.  The search phase validates
         // whether the selected walking/BikeShare access actually reaches the
         // boarding point before this departure.
@@ -411,20 +410,20 @@ pub(crate) async fn resolve_backbone(
         left.access_departure_at == right.access_departure_at
             && timed_signature(&left.rides) == timed_signature(&right.rides)
     });
-    TimedTransitBackbone { itineraries: timed }
+    TransitTiming { itineraries: timed }
 }
 
-/// Resolve a topology-only backbone. The topology may contain synthetic ride
+/// Resolve timing for topology-only discovery. The topology may contain synthetic ride
 /// shapes for buses, including services with no active static trip. Rail-like
 /// services still pass through the schedule resolver and therefore remain
 /// schedule-driven.
-pub(crate) async fn resolve_topology_backbone(
+pub(crate) async fn resolve_topology_timing(
     network: &TransitNetwork,
-    candidate: &TransitCandidateNetwork,
+    candidate: &DiscoveryResult,
     topologies: &[TransitTopologyItinerary],
     realtime: &RealtimeContext,
     context: &PlanningContext,
-) -> TimedTransitBackbone {
+) -> TransitTiming {
     let itineraries = topologies
         .iter()
         .map(|topology| TransitItinerary {
@@ -438,7 +437,7 @@ pub(crate) async fn resolve_topology_backbone(
             rides: topology.rides.clone(),
         })
         .collect::<Vec<_>>();
-    resolve_backbone(network, candidate, &itineraries, realtime, context).await
+    resolve_timing(network, candidate, &itineraries, realtime, context).await
 }
 
 fn service_condition_blocks(status: &NormalizedRealtimeValue, at: OffsetDateTime) -> bool {
@@ -472,8 +471,8 @@ mod tests {
     use super::*;
     use crate::{
         api::RequestCoordinate,
-        normalization::{BoardingPointId, ScheduledRunId, TransitServiceId},
-        transit::{ScheduledStopTime, ScheduledTrip, TransitStop},
+        domain::ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+        domain::transit::{ScheduledStopTime, ScheduledTrip, TransitStop},
     };
 
     fn fixture(mode: TransitMode) -> (TransitNetwork, TransitService, TransitRide) {

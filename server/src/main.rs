@@ -5,10 +5,10 @@ use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
     domain::transit::TransitNetwork,
     providers::PostgresIdentityResolver,
+    providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
     providers::{
         GraphRevision, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
     },
-    realtime::DEFAULT_REALTIME_CACHE_TTL,
 };
 
 #[tokio::main]

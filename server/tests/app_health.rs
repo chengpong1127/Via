@@ -7,11 +7,13 @@ use axum::{
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use via_server::{
-    api::RequestCoordinate,
     app::{build_router, build_router_with_network},
-    normalization::BoardingPointId,
+    domain::ids::BoardingPointId,
+    domain::{
+        location::RequestCoordinate,
+        transit::{TransitNetwork, TransitStop},
+    },
     street::{FakeProvider, GraphRevision},
-    transit::{TransitNetwork, TransitStop},
 };
 
 #[tokio::test]

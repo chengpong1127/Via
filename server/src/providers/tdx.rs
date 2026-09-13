@@ -8,13 +8,14 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use url::Url;
 
 use crate::{
-    live_status::{FreshnessPolicy, LiveStatusTimes},
-    normalization::{
-        ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, BikeShareStationId,
-        BoardingPointId, LocalizedSourceText, ServiceCondition, ServiceConditionState,
-        TransitServiceId,
+    domain::{
+        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        realtime::{
+            ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, FreshnessPolicy,
+            LiveStatusTimes, LocalizedSourceText, ServiceCondition, ServiceConditionState,
+        },
     },
-    realtime::{
+    providers::realtime::{
         ArrivalQuery, NormalizedRealtimeValue, RealtimeError, RealtimeProvider, RealtimeValue,
     },
 };

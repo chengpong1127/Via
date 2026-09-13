@@ -7,11 +7,11 @@ use async_trait::async_trait;
 use futures_util::future::join_all;
 use time::OffsetDateTime;
 use via_server::{
-    live_status::{Freshness, FreshnessState},
-    normalization::{
-        ArrivalEstimate, ArrivalState, BikeShareStationId, BoardingPointId, TransitServiceId,
+    domain::{
+        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        realtime::{ArrivalEstimate, ArrivalState, Freshness, FreshnessState},
     },
-    realtime::{
+    providers::realtime::{
         ArrivalQuery, CachedRealtimeProvider, NormalizedRealtimeValue, RealtimeError,
         RealtimeProvider, RealtimeValue,
     },
@@ -169,7 +169,7 @@ async fn recently_cached_stale_values_remain_unavailable() {
         calls: Arc::new(AtomicUsize::new(0)),
         result: Ok(vec![arrival_value(Freshness {
             state: FreshnessState::Unavailable,
-            reason: Some(via_server::live_status::FreshnessReason::Stale),
+            reason: Some(via_server::domain::realtime::FreshnessReason::Stale),
             policy_version: "1".into(),
             evaluated_at: now,
         })]),

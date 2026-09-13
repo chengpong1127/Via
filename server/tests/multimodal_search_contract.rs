@@ -1,17 +1,16 @@
 use time::macros::datetime;
 use via_server::{
-    live_status::FreshnessState,
-    normalization::{
-        ActionState, BikeAvailability, BikeShareStationId, BoardingPointId, ScheduledRunId,
-        TransitServiceId,
+    domain::{
+        ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId},
+        realtime::{ActionState, BikeAvailability, FreshnessState},
+        transit::{TransitMode, TransitRide},
     },
-    planner::{
+    routing::{
         StreetMetric,
-        multimodal_graph::{CandidateEdge, CandidateNode, MultimodalGraph},
+        enrich::TimedTransitRide,
+        graph::{RouteEdge, RouteGraph, RouteNode},
         search::{self, SearchLabel, SearchLimits},
-        transit_timing::TimedTransitRide,
     },
-    transit::{TransitMode, TransitRide},
 };
 
 fn limits() -> SearchLimits {
@@ -28,7 +27,7 @@ fn limits() -> SearchLimits {
 fn label(arrival: i64, walking: u32, transfers: u32) -> SearchLabel {
     let time = datetime!(2026-08-31 10:00 UTC) + time::Duration::seconds(arrival);
     SearchLabel {
-        node: CandidateNode::Destination,
+        node: RouteNode::Destination,
         arrival_time: time,
         departure_time: datetime!(2026-08-31 10:00 UTC),
         walking_seconds: walking,
@@ -55,27 +54,27 @@ fn pareto_dominance_keeps_time_and_walking_tradeoffs() {
 
 #[test]
 fn search_composes_walking_transit_and_bikeshare_edges() {
-    let mut graph = MultimodalGraph::default();
-    let station = CandidateNode::BikeShareStation(BikeShareStationId::new("station"));
-    let stop = CandidateNode::TransitStop(BoardingPointId::new("stop"));
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::Origin,
+    let mut graph = RouteGraph::default();
+    let station = RouteNode::BikeShareStation(BikeShareStationId::new("station"));
+    let stop = RouteNode::TransitStop(BoardingPointId::new("stop"));
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::Origin,
         to: station.clone(),
         metric: StreetMetric {
             duration_seconds: 60,
             distance_metres: 300,
         },
     });
-    graph.add_edge(CandidateEdge::BikeShare {
+    graph.add_edge(RouteEdge::Bike {
         from: station.clone(),
-        to: CandidateNode::BikeShareStation(BikeShareStationId::new("return")),
+        to: RouteNode::BikeShareStation(BikeShareStationId::new("return")),
         pickup_station_id: BikeShareStationId::new("station"),
         return_station_id: BikeShareStationId::new("return"),
         metric: StreetMetric {
             duration_seconds: 300,
             distance_metres: 1_000,
         },
-        availability: via_server::planner::multimodal_graph::BikeShareAvailability {
+        availability: via_server::routing::graph::BikeEdgeAvailability {
             pickup: BikeAvailability {
                 station_id: BikeShareStationId::new("station"),
                 rental_state: ActionState::Enabled,
@@ -98,18 +97,18 @@ fn search_composes_walking_transit_and_bikeshare_edges() {
             },
         },
     });
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::BikeShareStation(BikeShareStationId::new("return")),
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::BikeShareStation(BikeShareStationId::new("return")),
         to: stop.clone(),
         metric: StreetMetric {
             duration_seconds: 60,
             distance_metres: 300,
         },
     });
-    graph.add_edge(CandidateEdge::Transit {
+    graph.add_edge(RouteEdge::Transit {
         from: stop.clone(),
-        to: CandidateNode::Destination,
-        ride: via_server::planner::transit_timing::TimedTransitRide {
+        to: RouteNode::Destination,
+        ride: via_server::routing::enrich::TimedTransitRide {
             ride: TransitRide {
                 transit_mode: TransitMode::Metro,
                 service_id: TransitServiceId::new("metro"),
@@ -134,11 +133,11 @@ fn search_composes_walking_transit_and_bikeshare_edges() {
 
 #[test]
 fn transit_edges_require_an_explicit_transfer_edge() {
-    let mut graph = MultimodalGraph::default();
-    let first_stop = CandidateNode::TransitStop(BoardingPointId::new("first"));
-    let second_stop = CandidateNode::TransitStop(BoardingPointId::new("second"));
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::Origin,
+    let mut graph = RouteGraph::default();
+    let first_stop = RouteNode::TransitStop(BoardingPointId::new("first"));
+    let second_stop = RouteNode::TransitStop(BoardingPointId::new("second"));
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::Origin,
         to: first_stop.clone(),
         metric: StreetMetric {
             duration_seconds: 1,
@@ -146,7 +145,7 @@ fn transit_edges_require_an_explicit_transfer_edge() {
         },
     });
     let ride = |service_id: &str, trip_id: &str, board, alight, departure, arrival| {
-        via_server::planner::transit_timing::TimedTransitRide {
+        via_server::routing::enrich::TimedTransitRide {
             ride: TransitRide {
                 transit_mode: TransitMode::Metro,
                 service_id: TransitServiceId::new(service_id),
@@ -163,7 +162,7 @@ fn transit_edges_require_an_explicit_transfer_edge() {
             schedule_only: false,
         }
     };
-    graph.add_edge(CandidateEdge::Transit {
+    graph.add_edge(RouteEdge::Transit {
         from: first_stop.clone(),
         to: second_stop.clone(),
         ride: ride(
@@ -175,9 +174,9 @@ fn transit_edges_require_an_explicit_transfer_edge() {
             datetime!(2026-08-31 10:05 UTC),
         ),
     });
-    graph.add_edge(CandidateEdge::Transit {
+    graph.add_edge(RouteEdge::Transit {
         from: second_stop,
-        to: CandidateNode::Destination,
+        to: RouteNode::Destination,
         ride: ride(
             "second-service",
             "second-trip",
@@ -194,11 +193,11 @@ fn transit_edges_require_an_explicit_transfer_edge() {
 
 #[test]
 fn zero_bikes_and_return_slots_make_a_bikeshare_edge_unusable() {
-    let mut graph = MultimodalGraph::default();
-    let station = CandidateNode::BikeShareStation(BikeShareStationId::new("station"));
-    let return_station = CandidateNode::BikeShareStation(BikeShareStationId::new("return"));
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::Origin,
+    let mut graph = RouteGraph::default();
+    let station = RouteNode::BikeShareStation(BikeShareStationId::new("station"));
+    let return_station = RouteNode::BikeShareStation(BikeShareStationId::new("return"));
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::Origin,
         to: station.clone(),
         metric: StreetMetric {
             duration_seconds: 1,
@@ -215,7 +214,7 @@ fn zero_bikes_and_return_slots_make_a_bikeshare_edge_unusable() {
         provider_published_at: None,
         received_at: datetime!(2026-08-31 10:00 UTC),
     };
-    graph.add_edge(CandidateEdge::BikeShare {
+    graph.add_edge(RouteEdge::Bike {
         from: station,
         to: return_station,
         pickup_station_id: BikeShareStationId::new("station"),
@@ -224,7 +223,7 @@ fn zero_bikes_and_return_slots_make_a_bikeshare_edge_unusable() {
             duration_seconds: 1,
             distance_metres: 1,
         },
-        availability: via_server::planner::multimodal_graph::BikeShareAvailability {
+        availability: via_server::routing::graph::BikeEdgeAvailability {
             pickup: availability(0, 2),
             return_station: availability(2, 0),
         },
@@ -235,7 +234,7 @@ fn zero_bikes_and_return_slots_make_a_bikeshare_edge_unusable() {
 
 #[test]
 fn search_expansion_limit_is_a_hard_bound() {
-    let graph = MultimodalGraph::default();
+    let graph = RouteGraph::default();
     let mut bounded = limits();
     bounded.max_search_expansions = 0;
     let result = search::search(&graph, datetime!(2026-08-31 10:00 UTC), None, &bounded);
@@ -249,13 +248,13 @@ fn transit_edge(
     to: &str,
     departure: time::OffsetDateTime,
     arrival: time::OffsetDateTime,
-) -> CandidateEdge {
-    CandidateEdge::Transit {
-        from: CandidateNode::TransitStop(BoardingPointId::new(from)),
+) -> RouteEdge {
+    RouteEdge::Transit {
+        from: RouteNode::TransitStop(BoardingPointId::new(from)),
         to: if to == "destination" {
-            CandidateNode::Destination
+            RouteNode::Destination
         } else {
-            CandidateNode::TransitStop(BoardingPointId::new(to))
+            RouteNode::TransitStop(BoardingPointId::new(to))
         },
         ride: TimedTransitRide {
             ride: TransitRide {
@@ -279,10 +278,10 @@ fn transit_edge(
 #[test]
 fn same_service_continuation_is_one_leg_without_a_transfer() {
     let start = datetime!(2026-08-31 10:00 UTC);
-    let mut graph = MultimodalGraph::default();
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::Origin,
-        to: CandidateNode::TransitStop(BoardingPointId::new("a")),
+    let mut graph = RouteGraph::default();
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::Origin,
+        to: RouteNode::TransitStop(BoardingPointId::new("a")),
         metric: StreetMetric {
             duration_seconds: 60,
             distance_metres: 100,
@@ -311,10 +310,10 @@ fn same_service_continuation_is_one_leg_without_a_transfer() {
 #[test]
 fn changing_service_after_a_connector_counts_one_transfer() {
     let start = datetime!(2026-08-31 10:00 UTC);
-    let mut graph = MultimodalGraph::default();
-    graph.add_edge(CandidateEdge::Walking {
-        from: CandidateNode::Origin,
-        to: CandidateNode::TransitStop(BoardingPointId::new("a")),
+    let mut graph = RouteGraph::default();
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::Origin,
+        to: RouteNode::TransitStop(BoardingPointId::new("a")),
         metric: StreetMetric {
             duration_seconds: 60,
             distance_metres: 100,
@@ -327,10 +326,13 @@ fn changing_service_after_a_connector_counts_one_transfer() {
         start + time::Duration::minutes(2),
         start + time::Duration::minutes(8),
     ));
-    graph.add_edge(CandidateEdge::Transfer {
-        from: CandidateNode::TransitStop(BoardingPointId::new("b")),
-        to: CandidateNode::TransitStop(BoardingPointId::new("c")),
-        duration_seconds: 60,
+    graph.add_edge(RouteEdge::Walk {
+        from: RouteNode::TransitStop(BoardingPointId::new("b")),
+        to: RouteNode::TransitStop(BoardingPointId::new("c")),
+        metric: StreetMetric {
+            duration_seconds: 60,
+            distance_metres: 0,
+        },
     });
     graph.add_edge(transit_edge(
         "metro-c",

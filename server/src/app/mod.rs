@@ -20,14 +20,14 @@ pub mod routes;
 
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
+    domain::transit::TransitNetwork,
     observability::OperationalMetrics,
-    realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
-    routing::{JourneyPlanningService, PlanningError, PlanningOutcome, RoutingService},
+    providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
+    routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{
         GraphRevision, ProviderCapabilities, ProviderCategory, ProviderError,
         StreetRoutingProvider, StreetRoutingSession,
     },
-    transit::TransitNetwork,
 };
 
 #[derive(Clone)]
@@ -36,7 +36,7 @@ struct AppState {
     routing: RoutingService,
     transit_network: Arc<TransitNetwork>,
     metrics: OperationalMetrics,
-    realtime_metrics: crate::realtime::RealtimeMetrics,
+    realtime_metrics: crate::providers::realtime::RealtimeMetrics,
     openapi: OpenApi,
 }
 
@@ -79,7 +79,7 @@ pub async fn build_router_with_realtime_and_network(
         provider,
         realtime,
         transit_network,
-        crate::realtime::DEFAULT_REALTIME_CACHE_TTL,
+        crate::providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
     )
     .await
 }
@@ -97,10 +97,9 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
     ));
     let realtime_metrics = realtime.metrics();
     let metrics = OperationalMetrics::default();
-    let journey_planning = JourneyPlanningService::new(street_routing.clone(), realtime)
+    let routing = RoutingService::new(street_routing.clone(), realtime)
         .with_transit_network(transit_network.clone())
         .with_metrics(metrics.clone());
-    let routing = RoutingService::new(journey_planning);
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
@@ -491,7 +490,7 @@ async fn journey_plan(
     if let Err(error) = request.validate() {
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
-    match state.routing.plan(request).await {
+    match state.routing.route(request).await {
         Ok(outcome) => {
             match &outcome {
                 PlanningOutcome::Options(result) => state

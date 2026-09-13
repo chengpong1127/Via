@@ -1,4 +1,4 @@
-//! Immutable timetable data and the small transit portion of Via's planner.
+//! Immutable timetable data and the small transit portion of Via's routing model.
 //!
 //! This is intentionally independent of TDX (or any other provider). Static-data
 //! adapters build these records offline, and a planning request only reads the
@@ -13,9 +13,9 @@ use std::{
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
-use crate::{
-    api::{JourneyMode, RequestCoordinate, normalize_to_taipei, taipei_offset},
-    normalization::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId},
+use super::ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId};
+use super::{
+    journey::JourneyMode, location::RequestCoordinate, normalize_to_taipei, taipei_offset,
 };
 
 pub const DEFAULT_MAX_TRANSFERS: usize = 2;
@@ -530,8 +530,8 @@ impl TransitNetwork {
         )
     }
 
-    /// Generate a bounded static transit backbone for a selected set of
-    /// provider-neutral services. Timing is resolved by the planner later.
+    /// Generate a bounded static transit topology for a selected set of
+    /// provider-neutral services. Timing is resolved by routing later.
     pub fn itineraries_for_services(
         &self,
         access: &[TransitAccess],
