@@ -3,11 +3,12 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use url::Url;
 use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
-    postgres::PostgresIdentityResolver,
+    domain::transit::TransitNetwork,
+    providers::PostgresIdentityResolver,
+    providers::{
+        GraphRevision, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
+    },
     realtime::DEFAULT_REALTIME_CACHE_TTL,
-    street::{GraphRevision, ValhallaConfig, ValhallaProvider},
-    tdx::{TdxRealtimeConfig, TdxRealtimeProvider},
-    transit::TransitNetwork,
 };
 
 #[tokio::main]

@@ -9,7 +9,7 @@ use crate::{
 
 use super::{
     StreetMetric,
-    bike_share_expansion::{BikeShareGap, BikeShareOpportunity},
+    bike_share_expansion::BikeShareOpportunity,
     candidate_discovery::TransitCandidateNetwork,
     transit_timing::{TimedTransitBackbone, TimedTransitRide},
 };
@@ -20,6 +20,21 @@ pub enum CandidateNode {
     Destination,
     TransitStop(BoardingPointId),
     BikeShareStation(BikeShareStationId),
+}
+
+/// Provider-neutral names used by the routing boundary. The older candidate
+/// names remain available to avoid breaking downstream integrations.
+pub type Node = CandidateNode;
+pub type Edge = CandidateEdge;
+pub type BaseNetwork = MultimodalGraph;
+
+/// A rider-visible walking segment in the base network. BikeShare expansion
+/// treats this as the generic substitution seam.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WalkingEdge {
+    pub from: CandidateNode,
+    pub to: CandidateNode,
+    pub metric: StreetMetric,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,27 +140,7 @@ pub fn build_graph(
     opportunities: &[BikeShareOpportunity],
     bike_availability: &HashMap<BikeShareStationId, BikeAvailability>,
 ) -> MultimodalGraph {
-    let mut graph = MultimodalGraph::default();
-    graph.add_node(CandidateNode::Origin);
-    graph.add_node(CandidateNode::Destination);
-
-    for access in &candidate.origin_access {
-        graph.add_edge(CandidateEdge::Walking {
-            from: CandidateNode::Origin,
-            to: CandidateNode::TransitStop(access.access.stop_id.clone()),
-            metric: access.metric,
-        });
-    }
-    for egress in &candidate.destination_egress {
-        graph.add_edge(CandidateEdge::Walking {
-            from: CandidateNode::TransitStop(egress.stop_id.clone()),
-            to: CandidateNode::Destination,
-            metric: egress.metric,
-        });
-    }
-    for edge in &candidate.transfer_edges {
-        add_transfer(&mut graph, edge);
-    }
+    let mut graph = build_base_graph(candidate);
 
     for itinerary in &timed.itineraries {
         for (index, ride) in itinerary.rides.iter().enumerate() {
@@ -154,41 +149,22 @@ pub fn build_graph(
                 to: CandidateNode::TransitStop(ride.ride.alight_stop_id.clone()),
                 ride: ride.clone(),
             });
-            // A shared boarding point is an explicit zero-distance transfer
-            // in the candidate graph. Search still requires this edge before
-            // another transit leg can be boarded at the same node.
-            graph.add_edge(CandidateEdge::Transfer {
-                from: CandidateNode::TransitStop(ride.ride.alight_stop_id.clone()),
-                to: CandidateNode::TransitStop(ride.ride.alight_stop_id.clone()),
-                duration_seconds: network
-                    .transfer_seconds(&ride.ride.alight_stop_id, &ride.ride.alight_stop_id)
-                    .unwrap_or(0),
-            });
             if let Some(next) = itinerary.rides.get(index + 1)
-                && let Some(duration_seconds) =
-                    network.transfer_seconds(&ride.ride.alight_stop_id, &next.ride.board_stop_id)
+                && ride.ride.service_id != next.ride.service_id
+                && ride.ride.alight_stop_id == next.ride.board_stop_id
             {
                 graph.add_edge(CandidateEdge::Transfer {
                     from: CandidateNode::TransitStop(ride.ride.alight_stop_id.clone()),
                     to: CandidateNode::TransitStop(next.ride.board_stop_id.clone()),
-                    duration_seconds,
+                    duration_seconds: network
+                        .transfer_seconds(&ride.ride.alight_stop_id, &next.ride.board_stop_id)
+                        .unwrap_or_default(),
                 });
             }
         }
     }
 
     for opportunity in opportunities {
-        let (from, to) = match &opportunity.gap {
-            BikeShareGap::OriginToTransit(stop_id) => (
-                CandidateNode::Origin,
-                CandidateNode::TransitStop(stop_id.clone()),
-            ),
-            BikeShareGap::TransitToDestination(stop_id) => (
-                CandidateNode::TransitStop(stop_id.clone()),
-                CandidateNode::Destination,
-            ),
-            BikeShareGap::Direct => (CandidateNode::Origin, CandidateNode::Destination),
-        };
         let Some(pickup) = bike_availability
             .get(&opportunity.pickup_station_id)
             .cloned()
@@ -202,7 +178,7 @@ pub fn build_graph(
             continue;
         };
         graph.add_edge(CandidateEdge::Walking {
-            from,
+            from: opportunity.walking_edge.from.clone(),
             to: CandidateNode::BikeShareStation(opportunity.pickup_station_id.clone()),
             metric: opportunity.access,
         });
@@ -219,9 +195,42 @@ pub fn build_graph(
         });
         graph.add_edge(CandidateEdge::Walking {
             from: CandidateNode::BikeShareStation(opportunity.return_station_id.clone()),
-            to,
+            to: opportunity.walking_edge.to.clone(),
             metric: opportunity.egress,
         });
+    }
+    graph
+}
+
+/// Build the Walking + transfer base graph before any timed transit or
+/// BikeShare edges are added.
+pub fn build_base_graph(candidate: &TransitCandidateNetwork) -> MultimodalGraph {
+    let mut graph = MultimodalGraph::default();
+    graph.add_node(CandidateNode::Origin);
+    graph.add_node(CandidateNode::Destination);
+    if let Some(metric) = candidate.direct_walking {
+        graph.add_edge(CandidateEdge::Walking {
+            from: CandidateNode::Origin,
+            to: CandidateNode::Destination,
+            metric,
+        });
+    }
+    for access in &candidate.origin_access {
+        graph.add_edge(CandidateEdge::Walking {
+            from: CandidateNode::Origin,
+            to: CandidateNode::TransitStop(access.access.stop_id.clone()),
+            metric: access.metric,
+        });
+    }
+    for egress in &candidate.destination_egress {
+        graph.add_edge(CandidateEdge::Walking {
+            from: CandidateNode::TransitStop(egress.stop_id.clone()),
+            to: CandidateNode::Destination,
+            metric: egress.metric,
+        });
+    }
+    for edge in &candidate.transfer_edges {
+        add_transfer(&mut graph, edge);
     }
     graph
 }

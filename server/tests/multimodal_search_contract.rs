@@ -9,6 +9,7 @@ use via_server::{
         StreetMetric,
         multimodal_graph::{CandidateEdge, CandidateNode, MultimodalGraph},
         search::{self, SearchLabel, SearchLimits},
+        transit_timing::TimedTransitRide,
     },
     transit::{TransitMode, TransitRide},
 };
@@ -240,4 +241,106 @@ fn search_expansion_limit_is_a_hard_bound() {
     let result = search::search(&graph, datetime!(2026-08-31 10:00 UTC), None, &bounded);
     assert!(result.journeys.is_empty());
     assert_eq!(result.stats.expansions, 0);
+}
+
+fn transit_edge(
+    service_id: &str,
+    from: &str,
+    to: &str,
+    departure: time::OffsetDateTime,
+    arrival: time::OffsetDateTime,
+) -> CandidateEdge {
+    CandidateEdge::Transit {
+        from: CandidateNode::TransitStop(BoardingPointId::new(from)),
+        to: if to == "destination" {
+            CandidateNode::Destination
+        } else {
+            CandidateNode::TransitStop(BoardingPointId::new(to))
+        },
+        ride: TimedTransitRide {
+            ride: TransitRide {
+                transit_mode: TransitMode::Bus,
+                service_id: TransitServiceId::new(service_id),
+                trip_id: ScheduledRunId::new(format!("trip-{service_id}-{from}-{to}")),
+                board_stop_id: BoardingPointId::new(from),
+                alight_stop_id: BoardingPointId::new(to),
+                scheduled_departure: departure,
+                scheduled_arrival: arrival,
+            },
+            departure,
+            arrival,
+            evidence: Vec::new(),
+            required_states: Vec::new(),
+            schedule_only: false,
+        },
+    }
+}
+
+#[test]
+fn same_service_continuation_is_one_leg_without_a_transfer() {
+    let start = datetime!(2026-08-31 10:00 UTC);
+    let mut graph = MultimodalGraph::default();
+    graph.add_edge(CandidateEdge::Walking {
+        from: CandidateNode::Origin,
+        to: CandidateNode::TransitStop(BoardingPointId::new("a")),
+        metric: StreetMetric {
+            duration_seconds: 60,
+            distance_metres: 100,
+        },
+    });
+    graph.add_edge(transit_edge(
+        "bus-a",
+        "a",
+        "b",
+        start + time::Duration::minutes(2),
+        start + time::Duration::minutes(8),
+    ));
+    graph.add_edge(transit_edge(
+        "bus-a",
+        "b",
+        "destination",
+        start + time::Duration::minutes(8),
+        start + time::Duration::minutes(12),
+    ));
+
+    let result = search::search(&graph, start, None, &limits());
+    assert_eq!(result.journeys.len(), 1);
+    assert_eq!(result.journeys[0].transfer_count, 0);
+}
+
+#[test]
+fn changing_service_after_a_connector_counts_one_transfer() {
+    let start = datetime!(2026-08-31 10:00 UTC);
+    let mut graph = MultimodalGraph::default();
+    graph.add_edge(CandidateEdge::Walking {
+        from: CandidateNode::Origin,
+        to: CandidateNode::TransitStop(BoardingPointId::new("a")),
+        metric: StreetMetric {
+            duration_seconds: 60,
+            distance_metres: 100,
+        },
+    });
+    graph.add_edge(transit_edge(
+        "bus-a",
+        "a",
+        "b",
+        start + time::Duration::minutes(2),
+        start + time::Duration::minutes(8),
+    ));
+    graph.add_edge(CandidateEdge::Transfer {
+        from: CandidateNode::TransitStop(BoardingPointId::new("b")),
+        to: CandidateNode::TransitStop(BoardingPointId::new("c")),
+        duration_seconds: 60,
+    });
+    graph.add_edge(transit_edge(
+        "metro-c",
+        "c",
+        "destination",
+        start + time::Duration::minutes(10),
+        start + time::Duration::minutes(20),
+    ));
+
+    let result = search::search(&graph, start, None, &limits());
+    assert_eq!(result.journeys.len(), 1);
+    assert_eq!(result.journeys[0].transfer_count, 1);
 }

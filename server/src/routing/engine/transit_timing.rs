@@ -12,7 +12,10 @@ use crate::{
     live_status::FreshnessState,
     normalization::{ArrivalState, BoardingPointId, TransitServiceId},
     realtime::{NormalizedRealtimeValue, RealtimeValue},
-    transit::{TransitMode, TransitNetwork, TransitRide, TransitService},
+    transit::{
+        TransitItinerary, TransitMode, TransitNetwork, TransitRide, TransitService,
+        TransitTopologyItinerary,
+    },
 };
 
 use super::{PlanningContext, candidate_discovery::TransitCandidateNetwork};
@@ -181,6 +184,7 @@ impl TransitDepartureResolver for NetworkTransitDepartureResolver<'_> {
             TransitMode::Bus => Ok(realtime
                 .next_arrivals(&service.id, boarding_point, after)
                 .into_iter()
+                .filter(|status| status.freshness.state == FreshnessState::Fresh)
                 .filter_map(|status| {
                     let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
                         return None;
@@ -192,9 +196,12 @@ impl TransitDepartureResolver for NetworkTransitDepartureResolver<'_> {
                         return None;
                     }
                     let predicted = arrival.predicted_arrival_at?;
-                    let delay = predicted - scheduled.scheduled_departure;
-                    let adjusted_arrival = scheduled.scheduled_arrival + delay;
-                    (adjusted_arrival >= predicted).then_some(ResolvedDeparture {
+                    let ride_duration = (scheduled.scheduled_arrival
+                        - scheduled.scheduled_departure)
+                        .whole_seconds()
+                        .max(1);
+                    let adjusted_arrival = predicted + time::Duration::seconds(ride_duration);
+                    Some(ResolvedDeparture {
                         ride: scheduled.clone(),
                         departure: predicted,
                         arrival: adjusted_arrival,
@@ -204,26 +211,23 @@ impl TransitDepartureResolver for NetworkTransitDepartureResolver<'_> {
                 })
                 .collect()),
             TransitMode::Metro | TransitMode::Rail | TransitMode::HighSpeedRail => {
-                let service_day = self.network.service_day(scheduled.scheduled_departure);
-                let mut departures = if scheduled.scheduled_departure >= after {
-                    vec![scheduled.clone()]
-                } else {
-                    self.network
-                        .trips
-                        .iter()
-                        .filter(|trip| trip.service_id == service.id && trip.runs_on(service_day))
-                        .filter_map(|trip| {
-                            self.network.scheduled_ride(
-                                service_day,
-                                &service.id,
-                                &trip.id,
-                                boarding_point,
-                                &scheduled.alight_stop_id,
-                            )
-                        })
-                        .filter(|ride| ride.scheduled_departure >= after)
-                        .collect::<Vec<_>>()
-                };
+                let service_day = self.network.service_day(after);
+                let mut departures = self
+                    .network
+                    .trips
+                    .iter()
+                    .filter(|trip| trip.service_id == service.id && trip.runs_on(service_day))
+                    .filter_map(|trip| {
+                        self.network.scheduled_ride(
+                            service_day,
+                            &service.id,
+                            &trip.id,
+                            boarding_point,
+                            &scheduled.alight_stop_id,
+                        )
+                    })
+                    .filter(|ride| ride.scheduled_departure >= after)
+                    .collect::<Vec<_>>();
                 departures.sort_by(|left, right| {
                     left.scheduled_departure
                         .cmp(&right.scheduled_departure)
@@ -408,6 +412,33 @@ pub(crate) async fn resolve_backbone(
             && timed_signature(&left.rides) == timed_signature(&right.rides)
     });
     TimedTransitBackbone { itineraries: timed }
+}
+
+/// Resolve a topology-only backbone. The topology may contain synthetic ride
+/// shapes for buses, including services with no active static trip. Rail-like
+/// services still pass through the schedule resolver and therefore remain
+/// schedule-driven.
+pub(crate) async fn resolve_topology_backbone(
+    network: &TransitNetwork,
+    candidate: &TransitCandidateNetwork,
+    topologies: &[TransitTopologyItinerary],
+    realtime: &RealtimeContext,
+    context: &PlanningContext,
+) -> TimedTransitBackbone {
+    let itineraries = topologies
+        .iter()
+        .map(|topology| TransitItinerary {
+            service_day: topology.service_day,
+            access_departure_at: context.search_start,
+            arrival_at: topology
+                .rides
+                .last()
+                .map(|ride| ride.scheduled_arrival)
+                .unwrap_or(context.search_start),
+            rides: topology.rides.clone(),
+        })
+        .collect::<Vec<_>>();
+    resolve_backbone(network, candidate, &itineraries, realtime, context).await
 }
 
 fn service_condition_blocks(status: &NormalizedRealtimeValue, at: OffsetDateTime) -> bool {

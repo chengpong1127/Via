@@ -7,11 +7,13 @@ use std::collections::{HashSet, VecDeque};
 use crate::{
     api::PlanningRequest,
     normalization::TransitServiceId,
-    planner::{PlanningContext, PlanningLimits, StreetMetric, planner_coordinate, street_metric},
+    routing::engine::{
+        PlanningContext, PlanningLimits, StreetMetric, planner_coordinate, street_metric,
+    },
     street::{
         MatrixOrientation, MatrixQuery, ProviderError, StreetRoutingSession, StreetTravelMode,
     },
-    transit::{TransferEdge, TransitAccess, TransitNetwork},
+    transit::{TransferEdge, TransitAccess, TransitNetwork, TransitTopologyItinerary},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +35,11 @@ pub struct TransitCandidateNetwork {
     pub transfer_edges: Vec<TransferEdge>,
     pub origin_access: Vec<TransitAccessCandidate>,
     pub destination_egress: Vec<TransitEgressCandidate>,
+    /// Untimed paths found by destination-oriented service-pattern expansion.
+    pub topology_itineraries: Vec<TransitTopologyItinerary>,
+    /// The direct walking edge is part of the base network when street routing
+    /// can reach the destination.
+    pub direct_walking: Option<StreetMetric>,
 }
 
 impl TransitCandidateNetwork {
@@ -92,17 +99,28 @@ impl<'a> TransitCandidateDiscovery<'a> {
 
         let origin_pool = self
             .network
-            .nearest_stops(request.origin.coordinate, limits.max_candidate_stops.max(1))
+            .nearest_stops(
+                request.origin.coordinate,
+                limits.max_origin_side_stops.max(1),
+            )
             .into_iter()
+            .filter(|stop| {
+                geographic_distance_metres(request.origin.coordinate, stop.coordinate)
+                    <= u64::from(limits.max_walking_radius_metres)
+            })
             .map(|stop| (stop.id.clone(), stop.coordinate))
             .collect::<Vec<_>>();
         let destination_pool = self
             .network
             .nearest_stops(
                 request.destination.coordinate,
-                limits.max_candidate_stops.max(1),
+                limits.max_destination_side_stops.max(1),
             )
             .into_iter()
+            .filter(|stop| {
+                geographic_distance_metres(request.destination.coordinate, stop.coordinate)
+                    <= u64::from(limits.max_walking_radius_metres)
+            })
             .map(|stop| (stop.id.clone(), stop.coordinate))
             .collect::<Vec<_>>();
         if origin_pool.is_empty() || destination_pool.is_empty() {
@@ -208,6 +226,29 @@ impl<'a> TransitCandidateDiscovery<'a> {
             .collect::<HashSet<_>>();
         let (services, path_edges) = self.relevant_services(&origin_access, &egress_ids, limits);
         let service_set = services.iter().cloned().collect::<HashSet<_>>();
+        let service_day = self.network.service_day(context.effective_search_time);
+        let topology_itineraries = self.topology_itineraries(
+            (request.origin.coordinate, request.destination.coordinate),
+            &origin_access,
+            &egress_ids,
+            &service_set,
+            service_day,
+            limits,
+        );
+        let mut path_edges = path_edges;
+        for itinerary in &topology_itineraries {
+            for pair in itinerary.rides.windows(2) {
+                if pair[0].alight_stop_id == pair[1].board_stop_id
+                    && pair[0].service_id != pair[1].service_id
+                {
+                    path_edges.push(TransferEdge::new(
+                        pair[0].alight_stop_id.clone(),
+                        pair[1].board_stop_id.clone(),
+                        self.network.default_transfer_seconds,
+                    ));
+                }
+            }
+        }
         let mut boarding_points = origin_access
             .iter()
             .map(|access| access.access.stop_id.clone())
@@ -217,6 +258,12 @@ impl<'a> TransitCandidateDiscovery<'a> {
                     .map(|egress| egress.stop_id.clone()),
             )
             .collect::<Vec<_>>();
+        boarding_points.extend(topology_itineraries.iter().flat_map(|itinerary| {
+            itinerary
+                .rides
+                .iter()
+                .flat_map(|ride| [ride.board_stop_id.clone(), ride.alight_stop_id.clone()])
+        }));
         boarding_points.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         boarding_points.dedup();
         boarding_points.truncate(limits.max_candidate_stops.max(1));
@@ -237,6 +284,8 @@ impl<'a> TransitCandidateDiscovery<'a> {
             transfer_edges,
             origin_access,
             destination_egress,
+            topology_itineraries,
+            direct_walking: None,
         }
         .sorted())
     }
@@ -248,24 +297,34 @@ impl<'a> TransitCandidateDiscovery<'a> {
         limits: &PlanningLimits,
     ) -> (Vec<TransitServiceId>, Vec<TransferEdge>) {
         let max_transfers = limits.max_transfer_count as usize;
-        let max_states = limits.max_candidate_states;
-        let max_downstream_stops = limits.max_candidate_stops;
+        let max_states = limits.max_topology_search_states;
+        let max_upstream_stops = limits.max_topology_stops_visited;
         let max_services_per_stop = limits.max_services_per_stop;
         let max_services = limits.max_candidate_services;
         #[derive(Clone)]
         struct State {
             stop_id: crate::normalization::BoardingPointId,
+            current_service: Option<TransitServiceId>,
             transfers: usize,
+            stops_visited: usize,
             services: Vec<TransitServiceId>,
             edges: Vec<TransferEdge>,
         }
 
         let mut queue = VecDeque::new();
         let mut visited = HashSet::new();
-        for access in origin_access {
+        let origin_ids = origin_access
+            .iter()
+            .map(|access| access.access.stop_id.clone())
+            .collect::<HashSet<_>>();
+        let mut destination_ids = egress_ids.iter().cloned().collect::<Vec<_>>();
+        destination_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        for stop_id in destination_ids.into_iter().take(max_states.max(1)) {
             queue.push_back(State {
-                stop_id: access.access.stop_id.clone(),
+                stop_id,
+                current_service: None,
                 transfers: 0,
+                stops_visited: 0,
                 services: Vec::new(),
                 edges: Vec::new(),
             });
@@ -285,17 +344,19 @@ impl<'a> TransitCandidateDiscovery<'a> {
             if visited.len() >= max_states {
                 break;
             }
-            if !visited.insert((state.stop_id.clone(), state.transfers)) {
+            if !visited.insert((
+                state.stop_id.clone(),
+                state.current_service.clone(),
+                state.transfers,
+                state.services.clone(),
+            )) {
                 continue;
             }
-            if egress_ids.contains(&state.stop_id) && !state.services.is_empty() {
+            if origin_ids.contains(&state.stop_id) && !state.services.is_empty() {
                 relevant_services.extend(state.services.iter().cloned());
                 relevant_edges.extend(state.edges.iter().cloned());
-                if relevant_services.len() >= max_services {
-                    break;
-                }
             }
-            if state.transfers > max_transfers {
+            if state.transfers > max_transfers || state.stops_visited >= max_upstream_stops {
                 continue;
             }
 
@@ -313,7 +374,7 @@ impl<'a> TransitCandidateDiscovery<'a> {
             services.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
             services.truncate(max_services_per_stop.max(1));
             for service in services {
-                let Some(board_index) = service
+                let Some(alight_index) = service
                     .pattern
                     .iter()
                     .position(|stop_id| stop_id == &state.stop_id)
@@ -323,43 +384,50 @@ impl<'a> TransitCandidateDiscovery<'a> {
                 for next_stop in service
                     .pattern
                     .iter()
-                    .skip(board_index + 1)
-                    .take(max_downstream_stops.max(1))
+                    .take(alight_index)
+                    .rev()
+                    .take(max_upstream_stops.max(1))
                 {
                     if queue.len() >= max_states {
                         break;
                     }
+                    let service_change = state
+                        .current_service
+                        .as_ref()
+                        .is_some_and(|current| current != &service.id);
+                    let transfers = state.transfers + usize::from(service_change);
+                    if transfers > max_transfers {
+                        continue;
+                    }
                     let mut next_services = state.services.clone();
                     next_services.push(service.id.clone());
-                    next_services.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-                    next_services.dedup();
                     let next_state = State {
                         stop_id: next_stop.clone(),
-                        transfers: state.transfers,
+                        current_service: Some(service.id.clone()),
+                        transfers,
+                        stops_visited: state.stops_visited.saturating_add(1),
                         services: next_services,
                         edges: state.edges.clone(),
                     };
-                    if egress_ids.contains(next_stop) {
-                        relevant_services.extend(next_state.services.iter().cloned());
-                        relevant_edges.extend(next_state.edges.iter().cloned());
-                        if relevant_services.len() >= max_services {
-                            break;
-                        }
-                    }
                     queue.push_back(next_state.clone());
-                    if state.transfers < max_transfers {
-                        for edge in transfer_edges.iter().filter(|edge| &edge.from == next_stop) {
-                            if queue.len() >= max_states {
-                                break;
-                            }
-                            let mut transferred = next_state.clone();
-                            transferred.stop_id = edge.to.clone();
-                            transferred.transfers += 1;
-                            transferred.edges.push((*edge).clone());
-                            queue.push_back(transferred);
-                        }
-                    }
                 }
+            }
+            // Reverse the physical transfer edges. Keeping the downstream
+            // service in the state means a service change is counted only
+            // when an upstream service is selected, not when a graph node is
+            // crossed.
+            for edge in transfer_edges
+                .iter()
+                .filter(|edge| edge.to == state.stop_id)
+            {
+                if queue.len() >= max_states {
+                    break;
+                }
+                let mut transferred = state.clone();
+                transferred.stop_id = edge.from.clone();
+                transferred.edges.push((*edge).clone());
+                transferred.stops_visited = transferred.stops_visited.saturating_add(1);
+                queue.push_back(transferred);
             }
         }
         relevant_services.sort_by(|left, right| left.as_str().cmp(right.as_str()));
@@ -375,6 +443,152 @@ impl<'a> TransitCandidateDiscovery<'a> {
         relevant_edges.dedup();
         (relevant_services, relevant_edges)
     }
+
+    fn topology_itineraries(
+        &self,
+        geographic_bounds: (crate::api::RequestCoordinate, crate::api::RequestCoordinate),
+        origin_access: &[TransitAccessCandidate],
+        egress_ids: &HashSet<crate::normalization::BoardingPointId>,
+        service_ids: &HashSet<TransitServiceId>,
+        service_day: time::Date,
+        limits: &PlanningLimits,
+    ) -> Vec<TransitTopologyItinerary> {
+        #[derive(Clone)]
+        struct State {
+            stop_id: crate::normalization::BoardingPointId,
+            current_service: Option<TransitServiceId>,
+            transfers: usize,
+            stops_visited: usize,
+            rides: Vec<crate::transit::TransitRide>,
+        }
+
+        let mut services = self.network.services.iter().collect::<Vec<_>>();
+        services.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        let max_states = limits.max_topology_search_states.max(1);
+        let mut queue = origin_access
+            .iter()
+            .take(max_states)
+            .map(|access| State {
+                stop_id: access.access.stop_id.clone(),
+                current_service: None,
+                transfers: 0,
+                stops_visited: 0,
+                rides: Vec::new(),
+            })
+            .collect::<VecDeque<_>>();
+        let mut visited = HashSet::new();
+        let mut results = Vec::new();
+        while let Some(state) = queue.pop_front() {
+            if visited.len() >= max_states || results.len() >= limits.max_transit_itineraries.max(1)
+            {
+                break;
+            }
+            let signature = state
+                .rides
+                .iter()
+                .map(|ride| {
+                    (
+                        ride.service_id.clone(),
+                        ride.board_stop_id.clone(),
+                        ride.alight_stop_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !visited.insert((
+                state.stop_id.clone(),
+                state.current_service.clone(),
+                state.transfers,
+                signature,
+            )) {
+                continue;
+            }
+            if egress_ids.contains(&state.stop_id) && !state.rides.is_empty() {
+                results.push(TransitTopologyItinerary {
+                    service_day,
+                    rides: state.rides.clone(),
+                });
+                continue;
+            }
+            if state.rides.len() > limits.max_transfer_count as usize + 1
+                || state.stops_visited >= limits.max_topology_stops_visited.max(1)
+            {
+                continue;
+            }
+            for service in services.iter().filter(|service| {
+                service_ids.contains(&service.id)
+                    && service.pattern.iter().any(|id| id == &state.stop_id)
+            }) {
+                let Some(board_index) = service.pattern.iter().position(|id| id == &state.stop_id)
+                else {
+                    continue;
+                };
+                let service_change = state
+                    .current_service
+                    .as_ref()
+                    .is_some_and(|current| current != &service.id);
+                let transfers = state.transfers + usize::from(service_change);
+                if transfers > limits.max_transfer_count as usize {
+                    continue;
+                }
+                for (offset, alight_stop_id) in service
+                    .pattern
+                    .iter()
+                    .skip(board_index + 1)
+                    .take(limits.max_topology_stops_visited.max(1))
+                    .enumerate()
+                {
+                    let stops_visited =
+                        state.stops_visited.saturating_add(offset.saturating_add(1));
+                    if stops_visited > limits.max_topology_stops_visited.max(1)
+                        || visited.len().saturating_add(queue.len()) >= max_states
+                    {
+                        break;
+                    }
+                    let Some(ride) = self.network.topology_ride(
+                        service_day,
+                        &service.id,
+                        &state.stop_id,
+                        alight_stop_id,
+                    ) else {
+                        continue;
+                    };
+                    let mut next = state.clone();
+                    next.stop_id = alight_stop_id.clone();
+                    next.current_service = Some(service.id.clone());
+                    next.transfers = transfers;
+                    next.stops_visited = stops_visited;
+                    next.rides.push(ride);
+                    queue.push_back(next);
+                }
+            }
+            for edge in self
+                .network
+                .transfer_edges
+                .iter()
+                .filter(|edge| edge.from == state.stop_id)
+            {
+                if visited.len().saturating_add(queue.len()) >= max_states {
+                    break;
+                }
+                let mut next = state.clone();
+                next.stop_id = edge.to.clone();
+                next.stops_visited = next.stops_visited.saturating_add(1);
+                queue.push_back(next);
+            }
+        }
+        results.sort_by(|left, right| {
+            topology_signature(&left.rides).cmp(&topology_signature(&right.rides))
+        });
+        results.dedup_by(|left, right| left.rides == right.rides);
+        let direct_distance = geographic_distance_metres(geographic_bounds.0, geographic_bounds.1);
+        let max_geographic_distance =
+            direct_distance.saturating_add(u64::from(limits.max_geographic_detour_metres));
+        results.retain(|itinerary| {
+            topology_geographic_distance(self.network, &itinerary.rides) <= max_geographic_distance
+        });
+        results.truncate(limits.max_transit_itineraries.max(1));
+        results
+    }
 }
 
 impl TransitCandidateNetwork {
@@ -384,6 +598,46 @@ impl TransitCandidateNetwork {
         self.services.dedup();
         self
     }
+}
+
+fn topology_signature(rides: &[crate::transit::TransitRide]) -> String {
+    rides
+        .iter()
+        .map(|ride| {
+            format!(
+                "{}:{}:{}",
+                ride.service_id.as_str(),
+                ride.board_stop_id.as_str(),
+                ride.alight_stop_id.as_str()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn geographic_distance_metres(
+    from: crate::api::RequestCoordinate,
+    to: crate::api::RequestCoordinate,
+) -> u64 {
+    let latitude = ((from.latitude + to.latitude) / 2.0).to_radians();
+    let north = (to.latitude - from.latitude) * 111_320.0;
+    let east = (to.longitude - from.longitude) * 111_320.0 * latitude.cos();
+    north.hypot(east).max(0.0).round() as u64
+}
+
+fn topology_geographic_distance(
+    network: &TransitNetwork,
+    rides: &[crate::transit::TransitRide],
+) -> u64 {
+    rides
+        .iter()
+        .filter_map(|ride| {
+            Some(geographic_distance_metres(
+                network.stop(&ride.board_stop_id)?.coordinate,
+                network.stop(&ride.alight_stop_id)?.coordinate,
+            ))
+        })
+        .sum()
 }
 
 #[cfg(test)]

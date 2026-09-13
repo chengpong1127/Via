@@ -7,6 +7,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::street::Coordinate;
 
+pub mod models;
+
 pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
 pub const TAIPEI_TIME_ZONE: &str = "Asia/Taipei";
@@ -117,27 +119,7 @@ impl TryFrom<RequestCoordinate> for Coordinate {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Deserialize,
-    Serialize,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    utoipa::ToSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum JourneyMode {
-    Walking,
-    BikeShare,
-    Transit,
-    #[serde(other)]
-    Unknown,
-}
+pub use crate::domain::journey::JourneyMode;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

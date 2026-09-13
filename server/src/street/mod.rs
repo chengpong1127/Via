@@ -1,5 +1,4 @@
 mod fake;
-mod valhalla;
 
 use std::{fmt, sync::Arc};
 
@@ -12,11 +11,11 @@ const MAX_MATRIX_SOURCES: usize = 32;
 const MAX_MATRIX_TARGETS: usize = 32;
 const MAX_CORRELATION_COORDINATES: usize = 64;
 
-pub use fake::{FakeProvider, FakeProviderBuilder};
-pub use valhalla::{
-    NoopOperationalEventObserver, OperationalEvent, OperationalEventObserver, RoutingOperation,
-    ValhallaConfig, ValhallaProvider,
+pub use crate::providers::valhalla::{
+    NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,
+    RoutingOperation, ValhallaConfig, ValhallaProvider,
 };
+pub use fake::{FakeProvider, FakeProviderBuilder};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Coordinate {

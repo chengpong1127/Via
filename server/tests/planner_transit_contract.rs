@@ -765,3 +765,60 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
             .is_some_and(|(transit, bike)| transit < bike)
     }));
 }
+
+#[tokio::test]
+async fn bus_topology_can_create_a_departure_without_a_static_timetable_trip() {
+    let revision = GraphRevision::new("revision-a");
+    let origin = coordinate(25.000, 121.500);
+    let first = coordinate(25.010, 121.510);
+    let second = coordinate(25.015, 121.515);
+    let destination = coordinate(25.020, 121.520);
+    let provider = FakeProvider::builder(revision.clone())
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            first,
+            path(revision.clone(), origin, first, 120),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            second,
+            destination,
+            path(revision.clone(), second, destination, 120),
+        )
+        .build();
+    let now = datetime!(2026-08-31 10:00 +08:00);
+    let realtime = FixtureRealtime {
+        values: vec![normalized(
+            RealtimeValue::ArrivalEstimate(ArrivalEstimate {
+                transit_service_id: TransitServiceId::new("via_bus_1"),
+                boarding_point_id: BoardingPointId::new("via_bus_boarding_1"),
+                predicted_arrival_at: Some(datetime!(2026-08-31 10:12 +08:00)),
+                state: ArrivalState::Predicted,
+                transmitted_at: now,
+            }),
+            now,
+        )],
+        ..Default::default()
+    };
+    let mut network = network(
+        TransitMode::Bus,
+        "via_bus_1",
+        "via_bus_boarding_1",
+        "via_bus_boarding_2",
+    );
+    network.trips.clear();
+    let app =
+        build_router_with_realtime_and_network(Arc::new(provider), Arc::new(realtime), network)
+            .await
+            .unwrap();
+    let body = response_body(app, request()).await;
+    assert_eq!(
+        body["journey_options"][0]["legs"][1]["details"]["transit_mode"],
+        "bus"
+    );
+    assert_eq!(
+        body["journey_options"][0]["legs"][1]["departure_time"],
+        "2026-08-31T10:12:00+08:00"
+    );
+}

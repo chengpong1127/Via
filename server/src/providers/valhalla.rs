@@ -16,7 +16,7 @@ use tokio::{
 };
 use url::Url;
 
-use super::{
+use crate::street::{
     Attribution, Coordinate, Correlation, DetailedPath, DetailedPathQuery, GraphRevision, Maneuver,
     ManeuverKind, MatrixCell, MatrixQuery, MatrixReachability, MatrixResult, Metres,
     ProviderCapabilities, ProviderCategory, ProviderError, ProviderStatus, RoutingConstraints,

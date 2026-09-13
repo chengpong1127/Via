@@ -1,32 +1,23 @@
-//! Phase 3: expand only local BikeShare connectors around timed transit
-//! access/egress gaps.  No station is added to the graph until it survives
-//! this spatial and competitive pruning step.
-
-use std::collections::HashSet;
+//! Generic BikeShare substitution for eligible walking edges.
 
 use crate::{
     api::{JourneyMode, PlanningRequest, RequestCoordinate},
-    normalization::BoardingPointId,
-    planner::{PlanningContext, PlanningLimits, StreetMetric, planner_coordinate, street_metric},
+    routing::engine::{
+        PlanningContext, PlanningLimits, StreetMetric, planner_coordinate, street_metric,
+    },
     street::{
-        MatrixOrientation, MatrixQuery, ProviderError, RoutingConstraints, StreetRoutingSession,
-        StreetTravelMode,
+        Coordinate, MatrixOrientation, MatrixQuery, ProviderError, RoutingConstraints,
+        StreetRoutingSession, StreetTravelMode,
     },
     transit::{BikeShareStation, TransitNetwork},
 };
 
-use super::{candidate_discovery::TransitCandidateNetwork, transit_timing::TimedTransitBackbone};
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum BikeShareGap {
-    OriginToTransit(BoardingPointId),
-    TransitToDestination(BoardingPointId),
-    Direct,
-}
+use super::multimodal_graph::{CandidateEdge, CandidateNode, MultimodalGraph, WalkingEdge};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BikeShareOpportunity {
-    pub gap: BikeShareGap,
+    /// The walking edge this BikeShare path can replace.
+    pub walking_edge: WalkingEdge,
     pub pickup_station_id: crate::normalization::BikeShareStationId,
     pub return_station_id: crate::normalization::BikeShareStationId,
     pub access: StreetMetric,
@@ -37,6 +28,8 @@ pub struct BikeShareOpportunity {
 
 #[derive(Clone, Debug, Default)]
 pub struct BikeShareExpansion {
+    /// Only station IDs that survived spatial and competitive pruning are
+    /// returned for demand-driven realtime enrichment.
     pub opportunities: Vec<BikeShareOpportunity>,
     pub station_ids: Vec<crate::normalization::BikeShareStationId>,
     pub stations_considered: usize,
@@ -67,105 +60,60 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
         request: &PlanningRequest,
         context: &PlanningContext,
         limits: &PlanningLimits,
-        candidate: &TransitCandidateNetwork,
-        timed: &TimedTransitBackbone,
+        base: &MultimodalGraph,
     ) -> Result<BikeShareExpansion, ProviderError> {
         if !request.selected_modes.contains(&JourneyMode::BikeShare) {
             return Ok(BikeShareExpansion::default());
         }
-        let mut gaps = Vec::new();
-        let mut seen = HashSet::new();
-        if timed.itineraries.is_empty() {
-            gaps.push(BikeShareGap::Direct);
-        } else {
-            for itinerary in &timed.itineraries {
-                if let Some(first) = itinerary.rides.first()
-                    && let Some(access) = candidate.access_for(&first.ride.board_stop_id)
-                    && access.metric.duration_seconds >= limits.min_walking_before_bike_seconds
-                    && seen.insert(BikeShareGap::OriginToTransit(
-                        first.ride.board_stop_id.clone(),
-                    ))
-                {
-                    gaps.push(BikeShareGap::OriginToTransit(
-                        first.ride.board_stop_id.clone(),
-                    ));
-                }
-                if let Some(last) = itinerary.rides.last()
-                    && let Some(egress) = candidate.egress_for(&last.ride.alight_stop_id)
-                    && egress.metric.duration_seconds >= limits.min_walking_before_bike_seconds
-                    && seen.insert(BikeShareGap::TransitToDestination(
-                        last.ride.alight_stop_id.clone(),
-                    ))
-                {
-                    gaps.push(BikeShareGap::TransitToDestination(
-                        last.ride.alight_stop_id.clone(),
-                    ));
-                }
-            }
-        }
-        gaps.sort_by_key(gap_sort_key);
 
-        let origin = planner_coordinate(request.origin.coordinate)?;
-        let destination = planner_coordinate(request.destination.coordinate)?;
+        let mut walking_edges = base
+            .edges
+            .iter()
+            .filter_map(|edge| match edge {
+                CandidateEdge::Walking { from, to, metric } => Some(WalkingEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    metric: *metric,
+                }),
+                // Physical transfers are walking opportunities even while a
+                // transfer edge remains a compatibility graph separator.
+                CandidateEdge::Transfer {
+                    from,
+                    to,
+                    duration_seconds,
+                } => Some(WalkingEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    metric: StreetMetric {
+                        duration_seconds: *duration_seconds,
+                        distance_metres: 0,
+                    },
+                }),
+                _ => None,
+            })
+            .filter(|edge| edge.metric.duration_seconds >= limits.min_walking_before_bike_seconds)
+            .collect::<Vec<_>>();
+        walking_edges.sort_by_key(walking_edge_key);
+        walking_edges.dedup();
+
         let mut opportunities = Vec::new();
         let mut stations_considered = 0;
-        for gap in gaps {
-            let (from, to, baseline) = match &gap {
-                BikeShareGap::OriginToTransit(stop_id) => {
-                    let target = self
-                        .network
-                        .stop(stop_id)
-                        .ok_or(ProviderError::UnreachableEndpoints)?;
-                    let baseline = candidate
-                        .access_for(stop_id)
-                        .map(|access| access.metric.duration_seconds)
-                        .unwrap_or(u32::MAX);
-                    (origin, planner_coordinate(target.coordinate)?, baseline)
-                }
-                BikeShareGap::TransitToDestination(stop_id) => {
-                    let source = self
-                        .network
-                        .stop(stop_id)
-                        .ok_or(ProviderError::UnreachableEndpoints)?;
-                    let baseline = candidate
-                        .egress_for(stop_id)
-                        .map(|egress| egress.metric.duration_seconds)
-                        .unwrap_or(u32::MAX);
-                    (
-                        planner_coordinate(source.coordinate)?,
-                        destination,
-                        baseline,
-                    )
-                }
-                BikeShareGap::Direct => (origin, destination, u32::MAX),
+        for walking_edge in walking_edges {
+            let Some(from) = node_coordinate(request, self.network, &walking_edge.from) else {
+                continue;
             };
-            let mut pickup_center = from;
-            let mut return_center = to;
-            if let BikeShareGap::OriginToTransit(stop_id) = &gap {
-                return_center = planner_coordinate(
-                    self.network
-                        .stop(stop_id)
-                        .ok_or(ProviderError::UnreachableEndpoints)?
-                        .coordinate,
-                )?;
-            }
-            if let BikeShareGap::TransitToDestination(stop_id) = &gap {
-                pickup_center = planner_coordinate(
-                    self.network
-                        .stop(stop_id)
-                        .ok_or(ProviderError::UnreachableEndpoints)?
-                        .coordinate,
-                )?;
-            }
+            let Some(to) = node_coordinate(request, self.network, &walking_edge.to) else {
+                continue;
+            };
             let pickups = nearby_stations(
                 self.network,
-                pickup_center,
+                from,
                 limits.max_bike_pickup_stations,
                 limits.max_bike_search_radius_metres,
             );
             let returns = nearby_stations(
                 self.network,
-                return_center,
+                to,
                 limits.max_bike_return_stations,
                 limits.max_bike_search_radius_metres,
             );
@@ -173,6 +121,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
             if pickups.is_empty() || returns.is_empty() {
                 continue;
             }
+
             let access_metrics = self.walking_one_to_many(from, &pickups, context).await?;
             let egress_metrics = self.walking_many_to_one(&returns, to, context).await?;
             for (pickup_index, pickup) in pickups.iter().enumerate() {
@@ -206,24 +155,28 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
                     let Some(bicycle) = street_metric(cell) else {
                         continue;
                     };
-                    if pickup.id == returns[return_index].id
-                        || bicycle.duration_seconds > limits.max_bike_duration_seconds
-                    {
-                        continue;
-                    }
                     let Some(egress) = egress_metrics.get(return_index).copied().flatten() else {
                         continue;
                     };
+                    if pickup.id == returns[return_index].id
+                        || bicycle.duration_seconds > limits.max_bike_duration_seconds
+                        || bicycle.distance_metres > limits.max_bike_distance_metres
+                    {
+                        continue;
+                    }
                     let total_seconds = access
                         .duration_seconds
                         .saturating_add(bicycle.duration_seconds)
                         .saturating_add(egress.duration_seconds);
-                    let competitive_limit = baseline.saturating_add(limits.max_bike_extra_seconds);
-                    if !matches!(gap, BikeShareGap::Direct) && total_seconds > competitive_limit {
+                    let competitive_limit = walking_edge
+                        .metric
+                        .duration_seconds
+                        .saturating_add(limits.max_bike_extra_seconds);
+                    if total_seconds > competitive_limit {
                         continue;
                     }
                     opportunities.push(BikeShareOpportunity {
-                        gap: gap.clone(),
+                        walking_edge: walking_edge.clone(),
                         pickup_station_id: pickup.id.clone(),
                         return_station_id: returns[return_index].id.clone(),
                         access,
@@ -234,10 +187,14 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
                 }
             }
         }
+
         opportunities.sort_by(|left, right| {
             left.total_seconds
                 .cmp(&right.total_seconds)
-                .then(gap_sort_key(&left.gap).cmp(&gap_sort_key(&right.gap)))
+                .then(
+                    walking_edge_key(&left.walking_edge)
+                        .cmp(&walking_edge_key(&right.walking_edge)),
+                )
                 .then(
                     left.pickup_station_id
                         .as_str()
@@ -250,7 +207,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
                 )
         });
         opportunities.dedup_by(|left, right| {
-            left.gap == right.gap
+            left.walking_edge == right.walking_edge
                 && left.pickup_station_id == right.pickup_station_id
                 && left.return_station_id == right.return_station_id
         });
@@ -275,7 +232,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
 
     async fn walking_one_to_many(
         &self,
-        source: crate::street::Coordinate,
+        source: Coordinate,
         targets: &[BikeShareStation],
         context: &PlanningContext,
     ) -> Result<Vec<Option<StreetMetric>>, ProviderError> {
@@ -304,7 +261,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
     async fn walking_many_to_one(
         &self,
         sources: &[BikeShareStation],
-        target: crate::street::Coordinate,
+        target: Coordinate,
         context: &PlanningContext,
     ) -> Result<Vec<Option<StreetMetric>>, ProviderError> {
         let matrix = self
@@ -328,9 +285,23 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
     }
 }
 
+fn node_coordinate(
+    request: &PlanningRequest,
+    network: &TransitNetwork,
+    node: &CandidateNode,
+) -> Option<Coordinate> {
+    let coordinate = match node {
+        CandidateNode::Origin => request.origin.coordinate,
+        CandidateNode::Destination => request.destination.coordinate,
+        CandidateNode::TransitStop(stop_id) => network.stop(stop_id)?.coordinate,
+        CandidateNode::BikeShareStation(_) => return None,
+    };
+    Coordinate::try_new(coordinate.latitude, coordinate.longitude).ok()
+}
+
 fn nearby_stations(
     network: &TransitNetwork,
-    coordinate: crate::street::Coordinate,
+    coordinate: Coordinate,
     limit: usize,
     radius_metres: u32,
 ) -> Vec<BikeShareStation> {
@@ -348,11 +319,21 @@ fn nearby_stations(
         .collect()
 }
 
-fn gap_sort_key(gap: &BikeShareGap) -> String {
-    match gap {
-        BikeShareGap::OriginToTransit(stop_id) => format!("origin:{}", stop_id.as_str()),
-        BikeShareGap::TransitToDestination(stop_id) => format!("destination:{}", stop_id.as_str()),
-        BikeShareGap::Direct => "direct".into(),
+fn walking_edge_key(edge: &WalkingEdge) -> String {
+    format!(
+        "{}:{}:{}",
+        node_key(&edge.from),
+        node_key(&edge.to),
+        edge.metric.duration_seconds
+    )
+}
+
+fn node_key(node: &CandidateNode) -> String {
+    match node {
+        CandidateNode::Origin => "origin".into(),
+        CandidateNode::Destination => "destination".into(),
+        CandidateNode::TransitStop(id) => format!("stop:{}", id.as_str()),
+        CandidateNode::BikeShareStation(id) => format!("station:{}", id.as_str()),
     }
 }
 

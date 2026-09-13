@@ -16,11 +16,13 @@ use utoipa::{
 };
 use utoipa_axum::router::OpenApiRouter;
 
+pub mod routes;
+
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     observability::OperationalMetrics,
-    planner::{JourneyPlanningService, PlanningError, PlanningOutcome},
     realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
+    routing::{JourneyPlanningService, PlanningError, PlanningOutcome, RoutingService},
     street::{
         GraphRevision, ProviderCapabilities, ProviderCategory, ProviderError,
         StreetRoutingProvider, StreetRoutingSession,
@@ -31,7 +33,7 @@ use crate::{
 #[derive(Clone)]
 struct AppState {
     street_routing: StreetRoutingSession,
-    journey_planning: JourneyPlanningService,
+    routing: RoutingService,
     transit_network: Arc<TransitNetwork>,
     metrics: OperationalMetrics,
     realtime_metrics: crate::realtime::RealtimeMetrics,
@@ -98,13 +100,14 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
     let journey_planning = JourneyPlanningService::new(street_routing.clone(), realtime)
         .with_transit_network(transit_network.clone())
         .with_metrics(metrics.clone());
+    let routing = RoutingService::new(journey_planning);
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
         .route("/openapi.json", get(openapi_document_endpoint))
         .with_state(AppState {
             street_routing,
-            journey_planning,
+            routing,
             transit_network: Arc::new(transit_network),
             metrics,
             realtime_metrics,
@@ -488,15 +491,13 @@ async fn journey_plan(
     if let Err(error) = request.validate() {
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
-    match state.journey_planning.plan(request).await {
+    match state.routing.plan(request).await {
         Ok(outcome) => {
             match &outcome {
-                crate::planner::PlanningOutcome::Options(result) => state
+                PlanningOutcome::Options(result) => state
                     .metrics
                     .record_planning_success(result.journey_options.len()),
-                crate::planner::PlanningOutcome::Empty(_) => {
-                    state.metrics.record_planning_success(0)
-                }
+                PlanningOutcome::Empty(_) => state.metrics.record_planning_success(0),
             }
             no_store((StatusCode::OK, Json(outcome)))
         }

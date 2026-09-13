@@ -7,6 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use time::{Duration, OffsetDateTime};
 
 use super::multimodal_graph::{CandidateEdge, CandidateNode, MultimodalGraph};
+use crate::normalization::TransitServiceId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchLimits {
@@ -78,7 +79,7 @@ pub fn search(
         }
         stats.expansions += 1;
         for (edge_id, edge) in graph.outgoing(&label.node) {
-            let Some(next) = traverse(&label, edge, edge_id, limits) else {
+            let Some(next) = traverse(graph, &label, edge, edge_id, limits) else {
                 stats.labels_dominated_or_pruned =
                     stats.labels_dominated_or_pruned.saturating_add(1);
                 continue;
@@ -96,7 +97,7 @@ pub fn search(
                 }
                 continue;
             }
-            let inserted = insert_label(&mut labels, next.clone(), limits, &mut stats);
+            let inserted = insert_label(graph, &mut labels, next.clone(), limits, &mut stats);
             if inserted {
                 pending.push_back(next);
             }
@@ -145,21 +146,25 @@ pub fn dominates(left: &SearchLabel, right: &SearchLabel) -> bool {
 }
 
 fn insert_label(
+    graph: &MultimodalGraph,
     labels: &mut HashMap<CandidateNode, Vec<SearchLabel>>,
     candidate: SearchLabel,
     limits: &SearchLimits,
     stats: &mut SearchStats,
 ) -> bool {
     let retained = labels.entry(candidate.node.clone()).or_default();
-    if retained
-        .iter()
-        .any(|existing| existing.edge_ids == candidate.edge_ids || dominates(existing, &candidate))
-    {
+    if retained.iter().any(|existing| {
+        existing.edge_ids == candidate.edge_ids
+            || (same_transit_context(graph, existing, &candidate)
+                && dominates(existing, &candidate))
+    }) {
         stats.labels_dominated_or_pruned = stats.labels_dominated_or_pruned.saturating_add(1);
         return false;
     }
     let before = retained.len();
-    retained.retain(|existing| !dominates(&candidate, existing));
+    retained.retain(|existing| {
+        !same_transit_context(graph, &candidate, existing) || !dominates(&candidate, existing)
+    });
     stats.labels_dominated_or_pruned += before.saturating_sub(retained.len());
     retained.push(candidate.clone());
     retained.sort_by(label_order);
@@ -172,6 +177,7 @@ fn insert_label(
 }
 
 fn traverse(
+    graph: &MultimodalGraph,
     label: &SearchLabel,
     edge: &CandidateEdge,
     edge_id: usize,
@@ -191,10 +197,6 @@ fn traverse(
         } => {
             next.last_edge_was_transit = false;
             next.arrival_time += Duration::seconds(i64::from(*duration_seconds));
-            next.transfer_count = next.transfer_count.saturating_add(1);
-            if next.transfer_count > limits.max_transfer_count {
-                return None;
-            }
         }
         CandidateEdge::BikeShare {
             metric,
@@ -226,8 +228,19 @@ fn traverse(
             }
         }
         CandidateEdge::Transit { ride, .. } => {
-            if label.last_edge_was_transit {
+            let previous_service = previous_transit_service(graph, label);
+            if label.last_edge_was_transit
+                && previous_service.is_some_and(|service| service != &ride.ride.service_id)
+            {
+                // A different service requires a physical connector. A
+                // same-service continuation remains one passenger-visible leg.
                 return None;
+            }
+            if previous_service.is_some_and(|service| service != &ride.ride.service_id) {
+                next.transfer_count = next.transfer_count.saturating_add(1);
+                if next.transfer_count > limits.max_transfer_count {
+                    return None;
+                }
             }
             if label.arrival_time > ride.departure {
                 return None;
@@ -240,6 +253,22 @@ fn traverse(
         }
     }
     Some(next)
+}
+
+fn previous_transit_service<'a>(
+    graph: &'a MultimodalGraph,
+    label: &SearchLabel,
+) -> Option<&'a TransitServiceId> {
+    label.edge_ids.iter().rev().find_map(|edge_id| {
+        let CandidateEdge::Transit { ride, .. } = graph.edges.get(*edge_id)? else {
+            return None;
+        };
+        Some(&ride.ride.service_id)
+    })
+}
+
+fn same_transit_context(graph: &MultimodalGraph, left: &SearchLabel, right: &SearchLabel) -> bool {
+    previous_transit_service(graph, left) == previous_transit_service(graph, right)
 }
 
 fn label_order(left: &SearchLabel, right: &SearchLabel) -> std::cmp::Ordering {
