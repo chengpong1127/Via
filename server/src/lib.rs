@@ -1,6 +1,4 @@
-#[path = "api/mod.rs"]
 pub mod api;
-#[path = "app/mod.rs"]
 pub mod app;
 pub mod domain;
 mod entity;

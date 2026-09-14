@@ -9,8 +9,6 @@ use crate::street::Coordinate;
 
 pub use crate::domain::location::RequestCoordinate;
 
-pub mod models;
-
 pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
 pub const TAIPEI_TIME_ZONE: &str = "Asia/Taipei";

@@ -16,8 +16,6 @@ use utoipa::{
 };
 use utoipa_axum::router::OpenApiRouter;
 
-pub mod routes;
-
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     domain::transit::TransitNetwork,
