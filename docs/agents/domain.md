@@ -1,5 +1,7 @@
 # Domain Docs
 
+Status: Current
+
 How the engineering skills should consume this repo's domain documentation when exploring the codebase.
 
 ## Before exploring, read these
@@ -9,6 +11,14 @@ How the engineering skills should consume this repo's domain documentation when 
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+
+## Current Via routing vocabulary
+
+Read the current server flow as `discover → enrich → bike → search →
+reconstruct → rank`. `RouteGraph` is the canonical routing representation.
+Realtime is demand-driven and request-local; there is no global realtime refresh
+planner. iOS networking is `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI →
+APIClient`, while `DemoJourneyPlanner` is the offline implementation.
 
 ## File structure
 

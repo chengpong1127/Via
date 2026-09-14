@@ -1,11 +1,12 @@
 # Issue #12 — Server refresh, cache, and failure architecture
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Superseded
+Superseded by: ADR 0002 and `server/README.md`.
 
 ## Decision
 
-Via uses stateless Rust Axum request handlers on Vercel. PostgreSQL, connected through Vercel and initially expected to be Neon, is the authority for normalized Live Status, feed health, immutable Network Snapshots, refresh coordination, and retained operational history. Process memory can improve the speed of one warm instance, but it is never required for correctness.
+This document records the superseded refresh architecture. The current server uses stateless Rust Axum request handlers, an immutable checked-in or published `TransitNetwork` artifact, and demand-driven realtime reads through an in-process async cache. PostgreSQL stores provider aliases; it is not the authority for a global Live Status snapshot or refresh cycle.
 
 An external scheduler calls one authenticated, idempotent refresh endpoint. A leased PostgreSQL lock permits only one refresh cycle at a time. The refresh cycle fetches independent government feeds with bounded parallelism, normalizes each result, evaluates Freshness, and publishes a new Network Snapshot in one atomic transaction. A Planning Request never calls a government feed and never starts refresh work.
 

@@ -1,7 +1,8 @@
 # Issue #3 — Shared Journey Planning API contract
 
 Decision date: 2026-08-29
-Status: Accepted
+Status: Superseded
+Superseded by: `server/src/api/`, `server/README.md`, and `ios/Via/Services/API/`.
 
 ## Decision
 
@@ -13,7 +14,7 @@ Content-Type: application/json
 Accept: application/json
 ```
 
-The endpoint accepts one ephemeral Planning Request and returns one complete result calculated from one immutable Network Snapshot. The same request, snapshot, static and schedule revisions, and policy versions produces the same ordered Journey Options and semantic facts on both clients.
+The endpoint accepts one ephemeral Planning Request and returns one complete result calculated from one immutable static network revision and request-local realtime evidence. The same request, static and schedule revisions, and policy versions produces the same ordered Journey Options and semantic facts on both clients.
 
 The contract is specified with OpenAPI and uses `snake_case` JSON names. No request field or response type contains an Apple, Google, TDX, city-feed, or other upstream identifier or native-framework object. MapKit and the Android map SDK remain client adapters.
 

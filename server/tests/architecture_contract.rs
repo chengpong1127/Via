@@ -74,6 +74,57 @@ fn routing_uses_provider_traits_instead_of_concrete_adapters() {
 }
 
 #[test]
+fn routing_has_one_service_entry_point_and_no_legacy_imports() {
+    let service = source("src/routing/service.rs");
+    assert!(service.contains("pub struct RoutingService"));
+    assert!(service.contains("pub async fn route"));
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    for path in [
+        "planner.rs",
+        "normalization.rs",
+        "routing/engine.rs",
+        "routing/engine/mod.rs",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "legacy path still exists: {path}"
+        );
+    }
+    for source in [
+        source("src/routing/service.rs"),
+        source("src/routing/reconstruct/mod.rs"),
+    ] {
+        for legacy_import in [
+            "crate::planner",
+            "crate::normalization",
+            "crate::routing::engine",
+            "JourneyPlanningService",
+        ] {
+            assert!(
+                !source.contains(legacy_import),
+                "routing source contains legacy import or wrapper: {legacy_import}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reconstruction_modules_have_explicit_responsibilities() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing/reconstruct");
+    for file in ["mod.rs", "legs.rs", "geometry.rs", "evidence.rs"] {
+        assert!(
+            root.join(file).is_file(),
+            "missing reconstruction module: {file}"
+        );
+    }
+    assert!(source("src/routing/reconstruct/mod.rs").contains("legs::assemble"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("complete_pending_transfers"));
+    assert!(source("src/routing/reconstruct/geometry.rs").contains("hydrate_street_edge"));
+    assert!(source("src/routing/reconstruct/evidence.rs").contains("summary_from_evidence"));
+}
+
+#[test]
 fn canonical_domain_types_and_route_graph_have_single_definitions() {
     let journey = source("src/domain/journey.rs");
     let graph = source("src/routing/graph.rs");

@@ -1,5 +1,7 @@
 # Issue #11 research: how journey planners rank Journey Options
 
+Status: Historical Research
+
 Research date: 2026-08-29  
 Scope: Publicly documented ranking behavior for public-transit Journey Options in Google Maps, Apple Maps, Citymapper, Transit, and Moovit, with OpenTripPlanner and Valhalla as transparent implementation references.
 

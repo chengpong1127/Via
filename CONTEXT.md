@@ -32,8 +32,8 @@ _Avoid_: Navigation, live guidance
 Time-stamped operational information such as a bus arrival estimate, available-bike count, or return-slot count.
 _Avoid_: Live Observation, real-time data
 
-**Network Snapshot**:
-One fixed view of the transport network, schedule, and Live Status used to calculate a Planning Request. Every Journey Option from the request uses the same Network Snapshot.
+**Planning Inputs**:
+The immutable static `TransitNetwork` revision plus the request-local realtime facts collected for one Planning Request. Every Journey Option from the request uses the same static revision and frozen evidence context.
 _Avoid_: Current data, latest data
 
 **Stop Place**:

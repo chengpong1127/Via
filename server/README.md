@@ -35,7 +35,7 @@ Start PostgreSQL plus the pinned Valhalla 3.8.3 image, then build the checked-in
 deterministic street fixture:
 
 ```sh
-docker compose up -d valhalla
+docker compose up -d postgres valhalla
 ./scripts/wait-for-valhalla.sh
 ```
 
@@ -80,18 +80,24 @@ translates rate limits and malformed payloads into explicit realtime failures, a
 evaluates Freshness from the provider publication timestamp rather than a station's
 last-change timestamp. Planning Requests never receive feed credentials.
 
-## Current planner boundary
+## Current routing boundary
 
-Walking is always available for direct journeys and transit/bike-share
-access and egress; clients select only the high-level `transit` and
-`bike_share` categories. The request path orchestrates direct Walking,
-generic bounded timetable Transit rounds, and inventory-gated bike-share access/
-bicycle/egress candidates. Street access, egress, bicycle, matrix, and path
-calculations stay behind the Valhalla provider boundary; timetable lookup uses
-the immutable `TransitNetwork` artifact. After scheduled search narrows the
-candidate set, `RealtimeContext` freezes the required values for the rest of the
-request. The checked-in tests use injected fixtures, while a production deployment
-must publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
+Walking is always available for direct journeys and transit/BikeShare access and
+egress; clients select only the high-level `transit` and `bike_share`
+categories. The request path is:
+
+```text
+PlanningRequest → RoutingService → discover → RouteGraph → enrich → bike
+→ Pareto search → reconstruct → rank → JourneyOption[]
+```
+
+`RouteGraph` is the one canonical routing representation. Street access,
+egress, bicycle, matrix, and path calculations stay behind the Valhalla
+provider boundary; timetable lookup uses the immutable `TransitNetwork`
+artifact. After candidate discovery, `RealtimeContext` freezes the required
+values for the rest of the request. The checked-in tests use injected fixtures,
+while a production deployment must publish a reviewed artifact at
+`VIA_TRANSIT_NETWORK`.
 
 ## Tests
 

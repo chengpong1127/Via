@@ -1,5 +1,7 @@
 # Issue #3 research: existing map and Journey Planning API contracts
 
+Status: Historical Research
+
 Research date: 2026-08-29
 Scope: Primary-source comparison of Apple MapKit, Google Routes API, Mapbox Directions API, and OpenTripPlanner (OTP) as precedents for Via's shared Swift/Kotlin Journey Planning contract.
 

@@ -1,7 +1,7 @@
 # Issue #7 — Journey decision-flow interaction
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Current
 
 Final product-owner confirmation: 2026-08-29. The approved interaction is prototype Variant A in its refined form: compact Journey Options, a tappable route that opens the separate Details sheet, and only a small green Live Status indicator.
 

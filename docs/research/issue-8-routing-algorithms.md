@@ -1,5 +1,7 @@
 # Issue #8 — Routing algorithms for Reliable Arrival
 
+Status: Historical Research
+
 ## Decision
 
 Use **Multi-criteria Range RAPTOR (McRAPTOR) for the Bus/Metro timetable core, with a time-dependent graph search for Walking and YouBike access, egress, direct travel, and station-to-station bicycle movement**.

@@ -1,7 +1,7 @@
 # Issue #2 — Taipei–New Taipei MVP validation gate
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Current
 
 ## Decision
 
@@ -24,7 +24,7 @@ The study uses a fixed, versioned, replayable scenario matrix. It must cover:
 - at least one real or safely simulated disruption; and
 - at least one impossible YouBike pickup and one impossible YouBike return.
 
-Every recorded trial identifies the scenario version and the immutable Network Snapshot used by its Planning Request. Field observations are timestamped so the displayed Journey Option can be reconciled with what the rider encountered.
+Every recorded trial identifies the scenario version, static network revision, and request-time evidence context used by its Planning Request. Field observations are timestamped so the displayed Journey Option can be reconciled with what the rider encountered.
 
 ## Rider cohorts and trial design
 
@@ -67,11 +67,11 @@ Measure end-to-end time from submission of a Planning Request until complete Jou
 | Technical-error rate | `< 1%` |
 | Any critical scenario p95 | `<= 4 seconds` |
 
-A burst test at the expected expansion launch load must also keep the technical-error rate below 1%. The report separates warm, cold, cache-miss, stale-source, partial-refresh, and burst results rather than combining them into one favorable distribution.
+A burst test at the expected expansion launch load must also keep the technical-error rate below 1%. The report separates warm, cold, cache-miss, stale-source, realtime-failure, and burst results rather than combining them into one favorable distribution.
 
 ### Field accuracy and safety
 
-Reconcile Journey Options against timestamped field observations and retained Network Snapshots. The MVP passes only when:
+Reconcile Journey Options against timestamped field observations and retained planning-input revisions. The MVP passes only when:
 
 - at least 95% of displayed Legs, Boarding Points, Travel Modes, and scheduled times are correct;
 - at least 90% of selected Journey Options remain feasible without an unannounced missed Transfer, impossible boarding, or failed YouBike pickup or return;
@@ -122,7 +122,7 @@ The approval package is one versioned validation report containing:
 - timestamped field-observation reconciliation;
 - unsupported-gap and control-comprehension results;
 - failures, exclusions, uncertainty intervals, and deviations from the protocol; and
-- reproducible references to the schedule revisions, freshness-policy versions, and Network Snapshots used.
+- reproducible references to the schedule revisions, freshness-policy versions, and planning-input revisions used.
 
 Approval requires all of the following:
 
@@ -136,7 +136,7 @@ A failed hard gate blocks expansion. Any other miss requires a documented correc
 
 ## Privacy boundary
 
-The validation study follows the accepted location and telemetry contract in issue #5. Operational reporting contains no rider location, Journey details, or stable rider identifier. Consented research records use study-scoped participant codes and the minimum data needed for the approved protocol. Network Snapshot references and field-observation records are stored separately from participant identity. Any optional qualitative recording requires explicit study consent and a stated retention period.
+The validation study follows the accepted location and telemetry contract in issue #5. Operational reporting contains no rider location, Journey details, or stable rider identifier. Consented research records use study-scoped participant codes and the minimum data needed for the approved protocol. Planning-input references and field-observation records are stored separately from participant identity. Any optional qualitative recording requires explicit study consent and a stated retention period.
 
 ## Consequences
 

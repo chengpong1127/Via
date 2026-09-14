@@ -1,5 +1,7 @@
 # Issue #4 research: authoritative Taipei–New Taipei transit data contracts
 
+Status: Historical Research
+
 Research date: 2026-08-29  
 Scope: Bus, Metro, and YouBike data needed to construct Journey Options and decide whether a Journey Option qualifies as a Reliable Arrival. Walking is out of scope except where a published transfer duration or station location supports a Walking connector.
 

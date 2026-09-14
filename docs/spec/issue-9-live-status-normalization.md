@@ -1,13 +1,14 @@
 # Issue #9 — Live Status normalization model
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Superseded
+Superseded by: ADR 0001, ADR 0002, and the current provider interfaces under `server/src/providers/`.
 
 ## Decision
 
 Via owns a provider-neutral, typed network model. Every durable entity receives a stable opaque Via ID; TDX and city-feed identifiers are versioned aliases kept behind the ingestion boundary. Routing uses Via IDs only, and clients receive only rider-relevant normalized facts and public attribution.
 
-Static network revisions and immutable Live Status observations are separate. Each Planning Request pins one immutable Network Snapshot containing a static revision, schedule revision, selected observations, feed-health state, and snapshot time. All Journey Options calculated for that request use that same snapshot.
+Static network revisions and request-local Live Status evidence are separate. Each Planning Request reads one immutable `TransitNetwork` revision and freezes the normalized realtime values collected for its scheduled candidates. All Journey Options calculated for the request use that same evidence context.
 
 The normalized Live Status families are:
 

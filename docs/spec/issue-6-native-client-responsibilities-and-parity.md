@@ -1,7 +1,7 @@
 # Issue #6 — Native-client responsibilities and parity
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Current
 
 ## Decision
 
@@ -14,7 +14,7 @@ iOS leads product discovery and delivery. Every essential behavior accepted on i
 | Shared server | Native client |
 | --- | --- |
 | Validate a Planning Request. | Use the platform map SDK for map display and place search. |
-| Pin one Network Snapshot for the complete calculation. | Keep raw queries, browsing, unused candidates, and provider place identifiers on-device. |
+| Use one immutable static revision and request-local evidence context for the complete calculation. | Keep raw queries, browsing, unused candidates, and provider place identifiers on-device. |
 | Construct, validate, rank, and return Journey Options. | Send only a selected origin and destination, normalized display text, Travel Mode filters, locale, and departure setting. |
 | Define Leg and Transfer structure and the semantic content of Guidance. | Render the map, Journey Options, Details, and Guidance with native components. |
 | Interpret Live Status, Freshness, evidence strength, warnings, and failure reasons. | Format values, translate text, provide accessibility labels, and expose platform-native interactions. |
@@ -49,7 +49,7 @@ Clients do not persist selected coordinates, selected places, Planning Requests,
 
 ## Live Status refresh without progress tracking
 
-Via refreshes an open result by repeating its Planning Request. The new calculation pins one new Network Snapshot and returns a complete, internally consistent set of Journey Options. A client never refreshes or mutates one Leg independently.
+Via refreshes an open result by repeating its Planning Request. The new calculation reads the current static revision and collects a new request-local evidence context before returning a complete set of Journey Options. A client never refreshes or mutates one Leg independently.
 
 The client refresh sequence is:
 
@@ -98,7 +98,7 @@ The clients implement the same named presentation states:
 | `refreshing` | The prior complete result remains visible while its replacement is requested. |
 | `empty` | Calculation succeeded but no feasible Journey Option exists; the structured reason and relevant recovery actions are shown. |
 | `invalid_request` | A request field is invalid; the client identifies the field without echoing sensitive server data. |
-| `temporarily_unavailable` | No coherent Network Snapshot or permitted evidence is available; retry is offered. |
+| `temporarily_unavailable` | No coherent planning result or permitted evidence is available; retry is offered. |
 | `unexpected_failure` | The result cannot be trusted; no partial result from that failed calculation is shown. |
 
 The presentation can differ, but the available facts and recovery actions cannot silently differ.
@@ -134,7 +134,7 @@ Cross-platform tests compare semantics and behavior, not pixels. A server contra
 The decision is implemented only when automated or repeatable checks prove that:
 
 - place search works without sending raw queries or provider place identifiers to Via;
-- identical Planning Requests and Network Snapshots produce equivalent Journey Option facts on both clients;
+- identical Planning Requests and planning-input revisions produce equivalent Journey Option facts on both clients;
 - neither client ranks Journey Options or interprets raw provider status;
 - every Via-owned rider-facing message is generated from a stable code and client translation resource;
 - Traditional Chinese and English cover every supported semantic code, including accessibility text;
@@ -147,8 +147,8 @@ The decision is implemented only when automated or repeatable checks prove that:
 
 ## Consequences for other Wayfinder decisions
 
-- Issue #3 must define provider-neutral request fields, stable semantic codes and typed parameters, a result or snapshot version, stable Journey Option matching where safe, and structured result/error outcomes. It must not return Via-owned translated sentences.
+- The current provider-neutral contract in `server/src/api/` and `ios/Via/Services/API/` defines request fields, stable semantic codes and typed parameters, network revisions, stable Journey Option matching where safe, and structured result/error outcomes. It must not return Via-owned translated sentences.
 - Issue #5 remains the storage and transmission limit for client state, place search, consent artifacts, and Feedback Reports.
 - Issue #7 defines the accepted iOS interaction hierarchy. This decision extracts its essential behavior from its Apple Maps-style presentation.
-- Issue #9 and issue #12 remain authoritative for normalized Live Status, immutable Network Snapshots, Freshness, and server refresh. Native clients display their results but do not reproduce those rules.
+- ADR 0001 and ADR 0002 remain authoritative for provider-neutral Live Status, Freshness, and demand-driven realtime. Native clients display their results but do not reproduce those rules.
 - Android delivery can lag iOS, but the shared behavior contract and fixtures must be maintained from the first iOS implementation.

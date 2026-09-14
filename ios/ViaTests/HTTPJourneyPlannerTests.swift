@@ -86,6 +86,32 @@ struct HTTPJourneyPlannerTests {
         }
     }
 
+    @Test("API client preserves non-success status and response body")
+    func apiClientMapsNonSuccessResponses() async {
+        StubURLProtocol.reset(statusCode: 429, body: Self.errorBody)
+        let client = APIClient(
+            baseURL: URL(string: "https://api.example.test")!,
+            urlSession: Self.stubSession()
+        )
+
+        do {
+            let _: JourneyPlanResponseDTO = try await client.send(
+                request: JourneyPlanRequestDTO(request: Self.request()),
+                path: "v1/journey-plans"
+            )
+            Issue.record("expected the API client to reject HTTP 429")
+        } catch let error as APIError {
+            guard case let .httpStatus(code, body) = error else {
+                Issue.record("unexpected API error: \(error)")
+                return
+            }
+            #expect(code == 429)
+            #expect(body == Self.errorBody)
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     private static func stubSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]

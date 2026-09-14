@@ -1,7 +1,7 @@
 # Issue #11 — Journey Option ranking and diversity
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Current
 
 ## Decision
 
@@ -49,7 +49,7 @@ Safety thresholds and station-specific overrides are versioned policy. A larger 
 
 ## Server ranking pipeline
 
-For one Planning Request and pinned Network Snapshot, the server:
+For one Planning Request and one frozen request-local evidence context, the server:
 
 1. generates Pareto candidates;
 2. removes candidates with unavailable required Live Status or an infeasible critical action;
@@ -61,7 +61,7 @@ For one Planning Request and pinned Network Snapshot, the server:
 8. selects up to three materially different Journey Options, using Feasible options only when Reliable options do not fill the result set; and
 9. applies labels and machine-readable ranking reasons.
 
-The calculation pins a `ranking_policy_version`. Identical Planning Request inputs, schedule revision, ranking policy version, and Network Snapshot must produce the same ordered results. Cost arithmetic uses deterministic integer or fixed-point operations, not platform-dependent floating-point tie behavior.
+The calculation pins a `ranking_policy_version`. Identical Planning Request inputs, schedule revision, ranking policy version, and realtime evidence must produce the same ordered results. Cost arithmetic uses deterministic integer or fixed-point operations, not platform-dependent floating-point tie behavior.
 
 ## Generalized cost
 
@@ -141,7 +141,7 @@ The implementation is conformant only when automated fixtures prove that:
 - dominance, near-duplicate, five-minute Walking, and 15-minute delay boundaries behave exactly as specified;
 - labels follow their definitions and priority;
 - one or two useful Journey Options are returned without filler; and
-- replay with the same inputs, Network Snapshot, and policy version produces byte-equivalent ordering, classes, labels, and reasons.
+- replay with the same inputs, evidence, and policy version produces byte-equivalent ordering, classes, labels, and reasons.
 
 ## Consequences
 

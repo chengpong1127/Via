@@ -1,7 +1,7 @@
 # Issue #5 — Location privacy and product telemetry contract
 
 Decision date: 2026-08-29  
-Status: Accepted
+Status: Current
 
 ## Decision
 

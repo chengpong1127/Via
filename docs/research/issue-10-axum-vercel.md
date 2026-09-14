@@ -1,5 +1,7 @@
 # Rust Axum on Vercel for Journey Planning
 
+Status: Historical Research
+
 _Issue #10 research; checked 2026-08-29._
 
 ## Decision

@@ -11,6 +11,13 @@
 		A00000000000000000000103 /* JourneySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000203 /* JourneySession.swift */; };
 		A00000000000000000000104 /* DemoJourneyPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000204 /* DemoJourneyPlanner.swift */; };
 		A0000000000000000000010D /* HTTPJourneyPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0000000000000000000020F /* HTTPJourneyPlanner.swift */; };
+		A0000000000000000000010F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000213 /* APIClient.swift */; };
+		A00000000000000000000110 /* APIError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000214 /* APIError.swift */; };
+		A00000000000000000000111 /* JourneyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000215 /* JourneyAPI.swift */; };
+		A00000000000000000000112 /* JourneyRequestDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000216 /* JourneyRequestDTO.swift */; };
+		A00000000000000000000113 /* JourneyResponseDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000217 /* JourneyResponseDTO.swift */; };
+		A00000000000000000000114 /* CommonDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000218 /* CommonDTO.swift */; };
+		A00000000000000000000115 /* JourneyMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000219 /* JourneyMapper.swift */; };
 		A00000000000000000000105 /* ModeBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000205 /* ModeBadge.swift */; };
 		A00000000000000000000106 /* JourneyMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000206 /* JourneyMapView.swift */; };
 		A00000000000000000000107 /* DirectionsPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000207 /* DirectionsPanel.swift */; };
@@ -38,6 +45,13 @@
 		A00000000000000000000203 /* JourneySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneySession.swift; sourceTree = "<group>"; };
 		A00000000000000000000204 /* DemoJourneyPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoJourneyPlanner.swift; sourceTree = "<group>"; };
 		A0000000000000000000020F /* HTTPJourneyPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPJourneyPlanner.swift; sourceTree = "<group>"; };
+		A00000000000000000000213 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		A00000000000000000000214 /* APIError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIError.swift; sourceTree = "<group>"; };
+		A00000000000000000000215 /* JourneyAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyAPI.swift; sourceTree = "<group>"; };
+		A00000000000000000000216 /* JourneyRequestDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyRequestDTO.swift; sourceTree = "<group>"; };
+		A00000000000000000000217 /* JourneyResponseDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyResponseDTO.swift; sourceTree = "<group>"; };
+		A00000000000000000000218 /* CommonDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonDTO.swift; sourceTree = "<group>"; };
+		A00000000000000000000219 /* JourneyMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyMapper.swift; sourceTree = "<group>"; };
 		A00000000000000000000205 /* ModeBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeBadge.swift; sourceTree = "<group>"; };
 		A00000000000000000000206 /* JourneyMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyMapView.swift; sourceTree = "<group>"; };
 		A00000000000000000000207 /* DirectionsPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsPanel.swift; sourceTree = "<group>"; };
@@ -75,12 +89,15 @@
 		};
 		A00000000000000000000703 /* App */ = {isa = PBXGroup; children = (A00000000000000000000201); path = App; sourceTree = "<group>"; };
 		A00000000000000000000704 /* Domain */ = {isa = PBXGroup; children = (A00000000000000000000202, A00000000000000000000203); path = Domain; sourceTree = "<group>"; };
-		A00000000000000000000705 /* Services */ = {isa = PBXGroup; children = (A00000000000000000000204, A0000000000000000000020F); path = Services; sourceTree = "<group>"; };
+		A00000000000000000000705 /* Services */ = {isa = PBXGroup; children = (A00000000000000000000204, A0000000000000000000020F, A0000000000000000000070B); path = Services; sourceTree = "<group>"; };
 		A00000000000000000000706 /* Components */ = {isa = PBXGroup; children = (A00000000000000000000205); path = Components; sourceTree = "<group>"; };
 		A00000000000000000000707 /* Journey */ = {isa = PBXGroup; children = (A00000000000000000000206, A00000000000000000000207, A00000000000000000000208, A00000000000000000000209); path = Features/Journey; sourceTree = "<group>"; };
 		A00000000000000000000708 /* Resources and Search */ = {isa = PBXGroup; children = (A0000000000000000000020A, A0000000000000000000020D); name = "Resources and Search"; sourceTree = "<group>"; };
 		A00000000000000000000709 /* ViaTests */ = {isa = PBXGroup; children = (A0000000000000000000020E, A00000000000000000000212); path = ViaTests; sourceTree = "<group>"; };
 		A0000000000000000000070A /* Products */ = {isa = PBXGroup; children = (A00000000000000000000210, A00000000000000000000211); name = Products; sourceTree = "<group>"; };
+		A0000000000000000000070B /* API */ = {isa = PBXGroup; children = (A00000000000000000000213, A00000000000000000000214, A00000000000000000000215, A0000000000000000000070C, A0000000000000000000070D); path = API; sourceTree = "<group>"; };
+		A0000000000000000000070C /* DTO */ = {isa = PBXGroup; children = (A00000000000000000000216, A00000000000000000000217, A00000000000000000000218); path = DTO; sourceTree = "<group>"; };
+		A0000000000000000000070D /* Mapping */ = {isa = PBXGroup; children = (A00000000000000000000219); path = Mapping; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -138,7 +155,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A00000000000000000000801 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000101, A00000000000000000000102, A00000000000000000000103, A00000000000000000000104, A0000000000000000000010D, A00000000000000000000105, A00000000000000000000106, A00000000000000000000107, A00000000000000000000108, A00000000000000000000109, A0000000000000000000010A); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000801 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000101, A00000000000000000000102, A00000000000000000000103, A00000000000000000000104, A0000000000000000000010D, A0000000000000000000010F, A00000000000000000000110, A00000000000000000000111, A00000000000000000000112, A00000000000000000000113, A00000000000000000000114, A00000000000000000000115, A00000000000000000000105, A00000000000000000000106, A00000000000000000000107, A00000000000000000000108, A00000000000000000000109, A0000000000000000000010A); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000803 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000010C, A0000000000000000000010E); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 

@@ -4,7 +4,6 @@ use std::{
     time::Instant,
 };
 
-use futures_util::{StreamExt, stream};
 use time::{Duration, OffsetDateTime};
 
 use crate::{
@@ -21,7 +20,7 @@ use crate::{
         realtime::FreshnessState,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::realtime::{ArrivalQuery, NormalizedRealtimeValue, RealtimeProvider, RealtimeValue},
+    providers::realtime::{RealtimeProvider, RealtimeValue},
     street::{
         Coordinate, DetailedPath, DetailedPathQuery, MatrixCell, MatrixReachability, ProviderError,
         RoutingConstraints, RoutingTime, RoutingTimeKind, StreetRoutingSession, StreetTravelMode,
@@ -295,9 +294,14 @@ impl RoutingService {
                             })
                             .collect::<Vec<_>>();
                         let timing_started = Instant::now();
-                        let (collected, realtime_failed) = self
-                            .collect_request_realtime(&transit_candidate, &static_itineraries)
-                            .await;
+                        let (collected, realtime_failed) = enrich::collect_request_realtime(
+                            self.realtime.as_ref(),
+                            &transit_candidate,
+                            &static_itineraries,
+                            self.limits.max_transit_itineraries,
+                            self.limits.max_realtime_concurrency,
+                        )
+                        .await;
                         stage_metrics.transit_realtime_lookups =
                             transit_realtime_lookup_count(&transit_candidate, &static_itineraries);
                         realtime = collected;
@@ -354,8 +358,11 @@ impl RoutingService {
                 Ok(expansion) => {
                     stage_metrics.bike_opportunities = expansion.opportunities.len();
                     stage_metrics.bike_stations_queried = expansion.station_ids.len();
-                    let (bike_values, bike_failed) =
-                        self.collect_bike_realtime_v2(&expansion.station_ids).await;
+                    let (bike_values, bike_failed) = enrich::collect_bike_realtime(
+                        self.realtime.as_ref(),
+                        &expansion.station_ids,
+                    )
+                    .await;
                     had_transient_failure |= bike_failed;
                     realtime.extend(bike_values);
                     let availability = bike_availability_map(&realtime);
@@ -476,109 +483,6 @@ impl RoutingService {
             metadata,
             journey_options,
         }))
-    }
-
-    async fn collect_request_realtime(
-        &self,
-        candidate: &discover::DiscoveryResult,
-        itineraries: &[TransitItinerary],
-    ) -> (enrich::RealtimeContext, bool) {
-        let mut pairs = HashSet::new();
-        let mut service_ids = HashSet::new();
-        for itinerary in itineraries.iter().take(self.limits.max_transit_itineraries) {
-            for ride in &itinerary.rides {
-                service_ids.insert(ride.service_id.clone());
-                if enrich::requires_realtime_arrival(ride) {
-                    pairs.insert((ride.service_id.clone(), ride.board_stop_id.clone()));
-                }
-            }
-        }
-        for itinerary in candidate
-            .topology_itineraries
-            .iter()
-            .take(self.limits.max_transit_itineraries)
-        {
-            for ride in &itinerary.rides {
-                service_ids.insert(ride.service_id.clone());
-                if enrich::requires_realtime_arrival(ride) {
-                    pairs.insert((ride.service_id.clone(), ride.board_stop_id.clone()));
-                }
-            }
-        }
-        let mut values = Vec::new();
-        let mut had_transient_failure = false;
-        let mut pairs = pairs.into_iter().collect::<Vec<_>>();
-        pairs.sort_by(|left, right| {
-            left.0
-                .as_str()
-                .cmp(right.0.as_str())
-                .then(left.1.as_str().cmp(right.1.as_str()))
-        });
-        let realtime = self.realtime.clone();
-        let mut lookups = stream::iter(pairs.iter().cloned().map(|pair| {
-            let realtime = realtime.clone();
-            async move {
-                let result = realtime
-                    .arrival_estimates(ArrivalQuery::for_ride(pair.0.clone(), pair.1.clone()))
-                    .await;
-                (pair, result)
-            }
-        }))
-        .buffer_unordered(self.limits.max_realtime_concurrency.max(1))
-        .collect::<Vec<_>>()
-        .await;
-        lookups.sort_by(|left, right| {
-            left.0
-                .0
-                .as_str()
-                .cmp(right.0.0.as_str())
-                .then(left.0.1.as_str().cmp(right.0.1.as_str()))
-        });
-        for (pair, result) in lookups {
-            match result {
-                Ok(arrivals) => values.extend(arrivals),
-                Err(error) => {
-                    had_transient_failure |= error.is_transient();
-                    tracing::warn!(
-                        service_id = pair.0.as_str(),
-                        boarding_point_id = pair.1.as_str(),
-                        error = %error,
-                        "realtime arrival enrichment failed"
-                    );
-                }
-            }
-        }
-        if !service_ids.is_empty() {
-            let mut ids = service_ids.into_iter().collect::<Vec<_>>();
-            ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-            match self.realtime.service_conditions(&ids).await {
-                Ok(conditions) => values.extend(conditions),
-                Err(error) => {
-                    had_transient_failure |= error.is_transient();
-                    tracing::warn!(error = %error, "realtime service-condition enrichment failed");
-                }
-            }
-        }
-        (
-            enrich::RealtimeContext::from_values(values),
-            had_transient_failure,
-        )
-    }
-
-    async fn collect_bike_realtime_v2(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> (Vec<NormalizedRealtimeValue>, bool) {
-        if station_ids.is_empty() {
-            return (Vec::new(), false);
-        }
-        match self.realtime.bike_availability(station_ids).await {
-            Ok(values) => (values, false),
-            Err(error) => {
-                tracing::warn!(error = %error, "realtime BikeShare enrichment failed");
-                (Vec::new(), error.is_transient())
-            }
-        }
     }
 }
 

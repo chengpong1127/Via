@@ -1,5 +1,7 @@
 # Valhalla fit for Via's server planner
 
+Status: Historical Research
+
 Research date: 2026-08-29  
 Scope: Current official Valhalla documentation and source, reconciled with Via's accepted planner and server decisions.
 
