@@ -12,12 +12,11 @@ use crate::{
         ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
         realtime::{
             ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, FreshnessPolicy,
-            LiveStatusTimes, LocalizedSourceText, ServiceCondition, ServiceConditionState,
+            LiveStatusTimes, LocalizedSourceText, NormalizedRealtimeValue, RealtimeValue,
+            ServiceCondition, ServiceConditionState,
         },
     },
-    providers::realtime::{
-        ArrivalQuery, NormalizedRealtimeValue, RealtimeError, RealtimeProvider, RealtimeValue,
-    },
+    providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider},
 };
 
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;

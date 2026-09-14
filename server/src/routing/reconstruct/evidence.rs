@@ -2,16 +2,11 @@
 
 use time::OffsetDateTime;
 
-use crate::{
-    domain::{
-        journey::{
-            EvidenceType, JourneyMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary,
-        },
-        ranking::TransferKind,
-        realtime::FreshnessState,
-        transit::TransitMode,
-    },
-    providers::realtime::{NormalizedRealtimeValue, RealtimeValue},
+use crate::domain::{
+    journey::{EvidenceType, JourneyMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
+    ranking::TransferKind,
+    realtime::{FreshnessState, NormalizedRealtimeValue, RealtimeValue},
+    transit::TransitMode,
 };
 
 pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {

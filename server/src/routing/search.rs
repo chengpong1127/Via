@@ -245,7 +245,7 @@ fn traverse(
             next.arrival_time = ride.arrival;
             next.required_freshness_states
                 .extend(ride.required_states.iter().copied());
-            next.schedule_only |= ride.schedule_only;
+            next.schedule_only |= ride.is_schedule_only();
         }
     }
     Some(next)

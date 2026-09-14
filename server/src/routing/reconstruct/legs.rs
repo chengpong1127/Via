@@ -163,7 +163,7 @@ pub(crate) async fn assemble(
                     .required_states
                     .extend(ride.required_states.iter().copied());
                 result.live_evidence.extend(live.clone());
-                result.schedule_only |= ride.schedule_only;
+                result.schedule_only |= ride.is_schedule_only();
                 let effective = EffectiveRide {
                     ride: ride.ride.clone(),
                     departure: ride.departure,

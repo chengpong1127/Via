@@ -10,6 +10,9 @@ pub mod search;
 pub(crate) mod service;
 
 pub use crate::domain::journey::{JourneyOption, PlanningError, PlanningOutcome};
+pub use crate::domain::transit_timing::{
+    TimingBasis, TransitDeparture, TransitTimingError, TransitTimingProvider, TransitTimingQuery,
+};
 pub use crate::providers::realtime::RealtimeProvider;
 pub use crate::street::StreetRouter;
 pub use graph::StreetMetric;

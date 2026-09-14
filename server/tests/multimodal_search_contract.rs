@@ -5,6 +5,7 @@ use via_server::{
         realtime::{ActionState, BikeAvailability, FreshnessState},
         transit::{TransitMode, TransitRide},
     },
+    routing::TimingBasis,
     routing::{
         StreetMetric,
         enrich::TimedTransitRide,
@@ -122,7 +123,7 @@ fn search_composes_walking_transit_and_bikeshare_edges() {
             arrival: datetime!(2026-08-31 10:20 UTC),
             evidence: Vec::new(),
             required_states: vec![FreshnessState::NotApplicable],
-            schedule_only: false,
+            timing_basis: TimingBasis::RealtimePrediction,
         },
     });
 
@@ -159,7 +160,7 @@ fn transit_edges_require_an_explicit_transfer_edge() {
             arrival,
             evidence: Vec::new(),
             required_states: vec![FreshnessState::NotApplicable],
-            schedule_only: false,
+            timing_basis: TimingBasis::RealtimePrediction,
         }
     };
     graph.add_edge(RouteEdge::Transit {
@@ -270,7 +271,7 @@ fn transit_edge(
             arrival,
             evidence: Vec::new(),
             required_states: Vec::new(),
-            schedule_only: false,
+            timing_basis: TimingBasis::RealtimePrediction,
         },
     }
 }

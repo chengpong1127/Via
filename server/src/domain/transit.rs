@@ -60,6 +60,10 @@ impl TransitStop {
 pub struct TransitService {
     pub id: TransitServiceId,
     pub transit_mode: TransitMode,
+    /// Opaque adapter key used by timing composition. It is intentionally not
+    /// an endpoint name or a mode-derived routing rule.
+    #[serde(default)]
+    pub timing_source: Option<String>,
     pub label: String,
     pub headsign: String,
     pub pattern: Vec<BoardingPointId>,
@@ -84,6 +88,7 @@ impl TransitService {
         Self {
             id,
             transit_mode,
+            timing_source: None,
             label: label.into(),
             headsign: headsign.into(),
             pattern,
@@ -93,6 +98,11 @@ impl TransitService {
 
     pub fn requiring_service_conditions(mut self) -> Self {
         self.service_condition_required = true;
+        self
+    }
+
+    pub fn with_timing_source(mut self, source: impl Into<String>) -> Self {
+        self.timing_source = Some(source.into());
         self
     }
 }

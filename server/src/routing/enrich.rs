@@ -1,37 +1,28 @@
 //! Phase 2: resolve departures for the discovered transit topology.
-//! The resolver is mode-generic at the routing boundary; only this module
-//! knows that buses need Arrival Estimates while rail-like services use the
-//! immutable schedule.
+//! Timing source selection is owned by `TransitTimingProvider`; this module
+//! only turns normalized departures into timed graph-ready rides.
 
 use std::collections::{HashMap, HashSet};
 
-use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use time::{Date, OffsetDateTime};
 
 use crate::{
-    domain::transit::{
-        TransitItinerary, TransitMode, TransitNetwork, TransitRide, TransitService,
-        TransitTopologyItinerary,
-    },
+    domain::transit::{TransitItinerary, TransitNetwork, TransitRide, TransitTopologyItinerary},
     domain::{
-        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
-        realtime::{ArrivalState, FreshnessState},
+        ids::{BikeShareStationId, TransitServiceId},
+        realtime::{FreshnessState, NormalizedRealtimeValue, RealtimeValue},
+        transit_timing::{TimingBasis, TransitTimingProvider, TransitTimingQuery},
     },
-    providers::realtime::{ArrivalQuery, NormalizedRealtimeValue, RealtimeProvider, RealtimeValue},
+    providers::realtime::RealtimeProvider,
 };
 
 use super::{discover::DiscoveryResult, service::PlanningContext};
 
 #[derive(Clone, Debug, Default)]
 pub struct RealtimeContext {
-    arrivals: HashMap<(TransitServiceId, BoardingPointId), Vec<NormalizedRealtimeValue>>,
     bikes: HashMap<BikeShareStationId, NormalizedRealtimeValue>,
     conditions: HashMap<TransitServiceId, NormalizedRealtimeValue>,
-}
-
-pub fn requires_realtime_arrival(ride: &TransitRide) -> bool {
-    matches!(ride.transit_mode, TransitMode::Bus)
 }
 
 pub(crate) async fn collect_request_realtime(
@@ -39,67 +30,21 @@ pub(crate) async fn collect_request_realtime(
     candidate: &DiscoveryResult,
     itineraries: &[TransitItinerary],
     max_itineraries: usize,
-    max_concurrency: usize,
 ) -> (RealtimeContext, bool) {
-    let mut pairs = HashSet::new();
     let mut service_ids = HashSet::new();
     for itinerary in itineraries.iter().take(max_itineraries) {
         for ride in &itinerary.rides {
             service_ids.insert(ride.service_id.clone());
-            if requires_realtime_arrival(ride) {
-                pairs.insert((ride.service_id.clone(), ride.board_stop_id.clone()));
-            }
         }
     }
     for itinerary in candidate.topology_itineraries.iter().take(max_itineraries) {
         for ride in &itinerary.rides {
             service_ids.insert(ride.service_id.clone());
-            if requires_realtime_arrival(ride) {
-                pairs.insert((ride.service_id.clone(), ride.board_stop_id.clone()));
-            }
         }
     }
-
-    let mut pairs = pairs.into_iter().collect::<Vec<_>>();
-    pairs.sort_by(|left, right| {
-        left.0
-            .as_str()
-            .cmp(right.0.as_str())
-            .then(left.1.as_str().cmp(right.1.as_str()))
-    });
-    let mut lookups = stream::iter(pairs.iter().cloned().map(|pair| async move {
-        let result = realtime
-            .arrival_estimates(ArrivalQuery::for_ride(pair.0.clone(), pair.1.clone()))
-            .await;
-        (pair, result)
-    }))
-    .buffer_unordered(max_concurrency.max(1))
-    .collect::<Vec<_>>()
-    .await;
-    lookups.sort_by(|left, right| {
-        left.0
-            .0
-            .as_str()
-            .cmp(right.0.0.as_str())
-            .then(left.0.1.as_str().cmp(right.0.1.as_str()))
-    });
 
     let mut values = Vec::new();
     let mut had_transient_failure = false;
-    for (pair, result) in lookups {
-        match result {
-            Ok(arrivals) => values.extend(arrivals),
-            Err(error) => {
-                had_transient_failure |= error.is_transient();
-                tracing::warn!(
-                    service_id = pair.0.as_str(),
-                    boarding_point_id = pair.1.as_str(),
-                    error = %error,
-                    "realtime arrival enrichment failed"
-                );
-            }
-        }
-    }
     if !service_ids.is_empty() {
         let mut ids = service_ids.into_iter().collect::<Vec<_>>();
         ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
@@ -140,15 +85,7 @@ impl RealtimeContext {
     pub fn extend(&mut self, values: impl IntoIterator<Item = NormalizedRealtimeValue>) {
         for value in values {
             match &value.value {
-                RealtimeValue::ArrivalEstimate(arrival) => {
-                    self.arrivals
-                        .entry((
-                            arrival.transit_service_id.clone(),
-                            arrival.boarding_point_id.clone(),
-                        ))
-                        .or_default()
-                        .push(value);
-                }
+                RealtimeValue::ArrivalEstimate(_) => {}
                 RealtimeValue::BikeAvailability(availability) => {
                     self.bikes.insert(availability.station_id.clone(), value);
                 }
@@ -160,60 +97,6 @@ impl RealtimeContext {
                 }
             }
         }
-        for values in self.arrivals.values_mut() {
-            values.sort_by_key(|value| match &value.value {
-                RealtimeValue::ArrivalEstimate(arrival) => arrival.predicted_arrival_at,
-                _ => None,
-            });
-        }
-    }
-
-    pub fn arrivals_for(
-        &self,
-        service_id: &TransitServiceId,
-        boarding_point_id: &BoardingPointId,
-    ) -> &[NormalizedRealtimeValue] {
-        self.arrivals
-            .get(&(service_id.clone(), boarding_point_id.clone()))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn next_arrival(
-        &self,
-        service_id: &TransitServiceId,
-        boarding_point_id: &BoardingPointId,
-        after: OffsetDateTime,
-    ) -> Option<&NormalizedRealtimeValue> {
-        self.next_arrivals(service_id, boarding_point_id, after)
-            .into_iter()
-            .next()
-    }
-
-    pub fn next_arrivals(
-        &self,
-        service_id: &TransitServiceId,
-        boarding_point_id: &BoardingPointId,
-        after: OffsetDateTime,
-    ) -> Vec<&NormalizedRealtimeValue> {
-        let mut arrivals = self
-            .arrivals_for(service_id, boarding_point_id)
-            .iter()
-            .filter(|value| value.freshness.state != FreshnessState::Unavailable)
-            .filter_map(|value| {
-                let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
-                    return None;
-                };
-                let predicted = arrival.predicted_arrival_at?;
-                (predicted >= after).then_some((predicted, value))
-            })
-            .collect::<Vec<_>>();
-        arrivals.sort_by_key(|(predicted, _)| *predicted);
-        arrivals
-            .into_iter()
-            .take(3)
-            .map(|(_, value)| value)
-            .collect()
     }
 
     pub fn bike(&self, station_id: &BikeShareStationId) -> Option<&NormalizedRealtimeValue> {
@@ -229,124 +112,6 @@ impl RealtimeContext {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ResolvedDeparture {
-    pub ride: TransitRide,
-    pub departure: OffsetDateTime,
-    pub arrival: OffsetDateTime,
-    pub live_status: Option<NormalizedRealtimeValue>,
-    pub schedule_only: bool,
-}
-
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-pub enum TransitTimingError {
-    #[error("scheduled transit ride is invalid")]
-    InvalidScheduledRide,
-}
-
-#[async_trait]
-pub trait TransitDepartureResolver: Send + Sync {
-    async fn next_departures(
-        &self,
-        service: &TransitService,
-        boarding_point: &BoardingPointId,
-        after: OffsetDateTime,
-        scheduled: &TransitRide,
-        realtime: &RealtimeContext,
-    ) -> Result<Vec<ResolvedDeparture>, TransitTimingError>;
-}
-
-pub struct NetworkTransitDepartureResolver<'a> {
-    network: &'a TransitNetwork,
-}
-
-impl<'a> NetworkTransitDepartureResolver<'a> {
-    pub fn new(network: &'a TransitNetwork) -> Self {
-        Self { network }
-    }
-}
-
-#[async_trait]
-impl TransitDepartureResolver for NetworkTransitDepartureResolver<'_> {
-    async fn next_departures(
-        &self,
-        service: &TransitService,
-        boarding_point: &BoardingPointId,
-        after: OffsetDateTime,
-        scheduled: &TransitRide,
-        realtime: &RealtimeContext,
-    ) -> Result<Vec<ResolvedDeparture>, TransitTimingError> {
-        match service.transit_mode {
-            TransitMode::Bus => Ok(realtime
-                .next_arrivals(&service.id, boarding_point, after)
-                .into_iter()
-                .filter(|status| status.freshness.state == FreshnessState::Fresh)
-                .filter_map(|status| {
-                    let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
-                        return None;
-                    };
-                    if !matches!(
-                        arrival.state,
-                        ArrivalState::Predicted | ArrivalState::AtBoardingPoint
-                    ) {
-                        return None;
-                    }
-                    let predicted = arrival.predicted_arrival_at?;
-                    let ride_duration = (scheduled.scheduled_arrival
-                        - scheduled.scheduled_departure)
-                        .whole_seconds()
-                        .max(1);
-                    let adjusted_arrival = predicted + time::Duration::seconds(ride_duration);
-                    Some(ResolvedDeparture {
-                        ride: scheduled.clone(),
-                        departure: predicted,
-                        arrival: adjusted_arrival,
-                        live_status: Some(status.clone()),
-                        schedule_only: false,
-                    })
-                })
-                .collect()),
-            TransitMode::Metro | TransitMode::Rail | TransitMode::HighSpeedRail => {
-                let service_day = self.network.service_day(after);
-                let mut departures = self
-                    .network
-                    .trips
-                    .iter()
-                    .filter(|trip| trip.service_id == service.id && trip.runs_on(service_day))
-                    .filter_map(|trip| {
-                        self.network.scheduled_ride(
-                            service_day,
-                            &service.id,
-                            &trip.id,
-                            boarding_point,
-                            &scheduled.alight_stop_id,
-                        )
-                    })
-                    .filter(|ride| ride.scheduled_departure >= after)
-                    .collect::<Vec<_>>();
-                departures.sort_by(|left, right| {
-                    left.scheduled_departure
-                        .cmp(&right.scheduled_departure)
-                        .then(left.trip_id.as_str().cmp(right.trip_id.as_str()))
-                });
-                Ok(departures
-                    .into_iter()
-                    .take(3)
-                    .map(|ride| ResolvedDeparture {
-                        departure: ride.scheduled_departure,
-                        arrival: ride.scheduled_arrival,
-                        ride,
-                        live_status: None,
-                        schedule_only: !realtime.condition(&service.id).is_some_and(|condition| {
-                            condition.freshness.state == FreshnessState::Fresh
-                        }),
-                    })
-                    .collect())
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TimedTransitRide {
     pub ride: TransitRide,
@@ -354,7 +119,13 @@ pub struct TimedTransitRide {
     pub arrival: OffsetDateTime,
     pub evidence: Vec<NormalizedRealtimeValue>,
     pub required_states: Vec<FreshnessState>,
-    pub schedule_only: bool,
+    pub timing_basis: TimingBasis,
+}
+
+impl TimedTransitRide {
+    pub fn is_schedule_only(&self) -> bool {
+        matches!(self.timing_basis, TimingBasis::Schedule)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -368,17 +139,22 @@ pub struct TimedTransitItinerary {
 #[derive(Clone, Debug, Default)]
 pub struct TransitTiming {
     pub itineraries: Vec<TimedTransitItinerary>,
+    pub(crate) had_transient_failure: bool,
+    pub(crate) had_global_failure: bool,
 }
 
 pub(crate) async fn resolve_timing(
     network: &TransitNetwork,
     candidate: &DiscoveryResult,
     static_itineraries: &[crate::domain::transit::TransitItinerary],
+    timing_provider: &dyn TransitTimingProvider,
     realtime: &RealtimeContext,
     context: &PlanningContext,
+    max_concurrency: usize,
 ) -> TransitTiming {
-    let resolver = NetworkTransitDepartureResolver::new(network);
     let mut timed = Vec::new();
+    let mut had_transient_failure = false;
+    let mut had_global_failure = false;
     for itinerary in static_itineraries {
         let Some(first) = itinerary.rides.first() else {
             continue;
@@ -404,7 +180,7 @@ pub(crate) async fn resolve_timing(
             let Some(service) = network.service(&ride.service_id) else {
                 break;
             };
-            let mut next_partials = Vec::new();
+            let mut requests = Vec::new();
             for partial in partials {
                 let mut available_at = partial.available_at;
                 if index > 0 {
@@ -430,37 +206,102 @@ pub(crate) async fn resolve_timing(
                 if service.service_condition_required && !condition_is_fresh {
                     continue;
                 }
-                let Ok(departures) = resolver
-                    .next_departures(service, &ride.board_stop_id, available_at, ride, realtime)
-                    .await
-                else {
-                    continue;
+                requests.push((
+                    partial,
+                    ride.clone(),
+                    available_at,
+                    service.timing_source.clone(),
+                    condition.cloned(),
+                    condition_is_fresh,
+                ));
+            }
+            let mut resolved =
+                stream::iter(requests.into_iter().map(
+                    |(
+                        partial,
+                        ride,
+                        available_at,
+                        timing_source,
+                        condition,
+                        condition_is_fresh,
+                    )| async move {
+                        let result = timing_provider
+                            .next_departures(TransitTimingQuery {
+                                service_id: ride.service_id.clone(),
+                                board_stop_id: ride.board_stop_id.clone(),
+                                alight_stop_id: ride.alight_stop_id.clone(),
+                                timing_source,
+                                after: available_at,
+                                limit: 3,
+                                scheduled_ride: ride.clone(),
+                            })
+                            .await;
+                        (
+                            partial,
+                            ride,
+                            available_at,
+                            condition,
+                            condition_is_fresh,
+                            result,
+                        )
+                    },
+                ))
+                .buffer_unordered(max_concurrency.max(1))
+                .collect::<Vec<_>>()
+                .await;
+            resolved.sort_by(|left, right| {
+                timed_signature(&left.0.rides).cmp(&timed_signature(&right.0.rides))
+            });
+            let mut next_partials = Vec::new();
+            for (partial, ride, available_at, condition, condition_is_fresh, result) in resolved {
+                let departures = match result {
+                    Ok(departures) => departures,
+                    Err(error) => {
+                        had_transient_failure |= error.is_transient();
+                        had_global_failure |= error.is_global();
+                        tracing::warn!(
+                            service_id = ride.service_id.as_str(),
+                            board_stop_id = ride.board_stop_id.as_str(),
+                            error = %error,
+                            "transit timing resolution failed"
+                        );
+                        continue;
+                    }
                 };
                 for departure in departures.into_iter().take(3) {
-                    if departure.departure < available_at {
+                    if departure.departure_at < available_at
+                        || departure.arrival_at < departure.departure_at
+                    {
                         continue;
                     }
                     let mut evidence = Vec::new();
                     let mut required_states = Vec::new();
-                    if condition_is_fresh && let Some(condition) = condition {
+                    if condition_is_fresh && let Some(condition) = &condition {
                         evidence.push(condition.clone());
                         required_states.push(condition.freshness.state);
                     }
-                    if let Some(status) = departure.live_status {
-                        required_states.push(status.freshness.state);
-                        evidence.push(status);
+                    required_states.extend(
+                        departure
+                            .evidence
+                            .iter()
+                            .map(|status| status.freshness.state),
+                    );
+                    evidence.extend(departure.evidence);
+                    let mut timed_ride = ride.clone();
+                    if let Some(trip_id) = departure.trip_id {
+                        timed_ride.trip_id = trip_id;
                     }
                     let mut rides = partial.rides.clone();
                     rides.push(TimedTransitRide {
-                        ride: departure.ride,
-                        departure: departure.departure,
-                        arrival: departure.arrival,
+                        ride: timed_ride,
+                        departure: departure.departure_at,
+                        arrival: departure.arrival_at,
                         evidence,
                         required_states,
-                        schedule_only: departure.schedule_only,
+                        timing_basis: departure.timing_basis,
                     });
                     next_partials.push(Partial {
-                        available_at: departure.arrival,
+                        available_at: departure.arrival_at,
                         rides,
                     });
                 }
@@ -507,19 +348,23 @@ pub(crate) async fn resolve_timing(
         left.access_departure_at == right.access_departure_at
             && timed_signature(&left.rides) == timed_signature(&right.rides)
     });
-    TransitTiming { itineraries: timed }
+    TransitTiming {
+        itineraries: timed,
+        had_transient_failure,
+        had_global_failure,
+    }
 }
 
-/// Resolve timing for topology-only discovery. The topology may contain synthetic ride
-/// shapes for buses, including services with no active static trip. Rail-like
-/// services still pass through the schedule resolver and therefore remain
-/// schedule-driven.
+/// Resolve timing for topology-only discovery. The topology may contain
+/// synthetic ride shapes for services without an active static trip.
 pub(crate) async fn resolve_topology_timing(
     network: &TransitNetwork,
     candidate: &DiscoveryResult,
     topologies: &[TransitTopologyItinerary],
+    timing_provider: &dyn TransitTimingProvider,
     realtime: &RealtimeContext,
     context: &PlanningContext,
+    max_concurrency: usize,
 ) -> TransitTiming {
     let itineraries = topologies
         .iter()
@@ -534,7 +379,16 @@ pub(crate) async fn resolve_topology_timing(
             rides: topology.rides.clone(),
         })
         .collect::<Vec<_>>();
-    resolve_timing(network, candidate, &itineraries, realtime, context).await
+    resolve_timing(
+        network,
+        candidate,
+        &itineraries,
+        timing_provider,
+        realtime,
+        context,
+        max_concurrency,
+    )
+    .await
 }
 
 fn service_condition_blocks(status: &NormalizedRealtimeValue, at: OffsetDateTime) -> bool {
@@ -550,109 +404,15 @@ fn timed_signature(rides: &[TimedTransitRide]) -> String {
         .iter()
         .map(|ride| {
             format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}",
                 ride.ride.service_id.as_str(),
                 ride.ride.trip_id.as_str(),
                 ride.ride.board_stop_id.as_str(),
-                ride.ride.alight_stop_id.as_str()
+                ride.ride.alight_stop_id.as_str(),
+                ride.departure.unix_timestamp_nanos(),
+                ride.arrival.unix_timestamp_nanos()
             )
         })
         .collect::<Vec<_>>()
         .join(",")
-}
-
-#[cfg(test)]
-mod tests {
-    use time::macros::{date, datetime};
-
-    use super::*;
-    use crate::{
-        api::RequestCoordinate,
-        domain::ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
-        domain::transit::{ScheduledStopTime, ScheduledTrip, TransitStop},
-    };
-
-    fn fixture(mode: TransitMode) -> (TransitNetwork, TransitService, TransitRide) {
-        let board = BoardingPointId::new("board");
-        let alight = BoardingPointId::new("alight");
-        let service_id = TransitServiceId::new("service");
-        let service = TransitService::new(
-            service_id.clone(),
-            mode,
-            "Fixture service",
-            "Alight",
-            vec![board.clone(), alight.clone()],
-        );
-        let network = TransitNetwork::new(
-            time::Time::from_hms(4, 0, 0).unwrap(),
-            vec![
-                TransitStop::new(
-                    board.clone(),
-                    "Board",
-                    RequestCoordinate {
-                        latitude: 25.0,
-                        longitude: 121.5,
-                    },
-                ),
-                TransitStop::new(
-                    alight.clone(),
-                    "Alight",
-                    RequestCoordinate {
-                        latitude: 25.01,
-                        longitude: 121.51,
-                    },
-                ),
-            ],
-            vec![service.clone()],
-            vec![ScheduledTrip::weekdays(
-                ScheduledRunId::new("run"),
-                service_id.clone(),
-                vec![time::Weekday::Monday],
-                vec![
-                    ScheduledStopTime::new(21_600, 21_600),
-                    ScheduledStopTime::new(22_200, 22_200),
-                ],
-            )],
-            Vec::new(),
-        );
-        let ride = network
-            .scheduled_ride(
-                date!(2026 - 08 - 31),
-                &service_id,
-                &ScheduledRunId::new("run"),
-                &board,
-                &alight,
-            )
-            .unwrap();
-        (network, service, ride)
-    }
-
-    #[tokio::test]
-    async fn bus_requires_realtime_while_schedule_modes_use_schedule() {
-        for mode in [
-            TransitMode::Bus,
-            TransitMode::Metro,
-            TransitMode::Rail,
-            TransitMode::HighSpeedRail,
-        ] {
-            let (network, service, ride) = fixture(mode);
-            let resolver = NetworkTransitDepartureResolver::new(&network);
-            let departures = resolver
-                .next_departures(
-                    &service,
-                    &ride.board_stop_id,
-                    datetime!(2026-08-31 05:00 +08:00),
-                    &ride,
-                    &RealtimeContext::default(),
-                )
-                .await
-                .unwrap();
-            if mode == TransitMode::Bus {
-                assert!(departures.is_empty());
-            } else {
-                assert_eq!(departures.len(), 1);
-                assert!(departures[0].schedule_only);
-            }
-        }
-    }
 }

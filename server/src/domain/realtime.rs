@@ -132,6 +132,43 @@ pub struct ArrivalEstimate {
     pub transmitted_at: OffsetDateTime,
 }
 
+/// A normalized provider observation. Providers may use different payloads,
+/// but routing and reconstruction consume this stable evidence shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RealtimeValue {
+    ArrivalEstimate(ArrivalEstimate),
+    BikeAvailability(BikeAvailability),
+    ServiceCondition(ServiceCondition),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NormalizedRealtimeValue {
+    pub id: String,
+    pub received_at: OffsetDateTime,
+    pub normalized_at: OffsetDateTime,
+    pub provider_published_at: Option<OffsetDateTime>,
+    pub source_change_at: Option<OffsetDateTime>,
+    pub freshness: Freshness,
+    pub value: RealtimeValue,
+}
+
+impl NormalizedRealtimeValue {
+    pub fn kind(&self) -> RealtimeValueKind {
+        match &self.value {
+            RealtimeValue::ArrivalEstimate(_) => RealtimeValueKind::ArrivalEstimate,
+            RealtimeValue::BikeAvailability(_) => RealtimeValueKind::BikeAvailability,
+            RealtimeValue::ServiceCondition(_) => RealtimeValueKind::ServiceCondition,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RealtimeValueKind {
+    ArrivalEstimate,
+    BikeAvailability,
+    ServiceCondition,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionState {

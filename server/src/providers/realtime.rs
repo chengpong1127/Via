@@ -10,16 +10,13 @@ use std::{
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use moka::future::Cache;
-use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 
 use crate::domain::{
     ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
-    realtime::{
-        ArrivalEstimate, BikeAvailability, Freshness, FreshnessReason, FreshnessState,
-        ServiceCondition,
-    },
+    realtime::{FreshnessReason, FreshnessState},
 };
+
+pub use crate::domain::realtime::{NormalizedRealtimeValue, RealtimeValue, RealtimeValueKind};
 
 pub const DEFAULT_REALTIME_CACHE_TTL: Duration = Duration::from_secs(45);
 
@@ -123,41 +120,6 @@ impl ArrivalQuery {
     pub fn for_ride(service_id: TransitServiceId, boarding_point_id: BoardingPointId) -> Self {
         Self::new([service_id], [boarding_point_id])
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RealtimeValue {
-    ArrivalEstimate(ArrivalEstimate),
-    BikeAvailability(BikeAvailability),
-    ServiceCondition(ServiceCondition),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NormalizedRealtimeValue {
-    pub id: String,
-    pub received_at: OffsetDateTime,
-    pub normalized_at: OffsetDateTime,
-    pub provider_published_at: Option<OffsetDateTime>,
-    pub source_change_at: Option<OffsetDateTime>,
-    pub freshness: Freshness,
-    pub value: RealtimeValue,
-}
-
-impl NormalizedRealtimeValue {
-    pub fn kind(&self) -> RealtimeValueKind {
-        match self.value {
-            RealtimeValue::ArrivalEstimate(_) => RealtimeValueKind::ArrivalEstimate,
-            RealtimeValue::BikeAvailability(_) => RealtimeValueKind::BikeAvailability,
-            RealtimeValue::ServiceCondition(_) => RealtimeValueKind::ServiceCondition,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RealtimeValueKind {
-    ArrivalEstimate,
-    BikeAvailability,
-    ServiceCondition,
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]

@@ -114,10 +114,24 @@ PlanningRequest → RoutingService → discover → RouteGraph → enrich → bi
 `RouteGraph` is the one canonical routing representation. Street access,
 egress, bicycle, matrix, and path calculations stay behind the Valhalla
 provider boundary; timetable lookup uses the immutable `TransitNetwork`
-artifact. After candidate discovery, `RealtimeContext` freezes the required
-values for the rest of the request. The checked-in tests use injected fixtures,
-while a production deployment must publish a reviewed artifact at
-`VIA_TRANSIT_NETWORK`.
+artifact. After candidate discovery, the timing provider resolves transit
+departures while `RealtimeContext` freezes only service conditions and
+BikeShare availability for the rest of the request. The checked-in tests use
+injected fixtures, while a production deployment must publish a reviewed
+artifact at `VIA_TRANSIT_NETWORK`.
+
+Transit timing is provider-neutral across Bus, Metro, conventional rail, and
+high-speed rail. Discovery produces topology; a `TransitTimingProvider` then
+resolves normalized departures with `departure_at`, `arrival_at`, timing basis,
+and optional evidence before enrichment creates the shared `TimedTransitRide`
+graph edges. Routing and Pareto search do not choose timing sources by
+`TransitMode`.
+
+The currently wired TDX timing path is Bus `EstimatedTimeOfArrival`, with the
+static timetable as the deliberate fallback. The same adapter boundary is
+ready for TRA, THSR, and Metro live-board/timetable/frequency adapters; those
+live endpoints are not claimed as implemented until their payload contracts
+are available.
 
 ## Tests
 

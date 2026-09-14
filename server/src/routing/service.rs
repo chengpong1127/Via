@@ -17,10 +17,11 @@ use crate::{
             ResultMetadata, SemanticObject,
         },
         normalize_to_taipei,
-        realtime::FreshnessState,
+        realtime::{FreshnessState, RealtimeValue},
+        transit_timing::TransitTimingProvider,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::realtime::{RealtimeProvider, RealtimeValue},
+    providers::realtime::RealtimeProvider,
     street::{
         Coordinate, MatrixCell, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind,
         StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -35,6 +36,7 @@ use super::{bike, discover, enrich, graph, graph::StreetMetric, search};
 #[derive(Clone)]
 pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
+    pub(crate) transit_timing: Arc<dyn TransitTimingProvider>,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -119,9 +121,14 @@ impl Default for RoutingLimits {
 }
 
 impl RoutingService {
-    pub fn new(street_routing: Arc<dyn StreetRouter>, realtime: Arc<dyn RealtimeProvider>) -> Self {
+    pub fn new(
+        street_routing: Arc<dyn StreetRouter>,
+        transit_timing: Arc<dyn TransitTimingProvider>,
+        realtime: Arc<dyn RealtimeProvider>,
+    ) -> Self {
         Self {
             street_routing,
+            transit_timing,
             realtime,
             transit_network: Arc::new(TransitNetwork::default()),
             ranking: RankingPolicy::default(),
@@ -135,6 +142,11 @@ impl RoutingService {
 
     pub fn with_transit_network(mut self, transit_network: TransitNetwork) -> Self {
         self.transit_network = Arc::new(transit_network);
+        self
+    }
+
+    pub fn with_transit_network_arc(mut self, transit_network: Arc<TransitNetwork>) -> Self {
+        self.transit_network = transit_network;
         self
     }
 
@@ -299,7 +311,6 @@ impl RoutingService {
                             &transit_candidate,
                             &static_itineraries,
                             self.limits.max_transit_itineraries,
-                            self.limits.max_realtime_concurrency,
                         )
                         .await;
                         stage_metrics.transit_realtime_lookups =
@@ -311,8 +322,10 @@ impl RoutingService {
                                 &self.transit_network,
                                 &transit_candidate,
                                 &static_itineraries,
+                                self.transit_timing.as_ref(),
                                 &realtime,
                                 &context,
+                                self.limits.max_realtime_concurrency,
                             )
                             .await
                         } else {
@@ -320,11 +333,15 @@ impl RoutingService {
                                 &self.transit_network,
                                 &transit_candidate,
                                 &transit_candidate.topology_itineraries,
+                                self.transit_timing.as_ref(),
                                 &realtime,
                                 &context,
+                                self.limits.max_realtime_concurrency,
                             )
                             .await
                         };
+                        had_transient_failure |= transit_timing.had_transient_failure;
+                        had_global_failure |= transit_timing.had_global_failure;
                         stage_metrics.realtime_resolution_duration_ms =
                             timing_started.elapsed().as_millis() as u64;
                     }
@@ -634,7 +651,6 @@ fn transit_realtime_lookup_count(
                 .iter()
                 .flat_map(|itinerary| &itinerary.rides),
         )
-        .filter(|ride| enrich::requires_realtime_arrival(ride))
         .map(|ride| (ride.service_id.clone(), ride.board_stop_id.clone()))
         .collect::<HashSet<_>>()
         .len()
