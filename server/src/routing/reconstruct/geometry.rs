@@ -9,8 +9,8 @@ use crate::{
     api::{PlanningRequest, RequestCoordinate},
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
     street::{
-        Coordinate, DetailedPath, DetailedPathQuery, Maneuver, ManeuverKind, ProviderError,
-        RoutingConstraints, StreetTravelMode,
+        Coordinate, Maneuver, ManeuverKind, RouteQuery, RoutingConstraints, StreetPath,
+        StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -27,7 +27,7 @@ impl RoutingService {
         to: &graph::RouteNode,
         mode: StreetTravelMode,
         constraints: RoutingConstraints,
-    ) -> Result<Option<DetailedPath>, PlanningError> {
+    ) -> Result<Option<StreetPath>, PlanningError> {
         let Some(from) = self.node_coordinate(request, from) else {
             return Ok(None);
         };
@@ -36,7 +36,7 @@ impl RoutingService {
         };
         match self
             .street_routing
-            .detailed_path(DetailedPathQuery {
+            .route(RouteQuery {
                 travel_mode: mode,
                 origin: from,
                 destination: to,
@@ -45,7 +45,7 @@ impl RoutingService {
             .await
         {
             Ok(path) => Ok(Some(path)),
-            Err(ProviderError::UnreachableEndpoints) => Ok(None),
+            Err(StreetRoutingError::Unreachable) => Ok(None),
             Err(error) if is_transient_provider_error(&error) => {
                 Err(PlanningError::TemporarilyUnavailable)
             }

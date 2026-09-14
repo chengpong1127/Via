@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+
+use crate::health::DependencyHealth;
 
 use super::{
-    Coordinate, Correlation, DetailedPath, DetailedPathQuery, GraphRevision, MatrixCell,
-    MatrixQuery, MatrixReachability, MatrixResult, Metres, ProviderCapabilities, ProviderCategory,
-    ProviderError, ProviderStatus, Seconds, StreetRoutingProvider, StreetTravelMode,
+    Coordinate, MatrixCell, MatrixQuery, MatrixResult, Metres, RouteQuery, Seconds, StreetPath,
+    StreetRouter, StreetRoutingError, StreetTravelMode,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,76 +48,47 @@ enum MatrixFixture {
 }
 
 #[derive(Clone)]
-pub struct FakeProvider {
-    revision: Arc<RwLock<GraphRevision>>,
+pub struct FakeStreetRouter {
+    healthy: bool,
     matrix: Arc<HashMap<LegKey, MatrixFixture>>,
-    paths: Arc<HashMap<LegKey, DetailedPath>>,
-    status_failure: Option<ProviderError>,
-    correlation_failure: Option<ProviderError>,
-    matrix_failure: Option<ProviderError>,
-    path_failure: Option<ProviderError>,
+    paths: Arc<HashMap<LegKey, StreetPath>>,
+    matrix_failure: Option<StreetRoutingError>,
+    route_failure: Option<StreetRoutingError>,
 }
 
-pub struct FakeProviderBuilder {
-    revision: GraphRevision,
+pub struct FakeStreetRouterBuilder {
+    healthy: bool,
     matrix: HashMap<LegKey, MatrixFixture>,
-    paths: HashMap<LegKey, DetailedPath>,
-    status_failure: Option<ProviderError>,
-    correlation_failure: Option<ProviderError>,
-    matrix_failure: Option<ProviderError>,
-    path_failure: Option<ProviderError>,
+    paths: HashMap<LegKey, StreetPath>,
+    matrix_failure: Option<StreetRoutingError>,
+    route_failure: Option<StreetRoutingError>,
 }
 
-impl FakeProvider {
-    pub fn builder(revision: GraphRevision) -> FakeProviderBuilder {
-        FakeProviderBuilder {
-            revision,
+impl FakeStreetRouter {
+    pub fn builder() -> FakeStreetRouterBuilder {
+        FakeStreetRouterBuilder {
+            healthy: true,
             matrix: HashMap::new(),
             paths: HashMap::new(),
-            status_failure: None,
-            correlation_failure: None,
             matrix_failure: None,
-            path_failure: None,
+            route_failure: None,
         }
-    }
-
-    pub async fn publish_revision(&self, revision: GraphRevision) {
-        *self.revision.write().await = revision;
-    }
-
-    async fn require_revision(
-        &self,
-        expected: &GraphRevision,
-    ) -> Result<GraphRevision, ProviderError> {
-        let actual = self.revision.read().await.clone();
-        if &actual != expected {
-            return Err(ProviderError::InconsistentGraphRevision {
-                expected: expected.clone(),
-                actual,
-            });
-        }
-        Ok(actual)
     }
 }
 
-impl FakeProviderBuilder {
-    pub fn status_failure(mut self, error: ProviderError) -> Self {
-        self.status_failure = Some(error);
+impl FakeStreetRouterBuilder {
+    pub fn unhealthy(mut self) -> Self {
+        self.healthy = false;
         self
     }
 
-    pub fn correlation_failure(mut self, error: ProviderError) -> Self {
-        self.correlation_failure = Some(error);
-        self
-    }
-
-    pub fn matrix_failure(mut self, error: ProviderError) -> Self {
+    pub fn matrix_failure(mut self, error: StreetRoutingError) -> Self {
         self.matrix_failure = Some(error);
         self
     }
 
-    pub fn path_failure(mut self, error: ProviderError) -> Self {
-        self.path_failure = Some(error);
+    pub fn route_failure(mut self, error: StreetRoutingError) -> Self {
+        self.route_failure = Some(error);
         self
     }
 
@@ -154,95 +125,65 @@ impl FakeProviderBuilder {
         travel_mode: StreetTravelMode,
         origin: Coordinate,
         destination: Coordinate,
-        path: DetailedPath,
+        path: StreetPath,
     ) -> Self {
         self.paths
             .insert(LegKey::new(travel_mode, origin, destination), path);
         self
     }
 
-    pub fn build(self) -> FakeProvider {
-        FakeProvider {
-            revision: Arc::new(RwLock::new(self.revision)),
+    pub fn build(self) -> FakeStreetRouter {
+        FakeStreetRouter {
+            healthy: self.healthy,
             matrix: Arc::new(self.matrix),
             paths: Arc::new(self.paths),
-            status_failure: self.status_failure,
-            correlation_failure: self.correlation_failure,
             matrix_failure: self.matrix_failure,
-            path_failure: self.path_failure,
+            route_failure: self.route_failure,
         }
     }
 }
 
 #[async_trait]
-impl StreetRoutingProvider for FakeProvider {
-    async fn status(&self) -> Result<ProviderStatus, ProviderError> {
-        if let Some(error) = &self.status_failure {
-            return Err(error.clone());
-        }
-        Ok(ProviderStatus {
-            category: ProviderCategory::Fake,
-            healthy: true,
-            graph_revision: self.revision.read().await.clone(),
-            capabilities: ProviderCapabilities::REQUIRED,
-            attribution: vec![],
-        })
+impl DependencyHealth for FakeStreetRouter {
+    async fn healthy(&self) -> bool {
+        self.healthy
     }
 
-    async fn correlate(
-        &self,
-        graph_revision: &GraphRevision,
-        coordinates: &[Coordinate],
-    ) -> Result<Vec<Correlation>, ProviderError> {
-        self.require_revision(graph_revision).await?;
-        if let Some(error) = &self.correlation_failure {
-            return Err(error.clone());
-        }
-        Ok(coordinates
-            .iter()
-            .copied()
-            .map(|coordinate| Correlation {
-                input: coordinate,
-                correlated: coordinate,
-            })
-            .collect())
+    fn name(&self) -> &'static str {
+        "fake"
     }
+}
 
-    async fn matrix(
-        &self,
-        graph_revision: &GraphRevision,
-        query: &MatrixQuery,
-    ) -> Result<MatrixResult, ProviderError> {
-        let revision = self.require_revision(graph_revision).await?;
+#[async_trait]
+impl StreetRouter for FakeStreetRouter {
+    async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
+        query.validate()?;
         if let Some(error) = &self.matrix_failure {
             return Err(error.clone());
         }
         let cells = query
             .sources
             .iter()
-            .enumerate()
-            .map(|(source_index, source)| {
+            .map(|source| {
                 query
                     .targets
                     .iter()
-                    .enumerate()
-                    .map(|(target_index, target)| {
+                    .map(|target| {
                         let key = LegKey::new(query.travel_mode, *source, *target);
-                        let fixture = self.matrix.get(&key);
-                        let reachability = match fixture {
+                        match self.matrix.get(&key) {
                             Some(MatrixFixture::Reachable { duration, distance })
                                 if query
                                     .constraints
                                     .max_distance
                                     .is_none_or(|maximum| distance.0 <= maximum.0) =>
                             {
-                                MatrixReachability::Reachable {
+                                MatrixCell::Reachable {
                                     duration: *duration,
                                     distance: *distance,
                                 }
                             }
                             Some(MatrixFixture::Reachable { .. })
-                            | Some(MatrixFixture::Unreachable) => MatrixReachability::Unreachable,
+                            | Some(MatrixFixture::Unreachable) => MatrixCell::Unreachable,
                             None => self
                                 .paths
                                 .get(&key)
@@ -252,36 +193,21 @@ impl StreetRoutingProvider for FakeProvider {
                                         .max_distance
                                         .is_none_or(|maximum| path.distance.0 <= maximum.0)
                                 })
-                                .map(|path| MatrixReachability::Reachable {
+                                .map(|path| MatrixCell::Reachable {
                                     duration: path.duration,
                                     distance: path.distance,
                                 })
-                                .unwrap_or(MatrixReachability::Unreachable),
-                        };
-                        MatrixCell {
-                            source_index,
-                            target_index,
-                            source_correlation: Some(*source),
-                            target_correlation: Some(*target),
-                            reachability,
+                                .unwrap_or(MatrixCell::Unreachable),
                         }
                     })
                     .collect()
             })
             .collect();
-        Ok(MatrixResult {
-            cells,
-            graph_revision: revision,
-        })
+        Ok(MatrixResult { cells })
     }
 
-    async fn detailed_path(
-        &self,
-        graph_revision: &GraphRevision,
-        query: &DetailedPathQuery,
-    ) -> Result<DetailedPath, ProviderError> {
-        self.require_revision(graph_revision).await?;
-        if let Some(error) = &self.path_failure {
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        if let Some(error) = &self.route_failure {
             return Err(error.clone());
         }
         let path = self
@@ -292,13 +218,13 @@ impl StreetRoutingProvider for FakeProvider {
                 query.destination,
             ))
             .cloned()
-            .ok_or(ProviderError::UnreachableEndpoints)?;
+            .ok_or(StreetRoutingError::Unreachable)?;
         if query
             .constraints
             .max_distance
             .is_some_and(|maximum| path.distance.0 > maximum.0)
         {
-            return Err(ProviderError::UnreachableEndpoints);
+            return Err(StreetRoutingError::Unreachable);
         }
         Ok(path)
     }

@@ -4,10 +4,9 @@ use url::Url;
 use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
     domain::transit::TransitNetwork,
+    health::DependencyHealth,
     providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
-    providers::{
-        GraphRevision, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
-    },
+    providers::{TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
 };
 
 #[tokio::main]
@@ -31,13 +30,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    let graph_revision = env::var("VIA_STREET_GRAPH_REVISION")
-        .map(GraphRevision::new)
-        .map_err(|_| "VIA_STREET_GRAPH_REVISION must identify the immutable graph artifact")?;
+    let valhalla_graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")
+        .map_err(|_| "VIA_VALHALLA_GRAPH_REVISION must identify the immutable graph artifact")?;
     let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")
         .map_err(|_| "VIA_VALHALLA_TILESET_LAST_MODIFIED must pin the loaded graph artifact")?
         .parse()?;
-    let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
+    let mut config = ValhallaConfig::local(valhalla_graph_revision, tileset_last_modified);
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
         config.base_url = Url::parse(&base_url)?;
     }
@@ -45,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("VIA_VALHALLA_URL must use HTTPS in production".into());
     }
     let provider = Arc::new(ValhallaProvider::new(config)?);
+    if !provider.healthy().await {
+        return Err("Valhalla is not healthy for the configured graph artifact".into());
+    }
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = TransitNetwork::from_artifact_json(

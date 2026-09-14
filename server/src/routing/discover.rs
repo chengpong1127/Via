@@ -14,9 +14,7 @@ use crate::{
         transit::TransitRide,
     },
     routing::service::{PlanningContext, RoutingLimits, planner_coordinate, street_metric},
-    street::{
-        MatrixOrientation, MatrixQuery, ProviderError, StreetRoutingSession, StreetTravelMode,
-    },
+    street::{MatrixOrientation, MatrixQuery, StreetRouter, StreetRoutingError, StreetTravelMode},
 };
 
 use super::graph::StreetMetric;
@@ -69,12 +67,12 @@ impl DiscoveryResult {
 
 #[derive(Clone)]
 pub struct Discovery<'a> {
-    street_routing: &'a StreetRoutingSession,
+    street_routing: &'a dyn StreetRouter,
     network: &'a TransitNetwork,
 }
 
 impl<'a> Discovery<'a> {
-    pub fn new(street_routing: &'a StreetRoutingSession, network: &'a TransitNetwork) -> Self {
+    pub fn new(street_routing: &'a dyn StreetRouter, network: &'a TransitNetwork) -> Self {
         Self {
             street_routing,
             network,
@@ -86,7 +84,7 @@ impl<'a> Discovery<'a> {
         request: &PlanningRequest,
         context: &PlanningContext,
         limits: &RoutingLimits,
-    ) -> Result<DiscoveryResult, ProviderError> {
+    ) -> Result<DiscoveryResult, StreetRoutingError> {
         if !request.selected_modes.contains(&JourneyMode::Transit) {
             return Ok(DiscoveryResult::default());
         }
@@ -157,8 +155,9 @@ impl<'a> Discovery<'a> {
             .first()
             .into_iter()
             .flatten()
-            .filter_map(|cell| {
-                let (stop_id, _) = origin_pool.get(cell.target_index)?;
+            .enumerate()
+            .filter_map(|(target_index, cell)| {
+                let (stop_id, _) = origin_pool.get(target_index)?;
                 let metric = street_metric(cell)?;
                 (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
                     TransitAccessCandidate {
@@ -632,8 +631,6 @@ fn topology_geographic_distance(network: &TransitNetwork, rides: &[TransitRide])
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use time::macros::datetime;
 
     use super::*;
@@ -641,7 +638,7 @@ mod tests {
         api::RequestCoordinate,
         domain::ids::BoardingPointId,
         domain::transit::{TransitService, TransitStop},
-        street::{FakeProvider, GraphRevision},
+        street::FakeStreetRouter,
     };
 
     fn topology_network(service_count: usize) -> TransitNetwork {
@@ -704,10 +701,7 @@ mod tests {
             BoardingPointId::new("c"),
             90,
         )]);
-        let provider = FakeProvider::builder(GraphRevision::new("graph")).build();
-        let street = StreetRoutingSession::start(Arc::new(provider))
-            .await
-            .unwrap();
+        let street = FakeStreetRouter::builder().build();
         let discovery = Discovery::new(&street, &network);
         let access = vec![TransitAccessCandidate {
             access: TransitAccess::new(

@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use via_server::{
     api::PlanningRequest,
     app::{build_router, openapi_document},
-    street::{FakeProvider, GraphRevision},
+    street::FakeStreetRouter,
 };
 
 #[test]
@@ -97,6 +97,16 @@ fn generated_openapi_covers_the_http_contract() {
         );
     }
 
+    let health_properties = &openapi["components"]["schemas"]["HealthResponse"]["properties"];
+    assert!(health_properties["healthy"].is_object());
+    assert!(health_properties["provider"].is_object());
+    for removed in ["graph_revision", "pinned_graph_revision", "capabilities"] {
+        assert!(
+            health_properties[removed].is_null(),
+            "health leaked {removed}"
+        );
+    }
+
     let planning_properties = &openapi["components"]["schemas"]["PlanningRequest"]["properties"];
     assert!(planning_properties["selected_modes"].is_object());
     assert!(planning_properties["departure_setting"].is_object());
@@ -146,11 +156,9 @@ fn generated_openapi_covers_the_http_contract() {
 
 #[tokio::test]
 async fn openapi_endpoint_serves_the_generated_document_without_caching() {
-    let app = build_router(Arc::new(
-        FakeProvider::builder(GraphRevision::new("revision-a")).build(),
-    ))
-    .await
-    .unwrap();
+    let app = build_router(Arc::new(FakeStreetRouter::builder().build()))
+        .await
+        .unwrap();
 
     let response = app
         .oneshot(

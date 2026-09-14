@@ -11,7 +11,7 @@ pub(crate) mod service;
 
 pub use crate::domain::journey::{JourneyOption, PlanningError, PlanningOutcome};
 pub use crate::providers::realtime::RealtimeProvider;
-pub use crate::street::StreetRoutingProvider;
+pub use crate::street::StreetRouter;
 pub use graph::StreetMetric;
 pub use service::{RoutingLimits, RoutingService};
 

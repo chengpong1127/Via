@@ -8,7 +8,6 @@ pub mod tdx;
 
 pub mod valhalla;
 
-pub use crate::street::GraphRevision;
 pub use tdx::{TdxRealtimeConfig, TdxRealtimeProvider};
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,

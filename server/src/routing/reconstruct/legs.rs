@@ -13,7 +13,7 @@ use crate::{
         realtime::FreshnessState,
         transit::{TransitMode, TransitRide},
     },
-    street::{DetailedPath, RoutingTimeKind, StreetTravelMode},
+    street::{RoutingTimeKind, StreetPath, StreetTravelMode},
 };
 
 use super::{
@@ -54,7 +54,7 @@ pub(crate) async fn assemble(
     journey: &search::SearchLabel,
     realtime: &enrich::RealtimeContext,
     context: &PlanningContext,
-    direct_walking_path: Option<&DetailedPath>,
+    direct_walking_path: Option<&StreetPath>,
     departure_time: OffsetDateTime,
 ) -> Result<Option<ReconstructedLegs>, PlanningError> {
     let mut result = ReconstructedLegs {
@@ -340,7 +340,7 @@ fn walking_leg(
     to: &impl PlaceLike,
     departure_time: OffsetDateTime,
     arrival_time: OffsetDateTime,
-    path: &DetailedPath,
+    path: &StreetPath,
 ) -> Leg {
     Leg {
         id,
@@ -458,7 +458,7 @@ fn bike_leg(
     dropoff: &crate::domain::transit::BikeShareStation,
     departure_time: OffsetDateTime,
     arrival_time: OffsetDateTime,
-    path: &DetailedPath,
+    path: &StreetPath,
     pickup_availability: &crate::domain::realtime::BikeAvailability,
     dropoff_availability: &crate::domain::realtime::BikeAvailability,
     evidence: Vec<LiveStatusEvidence>,

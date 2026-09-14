@@ -20,13 +20,12 @@ Implemented capabilities:
 - scoped TDX arrival and BikeShare queries with provider-neutral normalization;
 - generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
   plus shared request, result, empty, and error fixtures;
-- coordinate correlation;
 - one-to-many and many-to-one Walking/bike-share matrices;
-- detailed geometry and semantic maneuver facts;
-- immutable graph-revision pinning and startup capability checks;
-- normalized provider errors, strict timeout/concurrency/location/body bounds;
+- provider-neutral route geometry and best-effort maneuver facts;
+- Valhalla-owned graph labeling and tileset validation;
+- normalized provider errors, strict timeout/concurrency/provider/body bounds;
 - structured OSM attribution; and
-- Operational Events containing only provider category, revision, latency,
+- Operational Events containing only provider name, Valhalla revision label, latency,
   outcome, and anonymous counts.
 
 ## Run locally
@@ -53,7 +52,7 @@ set in the process environment take precedence.
 
 The server fails startup until Valhalla is healthy. Its operator endpoint is
 `GET /health/street-routing`; responses use `Cache-Control: no-store` and report
-both the current and startup-pinned graph revision.
+only the provider-neutral health state and provider name.
 
 Configuration:
 
@@ -61,6 +60,8 @@ Configuration:
 | --- | --- |
 | `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and TDX URLs. |
 | `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
+| `VIA_VALHALLA_GRAPH_REVISION` | Valhalla-owned logical revision label for the loaded graph artifact; required. |
+| `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Valhalla `/status` tileset timestamp expected at startup and during health checks; required. |
 | `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
 | `VIA_TDX_AUTHORITY_NAMESPACE` | TDX authority namespace used to scope deterministic observation IDs; required. |
 | `VIA_TDX_BEARER_TOKEN` | TDX access token held only by the realtime adapter; required. |
@@ -144,11 +145,10 @@ Docker. The deterministic fake is the default seam for Journey Planning tests.
 ## Graph publication
 
 Graph builds are offline publication work. The fixture checksum, Valhalla image,
-and Via graph revision are pinned. A mounted volume with a different revision is
-rejected rather than rebuilt in place. Publish a new graph to a new volume,
-validate `/status`, then direct new Planning Requests to the new provider
-instance. Existing `StreetRoutingSession` values remain pinned to the old
-revision. Rollback selects the prior healthy volume.
+and Valhalla graph revision are pinned. A mounted volume with a different
+tileset timestamp is rejected rather than rebuilt in place. Publish a new graph
+to a new volume, validate `/status`, then direct new Planning Requests to the
+new provider instance. Rollback selects the prior healthy volume.
 
 The checked-in fixture is intentionally tiny. Taipei–New Taipei production use
 still requires a separately pinned OSM extract, the accepted route-quality

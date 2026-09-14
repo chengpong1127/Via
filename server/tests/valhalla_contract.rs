@@ -1,9 +1,9 @@
+mod support;
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-
-mod support;
 
 use axum::{
     Json, Router,
@@ -13,17 +13,20 @@ use axum::{
     routing::{get, post},
 };
 use serde_json::{Value, json};
-use time::macros::datetime;
-use via_server::street::{
-    Coordinate, DetailedPathQuery, GraphRevision, ManeuverKind, MatrixOrientation, MatrixQuery,
-    OperationalEvent, OperationalEventObserver, ProviderError, RoutingConstraints, RoutingTime,
-    RoutingTimeKind, StreetRoutingSession, StreetTravelMode, ValhallaConfig, ValhallaProvider,
-};
-
+use std::sync::atomic::{AtomicUsize, Ordering};
 use support::{
     ProviderContractFixture, assert_cancellation_follow_up_succeeds, assert_malformed_response,
-    assert_provider_contract, assert_rate_limited, assert_revision_mismatch, assert_timeout,
-    assert_unreachable,
+    assert_provider_contract, assert_rate_limited, assert_timeout, assert_unreachable,
+};
+use time::macros::datetime;
+use via_server::{
+    health::DependencyHealth,
+    providers::{OperationalEvent, OperationalEventObserver, ValhallaConfig, ValhallaProvider},
+    street::{
+        Coordinate, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
+        RoutingConstraints, RoutingTime, RoutingTimeKind, Seconds, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
+    },
 };
 
 #[derive(Clone, Default)]
@@ -39,25 +42,11 @@ async fn status() -> Json<Value> {
     }))
 }
 
-async fn locate(State(state): State<FixtureState>, Json(request): Json<Value>) -> Json<Value> {
-    state.requests.lock().unwrap().push(request);
-    Json(json!([
-        {"edges": [{"correlated_lat": 25.04770, "correlated_lon": 121.51710}]}
-    ]))
-}
-
 async fn matrix(State(state): State<FixtureState>, Json(request): Json<Value>) -> Json<Value> {
     let source_count = request["sources"].as_array().unwrap().len();
     let target_count = request["targets"].as_array().unwrap().len();
     state.requests.lock().unwrap().push(request);
-    let reachable = json!({
-        "time": 620.4,
-        "distance": 3.9,
-        "begin_lat": 25.04770,
-        "begin_lon": 121.51710,
-        "end_lat": 25.03390,
-        "end_lon": 121.56440
-    });
+    let reachable = json!({"time": 620.4, "distance": 3.9});
     let cells = if source_count == 2 && target_count == 1 {
         json!([[reachable.clone()], [reachable]])
     } else {
@@ -88,7 +77,6 @@ async fn spawn_fixture() -> (url::Url, FixtureState) {
     let state = FixtureState::default();
     let app = Router::new()
         .route("/status", get(status))
-        .route("/locate", post(locate))
         .route("/sources_to_targets", post(matrix))
         .route("/route", post(route))
         .with_state(state.clone());
@@ -108,34 +96,33 @@ fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
 fn config(base_url: url::Url) -> ValhallaConfig {
     ValhallaConfig {
         base_url,
-        graph_revision: GraphRevision::new("taipei-2026-08-30"),
+        graph_revision: "taipei-2026-08-30".into(),
         request_timeout: Duration::from_secs(1),
         max_concurrency: 2,
         max_sources: 4,
         max_targets: 4,
-        max_correlation_locations: 4,
         max_response_bytes: 64 * 1024,
         expected_tileset_last_modified: 1_788_019_200,
     }
 }
 
 #[tokio::test]
-async fn valhalla_adapter_normalizes_all_provider_contract_capabilities() {
+async fn valhalla_adapter_normalizes_the_provider_contract() {
     let (base_url, state) = spawn_fixture().await;
     let provider = Arc::new(ValhallaProvider::new(config(base_url)).unwrap());
-    let session = StreetRoutingSession::start(provider).await.unwrap();
+    assert!(provider.healthy().await);
     let origin = coordinate(25.04776, 121.51706);
     let destination = coordinate(25.03396, 121.56447);
     let unreachable = coordinate(25.03344, 121.53409);
 
     let path = assert_provider_contract(
-        &session,
+        provider.as_ref(),
         &ProviderContractFixture {
             origin,
             destination,
             unreachable,
             alternate_origin: unreachable,
-            duration: via_server::street::Seconds(620),
+            duration: Seconds(620),
             distance: via_server::street::Metres(3_900),
             geometry: vec![origin, destination],
             maneuver_kinds: vec![
@@ -152,7 +139,7 @@ async fn valhalla_adapter_normalizes_all_provider_contract_capabilities() {
     assert_eq!(path.maneuvers[1].street_names, vec!["信義路"]);
     assert_eq!(path.attribution[0].text, "© OpenStreetMap contributors");
 
-    session
+    provider
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::OneToMany,
             constraints: RoutingConstraints {
@@ -170,13 +157,13 @@ async fn valhalla_adapter_normalizes_all_provider_contract_capabilities() {
         .unwrap();
 
     let requests = state.requests.lock().unwrap();
-    assert_eq!(requests[1]["costing"], "bicycle");
-    assert_eq!(requests[1]["verbose"], true);
-    assert_eq!(requests[2]["costing"], "pedestrian");
-    assert_eq!(requests[3]["shape_format"], "polyline6");
-    assert_eq!(requests[4]["date_time"]["type"], 1);
-    assert_eq!(requests[4]["date_time"]["value"], "2026-08-30T08:15");
-    assert_eq!(requests[4]["expansion_max_distance"], 5_000);
+    assert_eq!(requests[0]["costing"], "bicycle");
+    assert_eq!(requests[0]["verbose"], true);
+    assert_eq!(requests[1]["costing"], "pedestrian");
+    assert_eq!(requests[2]["shape_format"], "polyline6");
+    assert_eq!(requests[3]["date_time"]["type"], 1);
+    assert_eq!(requests[3]["date_time"]["value"], "2026-08-30T08:15");
+    assert_eq!(requests[3]["expansion_max_distance"], 5_000);
 }
 
 #[derive(Default)]
@@ -189,13 +176,12 @@ impl OperationalEventObserver for RecordingObserver {
 }
 
 #[tokio::test]
-async fn operational_events_contains_counts_but_never_coordinates_or_paths() {
+async fn operational_events_contain_counts_but_never_coordinates_or_paths() {
     let (base_url, _) = spawn_fixture().await;
     let observer = Arc::new(RecordingObserver::default());
     let provider =
         Arc::new(ValhallaProvider::with_observer(config(base_url), observer.clone()).unwrap());
-    let session = StreetRoutingSession::start(provider).await.unwrap();
-    session
+    provider
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::OneToMany,
             constraints: Default::default(),
@@ -209,8 +195,7 @@ async fn operational_events_contains_counts_but_never_coordinates_or_paths() {
         .await
         .unwrap();
 
-    let events = observer.0.lock().unwrap();
-    let serialized = serde_json::to_string(&events.as_slice()).unwrap();
+    let serialized = serde_json::to_string(&observer.0.lock().unwrap().as_slice()).unwrap();
     assert!(serialized.contains("source_count"));
     assert!(!serialized.contains("25.04776"));
     assert!(!serialized.contains("121.51706"));
@@ -226,15 +211,11 @@ async fn valhalla_rate_limits_are_translated_to_a_via_owned_error() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let provider = Arc::new(
-        ValhallaProvider::new(config(
-            url::Url::parse(&format!("http://{address}/")).unwrap(),
-        ))
-        .unwrap(),
-    );
-    let session = StreetRoutingSession::start(provider).await.unwrap();
-
-    let error = session
+    let provider = ValhallaProvider::new(config(
+        url::Url::parse(&format!("http://{address}/")).unwrap(),
+    ))
+    .unwrap();
+    let error = provider
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::OneToMany,
             constraints: Default::default(),
@@ -248,33 +229,25 @@ async fn valhalla_rate_limits_are_translated_to_a_via_owned_error() {
 }
 
 #[tokio::test]
-async fn valhalla_unreachable_error_codes_are_translated_without_leaking_payloads() {
-    let app = Router::new().route("/status", get(status)).route(
+async fn valhalla_unreachable_errors_do_not_leak_payloads() {
+    let app = Router::new().route(
         "/route",
         post(|| async {
             (
                 StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error_code": 171,
-                    "error": "No suitable edges near location",
-                    "status_code": 400
-                })),
+                Json(json!({"error_code": 171, "error": "No suitable edges near location"})),
             )
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let provider = Arc::new(
-        ValhallaProvider::new(config(
-            url::Url::parse(&format!("http://{address}/")).unwrap(),
-        ))
-        .unwrap(),
-    );
-    let session = StreetRoutingSession::start(provider).await.unwrap();
-
-    let error = session
-        .detailed_path(DetailedPathQuery {
+    let provider = ValhallaProvider::new(config(
+        url::Url::parse(&format!("http://{address}/")).unwrap(),
+    ))
+    .unwrap();
+    let error = provider
+        .route(RouteQuery {
             travel_mode: StreetTravelMode::Walking,
             constraints: Default::default(),
             origin: coordinate(25.0, 121.5),
@@ -288,22 +261,16 @@ async fn valhalla_unreachable_error_codes_are_translated_without_leaking_payload
 
 #[tokio::test]
 async fn malformed_valhalla_responses_use_the_shared_contract_error() {
-    let app = Router::new()
-        .route("/status", get(status))
-        .route("/route", post(|| async { Json(json!({"trip": {}})) }));
+    let app = Router::new().route("/route", post(|| async { Json(json!({"trip": {}})) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let provider = Arc::new(
-        ValhallaProvider::new(config(
-            url::Url::parse(&format!("http://{address}/")).unwrap(),
-        ))
-        .unwrap(),
-    );
-    let session = StreetRoutingSession::start(provider).await.unwrap();
-
-    let error = session
-        .detailed_path(DetailedPathQuery {
+    let provider = ValhallaProvider::new(config(
+        url::Url::parse(&format!("http://{address}/")).unwrap(),
+    ))
+    .unwrap();
+    let error = provider
+        .route(RouteQuery {
             travel_mode: StreetTravelMode::Walking,
             constraints: Default::default(),
             origin: coordinate(25.0, 121.5),
@@ -315,27 +282,21 @@ async fn malformed_valhalla_responses_use_the_shared_contract_error() {
 }
 
 #[tokio::test]
-async fn startup_rejects_a_tileset_that_does_not_match_the_configured_revision() {
+async fn health_rejects_a_tileset_that_does_not_match_the_configured_value() {
     let (base_url, _) = spawn_fixture().await;
     let mut mismatched = config(base_url);
     mismatched.expected_tileset_last_modified = 1;
-    let provider = Arc::new(ValhallaProvider::new(mismatched).unwrap());
-
-    let error = match StreetRoutingSession::start(provider).await {
-        Ok(_) => panic!("mismatched graph must fail startup"),
-        Err(error) => error,
-    };
-    assert_revision_mismatch(error);
+    let provider = ValhallaProvider::new(mismatched).unwrap();
+    assert!(!provider.healthy().await);
 }
 
 #[tokio::test]
-async fn valhalla_adapter_enforces_matrix_and_response_size_bounds() {
+async fn valhalla_adapter_enforces_its_own_matrix_and_response_bounds() {
     let (base_url, _) = spawn_fixture().await;
     let mut bounded = config(base_url.clone());
     bounded.max_sources = 1;
-    let provider = Arc::new(ValhallaProvider::new(bounded).unwrap());
-    let session = StreetRoutingSession::start(provider).await.unwrap();
-    let matrix_error = session
+    let provider = ValhallaProvider::new(bounded).unwrap();
+    let matrix_error = provider
         .matrix(MatrixQuery {
             orientation: MatrixOrientation::ManyToOne,
             constraints: Default::default(),
@@ -348,19 +309,15 @@ async fn valhalla_adapter_enforces_matrix_and_response_size_bounds() {
         })
         .await
         .unwrap_err();
-    assert!(matches!(matrix_error, ProviderError::InvalidRequest { .. }));
+    assert!(matches!(
+        matrix_error,
+        StreetRoutingError::InvalidRequest { .. }
+    ));
 
     let mut tiny_response = config(base_url);
     tiny_response.max_response_bytes = 8;
-    let provider = Arc::new(ValhallaProvider::new(tiny_response).unwrap());
-    let startup_error = match StreetRoutingSession::start(provider).await {
-        Ok(_) => panic!("oversized health response must fail startup"),
-        Err(error) => error,
-    };
-    assert_eq!(
-        startup_error,
-        ProviderError::ResponseTooLarge { limit_bytes: 8 }
-    );
+    let provider = ValhallaProvider::new(tiny_response).unwrap();
+    assert!(!provider.healthy().await);
 }
 
 #[tokio::test]
@@ -370,9 +327,7 @@ async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
         Json(json!({"sources_to_targets": [[{"time": 1, "distance": 0.001}]]}))
     }
 
-    let app = Router::new()
-        .route("/status", get(status))
-        .route("/sources_to_targets", post(slow_matrix));
+    let app = Router::new().route("/sources_to_targets", post(slow_matrix));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -380,7 +335,6 @@ async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
     deadline_config.max_concurrency = 1;
     deadline_config.request_timeout = Duration::from_millis(40);
     let provider = Arc::new(ValhallaProvider::new(deadline_config).unwrap());
-    let session = StreetRoutingSession::start(provider).await.unwrap();
     let query = MatrixQuery {
         orientation: MatrixOrientation::OneToMany,
         constraints: Default::default(),
@@ -389,13 +343,12 @@ async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
         targets: vec![coordinate(25.1, 121.6)],
     };
 
-    let first_session = session.clone();
+    let first_provider = provider.clone();
     let first_query = query.clone();
-    let first = tokio::spawn(async move { first_session.matrix(first_query).await });
+    let first = tokio::spawn(async move { first_provider.matrix(first_query).await });
     tokio::time::sleep(Duration::from_millis(5)).await;
     let started = std::time::Instant::now();
-    let second_error = session.matrix(query).await.unwrap_err();
-
+    let second_error = provider.matrix(query).await.unwrap_err();
     assert_timeout(second_error);
     assert!(started.elapsed() < Duration::from_millis(80));
     assert_timeout(first.await.unwrap().unwrap_err());
@@ -403,20 +356,15 @@ async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
 
 #[tokio::test]
 async fn cancelling_an_operation_releases_its_concurrency_permit() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     async fn cancellable_matrix(State(calls): State<Arc<AtomicUsize>>) -> Json<Value> {
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-        Json(json!({
-            "sources_to_targets": [[{"time": 1, "distance": 0.001}]]
-        }))
+        Json(json!({"sources_to_targets": [[{"time": 1, "distance": 0.001}]]}))
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
-        .route("/status", get(status))
         .route("/sources_to_targets", post(cancellable_matrix))
         .with_state(calls);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -425,11 +373,7 @@ async fn cancelling_an_operation_releases_its_concurrency_permit() {
     let mut cancellation_config = config(url::Url::parse(&format!("http://{address}/")).unwrap());
     cancellation_config.max_concurrency = 1;
     cancellation_config.request_timeout = Duration::from_secs(2);
-    let session = StreetRoutingSession::start(Arc::new(
-        ValhallaProvider::new(cancellation_config).unwrap(),
-    ))
-    .await
-    .unwrap();
+    let provider = Arc::new(ValhallaProvider::new(cancellation_config).unwrap());
     let query = MatrixQuery {
         orientation: MatrixOrientation::OneToMany,
         constraints: Default::default(),
@@ -438,18 +382,17 @@ async fn cancelling_an_operation_releases_its_concurrency_permit() {
         targets: vec![coordinate(25.1, 121.6)],
     };
 
-    let cancelled_session = session.clone();
+    let cancelled_provider = provider.clone();
     let cancelled_query = query.clone();
-    let cancelled = tokio::spawn(async move { cancelled_session.matrix(cancelled_query).await });
+    let cancelled = tokio::spawn(async move { cancelled_provider.matrix(cancelled_query).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     cancelled.abort();
 
-    let follow_up = session.matrix(query).await;
+    let follow_up = provider.matrix(query).await;
     assert_cancellation_follow_up_succeeds(follow_up.clone());
-    let result = follow_up.unwrap();
     assert!(matches!(
-        result.cells[0][0].reachability,
-        via_server::street::MatrixReachability::Reachable { .. }
+        follow_up.unwrap().cells[0][0],
+        MatrixCell::Reachable { .. }
     ));
 }
 

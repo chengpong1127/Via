@@ -22,8 +22,8 @@ use crate::{
     observability::{OperationalMetrics, PlannerStageMetrics},
     providers::realtime::{RealtimeProvider, RealtimeValue},
     street::{
-        Coordinate, DetailedPath, DetailedPathQuery, MatrixCell, MatrixReachability, ProviderError,
-        RoutingConstraints, RoutingTime, RoutingTimeKind, StreetRoutingSession, StreetTravelMode,
+        Coordinate, MatrixCell, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind,
+        StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -34,7 +34,7 @@ use super::{bike, discover, enrich, graph, graph::StreetMetric, search};
 
 #[derive(Clone)]
 pub struct RoutingService {
-    pub(crate) street_routing: StreetRoutingSession,
+    pub(crate) street_routing: Arc<dyn StreetRouter>,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -119,7 +119,7 @@ impl Default for RoutingLimits {
 }
 
 impl RoutingService {
-    pub fn new(street_routing: StreetRoutingSession, realtime: Arc<dyn RealtimeProvider>) -> Self {
+    pub fn new(street_routing: Arc<dyn StreetRouter>, realtime: Arc<dyn RealtimeProvider>) -> Self {
         Self {
             street_routing,
             realtime,
@@ -270,7 +270,7 @@ impl RoutingService {
         let mut realtime = enrich::RealtimeContext::default();
         if request.selected_modes.contains(&JourneyMode::Transit) {
             let discovery_started = Instant::now();
-            match discover::Discovery::new(&self.street_routing, &self.transit_network)
+            match discover::Discovery::new(self.street_routing.as_ref(), &self.transit_network)
                 .discover(&request, &context, &self.limits)
                 .await
             {
@@ -349,7 +349,7 @@ impl RoutingService {
 
         if request.selected_modes.contains(&JourneyMode::BikeShare) {
             match bike::BikeShareOpportunityDiscovery::new(
-                &self.street_routing,
+                self.street_routing.as_ref(),
                 &self.transit_network,
             )
             .discover(&request, &context, &self.limits, &route_graph)
@@ -552,17 +552,17 @@ impl PlanningContext {
 
 pub(crate) fn planner_coordinate(
     coordinate: RequestCoordinate,
-) -> Result<Coordinate, ProviderError> {
+) -> Result<Coordinate, StreetRoutingError> {
     Coordinate::try_new(coordinate.latitude, coordinate.longitude)
 }
 
 pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
-    match cell.reachability {
-        MatrixReachability::Reachable { duration, distance } => Some(StreetMetric {
+    match cell {
+        MatrixCell::Reachable { duration, distance } => Some(StreetMetric {
             duration_seconds: duration.0,
             distance_metres: distance.0,
         }),
-        MatrixReachability::Unreachable => None,
+        MatrixCell::Unreachable => None,
     }
 }
 
@@ -574,9 +574,9 @@ pub(crate) struct GeneratedCandidate {
 }
 
 enum PathAttempt {
-    Found(DetailedPath),
+    Found(StreetPath),
     Unreachable,
-    Failed(ProviderError),
+    Failed(StreetRoutingError),
 }
 
 impl PathAttempt {
@@ -584,9 +584,9 @@ impl PathAttempt {
         matches!(
             self,
             Self::Failed(
-                ProviderError::Timeout
-                    | ProviderError::RateLimited
-                    | ProviderError::TemporarilyUnavailable
+                StreetRoutingError::Timeout
+                    | StreetRoutingError::RateLimited
+                    | StreetRoutingError::TemporarilyUnavailable
             )
         )
     }
@@ -595,31 +595,29 @@ impl PathAttempt {
         matches!(
             self,
             Self::Failed(
-                ProviderError::InvalidRequest { .. }
-                    | ProviderError::MalformedResponse
-                    | ProviderError::UnsupportedCapability
-                    | ProviderError::InconsistentGraphRevision { .. }
-                    | ProviderError::ResponseTooLarge { .. }
+                StreetRoutingError::InvalidRequest { .. }
+                    | StreetRoutingError::MalformedResponse
+                    | StreetRoutingError::ResponseTooLarge { .. }
             )
         )
     }
 }
 
-pub(crate) fn is_transient_provider_error(error: &ProviderError) -> bool {
+pub(crate) fn is_transient_provider_error(error: &StreetRoutingError) -> bool {
     matches!(
         error,
-        ProviderError::Timeout | ProviderError::RateLimited | ProviderError::TemporarilyUnavailable
+        StreetRoutingError::Timeout
+            | StreetRoutingError::RateLimited
+            | StreetRoutingError::TemporarilyUnavailable
     )
 }
 
-fn is_global_provider_error(error: &ProviderError) -> bool {
+fn is_global_provider_error(error: &StreetRoutingError) -> bool {
     matches!(
         error,
-        ProviderError::InvalidRequest { .. }
-            | ProviderError::MalformedResponse
-            | ProviderError::UnsupportedCapability
-            | ProviderError::InconsistentGraphRevision { .. }
-            | ProviderError::ResponseTooLarge { .. }
+        StreetRoutingError::InvalidRequest { .. }
+            | StreetRoutingError::MalformedResponse
+            | StreetRoutingError::ResponseTooLarge { .. }
     )
 }
 
@@ -644,7 +642,7 @@ fn transit_realtime_lookup_count(
 
 pub(crate) struct DirectWalking {
     pub(crate) metric: StreetMetric,
-    pub(crate) path: DetailedPath,
+    pub(crate) path: StreetPath,
 }
 
 impl RoutingService {
@@ -657,7 +655,7 @@ impl RoutingService {
     ) -> PathAttempt {
         match self
             .street_routing
-            .detailed_path(DetailedPathQuery {
+            .route(RouteQuery {
                 travel_mode: mode,
                 origin,
                 destination,
@@ -666,7 +664,7 @@ impl RoutingService {
             .await
         {
             Ok(path) => PathAttempt::Found(path),
-            Err(ProviderError::UnreachableEndpoints) => PathAttempt::Unreachable,
+            Err(StreetRoutingError::Unreachable) => PathAttempt::Unreachable,
             Err(error) => PathAttempt::Failed(error),
         }
     }
@@ -702,18 +700,16 @@ impl RoutingService {
     }
 }
 
-impl From<ProviderError> for PlanningError {
-    fn from(error: ProviderError) -> Self {
+impl From<StreetRoutingError> for PlanningError {
+    fn from(error: StreetRoutingError) -> Self {
         match error {
-            ProviderError::Timeout
-            | ProviderError::RateLimited
-            | ProviderError::TemporarilyUnavailable => Self::TemporarilyUnavailable,
-            ProviderError::UnreachableEndpoints => unreachable_is_handled_before_conversion(),
-            ProviderError::InvalidRequest { .. }
-            | ProviderError::MalformedResponse
-            | ProviderError::UnsupportedCapability
-            | ProviderError::InconsistentGraphRevision { .. }
-            | ProviderError::ResponseTooLarge { .. } => Self::Internal,
+            StreetRoutingError::Timeout
+            | StreetRoutingError::RateLimited
+            | StreetRoutingError::TemporarilyUnavailable => Self::TemporarilyUnavailable,
+            StreetRoutingError::Unreachable => unreachable_is_handled_before_conversion(),
+            StreetRoutingError::InvalidRequest { .. }
+            | StreetRoutingError::MalformedResponse
+            | StreetRoutingError::ResponseTooLarge { .. } => Self::Internal,
         }
     }
 }

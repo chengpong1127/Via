@@ -31,7 +31,7 @@ impl RoutingService {
         journey: &search::SearchLabel,
         realtime: &enrich::RealtimeContext,
         context: &PlanningContext,
-        direct_walking_path: Option<&crate::street::DetailedPath>,
+        direct_walking_path: Option<&crate::street::StreetPath>,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
         let departure_time = match request.departure_setting {
             crate::api::DepartureSetting::ArriveBy { time } => {

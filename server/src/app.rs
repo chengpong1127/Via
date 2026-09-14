@@ -19,18 +19,16 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     domain::transit::TransitNetwork,
+    health::DependencyHealth,
     observability::OperationalMetrics,
     providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
     routing::{PlanningError, PlanningOutcome, RoutingService},
-    street::{
-        GraphRevision, ProviderCapabilities, ProviderCategory, ProviderError,
-        StreetRoutingProvider, StreetRoutingSession,
-    },
+    street::{StreetRouter, StreetRoutingError},
 };
 
 #[derive(Clone)]
 struct AppState {
-    street_routing: StreetRoutingSession,
+    street_health: Arc<dyn DependencyHealth>,
     routing: RoutingService,
     transit_network: Arc<TransitNetwork>,
     metrics: OperationalMetrics,
@@ -38,9 +36,10 @@ struct AppState {
     openapi: OpenApi,
 }
 
-pub async fn build_router(
-    provider: Arc<dyn StreetRoutingProvider>,
-) -> Result<Router, ProviderError> {
+pub async fn build_router<P>(provider: Arc<P>) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
     build_router_with_realtime_and_network(
         provider,
         Arc::new(NullRealtimeProvider),
@@ -49,17 +48,23 @@ pub async fn build_router(
     .await
 }
 
-pub async fn build_router_with_realtime(
-    provider: Arc<dyn StreetRoutingProvider>,
+pub async fn build_router_with_realtime<P>(
+    provider: Arc<P>,
     realtime: Arc<dyn RealtimeProvider>,
-) -> Result<Router, ProviderError> {
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
     build_router_with_realtime_and_network(provider, realtime, TransitNetwork::default()).await
 }
 
-pub async fn build_router_with_network(
-    provider: Arc<dyn StreetRoutingProvider>,
+pub async fn build_router_with_network<P>(
+    provider: Arc<P>,
     transit_network: TransitNetwork,
-) -> Result<Router, ProviderError> {
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
     build_router_with_realtime_and_network(
         provider,
         Arc::new(NullRealtimeProvider),
@@ -68,13 +73,18 @@ pub async fn build_router_with_network(
     .await
 }
 
-pub async fn build_router_with_realtime_and_network(
-    provider: Arc<dyn StreetRoutingProvider>,
+pub async fn build_router_with_realtime_and_network<P>(
+    provider: Arc<P>,
     realtime: Arc<dyn RealtimeProvider>,
     transit_network: TransitNetwork,
-) -> Result<Router, ProviderError> {
-    build_router_with_realtime_and_network_and_ttl(
-        provider,
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    let (street_router, street_health) = provider_interfaces(provider);
+    build_router_with_realtime_and_network_and_ttl_interfaces(
+        street_router,
+        street_health,
         realtime,
         transit_network,
         crate::providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
@@ -82,20 +92,40 @@ pub async fn build_router_with_realtime_and_network(
     .await
 }
 
-pub async fn build_router_with_realtime_and_network_and_ttl(
-    provider: Arc<dyn StreetRoutingProvider>,
+pub async fn build_router_with_realtime_and_network_and_ttl<P>(
+    provider: Arc<P>,
     realtime: Arc<dyn RealtimeProvider>,
     transit_network: TransitNetwork,
     realtime_cache_ttl: std::time::Duration,
-) -> Result<Router, ProviderError> {
-    let street_routing = StreetRoutingSession::start(provider).await?;
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    let (street_router, street_health) = provider_interfaces(provider);
+    build_router_with_realtime_and_network_and_ttl_interfaces(
+        street_router,
+        street_health,
+        realtime,
+        transit_network,
+        realtime_cache_ttl,
+    )
+    .await
+}
+
+async fn build_router_with_realtime_and_network_and_ttl_interfaces(
+    street_router: Arc<dyn StreetRouter>,
+    street_health: Arc<dyn DependencyHealth>,
+    realtime: Arc<dyn RealtimeProvider>,
+    transit_network: TransitNetwork,
+    realtime_cache_ttl: std::time::Duration,
+) -> Result<Router, StreetRoutingError> {
     let realtime = Arc::new(CachedRealtimeProvider::with_ttl(
         realtime,
         realtime_cache_ttl,
     ));
     let realtime_metrics = realtime.metrics();
     let metrics = OperationalMetrics::default();
-    let routing = RoutingService::new(street_routing.clone(), realtime)
+    let routing = RoutingService::new(street_router, realtime)
         .with_transit_network(transit_network.clone())
         .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
@@ -103,7 +133,7 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
     Ok(router
         .route("/openapi.json", get(openapi_document_endpoint))
         .with_state(AppState {
-            street_routing,
+            street_health,
             routing,
             transit_network: Arc::new(transit_network),
             metrics,
@@ -112,6 +142,13 @@ pub async fn build_router_with_realtime_and_network_and_ttl(
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(http_timeout)))
+}
+
+fn provider_interfaces<P>(provider: Arc<P>) -> (Arc<dyn StreetRouter>, Arc<dyn DependencyHealth>)
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    (provider.clone(), provider)
 }
 
 fn documented_router() -> OpenApiRouter<AppState> {
@@ -365,15 +402,7 @@ struct ReadinessResponse {
     )
 )]
 async fn readiness(State(state): State<AppState>) -> Response {
-    let street_routing = state
-        .street_routing
-        .current_status()
-        .await
-        .is_ok_and(|status| {
-            status.healthy
-                && status.graph_revision == state.street_routing.pinned_status().graph_revision
-                && status.capabilities.supports(ProviderCapabilities::REQUIRED)
-        });
+    let street_routing = state.street_health.healthy().await;
     let static_network = !state
         .transit_network
         .static_network_revision
@@ -404,10 +433,7 @@ async fn openapi_document_endpoint(State(state): State<AppState>) -> Response {
 #[derive(Serialize, utoipa::ToSchema)]
 struct HealthResponse {
     healthy: bool,
-    provider: ProviderCategory,
-    graph_revision: GraphRevision,
-    pinned_graph_revision: GraphRevision,
-    capabilities: ProviderCapabilities,
+    provider: String,
 }
 
 #[utoipa::path(
@@ -415,46 +441,28 @@ struct HealthResponse {
     path = "/health/street-routing",
     operation_id = "getStreetRoutingHealth",
     summary = "Check street-routing health",
-    description = "Reports the current provider health against the graph revision pinned at server startup.",
+    description = "Reports whether the street-routing dependency is healthy.",
     responses(
         (status = 200, description = "Street-routing provider is healthy", body = HealthResponse,
             headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 503, description = "Street-routing provider is unavailable or changed revision", body = HealthResponse,
+        (status = 503, description = "Street-routing provider is unavailable", body = HealthResponse,
             headers(("Cache-Control" = String, description = "Always no-store.")))
     )
 )]
 async fn street_routing_health(State(state): State<AppState>) -> Response {
-    let pinned = state.street_routing.pinned_status();
-    match state.street_routing.current_status().await {
-        Ok(current) => {
-            let revision_matches = current.graph_revision == pinned.graph_revision;
-            let body = HealthResponse {
-                healthy: current.healthy && revision_matches,
-                provider: current.category,
-                graph_revision: current.graph_revision,
-                pinned_graph_revision: pinned.graph_revision.clone(),
-                capabilities: current.capabilities,
-            };
-            no_store((
-                if body.healthy {
-                    StatusCode::OK
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                },
-                Json(body),
-            ))
-        }
-        Err(_) => no_store((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                healthy: false,
-                provider: pinned.category,
-                graph_revision: pinned.graph_revision.clone(),
-                pinned_graph_revision: pinned.graph_revision.clone(),
-                capabilities: pinned.capabilities,
-            }),
-        )),
-    }
+    let healthy = state.street_health.healthy().await;
+    let body = HealthResponse {
+        healthy,
+        provider: state.street_health.name().to_owned(),
+    };
+    no_store((
+        if body.healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(body),
+    ))
 }
 
 #[utoipa::path(

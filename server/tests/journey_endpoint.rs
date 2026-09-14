@@ -10,8 +10,7 @@ use tower::ServiceExt;
 use via_server::{
     app::build_router,
     street::{
-        Coordinate, DetailedPath, FakeProvider, GraphRevision, Maneuver, Metres, Seconds,
-        StreetTravelMode,
+        Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
     },
 };
 
@@ -39,18 +38,16 @@ fn request_body() -> Value {
 async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
     let origin = coordinate(25.04776, 121.51706);
     let destination = coordinate(25.03396, 121.56447);
-    let revision = GraphRevision::new("revision-a");
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             destination,
-            DetailedPath {
+            StreetPath {
                 duration: Seconds(620),
                 distance: Metres(3_900),
                 geometry: vec![origin, destination],
                 maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
-                graph_revision: revision,
                 attribution: vec![],
             },
         )
@@ -93,7 +90,7 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
 
 #[tokio::test]
 async fn invalid_request_returns_a_redacted_error_envelope() {
-    let provider = FakeProvider::builder(GraphRevision::new("revision-a")).build();
+    let provider = FakeStreetRouter::builder().build();
     let app = build_router(Arc::new(provider)).await.unwrap();
     let mut invalid = request_body();
     invalid["origin"]["coordinate"]["latitude"] = json!(91);
@@ -121,7 +118,7 @@ async fn invalid_request_returns_a_redacted_error_envelope() {
 
 #[tokio::test]
 async fn successful_empty_result_is_distinct_from_service_unavailability() {
-    let provider = FakeProvider::builder(GraphRevision::new("revision-a")).build();
+    let provider = FakeStreetRouter::builder().build();
     let app = build_router(Arc::new(provider)).await.unwrap();
 
     let response = app

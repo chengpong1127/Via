@@ -24,8 +24,8 @@ use via_server::{
         ArrivalQuery, NormalizedRealtimeValue, RealtimeError, RealtimeProvider, RealtimeValue,
     },
     street::{
-        Coordinate, DetailedPath, FakeProvider, GraphRevision, Maneuver, Metres, ProviderError,
-        Seconds, StreetTravelMode,
+        Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetRoutingError,
+        StreetTravelMode,
     },
 };
 
@@ -33,13 +33,12 @@ fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
     Coordinate::try_new(latitude, longitude).unwrap()
 }
 
-fn path(revision: GraphRevision, from: Coordinate, to: Coordinate, duration: u32) -> DetailedPath {
-    DetailedPath {
+fn path(from: Coordinate, to: Coordinate, duration: u32) -> StreetPath {
+    StreetPath {
         duration: Seconds(duration),
         distance: Metres(duration * 5),
         geometry: vec![from, to],
         maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
-        graph_revision: revision,
         attribution: Vec::new(),
     }
 }
@@ -177,23 +176,22 @@ async fn response_body(app: axum::Router, body: Value) -> Value {
 
 #[tokio::test]
 async fn transit_candidate_uses_static_schedule_without_a_global_snapshot() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             first,
-            path(revision.clone(), origin, first, 120),
+            path(origin, first, 120),
         )
         .path(
             StreetTravelMode::Walking,
             second,
             destination,
-            path(revision.clone(), second, destination, 120),
+            path(second, destination, 120),
         )
         .build();
     let realtime = FixtureRealtime::default();
@@ -222,23 +220,22 @@ async fn transit_candidate_uses_static_schedule_without_a_global_snapshot() {
 
 #[tokio::test]
 async fn metro_candidate_degrades_to_schedule_only_when_realtime_times_out() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             first,
-            path(revision.clone(), origin, first, 120),
+            path(origin, first, 120),
         )
         .path(
             StreetTravelMode::Walking,
             second,
             destination,
-            path(revision.clone(), second, destination, 120),
+            path(second, destination, 120),
         )
         .build();
     let app = build_router_with_realtime_and_network(
@@ -266,23 +263,22 @@ async fn metro_candidate_degrades_to_schedule_only_when_realtime_times_out() {
 
 #[tokio::test]
 async fn stale_optional_service_condition_does_not_remove_schedule_route() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             first,
-            path(revision.clone(), origin, first, 120),
+            path(origin, first, 120),
         )
         .path(
             StreetTravelMode::Walking,
             second,
             destination,
-            path(revision.clone(), second, destination, 120),
+            path(second, destination, 120),
         )
         .build();
     let now = datetime!(2026-08-31 10:00 +08:00);
@@ -319,23 +315,22 @@ async fn stale_optional_service_condition_does_not_remove_schedule_route() {
 
 #[tokio::test]
 async fn bus_candidate_is_enriched_only_for_the_scheduled_ride() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             first,
-            path(revision.clone(), origin, first, 120),
+            path(origin, first, 120),
         )
         .path(
             StreetTravelMode::Walking,
             second,
             destination,
-            path(revision.clone(), second, destination, 120),
+            path(second, destination, 120),
         )
         .build();
     let now = datetime!(2026-08-31 10:00 +08:00);
@@ -388,29 +383,28 @@ async fn bus_candidate_is_enriched_only_for_the_scheduled_ride() {
 
 #[tokio::test]
 async fn youbike_candidate_uses_demand_fetched_station_counts() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let pickup = coordinate(25.005, 121.505);
     let dropoff = coordinate(25.010, 121.510);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             pickup,
-            path(revision.clone(), origin, pickup, 60),
+            path(origin, pickup, 60),
         )
         .path(
             StreetTravelMode::Bicycle,
             pickup,
             dropoff,
-            path(revision.clone(), pickup, dropoff, 600),
+            path(pickup, dropoff, 600),
         )
         .path(
             StreetTravelMode::Walking,
             dropoff,
             destination,
-            path(revision.clone(), dropoff, destination, 60),
+            path(dropoff, destination, 60),
         )
         .build();
     let now = datetime!(2026-08-31 10:00 +08:00);
@@ -497,8 +491,8 @@ async fn youbike_candidate_uses_demand_fetched_station_counts() {
 
 #[tokio::test]
 async fn planner_provider_failure_does_not_create_a_partial_internal_result() {
-    let provider = FakeProvider::builder(GraphRevision::new("revision-a"))
-        .path_failure(ProviderError::MalformedResponse)
+    let provider = FakeStreetRouter::builder()
+        .route_failure(StreetRoutingError::MalformedResponse)
         .build();
     let app = build_router_with_network(
         Arc::new(provider),
@@ -525,7 +519,6 @@ async fn planner_provider_failure_does_not_create_a_partial_internal_result() {
 
 #[tokio::test]
 async fn unified_search_can_use_bike_share_before_and_after_transit() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let destination = coordinate(25.040, 121.540);
     let a = BoardingPointId::new("a");
@@ -645,9 +638,8 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
     )
     .with_transfer_edges(vec![TransferEdge::new(b.clone(), c.clone(), 60)])
     .with_revisions("static-1", "schedule-1");
-    let path_for =
-        |from: Coordinate, to: Coordinate, seconds| path(revision.clone(), from, to, seconds);
-    let provider = FakeProvider::builder(revision.clone())
+    let path_for = |from: Coordinate, to: Coordinate, seconds| path(from, to, seconds);
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
@@ -770,23 +762,22 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
 
 #[tokio::test]
 async fn bus_topology_can_create_a_departure_without_a_static_timetable_trip() {
-    let revision = GraphRevision::new("revision-a");
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
     let destination = coordinate(25.020, 121.520);
-    let provider = FakeProvider::builder(revision.clone())
+    let provider = FakeStreetRouter::builder()
         .path(
             StreetTravelMode::Walking,
             origin,
             first,
-            path(revision.clone(), origin, first, 120),
+            path(origin, first, 120),
         )
         .path(
             StreetTravelMode::Walking,
             second,
             destination,
-            path(revision.clone(), second, destination, 120),
+            path(second, destination, 120),
         )
         .build();
     let now = datetime!(2026-08-31 10:00 +08:00);

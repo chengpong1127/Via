@@ -16,11 +16,13 @@ use tokio::{
 };
 use url::Url;
 
-use crate::street::{
-    Attribution, Coordinate, Correlation, DetailedPath, DetailedPathQuery, GraphRevision, Maneuver,
-    ManeuverKind, MatrixCell, MatrixQuery, MatrixReachability, MatrixResult, Metres,
-    ProviderCapabilities, ProviderCategory, ProviderError, ProviderStatus, RoutingConstraints,
-    RoutingTimeKind, Seconds, StreetRoutingProvider, StreetTravelMode,
+use crate::{
+    health::DependencyHealth,
+    street::{
+        Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixQuery, MatrixResult,
+        Metres, RouteQuery, RoutingConstraints, RoutingTimeKind, Seconds, StreetPath, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
+    },
 };
 
 const OSM_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
@@ -29,51 +31,48 @@ const ODBL_URL: &str = "https://opendatacommons.org/licenses/odbl/1-0/";
 #[derive(Clone, Debug)]
 pub struct ValhallaConfig {
     pub base_url: Url,
-    pub graph_revision: GraphRevision,
+    pub graph_revision: String,
     pub request_timeout: Duration,
     pub max_concurrency: usize,
     pub max_sources: usize,
     pub max_targets: usize,
-    pub max_correlation_locations: usize,
     pub max_response_bytes: usize,
     pub expected_tileset_last_modified: u64,
 }
 
 impl ValhallaConfig {
-    pub fn local(graph_revision: GraphRevision, expected_tileset_last_modified: u64) -> Self {
+    pub fn local(graph_revision: impl Into<String>, expected_tileset_last_modified: u64) -> Self {
         Self {
             base_url: Url::parse("http://127.0.0.1:8002/").expect("static URL is valid"),
-            graph_revision,
+            graph_revision: graph_revision.into(),
             request_timeout: Duration::from_millis(1_200),
             max_concurrency: 8,
             max_sources: 32,
             max_targets: 32,
-            max_correlation_locations: 64,
             max_response_bytes: 2 * 1024 * 1024,
             expected_tileset_last_modified,
         }
     }
 
-    fn validate(&self) -> Result<(), ProviderError> {
+    fn validate(&self) -> Result<(), StreetRoutingError> {
         if !matches!(self.base_url.scheme(), "http" | "https") || self.base_url.host_str().is_none()
         {
-            return Err(ProviderError::InvalidRequest {
+            return Err(StreetRoutingError::InvalidRequest {
                 reason: "Valhalla URL must be an HTTP(S) URL with a host".into(),
             });
         }
         if self.max_concurrency == 0
             || self.max_sources == 0
             || self.max_targets == 0
-            || self.max_correlation_locations == 0
             || self.max_response_bytes == 0
         {
-            return Err(ProviderError::InvalidRequest {
+            return Err(StreetRoutingError::InvalidRequest {
                 reason: "Valhalla resource bounds must be greater than zero".into(),
             });
         }
-        if self.graph_revision.as_str().trim().is_empty() {
-            return Err(ProviderError::InvalidRequest {
-                reason: "street graph revision must not be empty".into(),
+        if self.graph_revision.trim().is_empty() {
+            return Err(StreetRoutingError::InvalidRequest {
+                reason: "Valhalla graph revision must not be empty".into(),
             });
         }
         Ok(())
@@ -90,8 +89,6 @@ pub enum OperationOutcome {
     RateLimited,
     Unavailable,
     MalformedResponse,
-    UnsupportedCapability,
-    InconsistentRevision,
     ResponseTooLarge,
 }
 
@@ -99,16 +96,15 @@ pub enum OperationOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum RoutingOperation {
     Health,
-    Correlate,
     Matrix,
-    DetailedPath,
+    Route,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct OperationalEvent {
     pub operation: RoutingOperation,
-    pub provider: ProviderCategory,
-    pub graph_revision: GraphRevision,
+    pub provider: &'static str,
+    pub graph_revision: String,
     pub latency_milliseconds: u64,
     pub outcome: OperationOutcome,
     pub source_count: usize,
@@ -134,20 +130,20 @@ pub struct ValhallaProvider {
 }
 
 impl ValhallaProvider {
-    pub fn new(config: ValhallaConfig) -> Result<Self, ProviderError> {
+    pub fn new(config: ValhallaConfig) -> Result<Self, StreetRoutingError> {
         Self::with_observer(config, Arc::new(NoopOperationalEventObserver))
     }
 
     pub fn with_observer(
         config: ValhallaConfig,
         observer: Arc<dyn OperationalEventObserver>,
-    ) -> Result<Self, ProviderError> {
+    ) -> Result<Self, StreetRoutingError> {
         config.validate()?;
         let client = Client::builder()
             .connect_timeout(config.request_timeout)
             .timeout(config.request_timeout)
             .build()
-            .map_err(|_| ProviderError::InvalidRequest {
+            .map_err(|_| StreetRoutingError::InvalidRequest {
                 reason: "could not construct the Valhalla HTTP client".into(),
             })?;
         Ok(Self {
@@ -158,36 +154,36 @@ impl ValhallaProvider {
         })
     }
 
-    async fn permit(&self) -> Result<OwnedSemaphorePermit, ProviderError> {
+    async fn permit(&self) -> Result<OwnedSemaphorePermit, StreetRoutingError> {
         self.concurrency
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| ProviderError::TemporarilyUnavailable)
+            .map_err(|_| StreetRoutingError::TemporarilyUnavailable)
     }
 
     async fn with_deadline<T>(
         &self,
-        operation: impl Future<Output = Result<T, ProviderError>>,
-    ) -> Result<T, ProviderError> {
+        operation: impl Future<Output = Result<T, StreetRoutingError>>,
+    ) -> Result<T, StreetRoutingError> {
         timeout(self.config.request_timeout, operation)
             .await
-            .unwrap_or(Err(ProviderError::Timeout))
+            .unwrap_or(Err(StreetRoutingError::Timeout))
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, ProviderError> {
+    fn endpoint(&self, path: &str) -> Result<Url, StreetRoutingError> {
         self.config
             .base_url
             .join(path)
-            .map_err(|_| ProviderError::InvalidRequest {
+            .map_err(|_| StreetRoutingError::InvalidRequest {
                 reason: "invalid Valhalla endpoint URL".into(),
             })
     }
 
-    async fn response_bytes(&self, response: Response) -> Result<Bytes, ProviderError> {
+    async fn response_bytes(&self, response: Response) -> Result<Bytes, StreetRoutingError> {
         if let Some(length) = response.content_length() {
             if length > self.config.max_response_bytes as u64 {
-                return Err(ProviderError::ResponseTooLarge {
+                return Err(StreetRoutingError::ResponseTooLarge {
                     limit_bytes: self.config.max_response_bytes,
                 });
             }
@@ -197,7 +193,7 @@ impl ValhallaProvider {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(map_transport_error)?;
             if body.len().saturating_add(chunk.len()) > self.config.max_response_bytes {
-                return Err(ProviderError::ResponseTooLarge {
+                return Err(StreetRoutingError::ResponseTooLarge {
                     limit_bytes: self.config.max_response_bytes,
                 });
             }
@@ -209,7 +205,7 @@ impl ValhallaProvider {
     async fn parse_response<T: DeserializeOwned>(
         &self,
         response: Response,
-    ) -> Result<T, ProviderError> {
+    ) -> Result<T, StreetRoutingError> {
         let status = response.status();
         let bytes = self.response_bytes(response).await?;
         if !status.is_success() {
@@ -218,17 +214,7 @@ impl ValhallaProvider {
                 .map(|error| error.error_code);
             return Err(map_http_error(status, error_code));
         }
-        serde_json::from_slice(&bytes).map_err(|_| ProviderError::MalformedResponse)
-    }
-
-    fn ensure_revision(&self, expected: &GraphRevision) -> Result<(), ProviderError> {
-        if expected != &self.config.graph_revision {
-            return Err(ProviderError::InconsistentGraphRevision {
-                expected: expected.clone(),
-                actual: self.config.graph_revision.clone(),
-            });
-        }
-        Ok(())
+        serde_json::from_slice(&bytes).map_err(|_| StreetRoutingError::MalformedResponse)
     }
 
     fn observe<T>(
@@ -237,11 +223,11 @@ impl ValhallaProvider {
         started: Instant,
         source_count: usize,
         target_count: usize,
-        result: &Result<T, ProviderError>,
+        result: &Result<T, StreetRoutingError>,
     ) {
         self.observer.observe(OperationalEvent {
             operation,
-            provider: ProviderCategory::Valhalla,
+            provider: "valhalla",
             graph_revision: self.config.graph_revision.clone(),
             latency_milliseconds: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             outcome: result
@@ -256,21 +242,17 @@ impl ValhallaProvider {
     async fn execute<T>(
         &self,
         operation: RoutingOperation,
-        graph_revision: &GraphRevision,
         source_count: usize,
         target_count: usize,
-        future: impl Future<Output = Result<T, ProviderError>>,
-    ) -> Result<T, ProviderError> {
+        future: impl Future<Output = Result<T, StreetRoutingError>>,
+    ) -> Result<T, StreetRoutingError> {
         let started = Instant::now();
-        let result = match self.ensure_revision(graph_revision) {
-            Ok(()) => self.with_deadline(future).await,
-            Err(error) => Err(error),
-        };
+        let result = self.with_deadline(future).await;
         self.observe(operation, started, source_count, target_count, &result);
         result
     }
 
-    async fn status_inner(&self) -> Result<ProviderStatus, ProviderError> {
+    async fn health_inner(&self) -> Result<bool, StreetRoutingError> {
         let _permit = self.permit().await?;
         let response = self
             .client
@@ -280,75 +262,16 @@ impl ValhallaProvider {
             .map_err(map_transport_error)?;
         let wire: StatusResponse = self.parse_response(response).await?;
         if wire.tileset_last_modified != self.config.expected_tileset_last_modified {
-            return Err(ProviderError::InconsistentGraphRevision {
-                expected: self.config.graph_revision.clone(),
-                actual: GraphRevision::new(format!(
-                    "tileset-last-modified-{}",
-                    wire.tileset_last_modified
-                )),
-            });
+            return Err(StreetRoutingError::TemporarilyUnavailable);
         }
-        Ok(ProviderStatus {
-            category: ProviderCategory::Valhalla,
-            healthy: wire.has_tiles.unwrap_or(true),
-            graph_revision: self.config.graph_revision.clone(),
-            capabilities: ProviderCapabilities::REQUIRED,
-            attribution: osm_attribution(),
-        })
+        Ok(wire.has_tiles.unwrap_or(true))
     }
 
-    async fn correlate_inner(
-        &self,
-        coordinates: &[Coordinate],
-    ) -> Result<Vec<Correlation>, ProviderError> {
-        if coordinates.is_empty() || coordinates.len() > self.config.max_correlation_locations {
-            return Err(ProviderError::InvalidRequest {
-                reason: format!(
-                    "correlation requires 1..={} coordinates",
-                    self.config.max_correlation_locations
-                ),
-            });
-        }
-        let request = LocateRequest {
-            locations: coordinates
-                .iter()
-                .copied()
-                .map(WireLocation::from)
-                .collect(),
-            verbose: false,
-        };
-        let _permit = self.permit().await?;
-        let response = self
-            .client
-            .post(self.endpoint("locate")?)
-            .json(&request)
-            .send()
-            .await
-            .map_err(map_transport_error)?;
-        let wire: Vec<LocateResult> = self.parse_response(response).await?;
-        if wire.len() != coordinates.len() {
-            return Err(ProviderError::MalformedResponse);
-        }
-        wire.into_iter()
-            .zip(coordinates.iter().copied())
-            .map(|(result, input)| {
-                let edge = result
-                    .edges
-                    .into_iter()
-                    .next()
-                    .ok_or(ProviderError::UnreachableEndpoints)?;
-                let correlated = Coordinate::try_new(edge.correlated_lat, edge.correlated_lon)
-                    .map_err(|_| ProviderError::MalformedResponse)?;
-                Ok(Correlation { input, correlated })
-            })
-            .collect()
-    }
-
-    async fn matrix_inner(&self, query: &MatrixQuery) -> Result<MatrixResult, ProviderError> {
+    async fn matrix_inner(&self, query: &MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
         if query.sources.len() > self.config.max_sources
             || query.targets.len() > self.config.max_targets
         {
-            return Err(ProviderError::InvalidRequest {
+            return Err(StreetRoutingError::InvalidRequest {
                 reason: format!(
                     "matrix exceeds source/target bounds ({}/{})",
                     self.config.max_sources, self.config.max_targets
@@ -389,31 +312,21 @@ impl ValhallaProvider {
                 .iter()
                 .any(|row| row.len() != query.targets.len())
         {
-            return Err(ProviderError::MalformedResponse);
+            return Err(StreetRoutingError::MalformedResponse);
         }
         let cells = wire
             .sources_to_targets
             .into_iter()
-            .enumerate()
-            .map(|(source_index, row)| {
+            .map(|row| {
                 row.into_iter()
-                    .enumerate()
-                    .map(|(target_index, cell)| {
-                        normalize_matrix_cell(source_index, target_index, cell)
-                    })
+                    .map(normalize_matrix_cell)
                     .collect::<Result<Vec<_>, _>>()
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(MatrixResult {
-            cells,
-            graph_revision: self.config.graph_revision.clone(),
-        })
+        Ok(MatrixResult { cells })
     }
 
-    async fn detailed_path_inner(
-        &self,
-        query: &DetailedPathQuery,
-    ) -> Result<DetailedPath, ProviderError> {
+    async fn route_inner(&self, query: &RouteQuery) -> Result<StreetPath, StreetRoutingError> {
         let request = RouteRequest {
             locations: vec![query.origin.into(), query.destination.into()],
             costing: costing(query.travel_mode),
@@ -435,10 +348,10 @@ impl ValhallaProvider {
             .legs
             .into_iter()
             .next()
-            .ok_or(ProviderError::MalformedResponse)?;
+            .ok_or(StreetRoutingError::MalformedResponse)?;
         let geometry = decode_polyline6(&leg.shape)?;
         if geometry.is_empty() {
-            return Err(ProviderError::MalformedResponse);
+            return Err(StreetRoutingError::MalformedResponse);
         }
         let maneuvers = leg
             .maneuvers
@@ -451,115 +364,92 @@ impl ValhallaProvider {
             .max_distance
             .is_some_and(|maximum| distance.0 > maximum.0)
         {
-            return Err(ProviderError::UnreachableEndpoints);
+            return Err(StreetRoutingError::Unreachable);
         }
-        Ok(DetailedPath {
+        Ok(StreetPath {
             duration: seconds(wire.trip.summary.time)?,
             distance,
             geometry,
             maneuvers,
-            graph_revision: self.config.graph_revision.clone(),
             attribution: osm_attribution(),
         })
     }
 }
 
 #[async_trait]
-impl StreetRoutingProvider for ValhallaProvider {
-    async fn status(&self) -> Result<ProviderStatus, ProviderError> {
+impl DependencyHealth for ValhallaProvider {
+    async fn healthy(&self) -> bool {
         let started = Instant::now();
-        let result = self.with_deadline(self.status_inner()).await;
+        let result = self.with_deadline(self.health_inner()).await;
         self.observe(RoutingOperation::Health, started, 0, 0, &result);
-        result
+        result.is_ok_and(|healthy| healthy)
     }
 
-    async fn correlate(
-        &self,
-        graph_revision: &GraphRevision,
-        coordinates: &[Coordinate],
-    ) -> Result<Vec<Correlation>, ProviderError> {
-        self.execute(
-            RoutingOperation::Correlate,
-            graph_revision,
-            coordinates.len(),
-            0,
-            self.correlate_inner(coordinates),
-        )
-        .await
+    fn name(&self) -> &'static str {
+        "valhalla"
     }
+}
 
-    async fn matrix(
-        &self,
-        graph_revision: &GraphRevision,
-        query: &MatrixQuery,
-    ) -> Result<MatrixResult, ProviderError> {
+#[async_trait]
+impl StreetRouter for ValhallaProvider {
+    async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
+        query.validate()?;
         self.execute(
             RoutingOperation::Matrix,
-            graph_revision,
             query.sources.len(),
             query.targets.len(),
-            self.matrix_inner(query),
+            self.matrix_inner(&query),
         )
         .await
     }
 
-    async fn detailed_path(
-        &self,
-        graph_revision: &GraphRevision,
-        query: &DetailedPathQuery,
-    ) -> Result<DetailedPath, ProviderError> {
-        self.execute(
-            RoutingOperation::DetailedPath,
-            graph_revision,
-            1,
-            1,
-            self.detailed_path_inner(query),
-        )
-        .await
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        self.execute(RoutingOperation::Route, 1, 1, self.route_inner(&query))
+            .await
     }
 }
 
-fn map_transport_error(error: reqwest::Error) -> ProviderError {
+fn map_transport_error(error: reqwest::Error) -> StreetRoutingError {
     if error.is_timeout() {
-        ProviderError::Timeout
+        StreetRoutingError::Timeout
     } else {
-        ProviderError::TemporarilyUnavailable
+        StreetRoutingError::TemporarilyUnavailable
     }
 }
 
-fn map_http_error(status: StatusCode, error_code: Option<u16>) -> ProviderError {
+fn map_http_error(status: StatusCode, error_code: Option<u16>) -> StreetRoutingError {
     if matches!(error_code, Some(170 | 171 | 172 | 210 | 211 | 440..=444)) {
-        return ProviderError::UnreachableEndpoints;
+        return StreetRoutingError::Unreachable;
     }
     if matches!(
         error_code,
         Some(106 | 107 | 125 | 140..=142 | 144 | 400 | 504)
     ) {
-        return ProviderError::UnsupportedCapability;
+        return StreetRoutingError::InvalidRequest {
+            reason: "Valhalla rejected the normalized request".into(),
+        };
     }
     match status {
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
-            ProviderError::InvalidRequest {
+            StreetRoutingError::InvalidRequest {
                 reason: "Valhalla rejected the normalized request".into(),
             }
         }
-        StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimited,
-        status if status.is_server_error() => ProviderError::TemporarilyUnavailable,
-        _ => ProviderError::MalformedResponse,
+        StatusCode::TOO_MANY_REQUESTS => StreetRoutingError::RateLimited,
+        status if status.is_server_error() => StreetRoutingError::TemporarilyUnavailable,
+        _ => StreetRoutingError::MalformedResponse,
     }
 }
 
-fn outcome_for(error: &ProviderError) -> OperationOutcome {
+fn outcome_for(error: &StreetRoutingError) -> OperationOutcome {
     match error {
-        ProviderError::InvalidRequest { .. } => OperationOutcome::InvalidRequest,
-        ProviderError::UnreachableEndpoints => OperationOutcome::Unreachable,
-        ProviderError::Timeout => OperationOutcome::Timeout,
-        ProviderError::RateLimited => OperationOutcome::RateLimited,
-        ProviderError::TemporarilyUnavailable => OperationOutcome::Unavailable,
-        ProviderError::MalformedResponse => OperationOutcome::MalformedResponse,
-        ProviderError::UnsupportedCapability => OperationOutcome::UnsupportedCapability,
-        ProviderError::InconsistentGraphRevision { .. } => OperationOutcome::InconsistentRevision,
-        ProviderError::ResponseTooLarge { .. } => OperationOutcome::ResponseTooLarge,
+        StreetRoutingError::InvalidRequest { .. } => OperationOutcome::InvalidRequest,
+        StreetRoutingError::Unreachable => OperationOutcome::Unreachable,
+        StreetRoutingError::Timeout => OperationOutcome::Timeout,
+        StreetRoutingError::RateLimited => OperationOutcome::RateLimited,
+        StreetRoutingError::TemporarilyUnavailable => OperationOutcome::Unavailable,
+        StreetRoutingError::MalformedResponse => OperationOutcome::MalformedResponse,
+        StreetRoutingError::ResponseTooLarge { .. } => OperationOutcome::ResponseTooLarge,
     }
 }
 
@@ -573,14 +463,16 @@ fn costing(travel_mode: StreetTravelMode) -> &'static str {
 const VALHALLA_LOCAL_TIME_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]");
 
-fn wire_time(constraints: RoutingConstraints) -> Result<Option<DateTimeRequest>, ProviderError> {
+fn wire_time(
+    constraints: RoutingConstraints,
+) -> Result<Option<DateTimeRequest>, StreetRoutingError> {
     constraints
         .time
         .map(|routing_time| {
             let value = routing_time
                 .local_date_time
                 .format(VALHALLA_LOCAL_TIME_FORMAT)
-                .map_err(|_| ProviderError::InvalidRequest {
+                .map_err(|_| StreetRoutingError::InvalidRequest {
                     reason: "street-routing time could not be formatted".into(),
                 })?;
             Ok(DateTimeRequest {
@@ -602,57 +494,33 @@ fn osm_attribution() -> Vec<Attribution> {
     }]
 }
 
-fn seconds(value: f64) -> Result<Seconds, ProviderError> {
+fn seconds(value: f64) -> Result<Seconds, StreetRoutingError> {
     if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) {
-        return Err(ProviderError::MalformedResponse);
+        return Err(StreetRoutingError::MalformedResponse);
     }
     Ok(Seconds(value.round() as u32))
 }
 
-fn kilometres_to_metres(value: f64) -> Result<Metres, ProviderError> {
+fn kilometres_to_metres(value: f64) -> Result<Metres, StreetRoutingError> {
     let metres = value * 1_000.0;
     if !metres.is_finite() || metres < 0.0 || metres > f64::from(u32::MAX) {
-        return Err(ProviderError::MalformedResponse);
+        return Err(StreetRoutingError::MalformedResponse);
     }
     Ok(Metres(metres.round() as u32))
 }
 
-fn normalize_matrix_cell(
-    source_index: usize,
-    target_index: usize,
-    wire: MatrixWireCell,
-) -> Result<MatrixCell, ProviderError> {
-    let reachability = match (wire.time, wire.distance) {
-        (Some(time), Some(distance)) => MatrixReachability::Reachable {
+fn normalize_matrix_cell(wire: MatrixWireCell) -> Result<MatrixCell, StreetRoutingError> {
+    match (wire.time, wire.distance) {
+        (Some(time), Some(distance)) => Ok(MatrixCell::Reachable {
             duration: seconds(time)?,
             distance: kilometres_to_metres(distance)?,
-        },
-        (None, None) => MatrixReachability::Unreachable,
-        _ => return Err(ProviderError::MalformedResponse),
-    };
-    Ok(MatrixCell {
-        source_index,
-        target_index,
-        source_correlation: optional_coordinate(wire.begin_lat, wire.begin_lon)?,
-        target_correlation: optional_coordinate(wire.end_lat, wire.end_lon)?,
-        reachability,
-    })
-}
-
-fn optional_coordinate(
-    latitude: Option<f64>,
-    longitude: Option<f64>,
-) -> Result<Option<Coordinate>, ProviderError> {
-    match (latitude, longitude) {
-        (Some(latitude), Some(longitude)) => Coordinate::try_new(latitude, longitude)
-            .map(Some)
-            .map_err(|_| ProviderError::MalformedResponse),
-        (None, None) => Ok(None),
-        _ => Err(ProviderError::MalformedResponse),
+        }),
+        (None, None) => Ok(MatrixCell::Unreachable),
+        _ => Err(StreetRoutingError::MalformedResponse),
     }
 }
 
-fn normalize_maneuver(wire: RouteManeuver) -> Result<Maneuver, ProviderError> {
+fn normalize_maneuver(wire: RouteManeuver) -> Result<Maneuver, StreetRoutingError> {
     let kind = match wire.kind {
         1..=3 => ManeuverKind::Depart,
         4..=6 => ManeuverKind::Arrive,
@@ -672,7 +540,7 @@ fn normalize_maneuver(wire: RouteManeuver) -> Result<Maneuver, ProviderError> {
     })
 }
 
-fn decode_polyline6(encoded: &str) -> Result<Vec<Coordinate>, ProviderError> {
+fn decode_polyline6(encoded: &str) -> Result<Vec<Coordinate>, StreetRoutingError> {
     let bytes = encoded.as_bytes();
     let mut index = 0;
     let mut latitude = 0_i64;
@@ -681,29 +549,31 @@ fn decode_polyline6(encoded: &str) -> Result<Vec<Coordinate>, ProviderError> {
     while index < bytes.len() {
         latitude = latitude
             .checked_add(decode_component(bytes, &mut index)?)
-            .ok_or(ProviderError::MalformedResponse)?;
+            .ok_or(StreetRoutingError::MalformedResponse)?;
         longitude = longitude
             .checked_add(decode_component(bytes, &mut index)?)
-            .ok_or(ProviderError::MalformedResponse)?;
+            .ok_or(StreetRoutingError::MalformedResponse)?;
         coordinates.push(
             Coordinate::try_new(
                 latitude as f64 / 1_000_000.0,
                 longitude as f64 / 1_000_000.0,
             )
-            .map_err(|_| ProviderError::MalformedResponse)?,
+            .map_err(|_| StreetRoutingError::MalformedResponse)?,
         );
     }
     Ok(coordinates)
 }
 
-fn decode_component(bytes: &[u8], index: &mut usize) -> Result<i64, ProviderError> {
+fn decode_component(bytes: &[u8], index: &mut usize) -> Result<i64, StreetRoutingError> {
     let mut result = 0_u64;
     let mut shift = 0_u32;
     loop {
-        let byte = *bytes.get(*index).ok_or(ProviderError::MalformedResponse)?;
+        let byte = *bytes
+            .get(*index)
+            .ok_or(StreetRoutingError::MalformedResponse)?;
         *index += 1;
         if !(63..=126).contains(&byte) || shift > 60 {
-            return Err(ProviderError::MalformedResponse);
+            return Err(StreetRoutingError::MalformedResponse);
         }
         let value = u64::from(byte - 63);
         result |= (value & 0x1f) << shift;
@@ -749,23 +619,6 @@ impl From<Coordinate> for WireLocation {
 }
 
 #[derive(Serialize)]
-struct LocateRequest {
-    locations: Vec<WireLocation>,
-    verbose: bool,
-}
-
-#[derive(Deserialize)]
-struct LocateResult {
-    edges: Vec<LocateEdge>,
-}
-
-#[derive(Deserialize)]
-struct LocateEdge {
-    correlated_lat: f64,
-    correlated_lon: f64,
-}
-
-#[derive(Serialize)]
 struct MatrixRequest {
     sources: Vec<WireLocation>,
     targets: Vec<WireLocation>,
@@ -794,10 +647,6 @@ struct MatrixResponse {
 struct MatrixWireCell {
     time: Option<f64>,
     distance: Option<f64>,
-    begin_lat: Option<f64>,
-    begin_lon: Option<f64>,
-    end_lat: Option<f64>,
-    end_lon: Option<f64>,
 }
 
 #[derive(Serialize)]

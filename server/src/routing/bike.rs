@@ -6,8 +6,8 @@ use crate::{
     domain::{ids::BikeShareStationId, journey::JourneyMode, location::RequestCoordinate},
     routing::service::{PlanningContext, RoutingLimits, planner_coordinate, street_metric},
     street::{
-        Coordinate, MatrixOrientation, MatrixQuery, ProviderError, RoutingConstraints,
-        StreetRoutingSession, StreetTravelMode,
+        Coordinate, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -50,12 +50,12 @@ impl BikeShareExpansion {
 
 #[derive(Clone)]
 pub struct BikeShareOpportunityDiscovery<'a> {
-    street_routing: &'a StreetRoutingSession,
+    street_routing: &'a dyn StreetRouter,
     network: &'a TransitNetwork,
 }
 
 impl<'a> BikeShareOpportunityDiscovery<'a> {
-    pub fn new(street_routing: &'a StreetRoutingSession, network: &'a TransitNetwork) -> Self {
+    pub fn new(street_routing: &'a dyn StreetRouter, network: &'a TransitNetwork) -> Self {
         Self {
             street_routing,
             network,
@@ -68,7 +68,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
         context: &PlanningContext,
         limits: &RoutingLimits,
         base: &RouteGraph,
-    ) -> Result<BikeShareExpansion, ProviderError> {
+    ) -> Result<BikeShareExpansion, StreetRoutingError> {
         if !request.selected_modes.contains(&JourneyMode::BikeShare) {
             return Ok(BikeShareExpansion::default());
         }
@@ -244,7 +244,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
         source: Coordinate,
         targets: &[BikeShareStation],
         context: &PlanningContext,
-    ) -> Result<Vec<Option<StreetMetric>>, ProviderError> {
+    ) -> Result<Vec<Option<StreetMetric>>, StreetRoutingError> {
         let matrix = self
             .street_routing
             .matrix(MatrixQuery {
@@ -272,7 +272,7 @@ impl<'a> BikeShareOpportunityDiscovery<'a> {
         sources: &[BikeShareStation],
         target: Coordinate,
         context: &PlanningContext,
-    ) -> Result<Vec<Option<StreetMetric>>, ProviderError> {
+    ) -> Result<Vec<Option<StreetMetric>>, StreetRoutingError> {
         let matrix = self
             .street_routing
             .matrix(MatrixQuery {

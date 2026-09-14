@@ -1,6 +1,7 @@
 pub mod api;
 pub mod app;
 pub mod domain;
+pub mod health;
 pub mod observability;
 pub mod providers;
 pub mod routing;
