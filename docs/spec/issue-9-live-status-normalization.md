@@ -2,7 +2,7 @@
 
 Decision date: 2026-08-29  
 Status: Superseded
-Superseded by: ADR 0001, ADR 0002, and the current provider interfaces under `server/src/providers/`.
+Superseded by: ADR 0002, ADR 0006, and the current provider interfaces under `server/src/providers/`.
 
 ## Decision
 

@@ -29,7 +29,6 @@ fn legacy_architecture_modules_are_gone() {
         "planner.rs",
         "normalization.rs",
         "ranking.rs",
-        "postgres.rs",
         "tdx.rs",
         "transit.rs",
         "live_status.rs",
@@ -38,6 +37,22 @@ fn legacy_architecture_modules_are_gone() {
         assert!(
             !root.join(path).exists(),
             "legacy path still exists: {path}"
+        );
+    }
+}
+
+#[test]
+fn database_identity_infrastructure_is_gone() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        "src/entity.rs",
+        "src/migration.rs",
+        "src/providers/postgres.rs",
+        "tests/postgres_identity_contract.rs",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "obsolete path still exists: {path}"
         );
     }
 }

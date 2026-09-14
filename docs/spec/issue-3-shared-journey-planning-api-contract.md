@@ -129,7 +129,7 @@ HTTP `200` returns exactly one of `journey_options` or `empty`, with common meta
 
 `request_id` supports anonymous operational correlation and contains no encoded request data. It is not a rider, device, session, place, or Journey identifier.
 
-The snapshot and policy metadata makes a calculation replayable without exposing internal database or provider identifiers. All Journey Options in the response use the same metadata.
+The snapshot and policy metadata makes a calculation replayable without exposing internal provider or ingestion details. All Journey Options in the response use the same metadata.
 
 ## Journey Option
 
@@ -201,7 +201,9 @@ Calculated, scheduled, and live-estimated values are distinct fields. A client n
 | `transit` | `transit_mode` is `bus`, `metro`, `rail`, or `high_speed_rail`; stable Via service and Boarding Point IDs, public service label, headsign, boarding/alighting names and coordinates, stop count when known, and normalized live/schedule evidence. |
 | `bike_share` | Stable Via pickup and return station IDs, names and coordinates, pickup and return action states, actual available-bike and return-slot counts, and Bike Availability evidence. |
 
-Stable Via IDs are typed and opaque. Provider aliases, raw TDX/city codes, raw provider statuses, endpoint names, and ingestion details never cross this boundary.
+Stable domain IDs are typed and opaque at the routing boundary. The current
+TDX-backed implementation derives their values directly from TDX identifiers;
+raw statuses, endpoint names, and ingestion details never cross this boundary.
 
 ### Transfer
 
@@ -408,7 +410,7 @@ Fixtures must cover at least:
 The shared contract is conformant only when repeatable checks prove that:
 
 - MapKit and Android place search both produce the same provider-neutral Planning Request shape;
-- no provider place ID, raw search text, native-framework type, raw feed status, or provider alias crosses the boundary;
+- no provider place ID, raw search text, native-framework type, raw feed status, or endpoint detail crosses the boundary;
 - request and response data is absent from logs, traces, retained history, and shared caches;
 - iOS and Android render equivalent facts, states, actions, and recovery paths from the same fixtures;
 - neither client ranks Journey Options, evaluates Freshness, synthesizes bike-share counts, or interprets raw operator states;

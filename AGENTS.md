@@ -19,6 +19,10 @@ iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `DemoJourneyPlanner` for previews and offline tests. Navigation is future work
 under `Features/Navigation` and is not part of the current implementation.
 
+TDX is the current authoritative source for Taiwan transit static and realtime
+data. Static artifacts and realtime normalization use the same pure TDX-derived
+ID constructors; the server has no database or provider identity-reconciliation layer.
+
 Architecture decisions are authoritative in `docs/adr/`. Specs describe current
 contracts; research documents are historical unless their status says otherwise.
 

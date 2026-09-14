@@ -9,7 +9,6 @@ pub mod search;
 
 pub(crate) mod service;
 
-pub use crate::domain::ids::IdentityRepository;
 pub use crate::domain::journey::{JourneyOption, PlanningError, PlanningOutcome};
 pub use crate::providers::realtime::RealtimeProvider;
 pub use crate::street::StreetRoutingProvider;

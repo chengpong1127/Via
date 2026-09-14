@@ -4,7 +4,6 @@ use url::Url;
 use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
     domain::transit::TransitNetwork,
-    providers::PostgresIdentityResolver,
     providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
     providers::{
         GraphRevision, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
@@ -46,13 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("VIA_VALHALLA_URL must use HTTPS in production".into());
     }
     let provider = Arc::new(ValhallaProvider::new(config)?);
-    let database_url = env::var("DATABASE_URL")
-        .map_err(|_| "DATABASE_URL must point to the pooled PostgreSQL endpoint")?;
-    let max_database_connections = env::var("VIA_DATABASE_MAX_CONNECTIONS")
-        .unwrap_or_else(|_| "4".into())
-        .parse()?;
-    let identities =
-        Arc::new(PostgresIdentityResolver::connect(&database_url, max_database_connections).await?);
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = TransitNetwork::from_artifact_json(
@@ -80,8 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             authority_namespace,
         },
         &tdx_bearer_token,
-    )?
-    .with_identity_resolver(identities);
+    )?;
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         realtime = realtime.with_service_condition_path(path);
     }

@@ -1,5 +1,6 @@
 ---
-Status: Current
+Status: Superseded
+Superseded by: ADR 0006
 ---
 
 # Own provider-neutral Live Status identity

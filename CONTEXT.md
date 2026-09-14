@@ -68,6 +68,16 @@ _Avoid_: Recency, updated state
 An estimated arrival whose critical Legs and Transfers remain feasible under current operational data and safety buffers.
 _Avoid_: Fastest route, guaranteed arrival
 
+## Transit identity decision
+
+Via currently uses TDX as the authoritative source for Taiwan transit static
+and realtime data, including expected nationwide expansion. The normalized
+`TransitNetwork` and realtime adapter construct the same strongly typed domain
+IDs directly from TDX identifiers. Via does not maintain a provider-neutral
+canonical identity registry or persist aliases while TDX is the sole current
+transit provider. Revisit reconciliation only if Via combines multiple
+providers that describe the same logical entities.
+
 ## Privacy and Telemetry
 
 **Planning Request**:

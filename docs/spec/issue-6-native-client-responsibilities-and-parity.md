@@ -150,5 +150,5 @@ The decision is implemented only when automated or repeatable checks prove that:
 - The current provider-neutral contract in `server/src/api/` and `ios/Via/Services/API/` defines request fields, stable semantic codes and typed parameters, network revisions, stable Journey Option matching where safe, and structured result/error outcomes. It must not return Via-owned translated sentences.
 - Issue #5 remains the storage and transmission limit for client state, place search, consent artifacts, and Feedback Reports.
 - Issue #7 defines the accepted iOS interaction hierarchy. This decision extracts its essential behavior from its Apple Maps-style presentation.
-- ADR 0001 and ADR 0002 remain authoritative for provider-neutral Live Status, Freshness, and demand-driven realtime. Native clients display their results but do not reproduce those rules.
+- ADR 0002 and ADR 0006 remain authoritative for provider-neutral Live Status, Freshness, and TDX-derived typed IDs. Native clients display their results but do not reproduce those rules.
 - Android delivery can lag iOS, but the shared behavior contract and fixtures must be maintained from the first iOS implementation.

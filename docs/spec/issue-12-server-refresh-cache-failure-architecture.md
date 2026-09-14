@@ -2,7 +2,7 @@
 
 Decision date: 2026-08-29  
 Status: Superseded
-Superseded by: ADR 0002 and `server/README.md`.
+Superseded by: ADR 0002, ADR 0006, and `server/README.md`.
 
 ## Decision
 

@@ -31,27 +31,3 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Run deterministic and fixture tests
         run: cargo test --all-targets --all-features
-
-  postgres-integration:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: via
-          POSTGRES_USER: via
-          POSTGRES_PASSWORD: via-ci
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U via -d via"
-          --health-interval 2s
-          --health-timeout 2s
-          --health-retries 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run PostgreSQL provider-alias integration contract
-        env:
-          VIA_TEST_DATABASE_URL: postgres://via:via-ci@127.0.0.1:5433/via
-        run: cargo test --test postgres_identity_contract -- --ignored

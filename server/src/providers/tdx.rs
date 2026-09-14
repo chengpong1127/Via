@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
@@ -24,6 +24,7 @@ const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const DEFAULT_BIKE_PATH: &str = "v2/Bike/Availability/Station";
+const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,19 +33,31 @@ pub struct TdxRealtimeConfig {
     pub authority_namespace: String,
 }
 
-pub use crate::domain::ids::IdentityRepository as IdentityResolver;
+/// Construct the domain ID for a TDX bus stop or other boarding point.
+pub fn boarding_point_id(stop_uid: impl Into<String>) -> BoardingPointId {
+    BoardingPointId::new(stop_uid)
+}
 
-struct RejectUnknownIdentity;
+/// Construct the domain ID for a TDX bus sub-route service.
+pub fn transit_service_id(sub_route_uid: impl Into<String>) -> TransitServiceId {
+    TransitServiceId::new(sub_route_uid)
+}
 
-#[async_trait]
-impl IdentityResolver for RejectUnknownIdentity {
-    async fn resolve(&self, _: &str, _: &str, _: &str) -> Option<String> {
-        None
-    }
+/// Construct a direction-sensitive TDX service ID when a static artifact
+/// models each direction as a distinct service pattern.
+pub fn transit_service_id_for_direction(
+    sub_route_uid: impl Into<String>,
+    direction: u8,
+) -> TransitServiceId {
+    TransitServiceId::new(format!(
+        "{}{DIRECTIONAL_SERVICE_SEPARATOR}{direction}",
+        sub_route_uid.into()
+    ))
+}
 
-    async fn upstream_key(&self, _: &str, _: &str, _: &str) -> Option<String> {
-        None
-    }
+/// Construct the domain ID for a TDX YouBike station.
+pub fn bike_share_station_id(station_uid: impl Into<String>) -> BikeShareStationId {
+    BikeShareStationId::new(station_uid)
 }
 
 pub struct TdxRealtimeProvider {
@@ -55,7 +68,6 @@ pub struct TdxRealtimeProvider {
     condition_path: Option<String>,
     client: Client,
     policy: FreshnessPolicy,
-    identities: Arc<dyn IdentityResolver>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,13 +116,7 @@ impl TdxRealtimeProvider {
             condition_path: None,
             client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
-            identities: Arc::new(RejectUnknownIdentity),
         })
-    }
-
-    pub fn with_identity_resolver(mut self, identities: Arc<dyn IdentityResolver>) -> Self {
-        self.identities = identities;
-        self
     }
 
     pub fn with_endpoint_paths(
@@ -176,31 +182,11 @@ impl TdxRealtimeProvider {
         serde_json::from_slice(&body).map_err(|_| RealtimeError::RejectedPayload)
     }
 
-    async fn upstream_ids(
-        &self,
-        entity_kind: &str,
-        via_ids: impl IntoIterator<Item = String>,
-    ) -> Result<Vec<String>, RealtimeError> {
-        let mut upstream_ids = Vec::new();
-        for via_id in via_ids {
-            let Some(upstream_id) = self
-                .identities
-                .upstream_key(entity_kind, &self.authority_namespace, &via_id)
-                .await
-            else {
-                return Err(RealtimeError::UnknownIdentity);
-            };
-            upstream_ids.push(upstream_id);
-        }
-        upstream_ids.sort();
-        upstream_ids.dedup();
-        Ok(upstream_ids)
-    }
-
-    async fn normalize_payload(
+    fn normalize_payload(
         &self,
         payload: &serde_json::Value,
         family: TdxFamily,
+        requested_services: &[TransitServiceId],
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         let records = records(payload);
         if records.is_empty() {
@@ -209,14 +195,12 @@ impl TdxRealtimeProvider {
         let received_at = OffsetDateTime::now_utc();
         let normalized_at = OffsetDateTime::now_utc();
         let mut normalized = Vec::new();
-        let mut saw_published_record = false;
         for record in records {
             let Some(published_at) =
                 time_field(record, "UpdateTime").or_else(|| time_field(record, "update_time"))
             else {
                 continue;
             };
-            saw_published_record = true;
             if published_at > normalized_at + MAX_PROVIDER_CLOCK_SKEW {
                 return Err(RealtimeError::RejectedPayload);
             }
@@ -231,12 +215,12 @@ impl TdxRealtimeProvider {
                 None,
             );
             let value = match family {
-                TdxFamily::BusArrival => self.normalize_bus_arrival(record, published_at).await,
-                TdxFamily::BikeAvailability => {
-                    self.normalize_bike_station(record, published_at).await
+                TdxFamily::BusArrival => {
+                    self.normalize_bus_arrival(record, published_at, requested_services)
                 }
+                TdxFamily::BikeAvailability => self.normalize_bike_station(record, published_at),
                 TdxFamily::ServiceCondition => {
-                    self.normalize_service_condition(record, published_at).await
+                    self.normalize_service_condition(record, published_at, requested_services)
                 }
             };
             let Some((id, value)) = value else { continue };
@@ -255,30 +239,24 @@ impl TdxRealtimeProvider {
             });
         }
         if normalized.is_empty() {
-            return Err(if saw_published_record {
-                RealtimeError::UnknownIdentity
-            } else {
-                RealtimeError::RejectedPayload
-            });
+            return Err(RealtimeError::RejectedPayload);
         }
         Ok(normalized)
     }
 
-    async fn normalize_bus_arrival(
+    fn normalize_bus_arrival(
         &self,
         record: &serde_json::Value,
         published_at: OffsetDateTime,
+        requested_services: &[TransitServiceId],
     ) -> Option<(String, RealtimeValue)> {
         let stop_uid = string_field(record, "StopUID")?;
         let service_uid = string_field(record, "SubRouteUID")?;
-        let boarding_point_id = self
-            .identities
-            .resolve("boarding_point", &self.authority_namespace, stop_uid)
-            .await?;
-        let transit_service_id = self
-            .identities
-            .resolve("transit_service", &self.authority_namespace, service_uid)
-            .await?;
+        let transit_service_id = directional_service_id_for_request(
+            service_uid,
+            direction_field(record),
+            requested_services,
+        );
         let status = record
             .get("StopStatus")
             .and_then(serde_json::Value::as_u64)
@@ -288,8 +266,8 @@ impl TdxRealtimeProvider {
             .get("EstimateTime")
             .and_then(serde_json::Value::as_i64);
         let value = normalize_n1(
-            TransitServiceId::new(transit_service_id),
-            BoardingPointId::new(boarding_point_id),
+            transit_service_id,
+            boarding_point_id(stop_uid),
             status,
             estimate,
             published_at,
@@ -305,16 +283,12 @@ impl TdxRealtimeProvider {
         ))
     }
 
-    async fn normalize_bike_station(
+    fn normalize_bike_station(
         &self,
         record: &serde_json::Value,
         published_at: OffsetDateTime,
     ) -> Option<(String, RealtimeValue)> {
         let station_uid = string_field(record, "StationUID")?;
-        let station_id = self
-            .identities
-            .resolve("bike_share_station", &self.authority_namespace, station_uid)
-            .await?;
         let service_status = record
             .get("ServiceStatus")
             .and_then(serde_json::Value::as_u64)
@@ -323,7 +297,7 @@ impl TdxRealtimeProvider {
         let source_change_at = time_field(record, "SrcUpdateTime");
         let received_at = OffsetDateTime::now_utc();
         let value = normalize_bike_availability(
-            BikeShareStationId::new(station_id),
+            bike_share_station_id(station_uid),
             service_status,
             u32_field(record, "AvailableRentBikes"),
             u32_field(record, "AvailableReturnBikes"),
@@ -337,17 +311,16 @@ impl TdxRealtimeProvider {
         ))
     }
 
-    async fn normalize_service_condition(
+    fn normalize_service_condition(
         &self,
         record: &serde_json::Value,
         published_at: OffsetDateTime,
+        requested_services: &[TransitServiceId],
     ) -> Option<(String, RealtimeValue)> {
         let service_uid =
             string_field(record, "SubRouteUID").or_else(|| string_field(record, "ServiceUID"))?;
-        let service_id = self
-            .identities
-            .resolve("transit_service", &self.authority_namespace, service_uid)
-            .await?;
+        let service_ids =
+            condition_service_ids(service_uid, direction_field(record), requested_services);
         let status = string_field(record, "Status")
             .or_else(|| string_field(record, "Condition"))
             .unwrap_or("disrupted")
@@ -368,16 +341,19 @@ impl TdxRealtimeProvider {
             .unwrap_or_default();
         let condition = ServiceCondition {
             state,
-            scope_via_ids: vec![service_id],
+            scope_via_ids: service_ids,
             source_text_variants,
             effective_from: time_field(record, "EffectiveFrom"),
             effective_until: time_field(record, "EffectiveUntil"),
         };
+        let condition_key = direction_field(record)
+            .map(|direction| format!("condition:{direction}"))
+            .unwrap_or_else(|| "condition".into());
         Some((
             observation_id(
                 &self.authority_namespace,
                 service_uid,
-                "condition",
+                &condition_key,
                 published_at,
             ),
             RealtimeValue::ServiceCondition(condition),
@@ -401,22 +377,17 @@ impl RealtimeProvider for TdxRealtimeProvider {
         if query.transit_service_ids.is_empty() || query.boarding_point_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let service_via_ids = query
+        let service_ids = query
             .transit_service_ids
             .iter()
-            .map(|id| id.as_str().to_owned())
+            .map(tdx_sub_route_uid)
+            .map(str::to_owned)
             .collect::<Vec<_>>();
-        let boarding_via_ids = query
+        let boarding_point_ids = query
             .boarding_point_ids
             .iter()
             .map(|id| id.as_str().to_owned())
             .collect::<Vec<_>>();
-        let service_ids = self
-            .upstream_ids("transit_service", service_via_ids)
-            .await?;
-        let boarding_point_ids = self
-            .upstream_ids("boarding_point", boarding_via_ids)
-            .await?;
         let query_params = vec![(
             "$filter".into(),
             format!(
@@ -426,9 +397,8 @@ impl RealtimeProvider for TdxRealtimeProvider {
             ),
         )];
         let payload = self.get_json(&self.arrival_path, &query_params).await?;
-        let values = self
-            .normalize_payload(&payload, TdxFamily::BusArrival)
-            .await?;
+        let values =
+            self.normalize_payload(&payload, TdxFamily::BusArrival, &query.transit_service_ids)?;
         let requested_services = query
             .transit_service_ids
             .into_iter()
@@ -461,14 +431,12 @@ impl RealtimeProvider for TdxRealtimeProvider {
             .iter()
             .map(|id| id.as_str().to_owned())
             .collect::<Vec<_>>();
-        let upstream_ids = self.upstream_ids("bike_share_station", station_ids).await?;
         let query_params: Vec<(String, String)> = vec![(
             "$filter".into(),
-            odata_in_filter("StationUID", &upstream_ids),
+            odata_in_filter("StationUID", &station_ids),
         )];
         let payload = self.get_json(&self.bike_path, &query_params).await?;
-        self.normalize_payload(&payload, TdxFamily::BikeAvailability)
-            .await
+        self.normalize_payload(&payload, TdxFamily::BikeAvailability, &[])
     }
 
     async fn service_conditions(
@@ -481,21 +449,20 @@ impl RealtimeProvider for TdxRealtimeProvider {
         let Some(path) = &self.condition_path else {
             return Ok(Vec::new());
         };
-        let service_via_ids = service_ids
+        let requested_services = service_ids;
+        let service_uids = requested_services
             .iter()
-            .map(|id| id.as_str().to_owned())
+            .map(tdx_sub_route_uid)
+            .map(str::to_owned)
             .collect::<Vec<_>>();
-        let upstream_ids = self
-            .upstream_ids("transit_service", service_via_ids)
-            .await?;
+
         let query_params: Vec<(String, String)> = vec![(
             "$filter".into(),
-            odata_in_filter("SubRouteUID", &upstream_ids),
+            odata_in_filter("SubRouteUID", &service_uids),
         )];
         let payload = self.get_json(path, &query_params).await?;
-        let values = self
-            .normalize_payload(&payload, TdxFamily::ServiceCondition)
-            .await?;
+        let values =
+            self.normalize_payload(&payload, TdxFamily::ServiceCondition, requested_services)?;
         Ok(values
             .into_iter()
             .filter(|value| {
@@ -503,7 +470,9 @@ impl RealtimeProvider for TdxRealtimeProvider {
                     &value.value,
                     RealtimeValue::ServiceCondition(condition)
                         if condition.scope_via_ids.iter().any(|service_id| {
-                            service_ids.iter().any(|requested| requested.as_str() == service_id)
+                            requested_services
+                                .iter()
+                                .any(|requested| requested.as_str() == service_id)
                         })
                 )
             })
@@ -530,6 +499,64 @@ fn records(payload: &serde_json::Value) -> &[serde_json::Value] {
 
 fn string_field<'a>(record: &'a serde_json::Value, field: &str) -> Option<&'a str> {
     record.get(field).and_then(serde_json::Value::as_str)
+}
+
+fn direction_field(record: &serde_json::Value) -> Option<u8> {
+    record
+        .get("Direction")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|direction| u8::try_from(direction).ok())
+}
+
+fn tdx_sub_route_uid(service_id: &TransitServiceId) -> &str {
+    service_id
+        .as_str()
+        .split_once(DIRECTIONAL_SERVICE_SEPARATOR)
+        .map_or_else(|| service_id.as_str(), |(sub_route_uid, _)| sub_route_uid)
+}
+
+fn directional_service_id_for_request(
+    sub_route_uid: &str,
+    direction: Option<u8>,
+    requested_services: &[TransitServiceId],
+) -> TransitServiceId {
+    let direction_is_modeled = direction.is_some_and(|direction| {
+        requested_services.iter().any(|service_id| {
+            tdx_sub_route_uid(service_id) == sub_route_uid
+                && service_id.as_str() != sub_route_uid
+                && service_id.as_str()
+                    == transit_service_id_for_direction(sub_route_uid, direction).as_str()
+        })
+    });
+    match direction.filter(|_| direction_is_modeled) {
+        Some(direction) => transit_service_id_for_direction(sub_route_uid, direction),
+        None => transit_service_id(sub_route_uid),
+    }
+}
+
+fn condition_service_ids(
+    sub_route_uid: &str,
+    direction: Option<u8>,
+    requested_services: &[TransitServiceId],
+) -> Vec<String> {
+    if let Some(direction) = direction {
+        let directional_id = transit_service_id_for_direction(sub_route_uid, direction);
+        if requested_services.contains(&directional_id) {
+            return vec![directional_id.as_str().into()];
+        }
+    }
+
+    let mut service_ids = requested_services
+        .iter()
+        .filter(|service_id| tdx_sub_route_uid(service_id) == sub_route_uid)
+        .map(|service_id| service_id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    if service_ids.is_empty() {
+        service_ids.push(sub_route_uid.into());
+    }
+    service_ids.sort();
+    service_ids.dedup();
+    service_ids
 }
 
 fn time_field(record: &serde_json::Value, field: &str) -> Option<OffsetDateTime> {

@@ -1,10 +1,11 @@
 # Via server
 
 The Rust/Axum server owns Via's provider-neutral Journey Planning contract and
-street-routing boundary. A Planning Request reads one immutable `Arc<TransitNetwork>`
-for static schedules, then demand-fetches only the realtime facts needed by its
-scheduled candidates through an in-process async cache. Results use
-`Cache-Control: no-store`.
+street-routing boundary. TDX is currently the authoritative source for Taiwan
+transit static and realtime data. A Planning Request reads one immutable
+`Arc<TransitNetwork>` for static schedules, then demand-fetches only the
+realtime facts needed by its scheduled candidates through an in-process async
+cache. Results use `Cache-Control: no-store`.
 
 Implemented capabilities:
 
@@ -13,11 +14,10 @@ Implemented capabilities:
 - deterministic Live Status eligibility, Reliable/Feasible classification,
   Transfer and bike-share boundaries, dominance, ranking, diversity, labels, and
   replay behavior;
-- stable typed network identities, reviewed provider aliases, explicit TDX N1
-  status normalization, Service Day handling, and separate bike-share timestamps;
+- strongly typed TDX-derived network IDs, explicit TDX N1 status normalization,
+  Service Day handling, and separate bike-share timestamps;
 - Moka-backed demand-driven realtime caching with async request coalescing;
 - scoped TDX arrival and BikeShare queries with provider-neutral normalization;
-- PostgreSQL-backed, versioned provider aliases without persisted Live Status;
 - generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
   plus shared request, result, empty, and error fixtures;
 - coordinate correlation;
@@ -31,11 +31,11 @@ Implemented capabilities:
 
 ## Run locally
 
-Start PostgreSQL plus the pinned Valhalla 3.8.3 image, then build the checked-in
-deterministic street fixture:
+Start the pinned Valhalla 3.8.3 image, then build the checked-in deterministic
+street fixture:
 
 ```sh
-docker compose up -d postgres valhalla
+docker compose up -d valhalla
 ./scripts/wait-for-valhalla.sh
 ```
 
@@ -61,24 +61,43 @@ Configuration:
 | --- | --- |
 | `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and TDX URLs. |
 | `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
-| `DATABASE_URL` | Pooled PostgreSQL endpoint; required. |
-| `VIA_DATABASE_MAX_CONNECTIONS` | Small per-instance pool size; defaults to `4`. |
 | `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
-| `VIA_TDX_AUTHORITY_NAMESPACE` | Reviewed TDX authority namespace used for alias resolution; required. |
+| `VIA_TDX_AUTHORITY_NAMESPACE` | TDX authority namespace used to scope deterministic observation IDs; required. |
 | `VIA_TDX_BEARER_TOKEN` | TDX access token held only by the realtime adapter; required. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional scoped TDX service-condition endpoint path. |
 | `VIA_REALTIME_CACHE_TTL_SECONDS` | In-process realtime cache TTL; defaults to 45 seconds. |
 | `VIA_TRANSIT_NETWORK` | Path to the immutable normalized transit and bike-share network and timetable JSON artifact; required. |
 | `PORT` | Axum port; defaults to `3000`. |
 
-Database migrations run at startup and maintain only the versioned provider-alias
-registry. Static network and schedule revisions come from the validated immutable
-`VIA_TRANSIT_NETWORK` artifact.
+Static network and schedule revisions come from the validated immutable
+`VIA_TRANSIT_NETWORK` artifact. The server has no database runtime dependency.
 
 The TDX adapter enforces an eight-second deadline and 8 MiB response bound,
 translates rate limits and malformed payloads into explicit realtime failures, and
 evaluates Freshness from the provider publication timestamp rather than a station's
 last-change timestamp. Planning Requests never receive feed credentials.
+
+## Current identity model
+
+Via owns the domain ID types, while TDX currently owns the underlying transit
+identity values. TDX `StopUID`, `SubRouteUID`, and `StationUID` become the
+corresponding `BoardingPointId`, `TransitServiceId`, and `BikeShareStationId`
+through pure constructors. Static artifact generation and realtime normalization
+must use the same constructors, so matching entities have equal typed IDs.
+
+TDX UIDs include the authority code required by the current feeds, so no extra
+authority namespacing or identity registry is required. The current service
+artifact may use `SubRouteUID` directly; when a static artifact models each
+direction separately, it uses the deterministic directional constructor in the
+TDX adapter and realtime queries project that ID back to its `SubRouteUID`.
+
+The runtime dependency graph is:
+
+```text
+Via Server → immutable TransitNetwork artifact
+           → TDX realtime API
+           → Valhalla
+```
 
 ## Current routing boundary
 

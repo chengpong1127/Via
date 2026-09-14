@@ -1,56 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
-use async_trait::async_trait;
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
 use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     domain::ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
     providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider, RealtimeValue},
-    providers::tdx::{IdentityResolver, TdxRealtimeConfig, TdxRealtimeProvider},
+    providers::tdx::{TdxRealtimeConfig, TdxRealtimeProvider, transit_service_id_for_direction},
 };
-
-#[derive(Clone)]
-struct FixtureIdentities {
-    upstream_to_via: HashMap<(&'static str, &'static str), &'static str>,
-    via_to_upstream: HashMap<(&'static str, &'static str), &'static str>,
-}
-
-#[async_trait]
-impl IdentityResolver for FixtureIdentities {
-    async fn resolve(&self, entity_kind: &str, _: &str, upstream_key: &str) -> Option<String> {
-        self.upstream_to_via
-            .get(&(entity_kind, upstream_key))
-            .map(|value| (*value).to_owned())
-    }
-
-    async fn upstream_key(&self, entity_kind: &str, _: &str, via_id: &str) -> Option<String> {
-        self.via_to_upstream
-            .get(&(entity_kind, via_id))
-            .map(|value| (*value).to_owned())
-    }
-}
 
 async fn fixture_base(app: Router) -> url::Url {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     url::Url::parse(&format!("http://{address}/")).unwrap()
-}
-
-fn identities() -> FixtureIdentities {
-    FixtureIdentities {
-        upstream_to_via: HashMap::from([
-            (("boarding_point", "provider-stop"), "via-stop"),
-            (("transit_service", "provider-service"), "via-service"),
-            (("bike_share_station", "provider-station"), "via-station"),
-        ]),
-        via_to_upstream: HashMap::from([
-            (("boarding_point", "via-stop"), "provider-stop"),
-            (("transit_service", "via-service"), "provider-service"),
-            (("bike_share_station", "via-station"), "provider-station"),
-        ]),
-    }
 }
 
 #[tokio::test]
@@ -84,13 +47,12 @@ async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
         "fixture-token",
     )
     .unwrap()
-    .with_endpoint_paths("feed", "feed")
-    .with_identity_resolver(Arc::new(identities()));
+    .with_endpoint_paths("feed", "feed");
 
     let values = source
         .arrival_estimates(ArrivalQuery::for_ride(
-            TransitServiceId::new("via-service"),
-            BoardingPointId::new("via-stop"),
+            TransitServiceId::new("provider-service"),
+            BoardingPointId::new("provider-stop"),
         ))
         .await
         .unwrap();
@@ -98,12 +60,62 @@ async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
     let RealtimeValue::ArrivalEstimate(arrival) = &values[0].value else {
         panic!("expected normalized arrival estimate");
     };
-    assert_eq!(arrival.transit_service_id.as_str(), "via-service");
-    assert_eq!(arrival.boarding_point_id.as_str(), "via-stop");
+    assert_eq!(arrival.transit_service_id.as_str(), "provider-service");
+    assert_eq!(arrival.boarding_point_id.as_str(), "provider-stop");
     assert_eq!(
         arrival.predicted_arrival_at,
         Some(values[0].value.value_arrival_time())
     );
+}
+
+#[tokio::test]
+async fn directional_tdx_service_ids_match_static_directional_ids() {
+    let update_time = (OffsetDateTime::now_utc() - Duration::seconds(30))
+        .format(&Rfc3339)
+        .unwrap();
+    let app = Router::new().route(
+        "/feed",
+        get(
+            move |query: axum::extract::Query<HashMap<String, String>>| {
+                let update_time = update_time.clone();
+                async move {
+                    assert!(query.get("$filter").is_some_and(|filter| {
+                        filter.contains("provider-service") && !filter.contains("::direction=")
+                    }));
+                    Json(json!([{
+                        "StopUID": "provider-stop",
+                        "SubRouteUID": "provider-service",
+                        "Direction": 1,
+                        "StopStatus": 0,
+                        "EstimateTime": 120,
+                        "UpdateTime": update_time
+                    }]))
+                }
+            },
+        ),
+    );
+    let source = TdxRealtimeProvider::new(
+        TdxRealtimeConfig {
+            base_url: fixture_base(app).await,
+            authority_namespace: "taipei".into(),
+        },
+        "fixture-token",
+    )
+    .unwrap()
+    .with_endpoint_paths("feed", "feed");
+    let service_id = transit_service_id_for_direction("provider-service", 1);
+    let values = source
+        .arrival_estimates(ArrivalQuery::for_ride(
+            service_id.clone(),
+            BoardingPointId::new("provider-stop"),
+        ))
+        .await
+        .unwrap();
+
+    let RealtimeValue::ArrivalEstimate(arrival) = &values[0].value else {
+        panic!("expected normalized arrival estimate");
+    };
+    assert_eq!(arrival.transit_service_id, service_id);
 }
 
 #[tokio::test]
@@ -147,13 +159,12 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
         "fixture-token",
     )
     .unwrap()
-    .with_endpoint_paths("feed", "feed")
-    .with_identity_resolver(Arc::new(identities()));
+    .with_endpoint_paths("feed", "feed");
 
     let values = source
         .arrival_estimates(ArrivalQuery::for_ride(
-            TransitServiceId::new("via-service"),
-            BoardingPointId::new("via-stop"),
+            TransitServiceId::new("provider-service"),
+            BoardingPointId::new("provider-stop"),
         ))
         .await
         .unwrap();
@@ -199,17 +210,16 @@ async fn tdx_bike_availability_is_normalized_inside_the_adapter() {
         "fixture-token",
     )
     .unwrap()
-    .with_endpoint_paths("feed", "feed")
-    .with_identity_resolver(Arc::new(identities()));
+    .with_endpoint_paths("feed", "feed");
 
     let values = source
-        .bike_availability(&[BikeShareStationId::new("via-station")])
+        .bike_availability(&[BikeShareStationId::new("provider-station")])
         .await
         .unwrap();
     let RealtimeValue::BikeAvailability(availability) = &values[0].value else {
         panic!("expected normalized bike availability");
     };
-    assert_eq!(availability.station_id.as_str(), "via-station");
+    assert_eq!(availability.station_id.as_str(), "provider-station");
     assert_eq!(availability.available_bikes, Some(7));
     assert_eq!(availability.available_return_slots, Some(9));
     assert_eq!(
@@ -254,11 +264,10 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
         "fixture-token",
     )
     .unwrap()
-    .with_service_condition_path("conditions")
-    .with_identity_resolver(Arc::new(identities()));
+    .with_service_condition_path("conditions");
 
     let values = source
-        .service_conditions(&[TransitServiceId::new("via-service")])
+        .service_conditions(&[TransitServiceId::new("provider-service")])
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -269,49 +278,8 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
         condition.state,
         via_server::domain::realtime::ServiceConditionState::Suspended
     );
-    assert_eq!(condition.scope_via_ids, vec!["via-service"]);
+    assert_eq!(condition.scope_via_ids, vec!["provider-service"]);
     assert_eq!(condition.source_text_variants[0].text, "Service paused");
-}
-
-#[tokio::test]
-async fn tdx_unknown_identity_is_rejected_without_leaking_provider_ids() {
-    let update_time = (OffsetDateTime::now_utc() - Duration::seconds(30))
-        .format(&Rfc3339)
-        .unwrap();
-    let app = Router::new().route(
-        "/feed",
-        get(move || {
-            let update_time = update_time.clone();
-            async move {
-                Json(json!([{
-                    "StopUID": "unknown-stop",
-                    "SubRouteUID": "unknown-service",
-                    "StopStatus": 0,
-                    "EstimateTime": 120,
-                    "UpdateTime": update_time
-                }]))
-            }
-        }),
-    );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed")
-    .with_identity_resolver(Arc::new(identities()));
-
-    let error = source
-        .arrival_estimates(ArrivalQuery::for_ride(
-            TransitServiceId::new("via-service"),
-            BoardingPointId::new("via-stop"),
-        ))
-        .await
-        .unwrap_err();
-    assert_eq!(error, RealtimeError::UnknownIdentity);
 }
 
 #[tokio::test]
@@ -328,10 +296,9 @@ async fn tdx_rate_limits_are_explicit_realtime_errors() {
         "fixture-token",
     )
     .unwrap()
-    .with_endpoint_paths("feed", "feed")
-    .with_identity_resolver(Arc::new(identities()));
+    .with_endpoint_paths("feed", "feed");
     let error = source
-        .bike_availability(&[BikeShareStationId::new("via-station")])
+        .bike_availability(&[BikeShareStationId::new("provider-station")])
         .await
         .unwrap_err();
     assert_eq!(error, RealtimeError::RateLimited);

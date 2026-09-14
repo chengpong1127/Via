@@ -172,8 +172,6 @@ pub enum RealtimeError {
     RejectedPayload,
     #[error("realtime provider returned an invalid response")]
     InvalidResponse,
-    #[error("realtime provider rejected an unknown identity")]
-    UnknownIdentity,
     #[error("realtime provider configuration is invalid")]
     InvalidConfiguration,
 }
@@ -184,9 +182,7 @@ impl RealtimeError {
             Self::TimedOut => FreshnessReason::TimedOut,
             Self::RateLimited => FreshnessReason::RateLimited,
             Self::TemporarilyUnavailable => FreshnessReason::SourceError,
-            Self::RejectedPayload | Self::InvalidResponse | Self::UnknownIdentity => {
-                FreshnessReason::RejectedPayload
-            }
+            Self::RejectedPayload | Self::InvalidResponse => FreshnessReason::RejectedPayload,
             Self::InvalidConfiguration => FreshnessReason::SourceError,
         }
     }

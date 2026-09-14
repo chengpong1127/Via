@@ -1,7 +1,6 @@
 version: '3.8'
 
 volumes:
-  postgres-data:
   valhalla-data-taiwan:
 
 services:
@@ -12,33 +11,10 @@ services:
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - ../..:/workspaces:cached
-    environment:
-      POSTGRES_USER: via
-      POSTGRES_PASSWORD: via-development-only
-      POSTGRES_DB: via
-      POSTGRES_HOSTNAME: db
-      POSTGRES_PORT: 5432
     depends_on:
-      db:
-        condition: service_healthy
       valhalla:
         condition: service_healthy
     command: sleep infinity
-
-  db:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    env_file:
-      - .env
-    ports:
-      - "127.0.0.1:5433:5432"
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-      interval: 2s
-      timeout: 2s
-      retries: 30
 
   valhalla:
     image: ghcr.io/valhalla/valhalla:3.8.3

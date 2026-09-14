@@ -1,35 +1,37 @@
 use time::macros::{date, datetime};
 use via_server::domain::{
-    ids::{AliasKey, AliasRegistry, BoardingPointId, EntityId, Provider, TransitServiceId},
+    ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
     realtime::{ArrivalState, ServiceDayPolicy},
 };
-use via_server::providers::tdx::normalize_n1;
+use via_server::providers::tdx::{
+    bike_share_station_id, boarding_point_id, normalize_n1, transit_service_id,
+    transit_service_id_for_direction,
+};
 
 #[test]
-fn reviewed_alias_change_preserves_via_identity() {
-    let mut registry = AliasRegistry::default();
-    let via_id = EntityId::BoardingPoint(BoardingPointId::new("boarding_opaque"));
-    registry
-        .register_reviewed(
-            AliasKey::new(Provider::Tdx, "boarding_point", "taipei", "old-stop"),
-            via_id.clone(),
-            datetime!(2026-01-01 00:00 UTC),
-        )
-        .unwrap();
-    registry
-        .register_reviewed(
-            AliasKey::new(Provider::Tdx, "boarding_point", "taipei", "new-stop"),
-            via_id.clone(),
-            datetime!(2026-08-31 00:00 UTC),
-        )
-        .unwrap();
+fn static_and_realtime_tdx_records_share_typed_ids() {
+    let static_stop = boarding_point_id("TPE-stop-1");
+    let realtime_stop = BoardingPointId::new("TPE-stop-1");
+    assert_eq!(static_stop, realtime_stop);
 
-    assert_eq!(
-        registry.resolve(
-            &AliasKey::new(Provider::Tdx, "boarding_point", "taipei", "new-stop"),
-            datetime!(2026-09-01 00:00 UTC)
-        ),
-        Some(&via_id)
+    let static_service = transit_service_id("TPE-service-1");
+    let realtime_service = TransitServiceId::new("TPE-service-1");
+    assert_eq!(static_service, realtime_service);
+
+    let static_station = bike_share_station_id("TPE-station-1");
+    let realtime_station = BikeShareStationId::new("TPE-station-1");
+    assert_eq!(static_station, realtime_station);
+}
+
+#[test]
+fn tdx_authority_codes_and_directions_are_deterministic_namespaces() {
+    assert_ne!(
+        boarding_point_id("TPE-stop-1"),
+        boarding_point_id("KHH-stop-1")
+    );
+    assert_ne!(
+        transit_service_id_for_direction("TPE-service-1", 0),
+        transit_service_id_for_direction("TPE-service-1", 1)
     );
 }
 

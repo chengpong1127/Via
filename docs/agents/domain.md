@@ -19,6 +19,8 @@ reconstruct → rank`. `RouteGraph` is the canonical routing representation.
 Realtime is demand-driven and request-local; there is no global realtime refresh
 planner. iOS networking is `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI →
 APIClient`, while `DemoJourneyPlanner` is the offline implementation.
+TDX is currently authoritative for Taiwan transit static and realtime data, so
+matching records use the same typed IDs derived directly from TDX identifiers.
 
 ## File structure
 
@@ -29,7 +31,7 @@ Single-context repo (most repos):
 ├── CONTEXT.md
 ├── docs/adr/
 │   ├── 0001-event-sourced-orders.md
-│   └── 0002-postgres-for-write-model.md
+│   └── 0002-routing-decision.md
 └── src/
 ```
 

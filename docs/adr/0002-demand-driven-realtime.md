@@ -27,5 +27,5 @@ global Live Status store. Upstream failures can degrade or temporarily fail
 the request according to the existing eligibility and failure rules.
 
 This supersedes the realtime acquisition, refresh, and snapshot-storage parts
-of ADR-0001. ADR-0001's provider-neutral typed identities and versioned alias
-registry remain in force.
+of ADR-0001. Typed domain IDs are now derived directly from TDX identifiers as
+described in ADR-0006.
