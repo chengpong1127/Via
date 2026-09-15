@@ -5,7 +5,7 @@ Status: Current
 ## Context
 
 Via needs runtime transit timing and multimodal transfers without binding all
-future routing algorithms to `RouteGraph`, Trip-Based queues, or one provider's
+future routing algorithms to Trip-Based queues or one provider's
 identity model. Static TDX-derived transit identities and demand-driven
 realtime remain authoritative.
 
@@ -34,6 +34,5 @@ Trip-Based departure resolution is algorithmically lazy and request-local,
 while cached provider calls can still be coalesced per frontier. Schedule,
 realtime, delay-adjusted, and frequency policies remain provider composition
 details. RAPTOR or CSA may later implement `RoutingAlgorithm` with unrelated
-internal indexes. Detailed reconstruction may temporarily adapt candidates to
-the legacy `RouteGraph` seam, but that graph is not a routing-algorithm
-requirement.
+internal indexes. Reconstruction consumes `JourneyCandidate` directly;
+`RouteGraph` is not part of the production architecture.

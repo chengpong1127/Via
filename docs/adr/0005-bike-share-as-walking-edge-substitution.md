@@ -15,9 +15,12 @@ a bicycle leg between rental stations, and walking egress. Station availability
 is fetched only for stations referenced by explored candidate shortcuts and is
 evaluated for the request before a shortcut is used.
 
+This remains the representation decision, but the old walking-edge graph
+expansion implementation is retired. Direct BikeShare requests are reconstructed
+from the same decomposed path shape without introducing a transit service.
+
 ## Consequences
 
-BikeShare participates in the same Pareto search as walking and transit. Zero
-inventory or return capacity removes the substituted edge, while station
-evidence and safety thresholds remain visible during reconstruction and
-ranking.
+BikeShare participates in Trip-Based candidate search when it connects transit
+stops. Zero inventory or return capacity removes the shortcut, while station
+evidence and safety thresholds remain visible during reconstruction and ranking.

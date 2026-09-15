@@ -11,8 +11,7 @@ pub mod valhalla;
 
 pub use tdx::{TdxRealtimeConfig, TdxRealtimeProvider};
 pub use timing::{
-    CompositeDepartureResolver, CompositeTransitTimingProvider, RealtimeDepartureResolver,
-    RealtimeTransitTimingAdapter,
+    CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,
 };
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,

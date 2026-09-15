@@ -22,7 +22,9 @@ use crate::{
     health::DependencyHealth,
     observability::OperationalMetrics,
     providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
-    providers::timing::{CompositeDepartureResolver, RealtimeDepartureResolver},
+    providers::timing::{
+        CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,
+    },
     routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{StreetRouter, StreetRoutingError},
 };
@@ -127,15 +129,26 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     let realtime_metrics = realtime.metrics();
     let transit_network = Arc::new(transit_network);
     let departure_resolver = Arc::new(CompositeDepartureResolver::with_schedule_fallback(
+        transit_network.clone(),
         Arc::new(RealtimeDepartureResolver::new(
             realtime.clone(),
             transit_network.clone(),
         )),
-        transit_network.clone(),
     ));
+    let transfer_index = crate::routing::transfers::TransferShortcutBuilder::new(
+        street_router.clone(),
+        transit_network.clone(),
+    )
+    .build(&crate::routing::RoutingLimits::default())
+    .await
+    .map_err(|_| StreetRoutingError::TemporarilyUnavailable)?;
     let metrics = OperationalMetrics::default();
-    let routing = RoutingService::new(street_router, departure_resolver, realtime)
+    let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())
         .with_transit_network_arc(transit_network.clone())
+        .with_transfer_index(Arc::new(transfer_index))
+        .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
+            realtime.clone(),
+        )))
         .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
@@ -479,7 +492,7 @@ async fn street_routing_health(State(state): State<AppState>) -> Response {
     path = "/v1/journey-plans",
     operation_id = "createJourneyPlan",
     summary = "Plan a journey",
-    description = "Calculates provider-neutral Journey Options from one immutable static network revision, with demand-driven realtime enrichment.",
+    description = "Calculates provider-neutral Journey Options from one immutable static network revision, with demand-driven realtime resolution.",
     request_body(content = PlanningRequest, description = "Planning Request to evaluate.", content_type = "application/json"),
     responses(
         (status = 200, description = "A complete Journey Planning result or a successful empty result", body = PlanningOutcome,

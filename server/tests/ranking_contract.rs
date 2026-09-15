@@ -13,6 +13,7 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         departure_epoch_seconds: 1_000,
         arrival_epoch_seconds: arrival,
         walking_seconds: 300,
+        bike_share_seconds: 0,
         transfer_count: 1,
         main_service_sequence: vec![key.into()],
         required_live_status: vec![FreshnessState::Fresh],

@@ -2,14 +2,14 @@
 
 Status: Superseded by ADR-0007
 
-## Context
+## Historical context
 
 Transit discovery must remain useful when a representative scheduled trip is
 not active today, while departure timing still needs current schedule or live
 arrival evidence. Treating a timetable row as the topology would make the
 network disappear before realtime enrichment can make the decision.
 
-## Decision
+## Superseded decision
 
 Discover destination-oriented transit topology first. Enrich only the bounded
 services and boarding points that survive discovery with schedule and
@@ -18,12 +18,12 @@ eligibility decisions in Via's routing pipeline.
 
 ## Timing boundary
 
-Topology discovery remains a bounded provider concern, but departure selection
-now occurs lazily inside the configured algorithm through `DepartureResolver`;
-see ADR-0007.
+The current architecture does not use this topology-first pipeline. Departure
+selection occurs lazily inside `TripBasedRouter` through `DepartureResolver`,
+after algorithm-neutral access/egress preparation; see ADR-0007.
 
 ## Consequences
 
-Topology remains stable across service-day and feed-availability differences,
-while timing and reliability stay explicit. Discovery, enrichment, and search
-can be bounded independently without introducing a second transit graph.
+The historical separation is retained here for context only. It is not a
+production dependency and must not be reintroduced as a second transit search
+pipeline.

@@ -10,13 +10,14 @@ candidate network, transit backbone, or multimodal graph was authoritative.
 
 ## Decision
 
-`RouteGraph` was Via's canonical routing representation for the initial
-multimodal implementation. It remains a compatibility seam for detailed
-reconstruction during the migration, but algorithms must not be required to
-convert their internal state into it.
+This decision is retired. `RouteGraph` was removed rather than retained as a
+compatibility seam. `RoutingAlgorithm` returns `JourneyCandidate` values and
+reconstruction consumes their access, transit, transfer, and egress data
+directly.
 
 ## Consequences
 
-Search and reconstruction share one public routing mental model. BikeShare is
-expanded at the walking-edge seam, and no compatibility graph types or
-parallel planner abstractions are needed.
+The canonical routing flow is now street access/egress, `RoutingAlgorithm`,
+`TripBasedRouter`, direct reconstruction, and ranking. BikeShare is represented
+by decomposed transfer paths; generic graph search is not part of production
+routing.

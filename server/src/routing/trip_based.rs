@@ -220,11 +220,12 @@ struct SearchPath {
 
 impl SearchPath {
     fn from_access(access: AccessPoint) -> Self {
+        let bike_seconds = access.bike_seconds;
         Self {
             walking_seconds: access.walking_seconds,
             access,
             segments: Vec::new(),
-            bike_seconds: 0,
+            bike_seconds,
             transfer_count: 0,
             evidence: Vec::new(),
             timing_bases: Vec::new(),
@@ -335,18 +336,39 @@ impl RoutingAlgorithm for TripBasedRouter {
                     })
             })
             .collect::<Vec<_>>();
+        let mut initial_station_ids = initial_shortcuts
+            .iter()
+            .flat_map(TransferShortcut::required_station_ids)
+            .collect::<Vec<_>>();
+        initial_station_ids.extend(
+            query
+                .origin_access
+                .iter()
+                .flat_map(AccessPoint::required_station_ids),
+        );
+        initial_station_ids.extend(
+            query
+                .destination_egress
+                .iter()
+                .flat_map(super::EgressPoint::required_station_ids),
+        );
         let initial_availability = self
-            .collect_shortcut_availability(&initial_shortcuts, &mut availability_cache)
+            .collect_station_availability(&initial_station_ids, &mut availability_cache)
             .await;
         let mut needs = initial_needs
             .into_iter()
             .filter(|need| {
-                need.path.segments.iter().all(|segment| match segment {
-                    JourneySegment::Transfer { shortcut } => {
-                        shortcut_is_usable(shortcut, &initial_availability)
-                    }
-                    JourneySegment::Transit { .. } => true,
-                })
+                need.path
+                    .access
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path_is_usable(path, &initial_availability))
+                    && need.path.segments.iter().all(|segment| match segment {
+                        JourneySegment::Transfer { shortcut } => {
+                            shortcut_is_usable(shortcut, &initial_availability)
+                        }
+                        JourneySegment::Transit { .. } => true,
+                    })
             })
             .collect::<Vec<_>>();
         let mut candidates = Vec::new();
@@ -370,7 +392,8 @@ impl RoutingAlgorithm for TripBasedRouter {
                 )
                 .await;
             if states.is_empty() {
-                break;
+                needs = Vec::new();
+                continue;
             }
             let availability = self
                 .collect_availability(&states, &mut availability_cache)
@@ -607,8 +630,15 @@ impl TripBasedRouter {
                 shortcuts.extend(self.transfer_index.transfers_from(stop_id).iter().cloned());
             }
         }
-        self.collect_shortcut_availability(&shortcuts, availability_cache)
-            .await
+        let mut availability = self
+            .collect_shortcut_availability(&shortcuts, availability_cache)
+            .await;
+        availability.extend(
+            availability_cache
+                .iter()
+                .map(|(id, value)| (id.clone(), value.clone())),
+        );
+        availability
     }
 
     async fn collect_shortcut_availability(
@@ -616,13 +646,23 @@ impl TripBasedRouter {
         shortcuts: &[TransferShortcut],
         availability_cache: &mut HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
     ) -> HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability> {
-        let Some(resolver) = &self.bike_availability else {
-            return HashMap::new();
-        };
-        let mut station_ids = shortcuts
+        let station_ids = shortcuts
             .iter()
             .flat_map(TransferShortcut::required_station_ids)
             .collect::<Vec<_>>();
+        self.collect_station_availability(&station_ids, availability_cache)
+            .await
+    }
+
+    async fn collect_station_availability(
+        &self,
+        station_ids: &[crate::domain::ids::BikeShareStationId],
+        availability_cache: &mut HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
+    ) -> HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability> {
+        let Some(resolver) = &self.bike_availability else {
+            return HashMap::new();
+        };
+        let mut station_ids = station_ids.to_vec();
         station_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         station_ids.dedup();
         if station_ids.is_empty() {
@@ -675,8 +715,20 @@ impl TripBasedRouter {
                 if egress.stop_id != stop_time.stop_id {
                     continue;
                 }
-                let arrival_time =
-                    arrival_at_stop + Duration::seconds(i64::from(egress.walking_seconds));
+                if !egress
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path_is_usable(path, availability))
+                {
+                    continue;
+                }
+                let arrival_time = arrival_at_stop
+                    + Duration::seconds(i64::from(
+                        egress
+                            .path
+                            .as_ref()
+                            .map_or(egress.walking_seconds, |path| path.duration_seconds()),
+                    ));
                 if query
                     .latest_arrival
                     .is_some_and(|latest| arrival_time > latest)
@@ -688,6 +740,7 @@ impl TripBasedRouter {
                 let mut path = state.path.clone();
                 path.segments.push(transit_segment.clone());
                 path.walking_seconds = path.walking_seconds.saturating_add(egress.walking_seconds);
+                path.bike_seconds = path.bike_seconds.saturating_add(egress.bike_seconds);
                 candidates.push(JourneyCandidate {
                     access: path.access.clone(),
                     egress: egress.clone(),
@@ -724,6 +777,36 @@ impl TripBasedRouter {
             }
         }
     }
+}
+
+fn path_is_usable(
+    path: &super::transfers::TransferPath,
+    availability: &HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
+) -> bool {
+    if !path.uses_bike_share() {
+        return true;
+    }
+    path.legs.iter().all(|leg| match leg {
+        super::transfers::TransferLeg::Walk { .. } => true,
+        super::transfers::TransferLeg::BikeShare {
+            pickup_station_id,
+            return_station_id,
+            ..
+        } => {
+            let Some(pickup) = availability.get(pickup_station_id) else {
+                return false;
+            };
+            let Some(return_station) = availability.get(return_station_id) else {
+                return false;
+            };
+            pickup.rental_state == crate::domain::realtime::ActionState::Enabled
+                && pickup.available_bikes.is_some_and(|count| count > 0)
+                && return_station.return_state == crate::domain::realtime::ActionState::Enabled
+                && return_station
+                    .available_return_slots
+                    .is_some_and(|count| count > 0)
+        }
+    })
 }
 
 fn pareto_candidates(

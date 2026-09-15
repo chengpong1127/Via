@@ -6,73 +6,10 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::{PlanningRequest, RequestCoordinate},
+    api::RequestCoordinate,
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
-    street::{
-        Coordinate, Maneuver, ManeuverKind, RouteQuery, RoutingConstraints, StreetPath,
-        StreetRoutingError, StreetTravelMode,
-    },
+    street::{Coordinate, Maneuver, ManeuverKind},
 };
-
-use super::super::{
-    graph,
-    service::{RoutingService, is_transient_provider_error},
-};
-
-impl RoutingService {
-    pub(crate) async fn hydrate_street_edge(
-        &self,
-        request: &PlanningRequest,
-        from: &graph::RouteNode,
-        to: &graph::RouteNode,
-        mode: StreetTravelMode,
-        constraints: RoutingConstraints,
-    ) -> Result<Option<StreetPath>, PlanningError> {
-        let Some(from) = self.node_coordinate(request, from) else {
-            return Ok(None);
-        };
-        let Some(to) = self.node_coordinate(request, to) else {
-            return Ok(None);
-        };
-        match self
-            .street_routing
-            .route(RouteQuery {
-                travel_mode: mode,
-                origin: from,
-                destination: to,
-                constraints,
-            })
-            .await
-        {
-            Ok(path) => Ok(Some(path)),
-            Err(StreetRoutingError::Unreachable) => Ok(None),
-            Err(error) if is_transient_provider_error(&error) => {
-                Err(PlanningError::TemporarilyUnavailable)
-            }
-            Err(_) => Err(PlanningError::Internal),
-        }
-    }
-
-    pub(crate) fn node_coordinate(
-        &self,
-        request: &PlanningRequest,
-        node: &graph::RouteNode,
-    ) -> Option<Coordinate> {
-        let coordinate = match node {
-            graph::RouteNode::Origin => request.origin.coordinate,
-            graph::RouteNode::Destination => request.destination.coordinate,
-            graph::RouteNode::TransitStop(stop_id) => {
-                self.transit_network.stop(stop_id)?.coordinate
-            }
-            graph::RouteNode::BikeShareStation(station_id) => {
-                self.transit_network
-                    .bike_share_station(station_id)?
-                    .coordinate
-            }
-        };
-        Coordinate::try_new(coordinate.latitude, coordinate.longitude).ok()
-    }
-}
 
 pub(crate) fn overview_geometry(legs: &[Leg]) -> Geometry {
     let mut points = Vec::new();

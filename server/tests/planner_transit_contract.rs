@@ -314,7 +314,7 @@ async fn stale_optional_service_condition_does_not_remove_schedule_route() {
 }
 
 #[tokio::test]
-async fn bus_candidate_is_enriched_only_for_the_scheduled_ride() {
+async fn bus_timing_source_uses_realtime_for_the_scheduled_ride() {
     let origin = coordinate(25.000, 121.500);
     let first = coordinate(25.010, 121.510);
     let second = coordinate(25.015, 121.515);
@@ -348,18 +348,17 @@ async fn bus_candidate_is_enriched_only_for_the_scheduled_ride() {
         ..Default::default()
     };
     let arrival_queries = realtime.arrival_queries.clone();
-    let app = build_router_with_realtime_and_network(
-        Arc::new(provider),
-        Arc::new(realtime),
-        network(
-            TransitMode::Bus,
-            "via_bus_1",
-            "via_bus_boarding_1",
-            "via_bus_boarding_2",
-        ),
-    )
-    .await
-    .unwrap();
+    let mut network = network(
+        TransitMode::Bus,
+        "via_bus_1",
+        "via_bus_boarding_1",
+        "via_bus_boarding_2",
+    );
+    network.services[0] = network.services[0].clone().with_timing_source("bus_n1");
+    let app =
+        build_router_with_realtime_and_network(Arc::new(provider), Arc::new(realtime), network)
+            .await
+            .unwrap();
     let body = response_body(app, request()).await;
     assert_eq!(
         body["journey_options"][0]["legs"][1]["details"]["transit_mode"],

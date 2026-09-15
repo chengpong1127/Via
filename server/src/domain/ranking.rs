@@ -59,6 +59,7 @@ pub struct CandidateJourney {
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
+    pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
     pub required_live_status: Vec<FreshnessState>,
@@ -76,6 +77,7 @@ pub struct RankedJourney {
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
+    pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
 }
@@ -204,6 +206,7 @@ impl RankingPolicy {
             departure_epoch_seconds: candidate.departure_epoch_seconds,
             arrival_epoch_seconds: candidate.arrival_epoch_seconds,
             walking_seconds: candidate.walking_seconds,
+            bike_share_seconds: candidate.bike_share_seconds,
             transfer_count: candidate.transfer_count,
             main_service_sequence: candidate.main_service_sequence,
         })
@@ -275,11 +278,13 @@ fn dominates(left: &RankedJourney, right: &RankedJourney) -> bool {
     let no_worse = left.class <= right.class
         && left.arrival_epoch_seconds <= right.arrival_epoch_seconds
         && left.transfer_count <= right.transfer_count
-        && left.walking_seconds <= right.walking_seconds;
+        && left.walking_seconds <= right.walking_seconds
+        && left.bike_share_seconds <= right.bike_share_seconds;
     let strictly_better = left.class < right.class
         || left.arrival_epoch_seconds < right.arrival_epoch_seconds
         || left.transfer_count < right.transfer_count
-        || left.walking_seconds < right.walking_seconds;
+        || left.walking_seconds < right.walking_seconds
+        || left.bike_share_seconds < right.bike_share_seconds;
     no_worse && strictly_better
 }
 

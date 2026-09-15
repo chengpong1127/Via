@@ -134,39 +134,60 @@ fn reconstruction_modules_have_explicit_responsibilities() {
         );
     }
     assert!(source("src/routing/reconstruct/mod.rs").contains("legs::assemble"));
-    assert!(source("src/routing/reconstruct/legs.rs").contains("complete_pending_transfers"));
-    assert!(source("src/routing/reconstruct/geometry.rs").contains("hydrate_street_edge"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("append_transfer_path"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("hydrate_path"));
     assert!(source("src/routing/reconstruct/evidence.rs").contains("summary_from_evidence"));
 }
 
 #[test]
-fn canonical_domain_types_and_route_graph_have_single_definitions() {
+fn canonical_domain_types_and_algorithm_boundary_have_single_definitions() {
     let journey = source("src/domain/journey.rs");
-    let graph = source("src/routing/graph.rs");
     assert_eq!(journey.matches("enum JourneyMode").count(), 1);
-    assert_eq!(graph.matches("struct RouteGraph").count(), 1);
     assert!(journey.contains("pub enum JourneyMode"));
     assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
-    assert!(graph.contains("pub struct RouteGraph"));
+    assert!(source("src/routing/algorithm.rs").contains("pub trait RoutingAlgorithm"));
+    assert!(
+        source("src/routing/trip_based.rs").contains("impl RoutingAlgorithm for TripBasedRouter")
+    );
 }
 
 #[test]
-fn direct_walking_is_a_real_graph_edge_without_geographic_fallback() {
-    let graph = source("src/routing/graph.rs");
-    let discovery = source("src/routing/discover.rs");
+fn routing_has_no_legacy_transit_pipeline() {
     let service = source("src/routing/service.rs");
-    assert!(graph.contains("RouteEdge::Walk"));
-    assert!(graph.contains("candidate.direct_walking"));
-    assert!(service.contains("discover_direct_walking"));
-    assert!(!service.contains("walking_option"));
-    assert!(!discovery.contains("transit_leg_distance_metres"));
-    assert!(!service.contains("direct_walking.or_else"));
+    let routing = source_tree("src/routing");
+    for legacy in [
+        "DiscoveryResult",
+        "RouteGraph",
+        "BikeShareOpportunityDiscovery",
+        "TransitTimingProvider",
+        "collect_request_realtime",
+        "search::search",
+        "add_timed_transit",
+        "add_bike_alternatives",
+    ] {
+        assert!(
+            !routing.contains(legacy),
+            "legacy routing symbol remains: {legacy}"
+        );
+    }
+    assert!(service.contains("self.routing_algorithm.route(query).await"));
+    assert!(service.contains("discover_access_points"));
+    assert!(service.contains("discover_egress_points"));
 }
 
 #[test]
-fn transfer_connectors_are_walk_edges() {
-    let graph = source("src/routing/graph.rs");
-    assert!(graph.contains("fn add_transfer"));
-    assert!(graph.contains("RouteEdge::Walk {"));
-    assert!(!graph.contains("RouteEdge::Transfer"));
+fn obsolete_routing_files_are_deleted() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing");
+    for file in [
+        "discover.rs",
+        "enrich.rs",
+        "bike.rs",
+        "graph.rs",
+        "search.rs",
+    ] {
+        assert!(
+            !root.join(file).exists(),
+            "obsolete routing file remains: {file}"
+        );
+    }
 }

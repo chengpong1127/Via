@@ -15,6 +15,12 @@ use crate::domain::{
     transit::TransitNetwork,
 };
 
+use super::{access::street_metric, service::RoutingLimits};
+use crate::street::{
+    Coordinate, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
+    StreetRoutingError, StreetTravelMode,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransferLeg {
     Walk {
@@ -284,6 +290,232 @@ impl TransferShortcutIndex {
             });
         }
     }
+}
+
+/// Builds the request-independent transfer representation used by routing.
+///
+/// This is a bounded online builder, not the exact ULTRA preprocessing
+/// algorithm. Its output is intentionally the same shortcut/path shape so an
+/// offline artifact can replace it without changing Trip-Based or
+/// reconstruction code.
+pub(crate) struct TransferShortcutBuilder {
+    street: std::sync::Arc<dyn StreetRouter>,
+    network: std::sync::Arc<TransitNetwork>,
+}
+
+impl TransferShortcutBuilder {
+    pub(crate) fn new(
+        street: std::sync::Arc<dyn StreetRouter>,
+        network: std::sync::Arc<TransitNetwork>,
+    ) -> Self {
+        Self { street, network }
+    }
+
+    pub(crate) async fn build(
+        &self,
+        limits: &RoutingLimits,
+    ) -> Result<TransferShortcutIndex, StreetRoutingError> {
+        let mut index = TransferShortcutIndex::from_network(&self.network);
+        let stops = self
+            .network
+            .stops
+            .iter()
+            .filter_map(|stop| {
+                Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
+                    .ok()
+                    .map(|coordinate| (stop.id.clone(), coordinate))
+            })
+            .collect::<Vec<_>>();
+        for (from_id, from) in &stops {
+            let mut alternatives = Vec::new();
+            for (to_id, to) in &stops {
+                if from_id == to_id
+                    || geographic_distance_metres(*from, *to)
+                        > u64::from(limits.max_bike_search_radius_metres)
+                {
+                    continue;
+                }
+                alternatives.extend(
+                    self.build_bike_shortcuts(*from, *to, from_id.clone(), to_id.clone(), limits)
+                        .await?,
+                );
+            }
+            alternatives.sort_by(|left, right| {
+                left.duration_seconds
+                    .cmp(&right.duration_seconds)
+                    .then(left.signature().cmp(&right.signature()))
+            });
+            alternatives.truncate(limits.max_bike_connectors.max(1));
+            index.extend(alternatives);
+        }
+        Ok(index)
+    }
+
+    async fn build_bike_shortcuts(
+        &self,
+        from: Coordinate,
+        to: Coordinate,
+        from_id: BoardingPointId,
+        to_id: BoardingPointId,
+        limits: &RoutingLimits,
+    ) -> Result<Vec<TransferShortcut>, StreetRoutingError> {
+        let pickups = nearby_stations(
+            &self.network,
+            from,
+            limits.max_bike_pickup_stations,
+            limits.max_bike_search_radius_metres,
+        );
+        let returns = nearby_stations(
+            &self.network,
+            to,
+            limits.max_bike_return_stations,
+            limits.max_bike_search_radius_metres,
+        );
+        let mut shortcuts = Vec::new();
+        for pickup in pickups {
+            let Some(access) = self
+                .street
+                .matrix(MatrixQuery {
+                    orientation: MatrixOrientation::OneToMany,
+                    travel_mode: StreetTravelMode::Walking,
+                    sources: vec![from],
+                    targets: vec![coordinate(pickup.coordinate)?],
+                    constraints: RoutingConstraints::default(),
+                })
+                .await?
+                .cells
+                .first()
+                .and_then(|cells| cells.first())
+                .and_then(street_metric)
+            else {
+                continue;
+            };
+            for return_station in &returns {
+                if pickup.id == return_station.id {
+                    continue;
+                }
+                let Some(bicycle) = self
+                    .street
+                    .matrix(MatrixQuery {
+                        orientation: MatrixOrientation::OneToMany,
+                        travel_mode: StreetTravelMode::Bicycle,
+                        sources: vec![coordinate(pickup.coordinate)?],
+                        targets: vec![coordinate(return_station.coordinate)?],
+                        constraints: RoutingConstraints {
+                            max_distance: Some(crate::street::Metres(
+                                limits.max_bike_distance_metres,
+                            )),
+                            ..RoutingConstraints::default()
+                        },
+                    })
+                    .await?
+                    .cells
+                    .first()
+                    .and_then(|cells| cells.first())
+                    .and_then(street_metric)
+                else {
+                    continue;
+                };
+                if bicycle.duration_seconds > limits.max_bike_duration_seconds
+                    || bicycle.distance_metres > limits.max_bike_distance_metres
+                {
+                    continue;
+                }
+                let Some(egress) = self
+                    .street
+                    .matrix(MatrixQuery {
+                        orientation: MatrixOrientation::OneToMany,
+                        travel_mode: StreetTravelMode::Walking,
+                        sources: vec![coordinate(return_station.coordinate)?],
+                        targets: vec![to],
+                        constraints: RoutingConstraints::default(),
+                    })
+                    .await?
+                    .cells
+                    .first()
+                    .and_then(|cells| cells.first())
+                    .and_then(street_metric)
+                else {
+                    continue;
+                };
+                shortcuts.push(TransferShortcut::bike_share(
+                    from_id.clone(),
+                    to_id.clone(),
+                    TransferPath::walking_and_bike(
+                        access.duration_seconds,
+                        access.distance_metres,
+                        pickup.id.clone(),
+                        return_station.id.clone(),
+                        bicycle.duration_seconds,
+                        bicycle.distance_metres,
+                        egress.duration_seconds,
+                        egress.distance_metres,
+                    ),
+                ));
+            }
+        }
+        Ok(shortcuts)
+    }
+}
+
+impl TransferShortcut {
+    fn signature(&self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.from.as_str(),
+            self.to.as_str(),
+            self.required_station_ids()
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+}
+
+fn nearby_stations(
+    network: &TransitNetwork,
+    coordinate: Coordinate,
+    limit: usize,
+    radius_metres: u32,
+) -> Vec<&crate::domain::transit::BikeShareStation> {
+    let mut stations = network
+        .bike_share_stations
+        .iter()
+        .filter(|station| {
+            geographic_distance_metres(
+                coordinate,
+                Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
+                    .expect("validated station coordinate"),
+            ) <= u64::from(radius_metres)
+        })
+        .collect::<Vec<_>>();
+    stations.sort_by(|left, right| {
+        geographic_distance_metres(
+            coordinate,
+            Coordinate::try_new(left.coordinate.latitude, left.coordinate.longitude)
+                .expect("validated station coordinate"),
+        )
+        .cmp(&geographic_distance_metres(
+            coordinate,
+            Coordinate::try_new(right.coordinate.latitude, right.coordinate.longitude)
+                .expect("validated station coordinate"),
+        ))
+        .then(left.id.as_str().cmp(right.id.as_str()))
+    });
+    stations.truncate(limit.max(1));
+    stations
+}
+
+fn coordinate(value: crate::api::RequestCoordinate) -> Result<Coordinate, StreetRoutingError> {
+    Coordinate::try_new(value.latitude, value.longitude)
+}
+
+fn geographic_distance_metres(from: Coordinate, to: Coordinate) -> u64 {
+    let latitude = ((from.latitude() + to.latitude()) / 2.0).to_radians();
+    let north = (to.latitude() - from.latitude()) * 111_320.0;
+    let east = (to.longitude() - from.longitude()) * 111_320.0 * latitude.cos();
+    north.hypot(east).max(0.0).round() as u64
 }
 
 impl TransferIndex for TransferShortcutIndex {

@@ -103,8 +103,8 @@ Via Server → immutable TransitNetwork artifact
 ## Current routing boundary
 
 Walking is always available for direct journeys and transit/BikeShare access and
-egress; clients select only the high-level `transit` and `bike_share`
-categories. The request path is:
+egress; direct BikeShare is also a separate candidate, and clients select only
+the high-level `transit` and `bike_share` categories. The request path is:
 
 ```text
 PlanningRequest → RoutingService → street access/egress
@@ -133,11 +133,12 @@ The shortcut builder is ULTRA-compatible in representation, but exact ULTRA
 offline preprocessing is intentionally deferred until the required static
 street preprocessing artifact exists.
 
-The currently wired TDX timing path is Bus `EstimatedTimeOfArrival`, with the
-static timetable as the deliberate fallback. The same adapter boundary is
-ready for TRA, THSR, and Metro live-board/timetable/frequency adapters; those
-live endpoints are not claimed as implemented until their payload contracts
-are available.
+The currently wired TDX timing path is Bus `EstimatedTimeOfArrival` when the
+service metadata selects `bus_n1`, with the static timetable as the deliberate
+fallback for missing or unsupported timing sources and failed Bus realtime.
+The same adapter boundary is ready for TRA, THSR, and Metro
+live-board/timetable/frequency adapters; those live endpoints are not claimed
+as implemented until their payload contracts are available.
 
 ## Tests
 

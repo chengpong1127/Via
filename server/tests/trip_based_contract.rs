@@ -737,7 +737,7 @@ async fn departure_resolver_falls_back_to_schedule() {
         Vec::new(),
     ));
     let resolver =
-        CompositeDepartureResolver::with_schedule_fallback(Arc::new(FailingResolver), schedule);
+        CompositeDepartureResolver::with_schedule_fallback(schedule, Arc::new(FailingResolver));
     let query = DepartureQuery::new(
         TransitServiceId::new("line"),
         BoardingPointId::new("a"),

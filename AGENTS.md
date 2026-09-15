@@ -11,8 +11,8 @@ street access/egress → RoutingAlgorithm → TripBasedRouter
 
 `RoutingAlgorithm` is the algorithm-neutral routing boundary. `TripBasedRouter`
 owns its Trip-Based index and consumes `DepartureResolver` plus
-`TransferShortcutIndex`; `RouteGraph` is retained only as a reconstruction
-compatibility representation while the migration completes. Keep the dependency
+`TransferShortcutIndex`; reconstruction consumes `JourneyCandidate` directly and
+there is no `RouteGraph` in the canonical routing path. Keep the dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
 interfaces. Do not reintroduce the removed `planner`, `normalization`, or
 `routing/engine` modules, or a `JourneyPlanningService` wrapper.
