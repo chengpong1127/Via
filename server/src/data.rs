@@ -9,9 +9,9 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
-use futures_util::stream::{self, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -38,7 +38,13 @@ use crate::{
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
-const FETCH_CONCURRENCY: usize = 4;
+const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
+const TDX_RETRY_BACKOFFS: [Duration; 4] = [
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+];
 const ALL_WEEKDAYS: [Weekday; 7] = [
     Weekday::Monday,
     Weekday::Tuesday,
@@ -139,6 +145,31 @@ pub struct RawSourceMetadata {
     pub path: String,
     pub sha256: String,
     pub retrieved_at: String,
+}
+
+#[derive(Debug)]
+pub struct RawSnapshotFetchReport {
+    pub manifest: RawSnapshotManifest,
+    pub reused_count: usize,
+    pub downloaded_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FetchProgress {
+    Reuse {
+        source_key: String,
+        relative_path: String,
+    },
+    Fetch {
+        source_key: String,
+    },
+    Wait {
+        duration: Duration,
+    },
+    Retry {
+        source_key: String,
+        duration: Duration,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1307,6 +1338,23 @@ pub async fn fetch_raw_snapshot(
     output: &Path,
     credentials: TdxCredentials,
 ) -> Result<RawSnapshotManifest, DataError> {
+    Ok(
+        fetch_raw_snapshot_with_progress(scope, date, output, credentials, |_| {})
+            .await?
+            .manifest,
+    )
+}
+
+pub async fn fetch_raw_snapshot_with_progress<F>(
+    scope: DataScope,
+    date: Date,
+    output: &Path,
+    credentials: TdxCredentials,
+    progress: F,
+) -> Result<RawSnapshotFetchReport, DataError>
+where
+    F: FnMut(FetchProgress),
+{
     let api_base = std::env::var("TDX_API_BASE_URL")
         .or_else(|_| std::env::var("VIA_TDX_BASE_URL"))
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
@@ -1319,45 +1367,134 @@ pub async fn fetch_raw_snapshot(
             error,
         }
     })?;
+    let mut sleeper = TokioFetchSleeper;
+    let mut progress = progress;
+    fetch_raw_snapshot_with_client(
+        scope,
+        date,
+        output,
+        &client,
+        FetchTimingPolicy::default(),
+        &mut sleeper,
+        &mut progress,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct FetchTimingPolicy {
+    request_spacing: Duration,
+    retry_backoffs: [Duration; 4],
+}
+
+impl Default for FetchTimingPolicy {
+    fn default() -> Self {
+        Self {
+            request_spacing: TDX_REQUEST_SPACING,
+            retry_backoffs: TDX_RETRY_BACKOFFS,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+trait FetchSleeper {
+    async fn sleep(&mut self, duration: Duration);
+}
+
+struct TokioFetchSleeper;
+
+#[async_trait::async_trait]
+impl FetchSleeper for TokioFetchSleeper {
+    async fn sleep(&mut self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}
+
+struct TdxRequestLimiter {
+    last_request_at: Option<Instant>,
+    spacing: Duration,
+}
+
+impl TdxRequestLimiter {
+    fn new(spacing: Duration) -> Self {
+        Self {
+            last_request_at: None,
+            spacing,
+        }
+    }
+
+    async fn wait<S: FetchSleeper>(
+        &mut self,
+        sleeper: &mut S,
+        progress: &mut impl FnMut(FetchProgress),
+    ) {
+        if let Some(last_request_at) = self.last_request_at {
+            let elapsed = last_request_at.elapsed();
+            if elapsed < self.spacing {
+                let duration = self.spacing - elapsed;
+                progress(FetchProgress::Wait { duration });
+                sleeper.sleep(duration).await;
+            }
+        }
+        self.last_request_at = Some(Instant::now());
+    }
+}
+
+async fn fetch_raw_snapshot_with_client<S, F>(
+    scope: DataScope,
+    date: Date,
+    output: &Path,
+    client: &TdxClient,
+    timing: FetchTimingPolicy,
+    sleeper: &mut S,
+    progress: &mut F,
+) -> Result<RawSnapshotFetchReport, DataError>
+where
+    S: FetchSleeper,
+    F: FnMut(FetchProgress),
+{
     let sources = static_sources(scope, date);
     let snapshot = output.join("raw").join(date.to_string());
     fs::create_dir_all(&snapshot).map_err(|error| DataError::Io(snapshot.clone(), error))?;
-    let fetched = stream::iter(sources.into_iter().map(|source| {
-        let client = client.clone();
-        async move {
-            let result = client.get_raw(&source.path, &[]).await;
-            (source, result)
-        }
-    }))
-    .buffer_unordered(FETCH_CONCURRENCY)
-    .map(|(source, result)| {
-        let snapshot = snapshot.clone();
-        async move {
-            let response = result.map_err(|error| DataError::Fetch {
-                source_name: source.key.clone(),
-                error,
-            })?;
-            let path = snapshot.join(&source.output_path);
-            write_bytes_atomic(&path, &response.body)?;
-            Ok::<_, DataError>((source, response))
-        }
-    })
-    .buffer_unordered(FETCH_CONCURRENCY)
-    .try_collect::<Vec<_>>()
-    .await?;
+    let previous_manifest = read_previous_raw_manifest(&snapshot, scope, date);
     let mut metadata = BTreeMap::new();
-    for (source, response) in fetched {
+    let mut limiter = TdxRequestLimiter::new(timing.request_spacing);
+    let mut reused_count = 0;
+    let mut downloaded_count = 0;
+
+    for source in sources {
+        let path = snapshot.join(&source.output_path);
+        if let Some(body) = valid_existing_json(&path) {
+            progress(FetchProgress::Reuse {
+                source_key: source.key.clone(),
+                relative_path: source.output_path.to_string_lossy().into_owned(),
+            });
+            metadata.insert(
+                source.key.clone(),
+                raw_source_metadata(&source, &body, previous_manifest.as_ref()),
+            );
+            reused_count += 1;
+            continue;
+        }
+
+        progress(FetchProgress::Fetch {
+            source_key: source.key.clone(),
+        });
+        let response =
+            fetch_static_source(client, &source, &mut limiter, timing, sleeper, progress)
+                .await
+                .map_err(|error| DataError::Fetch {
+                    source_name: source.key.clone(),
+                    error,
+                })?;
+        serde_json::from_slice::<Value>(&response.body)
+            .map_err(|error| DataError::Json(path.clone(), error))?;
+        write_bytes_atomic(&path, &response.body)?;
         metadata.insert(
-            source.key,
-            RawSourceMetadata {
-                endpoint: source.endpoint,
-                path: source.output_path.to_string_lossy().into_owned(),
-                sha256: sha256_hex(&response.body),
-                retrieved_at: time::OffsetDateTime::now_utc()
-                    .format(&Rfc3339)
-                    .unwrap_or_else(|_| "unknown".into()),
-            },
+            source.key.clone(),
+            raw_source_metadata(&source, &response.body, None),
         );
+        downloaded_count += 1;
     }
     let manifest = RawSnapshotManifest {
         schema_version: ARTIFACT_SCHEMA_VERSION,
@@ -1366,7 +1503,99 @@ pub async fn fetch_raw_snapshot(
         sources: metadata,
     };
     write_json_atomic(&snapshot.join("manifest.json"), &manifest)?;
-    Ok(manifest)
+    Ok(RawSnapshotFetchReport {
+        manifest,
+        reused_count,
+        downloaded_count,
+    })
+}
+
+async fn fetch_static_source<S, F>(
+    client: &TdxClient,
+    source: &StaticSource,
+    limiter: &mut TdxRequestLimiter,
+    timing: FetchTimingPolicy,
+    sleeper: &mut S,
+    progress: &mut F,
+) -> Result<crate::config::TdxRawResponse, TdxClientError>
+where
+    S: FetchSleeper,
+    F: FnMut(FetchProgress),
+{
+    for retry_index in 0..=timing.retry_backoffs.len() {
+        limiter.wait(sleeper, progress).await;
+        match client.get_raw(&source.path, &[]).await {
+            Ok(response) => return Ok(response),
+            Err(error)
+                if matches!(
+                    error,
+                    TdxClientError::RateLimited | TdxClientError::RateLimitedWithRetryAfter(_)
+                ) =>
+            {
+                let Some(default_retry_delay) = timing.retry_backoffs.get(retry_index).copied()
+                else {
+                    return Err(TdxClientError::RateLimited);
+                };
+                let retry_delay = error.retry_after().unwrap_or(default_retry_delay);
+                progress(FetchProgress::Retry {
+                    source_key: source.key.clone(),
+                    duration: retry_delay,
+                });
+                sleeper.sleep(retry_delay).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("the bounded retry loop always returns")
+}
+
+fn valid_existing_json(path: &Path) -> Option<Vec<u8>> {
+    let body = fs::read(path).ok()?;
+    if body.is_empty() || serde_json::from_slice::<Value>(&body).is_err() {
+        return None;
+    }
+    Some(body)
+}
+
+fn read_previous_raw_manifest(
+    snapshot: &Path,
+    scope: DataScope,
+    date: Date,
+) -> Option<RawSnapshotManifest> {
+    let body = fs::read_to_string(snapshot.join("manifest.json")).ok()?;
+    let manifest = serde_json::from_str::<RawSnapshotManifest>(&body).ok()?;
+    (manifest.scope == scope.as_str() && manifest.date == date.to_string()).then_some(manifest)
+}
+
+fn raw_source_metadata(
+    source: &StaticSource,
+    body: &[u8],
+    previous_manifest: Option<&RawSnapshotManifest>,
+) -> RawSourceMetadata {
+    let path = source.output_path.to_string_lossy().into_owned();
+    let sha256 = sha256_hex(body);
+    let retrieved_at = previous_manifest
+        .and_then(|manifest| manifest.sources.get(&source.key))
+        .filter(|previous| {
+            previous.endpoint == source.endpoint
+                && previous.path == path
+                && previous.sha256 == sha256
+                && time::OffsetDateTime::parse(&previous.retrieved_at, &Rfc3339).is_ok()
+        })
+        .map(|previous| previous.retrieved_at.clone())
+        .unwrap_or_else(current_retrieved_at);
+    RawSourceMetadata {
+        endpoint: source.endpoint.clone(),
+        path,
+        sha256,
+        retrieved_at,
+    }
+}
+
+fn current_retrieved_at() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 fn static_sources(scope: DataScope, date: Date) -> Vec<StaticSource> {
@@ -1793,4 +2022,404 @@ fn write_bytes_atomic(path: &Path, body: &[u8]) -> Result<(), DataError> {
     ));
     fs::write(&temporary, body).map_err(|error| DataError::Io(temporary.clone(), error))?;
     fs::rename(&temporary, path).map_err(|error| DataError::Io(path.into(), error))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeSet,
+        net::SocketAddr,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+
+    use axum::{
+        Json, Router,
+        body::Body,
+        extract::State,
+        http::{StatusCode, Uri, header::RETRY_AFTER},
+        response::{IntoResponse, Response},
+        routing::post,
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::config::{TdxClient, TdxCredentials};
+
+    #[derive(Clone, Copy)]
+    enum MockMode {
+        Success,
+        RetryAfterThenSuccess,
+        AlwaysRateLimited,
+    }
+
+    #[derive(Clone)]
+    struct MockTdxState {
+        mode: MockMode,
+        data_calls: Arc<AtomicUsize>,
+        token_calls: Arc<AtomicUsize>,
+    }
+
+    #[derive(Default)]
+    struct RecordingSleeper {
+        waits: Vec<Duration>,
+    }
+
+    #[async_trait::async_trait]
+    impl FetchSleeper for RecordingSleeper {
+        async fn sleep(&mut self, duration: Duration) {
+            self.waits.push(duration);
+        }
+    }
+
+    async fn mock_token(State(state): State<MockTdxState>) -> impl IntoResponse {
+        state.token_calls.fetch_add(1, Ordering::Relaxed);
+        Json(json!({
+            "access_token": "test-access-token",
+            "expires_in": 3600
+        }))
+    }
+
+    async fn mock_data(State(state): State<MockTdxState>, uri: Uri) -> Response {
+        let call = state.data_calls.fetch_add(1, Ordering::Relaxed);
+        let rate_limited = match state.mode {
+            MockMode::Success => false,
+            MockMode::RetryAfterThenSuccess => call == 0,
+            MockMode::AlwaysRateLimited => true,
+        };
+        let mut builder = Response::builder().status(if rate_limited {
+            StatusCode::TOO_MANY_REQUESTS
+        } else {
+            StatusCode::OK
+        });
+        if matches!(state.mode, MockMode::RetryAfterThenSuccess) && call == 0 {
+            builder = builder.header(RETRY_AFTER, "7");
+        }
+        builder
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({"path": uri.path(), "call": call}).to_string(),
+            ))
+            .unwrap()
+    }
+
+    async fn mock_client(mode: MockMode) -> (TdxClient, MockTdxState) {
+        let state = MockTdxState {
+            mode,
+            data_calls: Arc::new(AtomicUsize::new(0)),
+            token_calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route("/token", post(mock_token))
+            .fallback(mock_data)
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let base_url = format!("http://{address}/api/basic/");
+        let token_url = format!("http://{address}/token");
+        let client =
+            TdxClient::with_urls(TdxCredentials::for_tests(), &base_url, &token_url).unwrap();
+        (client, state)
+    }
+
+    fn test_date() -> Date {
+        Date::from_calendar_date(2026, time::Month::September, 15).unwrap()
+    }
+
+    fn temporary_output(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "via-fetch-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    fn seed_sources(output: &Path, date: Date, skip: &BTreeSet<String>, body: &[u8]) {
+        let snapshot = output.join("raw").join(date.to_string());
+        for source in static_sources(DataScope::TaipeiNewTaipei, date) {
+            if skip.contains(&source.key) {
+                continue;
+            }
+            let path = snapshot.join(&source.output_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+    }
+
+    fn fast_timing() -> FetchTimingPolicy {
+        FetchTimingPolicy {
+            request_spacing: Duration::ZERO,
+            retry_backoffs: [
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(3),
+                Duration::from_secs(4),
+            ],
+        }
+    }
+
+    async fn run_fetch(
+        output: &Path,
+        client: &TdxClient,
+        timing: FetchTimingPolicy,
+    ) -> (
+        Result<RawSnapshotFetchReport, DataError>,
+        RecordingSleeper,
+        Vec<FetchProgress>,
+    ) {
+        let mut sleeper = RecordingSleeper::default();
+        let mut progress = Vec::new();
+        let result = fetch_raw_snapshot_with_client(
+            DataScope::TaipeiNewTaipei,
+            test_date(),
+            output,
+            client,
+            timing,
+            &mut sleeper,
+            &mut |event| progress.push(event),
+        )
+        .await;
+        (result, sleeper, progress)
+    }
+
+    #[test]
+    fn default_fetch_policy_spaces_requests_and_bounds_backoff() {
+        let timing = FetchTimingPolicy::default();
+        assert_eq!(timing.request_spacing, Duration::from_secs(13));
+        assert_eq!(timing.retry_backoffs, TDX_RETRY_BACKOFFS);
+    }
+
+    #[tokio::test]
+    async fn existing_valid_sources_are_reused_without_data_http_calls() {
+        let output = temporary_output("reuse");
+        let date = test_date();
+        seed_sources(&output, date, &BTreeSet::new(), br#"{"cached":true}"#);
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+
+        assert_eq!(report.reused_count, 19);
+        assert_eq!(report.downloaded_count, 0);
+        assert_eq!(report.manifest.sources.len(), 19);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
+        assert!(sleeper.waits.is_empty());
+        assert!(
+            progress
+                .iter()
+                .all(|event| matches!(event, FetchProgress::Reuse { .. }))
+        );
+        assert!(
+            output
+                .join("raw")
+                .join(date.to_string())
+                .join("manifest.json")
+                .is_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_snapshot_resumes_without_an_existing_manifest() {
+        let output = temporary_output("partial");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let skip = sources
+            .iter()
+            .skip(5)
+            .map(|source| source.key.clone())
+            .collect::<BTreeSet<_>>();
+        seed_sources(&output, date, &skip, br#"{"cached":true}"#);
+        assert!(
+            !output
+                .join("raw")
+                .join(date.to_string())
+                .join("manifest.json")
+                .exists()
+        );
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+
+        assert_eq!(report.reused_count, 5);
+        assert_eq!(report.downloaded_count, 14);
+        assert_eq!(report.manifest.sources.len(), 19);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 14);
+        assert_eq!(state.token_calls.load(Ordering::Relaxed), 1);
+        assert!(
+            output
+                .join("raw")
+                .join(date.to_string())
+                .join("manifest.json")
+                .is_file()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_and_corrupt_sources_are_refetched() {
+        let output = temporary_output("broken");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let skip = sources
+            .iter()
+            .take(2)
+            .map(|source| source.key.clone())
+            .collect::<BTreeSet<_>>();
+        seed_sources(&output, date, &skip, br#"{"cached":true}"#);
+        let snapshot = output.join("raw").join(date.to_string());
+        fs::write(snapshot.join(&sources[0].output_path), Vec::<u8>::new()).unwrap();
+        fs::write(snapshot.join(&sources[1].output_path), b"not-json").unwrap();
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+
+        assert_eq!(report.reused_count, 17);
+        assert_eq!(report.downloaded_count, 2);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
+        assert!(valid_existing_json(&snapshot.join(&sources[0].output_path)).is_some());
+        assert!(valid_existing_json(&snapshot.join(&sources[1].output_path)).is_some());
+    }
+
+    #[tokio::test]
+    async fn retry_after_is_honored_before_success() {
+        let output = temporary_output("retry-after");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let skip = sources
+            .iter()
+            .take(1)
+            .map(|source| source.key.clone())
+            .collect::<BTreeSet<_>>();
+        seed_sources(&output, date, &skip, br#"{"cached":true}"#);
+        let (client, state) = mock_client(MockMode::RetryAfterThenSuccess).await;
+
+        let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+
+        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.downloaded_count, 1);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
+        assert_eq!(sleeper.waits, vec![Duration::from_secs(7)]);
+        assert!(progress.iter().any(|event| {
+            matches!(
+                event,
+                FetchProgress::Retry {
+                    source_key,
+                    duration
+                } if source_key == &sources[0].key && *duration == Duration::from_secs(7)
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn repeated_rate_limits_fail_after_bounded_retries() {
+        let output = temporary_output("retry-failure");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let skip = sources
+            .iter()
+            .take(1)
+            .map(|source| source.key.clone())
+            .collect::<BTreeSet<_>>();
+        seed_sources(&output, date, &skip, br#"{"cached":true}"#);
+        let (client, state) = mock_client(MockMode::AlwaysRateLimited).await;
+
+        let (result, sleeper, _) = run_fetch(&output, &client, fast_timing()).await;
+        let error = result.unwrap_err();
+
+        assert!(matches!(
+            error,
+            DataError::Fetch {
+                source_name,
+                error: TdxClientError::RateLimited
+            } if source_name == sources[0].key
+        ));
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 5);
+        assert_eq!(
+            sleeper.waits,
+            vec![
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(3),
+                Duration::from_secs(4),
+            ]
+        );
+        assert!(
+            !output
+                .join("raw")
+                .join(date.to_string())
+                .join("manifest.json")
+                .exists()
+        );
+        assert!(
+            valid_existing_json(
+                &output
+                    .join("raw")
+                    .join(date.to_string())
+                    .join(&sources[1].output_path)
+            )
+            .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_rerun_makes_zero_data_requests() {
+        let output = temporary_output("idempotent");
+        let date = test_date();
+        seed_sources(&output, date, &BTreeSet::new(), br#"{"cached":true}"#);
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (first, _, _) = run_fetch(&output, &client, fast_timing()).await;
+        let (second, _, _) = run_fetch(&output, &client, fast_timing()).await;
+
+        assert_eq!(first.unwrap().downloaded_count, 0);
+        assert_eq!(second.unwrap().reused_count, 19);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn manifest_contains_reused_and_downloaded_sources_with_hashes() {
+        let output = temporary_output("manifest");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let skip = sources
+            .iter()
+            .take(1)
+            .map(|source| source.key.clone())
+            .collect::<BTreeSet<_>>();
+        seed_sources(&output, date, &skip, br#"{"cached":true}"#);
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+        let manifest_path = output
+            .join("raw")
+            .join(date.to_string())
+            .join("manifest.json");
+        let manifest: RawSnapshotManifest =
+            serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
+
+        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.downloaded_count, 1);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
+        for source in sources {
+            let body = fs::read(
+                output
+                    .join("raw")
+                    .join(date.to_string())
+                    .join(&source.output_path),
+            )
+            .unwrap();
+            let source_manifest = manifest.sources.get(&source.key).unwrap();
+            assert_eq!(source_manifest.endpoint, source.endpoint);
+            assert_eq!(source_manifest.path, source.output_path.to_string_lossy());
+            assert_eq!(source_manifest.sha256, sha256_hex(&body));
+            assert!(!source_manifest.retrieved_at.is_empty());
+        }
+    }
 }

@@ -3,10 +3,10 @@
 use std::{
     env, fmt,
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, header::RETRY_AFTER};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -35,6 +35,14 @@ impl TdxCredentials {
             client_id,
             client_secret,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            client_id: "test-client-id".into(),
+            client_secret: "test-client-secret".into(),
+        }
     }
 
     pub fn client_id(&self) -> &str {
@@ -90,6 +98,8 @@ pub enum TdxClientError {
     ApiRequest(#[source] reqwest::Error),
     #[error("TDX API rate limit reached")]
     RateLimited,
+    #[error("TDX API rate limit reached")]
+    RateLimitedWithRetryAfter(Duration),
     #[error("TDX API response exceeded the development limit")]
     ResponseTooLarge,
 }
@@ -112,6 +122,15 @@ struct CachedToken {
 pub struct TdxRawResponse {
     pub url: Url,
     pub body: Vec<u8>,
+}
+
+impl TdxClientError {
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::RateLimitedWithRetryAfter(retry_after) => Some(*retry_after),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -185,7 +204,7 @@ impl TdxClient {
             .await
             .map_err(TdxClientError::OAuthRequest)?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(TdxClientError::RateLimited);
+            return Err(rate_limited(response.headers()));
         }
         let response = response
             .error_for_status()
@@ -226,7 +245,7 @@ impl TdxClient {
             .await
             .map_err(TdxClientError::ApiRequest)?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(TdxClientError::RateLimited);
+            return Err(rate_limited(response.headers()));
         }
         let response = response
             .error_for_status()
@@ -246,6 +265,25 @@ impl TdxClient {
             body: body.to_vec(),
         })
     }
+}
+
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let retry_at = httpdate::parse_http_date(value).ok()?;
+    Some(
+        retry_at
+            .duration_since(SystemTime::now())
+            .unwrap_or_default(),
+    )
+}
+
+fn rate_limited(headers: &reqwest::header::HeaderMap) -> TdxClientError {
+    retry_after(headers)
+        .map(TdxClientError::RateLimitedWithRetryAfter)
+        .unwrap_or(TdxClientError::RateLimited)
 }
 
 #[cfg(test)]

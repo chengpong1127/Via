@@ -5,9 +5,9 @@ use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
-        ArtifactCounts, DataError, DataScope, build_from_raw,
-        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot, load_manifest,
-        load_network_artifact, load_transfer_artifact,
+        ArtifactCounts, DataError, DataScope, FetchProgress, build_from_raw,
+        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot_with_progress,
+        load_manifest, load_network_artifact, load_transfer_artifact,
     },
     domain::{
         ids::BoardingPointId,
@@ -149,14 +149,51 @@ async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
     let scope = DataScope::from_str(&args.scope)?;
     let date = parse_date(&args.date)?;
     let credentials = TdxCredentials::from_env()?;
-    let manifest = fetch_raw_snapshot(scope, date, &args.output, credentials).await?;
+    let report = fetch_raw_snapshot_with_progress(
+        scope,
+        date,
+        &args.output,
+        credentials,
+        print_fetch_progress,
+    )
+    .await?;
+    let snapshot = args.output.join("raw").join(&report.manifest.date);
     println!(
-        "fetched {} sources for {} into {}",
-        manifest.sources.len(),
-        manifest.scope,
-        args.output.join("raw").join(manifest.date).display()
+        "reused={} downloaded={} total={}",
+        report.reused_count,
+        report.downloaded_count,
+        report.manifest.sources.len()
     );
+    println!("snapshot: {}", snapshot.display());
     Ok(())
+}
+
+fn print_fetch_progress(progress: FetchProgress) {
+    match progress {
+        FetchProgress::Reuse {
+            source_key,
+            relative_path,
+        } => println!("REUSE  {source_key}        {relative_path}"),
+        FetchProgress::Fetch { source_key } => println!("FETCH  {source_key}"),
+        FetchProgress::Wait { duration } => {
+            println!("WAIT   {} for TDX rate limit", duration_text(duration))
+        }
+        FetchProgress::Retry {
+            source_key,
+            duration,
+        } => println!(
+            "RETRY  {source_key} after {} (429)",
+            duration_text(duration)
+        ),
+    }
+}
+
+fn duration_text(duration: std::time::Duration) -> String {
+    if duration.subsec_millis() == 0 {
+        format!("{}s", duration.as_secs())
+    } else {
+        format!("{}.{:03}s", duration.as_secs(), duration.subsec_millis())
+    }
 }
 
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {

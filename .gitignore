@@ -1,4 +1,5 @@
 /server/target/
+/server/data/
 .DS_Store
 .env
 .env.*
