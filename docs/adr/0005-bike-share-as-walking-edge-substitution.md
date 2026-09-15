@@ -1,6 +1,6 @@
 # BikeShare as walking-edge substitution
 
-Status: Current
+Status: Superseded by ADR-0007
 
 ## Context
 
@@ -10,10 +10,10 @@ and post-transit opportunities and would duplicate connector logic.
 
 ## Decision
 
-Expand BikeShare opportunities from the discovered walking base graph. A
-usable opportunity adds walking access, a bicycle edge between rental
-stations, and walking egress; station availability is fetched and evaluated
-for the request before the edges are added.
+Represent BikeShare as a decomposed transfer shortcut containing walking access,
+a bicycle leg between rental stations, and walking egress. Station availability
+is fetched only for stations referenced by explored candidate shortcuts and is
+evaluated for the request before a shortcut is used.
 
 ## Consequences
 

@@ -1,6 +1,6 @@
 # Canonical RouteGraph
 
-Status: Current
+Status: Superseded by ADR-0007
 
 ## Context
 
@@ -10,10 +10,10 @@ candidate network, transit backbone, or multimodal graph was authoritative.
 
 ## Decision
 
-`RouteGraph` is Via's canonical routing representation. It contains graph
-nodes and `Walk`, `Transit`, and `Bike` edges. Transfer connectors are walking
-edges, and direct walking is a normal graph edge when the street provider
-confirms it is reachable.
+`RouteGraph` was Via's canonical routing representation for the initial
+multimodal implementation. It remains a compatibility seam for detailed
+reconstruction during the migration, but algorithms must not be required to
+convert their internal state into it.
 
 ## Consequences
 

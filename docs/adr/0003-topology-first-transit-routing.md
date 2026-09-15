@@ -1,6 +1,6 @@
 # Topology-first transit routing
 
-Status: Current
+Status: Superseded by ADR-0007
 
 ## Context
 
@@ -18,12 +18,9 @@ eligibility decisions in Via's routing pipeline.
 
 ## Timing boundary
 
-Transit timing is resolved after topology discovery through one
-provider-neutral `TransitTimingProvider` contract. Bus, Metro, conventional
-rail, and high-speed rail all become normalized departures before they enter
-the shared `TimedTransitRide` and `RouteGraph` models. Timing adapters own live
-prediction, schedule, delay, or frequency-estimation policy; routing does not
-branch on `TransitMode` to choose a source.
+Topology discovery remains a bounded provider concern, but departure selection
+now occurs lazily inside the configured algorithm through `DepartureResolver`;
+see ADR-0007.
 
 ## Consequences
 

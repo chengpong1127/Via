@@ -10,7 +10,10 @@ pub mod timing;
 pub mod valhalla;
 
 pub use tdx::{TdxRealtimeConfig, TdxRealtimeProvider};
-pub use timing::{CompositeTransitTimingProvider, RealtimeTransitTimingAdapter};
+pub use timing::{
+    CompositeDepartureResolver, CompositeTransitTimingProvider, RealtimeDepartureResolver,
+    RealtimeTransitTimingAdapter,
+};
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,
     RoutingOperation, ValhallaConfig, ValhallaProvider,

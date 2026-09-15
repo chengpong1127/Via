@@ -22,7 +22,7 @@ use crate::{
     health::DependencyHealth,
     observability::OperationalMetrics,
     providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
-    providers::timing::{CompositeTransitTimingProvider, RealtimeTransitTimingAdapter},
+    providers::timing::{CompositeDepartureResolver, RealtimeDepartureResolver},
     routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{StreetRouter, StreetRoutingError},
 };
@@ -126,12 +126,15 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     ));
     let realtime_metrics = realtime.metrics();
     let transit_network = Arc::new(transit_network);
-    let transit_timing = Arc::new(CompositeTransitTimingProvider::with_schedule_fallback(
-        Arc::new(RealtimeTransitTimingAdapter::new(realtime.clone())),
+    let departure_resolver = Arc::new(CompositeDepartureResolver::with_schedule_fallback(
+        Arc::new(RealtimeDepartureResolver::new(
+            realtime.clone(),
+            transit_network.clone(),
+        )),
         transit_network.clone(),
     ));
     let metrics = OperationalMetrics::default();
-    let routing = RoutingService::new(street_router, transit_timing, realtime)
+    let routing = RoutingService::new(street_router, departure_resolver, realtime)
         .with_transit_network_arc(transit_network.clone())
         .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();

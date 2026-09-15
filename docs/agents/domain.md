@@ -14,13 +14,16 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 
 ## Current Via routing vocabulary
 
-Read the current server flow as `discover → enrich → bike → search →
-reconstruct → rank`. `RouteGraph` is the canonical routing representation.
-Realtime is demand-driven and request-local; there is no global realtime refresh
-planner. iOS networking is `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI →
-APIClient`, while `DemoJourneyPlanner` is the offline implementation.
-TDX is currently authoritative for Taiwan transit static and realtime data, so
-matching records use the same typed IDs derived directly from TDX identifiers.
+Read the current server flow as `street access/egress → RoutingAlgorithm →
+TripBasedRouter → reconstruct → rank`. `RoutingAlgorithm` is the public
+algorithm-neutral boundary; Trip-Based owns its private index. `DepartureResolver`
+resolves runtime `EffectiveTrip` values and `TransferShortcutIndex` represents
+walking and YouBike alternatives. Realtime is demand-driven and request-local;
+there is no global realtime refresh planner. iOS networking is
+`JourneyPlanner → HTTPJourneyPlanner → JourneyAPI → APIClient`, while
+`DemoJourneyPlanner` is the offline implementation. TDX is currently
+authoritative for Taiwan transit static and realtime data, so matching records
+use the same typed IDs derived directly from TDX identifiers.
 
 ## File structure
 

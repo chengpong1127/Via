@@ -11,8 +11,9 @@ use async_trait::async_trait;
 use crate::domain::{
     realtime::{ArrivalState, RealtimeValue},
     transit_timing::{
-        ScheduleTimingProvider, TransitDeparture, TransitTimingError, TransitTimingProvider,
-        TransitTimingQuery,
+        DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
+        ScheduleDepartureResolver, ScheduleTimingProvider, TransitDeparture, TransitTimingError,
+        TransitTimingProvider, TransitTimingQuery,
     },
 };
 
@@ -86,6 +87,217 @@ impl TransitTimingProvider for RealtimeTransitTimingAdapter {
     }
 }
 
+/// Adapts normalized arrival observations into complete runtime trips.
+///
+/// TDX supplies the boarding prediction; static service geometry supplies the
+/// downstream stop sequence and relative travel times. No raw provider data
+/// crosses this boundary and no runtime trip is persisted.
+pub struct RealtimeDepartureResolver {
+    realtime: Arc<dyn RealtimeProvider>,
+    network: Arc<crate::domain::transit::TransitNetwork>,
+}
+
+impl RealtimeDepartureResolver {
+    pub fn new(
+        realtime: Arc<dyn RealtimeProvider>,
+        network: Arc<crate::domain::transit::TransitNetwork>,
+    ) -> Self {
+        Self { realtime, network }
+    }
+
+    fn effective_trip(
+        &self,
+        query: &DepartureQuery,
+        departure_at: time::OffsetDateTime,
+        observed_at: time::OffsetDateTime,
+        evidence: crate::domain::realtime::NormalizedRealtimeValue,
+    ) -> Option<EffectiveTrip> {
+        let service = self.network.service(&query.service_id)?;
+        let board_index = service
+            .pattern
+            .iter()
+            .position(|stop_id| stop_id == &query.board_stop_id)?;
+        let shape = self
+            .network
+            .trips
+            .iter()
+            .find(|trip| trip.service_id == query.service_id)
+            .filter(|trip| trip.stop_times.len() == service.pattern.len());
+        let board_departure = shape.map(|trip| trip.stop_times[board_index].departure_seconds);
+        let start = self
+            .network
+            .service_day_start(self.network.service_day(departure_at));
+        let stop_times = service
+            .pattern
+            .iter()
+            .enumerate()
+            .map(|(index, stop_id)| {
+                if index < board_index {
+                    let static_time = shape.map(|trip| &trip.stop_times[index]);
+                    let (arrival_at, departure_at) = static_time
+                        .map(|static_time| {
+                            (
+                                start
+                                    + time::Duration::seconds(i64::from(
+                                        static_time.arrival_seconds,
+                                    )),
+                                start
+                                    + time::Duration::seconds(i64::from(
+                                        static_time.departure_seconds,
+                                    )),
+                            )
+                        })
+                        .unwrap_or((departure_at, departure_at));
+                    return EffectiveStopTime {
+                        stop_id: stop_id.clone(),
+                        arrival_at,
+                        departure_at,
+                    };
+                }
+                let (arrival_offset, departure_offset) = if let Some(shape) = shape {
+                    (
+                        shape.stop_times[index]
+                            .arrival_seconds
+                            .saturating_sub(board_departure.unwrap_or_default()),
+                        shape.stop_times[index]
+                            .departure_seconds
+                            .saturating_sub(board_departure.unwrap_or_default()),
+                    )
+                } else if index == board_index {
+                    (0, 0)
+                } else {
+                    let previous_stop = &service.pattern[index - 1];
+                    let duration = self
+                        .network
+                        .topology_ride(
+                            self.network.service_day(departure_at),
+                            &query.service_id,
+                            previous_stop,
+                            stop_id,
+                        )
+                        .map(|ride| {
+                            (ride.scheduled_arrival - ride.scheduled_departure)
+                                .whole_seconds()
+                                .max(0) as u32
+                        })
+                        .unwrap_or(0);
+                    let previous_offset = if index == board_index + 1 {
+                        0
+                    } else {
+                        let mut total: u32 = 0;
+                        for segment_index in (board_index + 1)..index {
+                            let from = &service.pattern[segment_index - 1];
+                            let to = &service.pattern[segment_index];
+                            total = total.saturating_add(
+                                self.network
+                                    .topology_ride(
+                                        self.network.service_day(departure_at),
+                                        &query.service_id,
+                                        from,
+                                        to,
+                                    )
+                                    .map(|ride| {
+                                        (ride.scheduled_arrival - ride.scheduled_departure)
+                                            .whole_seconds()
+                                            .max(0) as u32
+                                    })
+                                    .unwrap_or(0),
+                            );
+                        }
+                        total
+                    };
+                    (
+                        previous_offset.saturating_add(duration),
+                        previous_offset.saturating_add(duration),
+                    )
+                };
+                EffectiveStopTime {
+                    stop_id: stop_id.clone(),
+                    arrival_at: departure_at + time::Duration::seconds(i64::from(arrival_offset)),
+                    departure_at: departure_at
+                        + time::Duration::seconds(i64::from(departure_offset)),
+                }
+            })
+            .collect::<Vec<_>>();
+        Some(EffectiveTrip {
+            id: crate::domain::ids::EffectiveTripId::new(format!(
+                "runtime:{}:{}:{}",
+                query.service_id.as_str(),
+                query.board_stop_id.as_str(),
+                departure_at.unix_timestamp_nanos()
+            )),
+            service_id: query.service_id.clone(),
+            scheduled_run_id: None,
+            stop_times,
+            timing_basis: crate::domain::transit_timing::TimingBasis::RealtimePrediction,
+            observed_at: Some(observed_at),
+            uncertainty_seconds: None,
+            evidence: vec![evidence],
+        })
+    }
+}
+
+#[async_trait]
+impl DepartureResolver for RealtimeDepartureResolver {
+    async fn next_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let values = self
+            .realtime
+            .arrival_estimates(ArrivalQuery::for_ride(
+                query.service_id.clone(),
+                query.board_stop_id.clone(),
+            ))
+            .await
+            .map_err(map_departure_realtime_error)?;
+        let mut departures = values
+            .into_iter()
+            .filter_map(|status| {
+                if status.freshness.state != crate::domain::realtime::FreshnessState::Fresh {
+                    return None;
+                }
+                let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
+                    return None;
+                };
+                if arrival.transit_service_id != query.service_id
+                    || arrival.boarding_point_id != query.board_stop_id
+                    || !matches!(
+                        arrival.state,
+                        ArrivalState::Predicted | ArrivalState::AtBoardingPoint
+                    )
+                {
+                    return None;
+                }
+                let departure_at = arrival.predicted_arrival_at?;
+                if departure_at < query.after {
+                    return None;
+                }
+                self.effective_trip(&query, departure_at, arrival.transmitted_at, status)
+            })
+            .collect::<Vec<_>>();
+        departures.sort_by(|left, right| {
+            left.stop_times
+                .iter()
+                .find(|stop_time| stop_time.stop_id == query.board_stop_id)
+                .map(|stop_time| stop_time.departure_at)
+                .cmp(
+                    &right
+                        .stop_times
+                        .iter()
+                        .find(|stop_time| stop_time.stop_id == query.board_stop_id)
+                        .map(|stop_time| stop_time.departure_at),
+                )
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        departures.truncate(query.limit);
+        Ok(departures)
+    }
+}
+
 /// Compose a preferred timing source with the immutable schedule source.
 /// Empty results and source failures both fall back deliberately; a failure is
 /// returned only when no fallback departure can be resolved.
@@ -93,6 +305,55 @@ pub struct CompositeTransitTimingProvider {
     preferred: Arc<dyn TransitTimingProvider>,
     fallback: Arc<dyn TransitTimingProvider>,
     adapters: HashMap<String, Arc<dyn TransitTimingProvider>>,
+}
+
+/// Compose realtime departure resolution with a static schedule fallback.
+/// Selection is by an opaque provider timing-source key, never by
+/// `TransitMode`, and all returned trips retain their timing basis.
+pub struct CompositeDepartureResolver {
+    preferred: Arc<dyn DepartureResolver>,
+    fallback: Arc<dyn DepartureResolver>,
+}
+
+impl CompositeDepartureResolver {
+    pub fn new(
+        preferred: Arc<dyn DepartureResolver>,
+        fallback: Arc<dyn DepartureResolver>,
+    ) -> Self {
+        Self {
+            preferred,
+            fallback,
+        }
+    }
+
+    pub fn with_schedule_fallback(
+        preferred: Arc<dyn DepartureResolver>,
+        network: Arc<crate::domain::transit::TransitNetwork>,
+    ) -> Self {
+        Self::new(preferred, Arc::new(ScheduleDepartureResolver::new(network)))
+    }
+}
+
+#[async_trait]
+impl DepartureResolver for CompositeDepartureResolver {
+    async fn next_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        // `DepartureQuery` intentionally has no mode or source field. Source
+        // composition is therefore explicit at construction time; the
+        // default preferred resolver is used for all services.
+        let preferred = self.preferred.next_departures(query.clone()).await;
+        match preferred {
+            Ok(departures) if !departures.is_empty() => Ok(departures),
+            Ok(_) => self.fallback.next_departures(query).await,
+            Err(preferred_error) => match self.fallback.next_departures(query).await {
+                Ok(departures) if !departures.is_empty() => Ok(departures),
+                Ok(_) => Err(preferred_error),
+                Err(_) => Err(preferred_error),
+            },
+        }
+    }
 }
 
 impl CompositeTransitTimingProvider {
@@ -161,6 +422,18 @@ fn map_realtime_error(error: RealtimeError) -> TransitTimingError {
             TransitTimingError::InvalidResponse
         }
         RealtimeError::InvalidConfiguration => TransitTimingError::InvalidConfiguration,
+    }
+}
+
+fn map_departure_realtime_error(error: RealtimeError) -> DepartureError {
+    match error {
+        RealtimeError::TimedOut => DepartureError::TimedOut,
+        RealtimeError::RateLimited => DepartureError::RateLimited,
+        RealtimeError::TemporarilyUnavailable => DepartureError::TemporarilyUnavailable,
+        RealtimeError::RejectedPayload | RealtimeError::InvalidResponse => {
+            DepartureError::InvalidResponse
+        }
+        RealtimeError::InvalidConfiguration => DepartureError::InvalidConfiguration,
     }
 }
 

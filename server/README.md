@@ -107,25 +107,31 @@ egress; clients select only the high-level `transit` and `bike_share`
 categories. The request path is:
 
 ```text
-PlanningRequest → RoutingService → discover → RouteGraph → enrich → bike
-→ Pareto search → reconstruct → rank → JourneyOption[]
+PlanningRequest → RoutingService → street access/egress
+→ RoutingAlgorithm → TripBasedRouter → reconstruct → rank → JourneyOption[]
 ```
 
-`RouteGraph` is the one canonical routing representation. Street access,
-egress, bicycle, matrix, and path calculations stay behind the Valhalla
-provider boundary; timetable lookup uses the immutable `TransitNetwork`
-artifact. After candidate discovery, the timing provider resolves transit
-departures while `RealtimeContext` freezes only service conditions and
-BikeShare availability for the rest of the request. The checked-in tests use
-injected fixtures, while a production deployment must publish a reviewed
-artifact at `VIA_TRANSIT_NETWORK`.
+`RoutingAlgorithm` exposes only algorithm-neutral access/egress facts and
+`JourneyCandidate` results. `TripBasedRouter` uses a private `TripBasedIndex`,
+resolves complete `EffectiveTrip` instances lazily through `DepartureResolver`,
+and expands `TransferShortcutIndex` alternatives. Street access, egress,
+bicycle, matrix, and path calculations stay behind the Valhalla provider
+boundary; timetable lookup uses the immutable `TransitNetwork` artifact. The
+checked-in tests use injected fixtures, while a production deployment must
+publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
 
 Transit timing is provider-neutral across Bus, Metro, conventional rail, and
-high-speed rail. Discovery produces topology; a `TransitTimingProvider` then
-resolves normalized departures with `departure_at`, `arrival_at`, timing basis,
-and optional evidence before enrichment creates the shared `TimedTransitRide`
-graph edges. Routing and Pareto search do not choose timing sources by
-`TransitMode`.
+high-speed rail. A `DepartureResolver` receives only a service, boarding point,
+and ready time, then returns normalized `EffectiveTrip` instances with complete
+stop timing, timing basis, and optional evidence. Routing and Pareto search do
+not choose timing sources by `TransitMode`.
+
+Walking and YouBike are transfer semantics, not transit departures. A
+`TransferShortcut` retains its decomposed walk/bike path, while runtime
+availability is fetched only for stations referenced by explored shortcuts.
+The shortcut builder is ULTRA-compatible in representation, but exact ULTRA
+offline preprocessing is intentionally deferred until the required static
+street preprocessing artifact exists.
 
 The currently wired TDX timing path is Bus `EstimatedTimeOfArrival`, with the
 static timetable as the deliberate fallback. The same adapter boundary is

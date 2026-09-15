@@ -5,10 +5,14 @@
 The server's canonical planning flow is:
 
 ```text
-discover → enrich → bike → search → reconstruct → rank
+street access/egress → RoutingAlgorithm → TripBasedRouter
+  → reconstruct → rank
 ```
 
-`RouteGraph` is the only public routing graph representation. Keep the dependency
+`RoutingAlgorithm` is the algorithm-neutral routing boundary. `TripBasedRouter`
+owns its Trip-Based index and consumes `DepartureResolver` plus
+`TransferShortcutIndex`; `RouteGraph` is retained only as a reconstruction
+compatibility representation while the migration completes. Keep the dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
 interfaces. Do not reintroduce the removed `planner`, `normalization`, or
 `routing/engine` modules, or a `JourneyPlanningService` wrapper.

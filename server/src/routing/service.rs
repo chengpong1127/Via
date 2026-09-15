@@ -9,16 +9,16 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     api::{PlanningRequest, RequestCoordinate, new_request_id},
     domain::ranking::{CandidateJourney, RankingPolicy},
-    domain::transit::{TransitItinerary, TransitNetwork},
+    domain::transit::TransitNetwork,
     domain::{
-        ids::BikeShareStationId,
+        ids::{BikeShareStationId, ScheduledRunId},
         journey::{
             EmptyResult, JourneyMode, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
             ResultMetadata, SemanticObject,
         },
         normalize_to_taipei,
         realtime::{FreshnessState, RealtimeValue},
-        transit_timing::TransitTimingProvider,
+        transit_timing::DepartureResolver,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
     providers::realtime::RealtimeProvider,
@@ -28,15 +28,26 @@ use crate::{
     },
 };
 
+use super::algorithm::{
+    AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment,
+};
 use super::reconstruct::{
     apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
 };
-use super::{bike, discover, enrich, graph, graph::StreetMetric, search};
+use super::{
+    bike, discover, enrich, graph,
+    graph::StreetMetric,
+    search,
+    transfers::{TransferIndex, TransferShortcutIndex},
+    trip_based::TripBasedRouter,
+};
 
 #[derive(Clone)]
 pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
-    pub(crate) transit_timing: Arc<dyn TransitTimingProvider>,
+    pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
+    pub(crate) routing_algorithm: Arc<dyn super::algorithm::RoutingAlgorithm>,
+    pub(crate) transfer_index: Arc<dyn TransferIndex>,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -123,14 +134,25 @@ impl Default for RoutingLimits {
 impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
-        transit_timing: Arc<dyn TransitTimingProvider>,
+        departure_resolver: Arc<dyn DepartureResolver>,
         realtime: Arc<dyn RealtimeProvider>,
     ) -> Self {
+        let transit_network = Arc::new(TransitNetwork::default());
+        let transfer_index: Arc<dyn TransferIndex> =
+            Arc::new(TransferShortcutIndex::from_network(&transit_network));
+        let routing_algorithm: Arc<dyn super::algorithm::RoutingAlgorithm> =
+            Arc::new(TripBasedRouter::new(
+                transit_network.clone(),
+                departure_resolver.clone(),
+                transfer_index.clone(),
+            ));
         Self {
             street_routing,
-            transit_timing,
             realtime,
-            transit_network: Arc::new(TransitNetwork::default()),
+            departure_resolver,
+            routing_algorithm,
+            transfer_index,
+            transit_network,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(
                 RoutingLimits::default().max_concurrent_requests,
@@ -142,12 +164,44 @@ impl RoutingService {
 
     pub fn with_transit_network(mut self, transit_network: TransitNetwork) -> Self {
         self.transit_network = Arc::new(transit_network);
+        self.transfer_index = Arc::new(TransferShortcutIndex::from_network(&self.transit_network));
+        self.rebuild_default_algorithm();
         self
     }
 
     pub fn with_transit_network_arc(mut self, transit_network: Arc<TransitNetwork>) -> Self {
         self.transit_network = transit_network;
+        self.transfer_index = Arc::new(TransferShortcutIndex::from_network(&self.transit_network));
+        self.rebuild_default_algorithm();
         self
+    }
+
+    pub fn with_departure_resolver(mut self, resolver: Arc<dyn DepartureResolver>) -> Self {
+        self.departure_resolver = resolver;
+        self.rebuild_default_algorithm();
+        self
+    }
+
+    pub fn with_routing_algorithm(
+        mut self,
+        algorithm: Arc<dyn super::algorithm::RoutingAlgorithm>,
+    ) -> Self {
+        self.routing_algorithm = algorithm;
+        self
+    }
+
+    pub fn with_transfer_index(mut self, transfer_index: Arc<dyn TransferIndex>) -> Self {
+        self.transfer_index = transfer_index;
+        self.rebuild_default_algorithm();
+        self
+    }
+
+    fn rebuild_default_algorithm(&mut self) {
+        self.routing_algorithm = Arc::new(TripBasedRouter::new(
+            self.transit_network.clone(),
+            self.departure_resolver.clone(),
+            self.transfer_index.clone(),
+        ));
     }
 
     pub fn with_ranking_policy(mut self, ranking: RankingPolicy) -> Self {
@@ -279,6 +333,7 @@ impl RoutingService {
 
         let mut transit_candidate = discover::DiscoveryResult::default();
         let mut transit_timing = enrich::TransitTiming::default();
+        let mut algorithm_candidates = Vec::<JourneyCandidate>::new();
         let mut realtime = enrich::RealtimeContext::default();
         if request.selected_modes.contains(&JourneyMode::Transit) {
             let discovery_started = Instant::now();
@@ -306,6 +361,9 @@ impl RoutingService {
                             })
                             .collect::<Vec<_>>();
                         let timing_started = Instant::now();
+                        // Service-condition facts remain request-scoped policy
+                        // evidence. Arrival timing itself is now resolved by
+                        // the algorithm during frontier expansion.
                         let (collected, realtime_failed) = enrich::collect_request_realtime(
                             self.realtime.as_ref(),
                             &transit_candidate,
@@ -313,35 +371,60 @@ impl RoutingService {
                             self.limits.max_transit_itineraries,
                         )
                         .await;
-                        stage_metrics.transit_realtime_lookups =
-                            transit_realtime_lookup_count(&transit_candidate, &static_itineraries);
                         realtime = collected;
                         had_transient_failure |= realtime_failed;
-                        transit_timing = if transit_candidate.topology_itineraries.is_empty() {
-                            enrich::resolve_timing(
-                                &self.transit_network,
-                                &transit_candidate,
-                                &static_itineraries,
-                                self.transit_timing.as_ref(),
-                                &realtime,
-                                &context,
-                                self.limits.max_realtime_concurrency,
-                            )
-                            .await
-                        } else {
-                            enrich::resolve_topology_timing(
-                                &self.transit_network,
-                                &transit_candidate,
-                                &transit_candidate.topology_itineraries,
-                                self.transit_timing.as_ref(),
-                                &realtime,
-                                &context,
-                                self.limits.max_realtime_concurrency,
-                            )
-                            .await
+                        let algorithm_query = AlgorithmQuery {
+                            origin_access: transit_candidate
+                                .origin_access
+                                .iter()
+                                .map(|access| {
+                                    AccessPoint::new(
+                                        access.access.stop_id.clone(),
+                                        access.access.departure_at,
+                                        access.access.available_at,
+                                        access.metric.duration_seconds,
+                                        access.metric.distance_metres,
+                                    )
+                                })
+                                .collect(),
+                            destination_egress: transit_candidate
+                                .destination_egress
+                                .iter()
+                                .map(|egress| {
+                                    EgressPoint::new(
+                                        egress.stop_id.clone(),
+                                        egress.metric.duration_seconds,
+                                        egress.metric.distance_metres,
+                                    )
+                                })
+                                .collect(),
+                            departure_time: context.search_start,
+                            latest_arrival: context.latest_arrival,
+                            max_transfers: self.limits.max_transfer_count as usize,
+                            max_candidates: self.limits.max_transit_itineraries,
+                            max_expansions: self.limits.max_search_expansions,
+                            max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
                         };
-                        had_transient_failure |= transit_timing.had_transient_failure;
-                        had_global_failure |= transit_timing.had_global_failure;
+                        match self.routing_algorithm.route(algorithm_query).await {
+                            Ok(candidates) => {
+                                stage_metrics.transit_realtime_lookups = candidates
+                                    .iter()
+                                    .flat_map(|candidate| &candidate.evidence)
+                                    .count();
+                                algorithm_candidates = candidates;
+                                transit_timing = timed_transit_from_candidates(
+                                    &self.transit_network,
+                                    &algorithm_candidates,
+                                );
+                            }
+                            Err(error) => {
+                                if let super::algorithm::RoutingError::Departure(departure) = &error
+                                {
+                                    had_transient_failure |= departure.is_transient();
+                                }
+                                tracing::warn!(error = %error, "routing algorithm failed");
+                            }
+                        }
                         stage_metrics.realtime_resolution_duration_ms =
                             timing_started.elapsed().as_millis() as u64;
                     }
@@ -400,17 +483,26 @@ impl RoutingService {
         stage_metrics.multimodal_graph_nodes = route_graph.nodes.len();
         stage_metrics.multimodal_graph_edges = route_graph.edges.len();
         let search_started = Instant::now();
-        let search = search::search(
-            &route_graph,
-            context.search_start,
-            context.latest_arrival,
-            &self.search_limits(),
-        );
-        stage_metrics.search_expansions += search.stats.expansions;
-        stage_metrics.labels_retained += search.stats.labels_retained;
-        stage_metrics.labels_pruned += search.stats.labels_dominated_or_pruned;
+        let mut journeys = algorithm_candidates
+            .iter()
+            .filter_map(|candidate| {
+                candidate_search_label(&self.transit_network, &mut route_graph, candidate)
+            })
+            .collect::<Vec<_>>();
+        if request.selected_modes.contains(&JourneyMode::BikeShare) {
+            let search = search::search(
+                &route_graph,
+                context.search_start,
+                context.latest_arrival,
+                &self.search_limits(),
+            );
+            stage_metrics.search_expansions += search.stats.expansions;
+            stage_metrics.labels_retained += search.stats.labels_retained;
+            stage_metrics.labels_pruned += search.stats.labels_dominated_or_pruned;
+            journeys.extend(search.journeys);
+        }
         stage_metrics.multimodal_search_duration_ms += search_started.elapsed().as_millis() as u64;
-        for journey in search.journeys {
+        for journey in journeys {
             match self
                 .reconstruct_multimodal_candidate(
                     &request,
@@ -638,22 +730,177 @@ fn is_global_provider_error(error: &StreetRoutingError) -> bool {
     )
 }
 
-fn transit_realtime_lookup_count(
-    candidate: &discover::DiscoveryResult,
-    itineraries: &[TransitItinerary],
-) -> usize {
-    itineraries
-        .iter()
-        .flat_map(|itinerary| &itinerary.rides)
-        .chain(
-            candidate
-                .topology_itineraries
+/// Adapt algorithm-neutral Trip-Based candidates to the existing detailed
+/// reconstruction seam. The conversion contains no search logic: it simply
+/// preserves the selected effective trip segment and its runtime evidence.
+fn candidate_search_label(
+    network: &TransitNetwork,
+    graph: &mut graph::RouteGraph,
+    candidate: &JourneyCandidate,
+) -> Option<search::SearchLabel> {
+    let access_node = graph::RouteNode::TransitStop(candidate.access.stop_id.clone());
+    let access_edge = graph::RouteEdge::Walk {
+        from: graph::RouteNode::Origin,
+        to: access_node.clone(),
+        metric: graph::StreetMetric {
+            duration_seconds: candidate.access.walking_seconds,
+            distance_metres: candidate.access.distance_metres,
+        },
+    };
+    let mut edge_ids = vec![add_or_find_edge(graph, access_edge)];
+    let mut current = access_node;
+    for segment in &candidate.segments {
+        match segment {
+            JourneySegment::Transfer { shortcut } => {
+                if shortcut.uses_bike_share() {
+                    return None;
+                }
+                let edge = graph::RouteEdge::Walk {
+                    from: graph::RouteNode::TransitStop(shortcut.from.clone()),
+                    to: graph::RouteNode::TransitStop(shortcut.to.clone()),
+                    metric: graph::StreetMetric {
+                        duration_seconds: shortcut.duration_seconds,
+                        distance_metres: 0,
+                    },
+                };
+                edge_ids.push(add_or_find_edge(graph, edge));
+                current = graph::RouteNode::TransitStop(shortcut.to.clone());
+            }
+            JourneySegment::Transit {
+                trip,
+                board_index,
+                alight_index,
+            } => {
+                let transit_mode = network.service(&trip.service_id)?.transit_mode;
+                let ride =
+                    timed_ride_from_segment(trip, *board_index, *alight_index, transit_mode)?;
+                current = graph::RouteNode::TransitStop(ride.ride.alight_stop_id.clone());
+                edge_ids.push(add_or_find_edge(
+                    graph,
+                    graph::RouteEdge::Transit {
+                        from: graph::RouteNode::TransitStop(ride.ride.board_stop_id.clone()),
+                        to: current.clone(),
+                        ride,
+                    },
+                ));
+            }
+        }
+    }
+    if current != graph::RouteNode::TransitStop(candidate.egress.stop_id.clone()) {
+        return None;
+    }
+    edge_ids.push(add_or_find_edge(
+        graph,
+        graph::RouteEdge::Walk {
+            from: current,
+            to: graph::RouteNode::Destination,
+            metric: graph::StreetMetric {
+                duration_seconds: candidate.egress.walking_seconds,
+                distance_metres: candidate.egress.distance_metres,
+            },
+        },
+    ));
+    Some(search::SearchLabel {
+        node: graph::RouteNode::Destination,
+        arrival_time: candidate.arrival_time,
+        departure_time: candidate.departure_time,
+        walking_seconds: candidate.walking_seconds,
+        bike_share_seconds: candidate.bike_seconds,
+        transfer_count: candidate.transfer_count,
+        bike_share_expansions: usize::from(candidate.bike_seconds > 0),
+        required_freshness_states: candidate
+            .evidence
+            .iter()
+            .map(|evidence| evidence.freshness.state)
+            .collect(),
+        schedule_only: !candidate.timing_bases.is_empty()
+            && candidate
+                .timing_bases
                 .iter()
-                .flat_map(|itinerary| &itinerary.rides),
-        )
-        .map(|ride| (ride.service_id.clone(), ride.board_stop_id.clone()))
-        .collect::<HashSet<_>>()
-        .len()
+                .all(|basis| matches!(basis, crate::domain::transit_timing::TimingBasis::Schedule)),
+        last_edge_was_transit: false,
+        edge_ids,
+    })
+}
+
+fn add_or_find_edge(graph: &mut graph::RouteGraph, edge: graph::RouteEdge) -> usize {
+    graph.add_edge(edge.clone());
+    graph
+        .edges
+        .iter()
+        .position(|existing| existing == &edge)
+        .expect("route edge was inserted or already present")
+}
+
+fn timed_ride_from_segment(
+    trip: &crate::domain::transit_timing::EffectiveTrip,
+    board_index: usize,
+    alight_index: usize,
+    transit_mode: crate::domain::transit::TransitMode,
+) -> Option<enrich::TimedTransitRide> {
+    let board = trip.stop_times.get(board_index)?;
+    let alight = trip.stop_times.get(alight_index)?;
+    Some(enrich::TimedTransitRide {
+        ride: crate::domain::transit::TransitRide {
+            transit_mode,
+            service_id: trip.service_id.clone(),
+            trip_id: trip
+                .scheduled_run_id
+                .clone()
+                .unwrap_or_else(|| ScheduledRunId::new(format!("effective:{}", trip.id.as_str()))),
+            board_stop_id: board.stop_id.clone(),
+            alight_stop_id: alight.stop_id.clone(),
+            scheduled_departure: board.departure_at,
+            scheduled_arrival: alight.arrival_at,
+        },
+        departure: board.departure_at,
+        arrival: alight.arrival_at,
+        evidence: trip.evidence.clone(),
+        required_states: trip
+            .evidence
+            .iter()
+            .map(|evidence| evidence.freshness.state)
+            .collect(),
+        timing_basis: trip.timing_basis,
+    })
+}
+
+fn timed_transit_from_candidates(
+    network: &TransitNetwork,
+    candidates: &[JourneyCandidate],
+) -> enrich::TransitTiming {
+    let mut itineraries = Vec::new();
+    for candidate in candidates {
+        let mut rides = Vec::new();
+        for segment in &candidate.segments {
+            let JourneySegment::Transit {
+                trip,
+                board_index,
+                alight_index,
+            } = segment
+            else {
+                continue;
+            };
+            let Some(service) = network.service(&trip.service_id) else {
+                continue;
+            };
+            let Some(ride) =
+                timed_ride_from_segment(trip, *board_index, *alight_index, service.transit_mode)
+            else {
+                continue;
+            };
+            rides.push(ride);
+        }
+        if !rides.is_empty() {
+            itineraries.push(enrich::TimedTransitItinerary {
+                service_day: network.service_day(candidate.departure_time),
+                access_departure_at: candidate.departure_time,
+                arrival_at: candidate.arrival_time,
+                rides,
+            });
+        }
+    }
+    enrich::TransitTiming { itineraries }
 }
 
 pub(crate) struct DirectWalking {
