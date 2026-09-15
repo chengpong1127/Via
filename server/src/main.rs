@@ -1,9 +1,10 @@
-use std::{env, net::SocketAddr, sync::Arc, time::Duration};
+use std::{env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use url::Url;
 use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
-    domain::transit::TransitNetwork,
+    config::{TdxClient, TdxCredentials, load_dotenv},
+    data::load_network_artifact,
     health::DependencyHealth,
     providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
     providers::{TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
@@ -11,7 +12,7 @@ use via_server::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
+    load_dotenv();
 
     let environment = env::var("VIA_ENV")
         .map_err(|_| "VIA_ENV must be explicitly set to development, staging, or production")?;
@@ -48,20 +49,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
-    let transit_network = TransitNetwork::from_artifact_json(
-        &std::fs::read_to_string(&transit_network_path)
-            .map_err(|_| "VIA_TRANSIT_NETWORK could not be read")?,
-    )
-    .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
-    transit_network
-        .validate()
+    let transit_network = load_network_artifact(Path::new(&transit_network_path))
         .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
-    let tdx_bearer_token = env::var("VIA_TDX_BEARER_TOKEN")
-        .map_err(|_| "VIA_TDX_BEARER_TOKEN must authenticate realtime requests")?;
-    let tdx_base_url = Url::parse(
-        &env::var("VIA_TDX_BASE_URL")
-            .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?,
-    )?;
+    let tdx_base_url_value = env::var("VIA_TDX_BASE_URL")
+        .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?;
+    let tdx_token_url = env::var("TDX_TOKEN_URL").unwrap_or_else(|_| {
+        "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token".into()
+    });
+    let tdx_bearer_token = match env::var("VIA_TDX_BEARER_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => token,
+        _ => {
+            let credentials = TdxCredentials::from_env()?;
+            TdxClient::with_urls(credentials, &tdx_base_url_value, &tdx_token_url)?
+                .access_token()
+                .await?
+        }
+    };
+    let tdx_base_url = Url::parse(&tdx_base_url_value)?;
     if environment == "production" && tdx_base_url.scheme() != "https" {
         return Err("VIA_TDX_BASE_URL must use HTTPS in production".into());
     }

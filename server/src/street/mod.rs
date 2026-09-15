@@ -1,4 +1,5 @@
 mod fake;
+pub mod offline;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -7,6 +8,7 @@ use time::PrimitiveDateTime;
 
 pub use crate::domain::journey::Attribution;
 pub use fake::{FakeStreetRouter, FakeStreetRouterBuilder};
+pub use offline::StraightLineStreetRouter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Coordinate {

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::{
     ids::{BikeShareStationId, BoardingPointId},
@@ -21,7 +22,7 @@ use crate::street::{
     StreetRoutingError, StreetTravelMode,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferLeg {
     Walk {
         duration_seconds: u32,
@@ -35,7 +36,7 @@ pub enum TransferLeg {
     },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferPath {
     pub legs: Vec<TransferLeg>,
 }
@@ -157,7 +158,7 @@ impl TransferPath {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferShortcut {
     pub from: BoardingPointId,
     pub to: BoardingPointId,
@@ -278,6 +279,72 @@ impl TransferShortcutIndex {
         self.by_from.values().all(Vec::is_empty)
     }
 
+    pub fn shortcuts(&self) -> Vec<TransferShortcut> {
+        let mut shortcuts = self
+            .by_from
+            .values()
+            .flat_map(|alternatives| alternatives.iter().cloned())
+            .collect::<Vec<_>>();
+        shortcuts.sort_by(|left, right| {
+            left.from
+                .as_str()
+                .cmp(right.from.as_str())
+                .then(left.to.as_str().cmp(right.to.as_str()))
+                .then(left.duration_seconds.cmp(&right.duration_seconds))
+                .then(left.signature().cmp(&right.signature()))
+        });
+        shortcuts
+    }
+
+    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&TransferShortcutArtifact {
+            schema_version: 1,
+            shortcuts: self.shortcuts(),
+        })
+    }
+
+    pub fn from_artifact_json(input: &str) -> Result<Self, serde_json::Error> {
+        let artifact = serde_json::from_str::<TransferShortcutArtifact>(input)?;
+        Ok(Self::new(artifact.shortcuts))
+    }
+
+    pub fn validate_against(&self, network: &TransitNetwork) -> Result<(), String> {
+        for shortcut in self.shortcuts() {
+            if network.stop(&shortcut.from).is_none() || network.stop(&shortcut.to).is_none() {
+                return Err(format!(
+                    "transfer shortcut references unknown endpoint {} -> {}",
+                    shortcut.from.as_str(),
+                    shortcut.to.as_str()
+                ));
+            }
+            if shortcut.duration_seconds == 0
+                || shortcut.path.legs.iter().any(|leg| match leg {
+                    TransferLeg::Walk {
+                        duration_seconds, ..
+                    }
+                    | TransferLeg::BikeShare {
+                        duration_seconds, ..
+                    } => *duration_seconds == 0,
+                })
+            {
+                return Err(format!(
+                    "transfer shortcut {} -> {} has a non-positive duration",
+                    shortcut.from.as_str(),
+                    shortcut.to.as_str()
+                ));
+            }
+            for station_id in shortcut.required_station_ids() {
+                if network.bike_share_station(&station_id).is_none() {
+                    return Err(format!(
+                        "transfer shortcut references unknown bike station {}",
+                        station_id.as_str()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn sort(&mut self) {
         for alternatives in self.by_from.values_mut() {
             alternatives.sort_by(|left, right| {
@@ -292,26 +359,32 @@ impl TransferShortcutIndex {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransferShortcutArtifact {
+    pub schema_version: u32,
+    pub shortcuts: Vec<TransferShortcut>,
+}
+
 /// Builds the request-independent transfer representation used by routing.
 ///
 /// This is a bounded online builder, not the exact ULTRA preprocessing
 /// algorithm. Its output is intentionally the same shortcut/path shape so an
 /// offline artifact can replace it without changing Trip-Based or
 /// reconstruction code.
-pub(crate) struct TransferShortcutBuilder {
+pub struct TransferShortcutBuilder {
     street: std::sync::Arc<dyn StreetRouter>,
     network: std::sync::Arc<TransitNetwork>,
 }
 
 impl TransferShortcutBuilder {
-    pub(crate) fn new(
+    pub fn new(
         street: std::sync::Arc<dyn StreetRouter>,
         network: std::sync::Arc<TransitNetwork>,
     ) -> Self {
         Self { street, network }
     }
 
-    pub(crate) async fn build(
+    pub async fn build(
         &self,
         limits: &RoutingLimits,
     ) -> Result<TransferShortcutIndex, StreetRoutingError> {

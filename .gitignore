@@ -1,5 +1,8 @@
 /server/target/
 .DS_Store
 .env
+.env.*
+!.env.example
+/data/dev/
 /server/var/valhalla/
 /server/var/valhalla-taiwan/

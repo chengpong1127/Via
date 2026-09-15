@@ -9,6 +9,7 @@ pub mod timing;
 
 pub mod valhalla;
 
+pub use crate::config::{TdxClient, TdxCredentials, TdxCredentialsError};
 pub use tdx::{TdxRealtimeConfig, TdxRealtimeProvider};
 pub use timing::{
     CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,

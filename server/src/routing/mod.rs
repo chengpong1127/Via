@@ -23,7 +23,7 @@ pub use algorithm::{
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{
     BikeAvailabilityResolver, TransferError, TransferIndex, TransferLeg, TransferPath,
-    TransferShortcut, TransferShortcutIndex,
+    TransferShortcut, TransferShortcutBuilder, TransferShortcutIndex,
 };
 pub use trip_based::{TripBasedIndex, TripBasedLimits, TripBasedRouter};
 

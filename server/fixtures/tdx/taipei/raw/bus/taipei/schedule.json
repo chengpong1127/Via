@@ -1,0 +1,17 @@
+[
+  {
+    "SubRouteUID": "TPE-307-0",
+    "SubRouteName": {"Zh_tw": "307"},
+    "Direction": 0,
+    "Timetables": [
+      {
+        "TripID": "TPE-307-0800",
+        "StopTimes": [
+          {"StopUID": "TPE-001", "ArrivalTime": "08:00:00", "DepartureTime": "08:00:30"},
+          {"StopUID": "TPE-002", "ArrivalTime": "08:10:00", "DepartureTime": "08:10:00"}
+        ]
+      }
+    ],
+    "ActiveWeekdays": [1, 2, 3, 4, 5, 6, 7]
+  }
+]

@@ -30,6 +30,13 @@ Implemented capabilities:
 
 ## Run locally
 
+Development data and route debugging commands are documented in
+[`docs/dev-tooling.md`](../docs/dev-tooling.md). In brief, copy the repository
+example environment file with `cp .env.example .env`; `via-data fetch` and
+`via-route --realtime live` use the shared `TDX_CLIENT_ID`/
+`TDX_CLIENT_SECRET` OAuth configuration, while build, validation, inspection,
+and fixture routing remain fully offline.
+
 Start the pinned Valhalla 3.8.3 image, then build the checked-in deterministic
 street fixture:
 
@@ -47,8 +54,8 @@ Then start Axum:
 cargo run
 ```
 
-At startup, the server loads configuration from `server/.env`. Variables already
-set in the process environment take precedence.
+At startup, the server loads configuration with dotenvy. Variables already set
+in the process environment take precedence.
 
 The server fails startup until Valhalla is healthy. Its operator endpoint is
 `GET /health/street-routing`; responses use `Cache-Control: no-store` and report
@@ -64,7 +71,9 @@ Configuration:
 | `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Valhalla `/status` tileset timestamp expected at startup and during health checks; required. |
 | `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
 | `VIA_TDX_AUTHORITY_NAMESPACE` | TDX authority namespace used to scope deterministic observation IDs; required. |
-| `VIA_TDX_BEARER_TOKEN` | TDX access token held only by the realtime adapter; required. |
+| `VIA_TDX_BEARER_TOKEN` | Optional pre-issued TDX access token for the realtime adapter. |
+| `TDX_CLIENT_ID` | Shared TDX OAuth client ID used when a bearer token is not supplied. |
+| `TDX_CLIENT_SECRET` | Shared TDX OAuth client secret used with `TDX_CLIENT_ID`; never passed as a CLI flag or written to artifacts. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional scoped TDX service-condition endpoint path. |
 | `VIA_REALTIME_CACHE_TTL_SECONDS` | In-process realtime cache TTL; defaults to 45 seconds. |
 | `VIA_TRANSIT_NETWORK` | Path to the immutable normalized transit and bike-share network and timetable JSON artifact; required. |
