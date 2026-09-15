@@ -5,7 +5,6 @@ struct JourneyOptionCard: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onShowDetails: () -> Void
-    let onStart: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -57,15 +56,9 @@ struct JourneyOptionCard: View {
                     Divider()
                     HStack {
                         Button(action: onShowDetails) {
-                            Label("Details", systemImage: "list.bullet")
+                            Label("Trip Details", systemImage: "list.bullet")
                         }
                         .buttonStyle(.bordered)
-
-                        Spacer()
-
-                        Button("Start", action: onStart)
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color.viaBlue)
                     }
                 }
         }

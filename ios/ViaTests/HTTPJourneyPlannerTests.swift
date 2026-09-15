@@ -20,12 +20,12 @@ struct HTTPJourneyPlannerTests {
         )
 
         let request = PlanningRequest(
-            origin: SelectedPlace(
-                displayText: "Origin",
+            origin: Place(
+                name: "Origin",
                 coordinate: Coordinate(latitude: 25.04776, longitude: 121.51706)
             ),
-            destination: SelectedPlace(
-                displayText: "Destination",
+            destination: Place(
+                name: "Destination",
                 coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
             ),
             selectedModes: [.bikeShare, .transit],
@@ -40,6 +40,10 @@ struct HTTPJourneyPlannerTests {
         #expect(json["locale"] as? String == "en-US")
         #expect(json["selected_modes"] as? [String] == ["bike_share", "transit"])
         #expect(json["departure_setting"] as? [String: Any] != nil)
+        let origin = try #require(json["origin"] as? [String: Any])
+        let originCoordinate = try #require(origin["coordinate"] as? [String: Any])
+        #expect(originCoordinate["latitude"] as? Double == 25.04776)
+        #expect(originCoordinate["longitude"] as? Double == 121.51706)
         #expect(StubURLProtocol.lastRequest?.url?.path == "/v1/journey-plans")
     }
 
@@ -120,8 +124,8 @@ struct HTTPJourneyPlannerTests {
 
     private static func request() -> PlanningRequest {
         PlanningRequest(
-            origin: SelectedPlace(displayText: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
-            destination: SelectedPlace(displayText: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
+            origin: Place(name: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
+            destination: Place(name: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
             selectedModes: [.transit],
             departureSetting: .departNow,
             locale: "en"

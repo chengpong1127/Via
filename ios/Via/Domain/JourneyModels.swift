@@ -10,10 +10,23 @@ struct Coordinate: Hashable, Sendable {
     }
 }
 
-struct SelectedPlace: Hashable, Identifiable, Sendable {
-    let id = UUID()
-    let displayText: String
+struct Place: Hashable, Sendable {
+    let name: String
+    let subtitle: String?
     let coordinate: Coordinate
+
+    init(name: String, subtitle: String? = nil, coordinate: Coordinate) {
+        self.name = name
+        self.subtitle = subtitle
+        self.coordinate = coordinate
+    }
+
+    var displayText: String { name }
+}
+
+enum JourneyEndpoint: Hashable, Sendable {
+    case currentLocation
+    case place(Place)
 }
 
 enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
@@ -74,8 +87,8 @@ enum DepartureSetting: Hashable, Sendable {
 }
 
 struct PlanningRequest: Hashable, Sendable {
-    let origin: SelectedPlace
-    let destination: SelectedPlace
+    let origin: Place
+    let destination: Place
     let selectedModes: Set<JourneyMode>
     let departureSetting: DepartureSetting
     let locale: String
@@ -196,6 +209,20 @@ enum JourneyPlanningError: Error, Equatable, Sendable {
     case temporarilyUnavailable
     case unsupportedResponse
     case unexpectedFailure
+}
+
+enum LocationProvidingError: Error, Equatable, Sendable {
+    case permissionDenied
+    case restricted
+    case unavailable
+}
+
+@MainActor
+protocol LocationProviding {
+    var authorizationStatus: CLAuthorizationStatus { get }
+
+    func requestWhenInUseAuthorization()
+    func currentLocation() async throws -> Coordinate
 }
 
 protocol JourneyPlanning: Sendable {

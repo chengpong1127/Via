@@ -30,7 +30,7 @@ struct PlaceDTO: Encodable, Sendable {
     let coordinate: CoordinateDTO
     let displayText: String
 
-    init(place: SelectedPlace) {
+    init(place: Place) {
         coordinate = CoordinateDTO(coordinate: place.coordinate)
         displayText = place.displayText.precomposedStringWithCanonicalMapping
     }

@@ -3,11 +3,9 @@ import SwiftUI
 
 struct JourneyMapView: View {
     @Environment(JourneySession.self) private var session
-    @State private var cameraPosition: MapCameraPosition = .region(Self.taipeiRegion)
+    @State private var cameraPosition: MapCameraPosition = .region(LocationSearchRegion.taiwanWide)
+    @State private var mapViewport: MKCoordinateRegion?
     @State private var detailsOption: JourneyOption?
-    @State private var showStaticGuidanceExplanation = false
-    @State private var isPlanningJourney = false
-    @State private var isSearching = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -21,41 +19,21 @@ struct JourneyMapView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
 
-            if isPlanningJourney {
-                DirectionsPanel(
-                    onShowDetails: { detailsOption = $0 },
-                    onStart: { showStaticGuidanceExplanation = true }
-                )
-                .frame(maxHeight: 570)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else {
-                MapSearchPanel {
-                    isSearching = true
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            DirectionsPanel(
+                searchRegion: LocationSearchRegion.preferred(
+                    mapViewport: mapViewport,
+                    userCoordinate: nil
+                ),
+                onShowDetails: { detailsOption = $0 }
+            )
+            .frame(maxHeight: 570)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-        .animation(.snappy, value: isPlanningJourney)
-        .sheet(isPresented: $isSearching) {
-            LocationSearchView(title: "Search") { place in
-                session.destination = place
-                session.returnToEditing()
-                cameraPosition = .region(MKCoordinateRegion(
-                    center: place.coordinate.clLocationCoordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.025, longitudeDelta: 0.025)
-                ))
-                isPlanningJourney = true
-            }
-        }
+        .animation(.snappy, value: session.state)
         .sheet(item: $detailsOption) { option in
             JourneyDetailsView(option: option)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-        }
-        .alert("Static Guidance", isPresented: $showStaticGuidanceExplanation) {
-            Button("Got it", role: .cancel) {}
-        } message: {
-            Text("Via provides static Guidance. It does not track your location or advance through Legs.")
         }
         .onChange(of: session.selectedOptionID) {
             frameSelectedJourney()
@@ -67,7 +45,7 @@ struct JourneyMapView: View {
 
     private var map: some View {
         Map(position: $cameraPosition) {
-            if let origin = session.origin {
+            if case .place(let origin) = session.origin {
                 Marker("From", systemImage: "location.fill", coordinate: origin.coordinate.clLocationCoordinate)
                     .tint(Color.viaBlue)
             }
@@ -83,6 +61,9 @@ struct JourneyMapView: View {
             }
         }
         .mapStyle(.standard(elevation: .realistic))
+        .onMapCameraChange(frequency: .onEnd) { context in
+            mapViewport = context.region
+        }
         .mapControls {
             MapCompass()
             MapScaleView()
@@ -100,11 +81,11 @@ struct JourneyMapView: View {
 
             Menu {
                 Button("Reset Journey", systemImage: "arrow.counterclockwise") {
-                    session.origin = nil
+                    session.origin = .currentLocation
                     session.destination = nil
                     session.returnToEditing()
-                    isPlanningJourney = false
-                    cameraPosition = .region(Self.taipeiRegion)
+                    mapViewport = nil
+                    cameraPosition = .region(LocationSearchRegion.taiwanWide)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -136,57 +117,14 @@ struct JourneyMapView: View {
         ))
     }
 
-    private static let taipeiRegion = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 25.0418, longitude: 121.5434),
-        span: MKCoordinateSpan(latitudeDelta: 0.055, longitudeDelta: 0.075)
-    )
-}
-
-private struct MapSearchPanel: View {
-    let onSearch: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Capsule()
-                .fill(.tertiary)
-                .frame(width: 38, height: 5)
-                .frame(maxWidth: .infinity)
-
-            Text("Where to?")
-                .font(.title2.bold())
-                .foregroundStyle(Color.viaInk)
-
-            Button(action: onSearch) {
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.headline)
-                    Text("Search places")
-                        .font(.body)
-                    Spacer()
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 48)
-                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("map.search")
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 9)
-        .padding(.bottom, 22)
-        .background(.ultraThickMaterial)
-        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28))
-        .shadow(color: .black.opacity(0.16), radius: 24, y: -5)
-    }
 }
 
 #Preview {
     JourneyMapView()
         .environment(JourneySession(
             planner: DemoJourneyPlanner(),
-            origin: SelectedPlace(displayText: "Taipei Main Station", coordinate: Coordinate(latitude: 25.0478, longitude: 121.5170)),
-            destination: SelectedPlace(displayText: "Taipei 101", coordinate: Coordinate(latitude: 25.0340, longitude: 121.5645))
+            locationProvider: LocationService(),
+            origin: .place(Place(name: "Taipei Main Station", coordinate: Coordinate(latitude: 25.0478, longitude: 121.5170))),
+            destination: Place(name: "Taipei 101", coordinate: Coordinate(latitude: 25.0340, longitude: 121.5645))
         ))
 }

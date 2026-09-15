@@ -11,12 +11,15 @@ final class JourneySession {
         case refreshing
         case empty
         case invalidRequest(field: String)
+        case locationPermissionDenied
+        case locationRestricted
+        case locationUnavailable
         case temporarilyUnavailable
         case unexpectedFailure
     }
 
-    var origin: SelectedPlace?
-    var destination: SelectedPlace?
+    var origin: JourneyEndpoint = .currentLocation
+    var destination: Place?
     var departureSetting: DepartureSetting = .departNow
     private(set) var state: PresentationState = .editing
     private(set) var result: JourneyResult?
@@ -28,16 +31,19 @@ final class JourneySession {
     }
 
     private let planner: any JourneyPlanning
+    private let locationProvider: any LocationProviding
     private let defaults: UserDefaults
     private var lastRequest: PlanningRequest?
 
     init(
         planner: any JourneyPlanning,
+        locationProvider: any LocationProviding,
         defaults: UserDefaults = .standard,
-        origin: SelectedPlace? = nil,
-        destination: SelectedPlace? = nil
+        origin: JourneyEndpoint = .currentLocation,
+        destination: Place? = nil
     ) {
         self.planner = planner
+        self.locationProvider = locationProvider
         self.defaults = defaults
         self.origin = origin
         self.destination = destination
@@ -54,7 +60,7 @@ final class JourneySession {
     }
 
     var canSubmit: Bool {
-        origin != nil && destination != nil && !selectedModes.isEmpty
+        destination != nil && !selectedModes.isEmpty
     }
 
     func toggle(_ mode: JourneyMode) {
@@ -73,7 +79,7 @@ final class JourneySession {
     }
 
     func submit(locale: String = Locale.current.identifier) async {
-        guard let request = makeRequest(locale: locale) else {
+        guard destination != nil, !selectedModes.isEmpty else {
             state = .invalidRequest(field: missingField)
             return
         }
@@ -82,9 +88,11 @@ final class JourneySession {
         result = nil
         selectedOptionID = nil
         refreshMessage = nil
-        lastRequest = request
+        lastRequest = nil
 
         do {
+            let request = try await makeRequest(locale: locale)
+            lastRequest = request
             apply(try await planner.plan(request), preservingMatchingKey: nil)
         } catch {
             applyInitialFailure(error)
@@ -115,13 +123,16 @@ final class JourneySession {
     }
 
     private var missingField: String {
-        if origin == nil { return "origin" }
         if destination == nil { return "destination" }
         return "selected_modes"
     }
 
-    private func makeRequest(locale: String) -> PlanningRequest? {
-        guard let origin, let destination, !selectedModes.isEmpty else { return nil }
+    private func makeRequest(locale: String) async throws -> PlanningRequest {
+        guard let destination, !selectedModes.isEmpty else {
+            throw JourneyPlanningError.invalidRequest(field: missingField)
+        }
+
+        let origin = try await resolve(origin)
         return PlanningRequest(
             origin: origin,
             destination: destination,
@@ -129,6 +140,29 @@ final class JourneySession {
             departureSetting: departureSetting,
             locale: LocaleNormalization.bcp47(locale)
         )
+    }
+
+    private func resolve(_ endpoint: JourneyEndpoint) async throws -> Place {
+        switch endpoint {
+        case .place(let place):
+            return place
+        case .currentLocation:
+            switch locationProvider.authorizationStatus {
+            case .notDetermined:
+                locationProvider.requestWhenInUseAuthorization()
+            case .authorizedWhenInUse, .authorizedAlways:
+                break
+            case .denied:
+                throw LocationProvidingError.permissionDenied
+            case .restricted:
+                throw LocationProvidingError.restricted
+            @unknown default:
+                throw LocationProvidingError.unavailable
+            }
+
+            let coordinate = try await locationProvider.currentLocation()
+            return Place(name: "Current Location", coordinate: coordinate)
+        }
     }
 
     private func apply(_ newResult: JourneyResult, preservingMatchingKey matchingKey: String?) {
@@ -153,6 +187,12 @@ final class JourneySession {
         switch error {
         case JourneyPlanningError.invalidRequest(let field):
             state = .invalidRequest(field: field)
+        case LocationProvidingError.permissionDenied:
+            state = .locationPermissionDenied
+        case LocationProvidingError.restricted:
+            state = .locationRestricted
+        case LocationProvidingError.unavailable:
+            state = .locationUnavailable
         case JourneyPlanningError.temporarilyUnavailable:
             state = .temporarilyUnavailable
         default:

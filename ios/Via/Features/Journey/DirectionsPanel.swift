@@ -1,11 +1,12 @@
+import MapKit
 import SwiftUI
 
 struct DirectionsPanel: View {
     @Environment(JourneySession.self) private var session
     @State private var searchTarget: SearchTarget?
 
+    let searchRegion: MKCoordinateRegion
     let onShowDetails: (JourneyOption) -> Void
-    let onStart: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,10 +35,18 @@ struct DirectionsPanel: View {
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 28, topTrailingRadius: 28))
         .shadow(color: .black.opacity(0.16), radius: 24, y: -5)
         .sheet(item: $searchTarget) { target in
-            LocationSearchView(title: target.title) { place in
+            LocationSearchView(
+                title: target.title,
+                searchRegion: searchRegion,
+                allowsCurrentLocation: target == .origin
+            ) { endpoint in
                 switch target {
-                case .origin: session.origin = place
-                case .destination: session.destination = place
+                case .origin:
+                    session.origin = endpoint
+                case .destination:
+                    if case .place(let place) = endpoint {
+                        session.destination = place
+                    }
                 }
                 session.returnToEditing()
             }
@@ -87,15 +96,15 @@ struct DirectionsPanel: View {
 
     private var locationFields: some View {
         VStack(spacing: 0) {
-            locationButton(target: .origin, place: session.origin, symbol: "location.fill", tint: Color.viaBlue)
+            locationButton(target: .origin, endpoint: session.origin, symbol: "location.fill", tint: Color.viaBlue)
             Divider().padding(.leading, 40)
-            locationButton(target: .destination, place: session.destination, symbol: "diamond.fill", tint: .brown)
+            locationButton(target: .destination, endpoint: session.destination.map { .place($0) }, symbol: "diamond.fill", tint: .brown)
         }
         .padding(.horizontal, 12)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
     }
 
-    private func locationButton(target: SearchTarget, place: SelectedPlace?, symbol: String, tint: Color) -> some View {
+    private func locationButton(target: SearchTarget, endpoint: JourneyEndpoint?, symbol: String, tint: Color) -> some View {
         Button {
             searchTarget = target
         } label: {
@@ -109,8 +118,8 @@ struct DirectionsPanel: View {
                     Text(target.title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(place?.displayText ?? target.placeholder)
-                        .foregroundStyle(place == nil ? .secondary : .primary)
+                    Text(endpointTitle(endpoint) ?? target.placeholder)
+                        .foregroundStyle(endpoint == nil ? .secondary : .primary)
                         .lineLimit(1)
                 }
                 Spacer()
@@ -182,8 +191,7 @@ struct DirectionsPanel: View {
                     option: option,
                     isSelected: session.selectedOptionID == option.id,
                     onSelect: { session.select(option) },
-                    onShowDetails: { onShowDetails(option) },
-                    onStart: onStart
+                    onShowDetails: { onShowDetails(option) }
                 )
             }
         case .empty:
@@ -201,6 +209,30 @@ struct DirectionsPanel: View {
                 message: "A required field needs attention: \(field).",
                 actionTitle: "Edit request",
                 action: session.returnToEditing
+            )
+        case .locationPermissionDenied:
+            MessageStateView(
+                symbol: "location.slash",
+                title: "Location access is turned off",
+                message: "Via needs your location to plan from Current Location. Choose another starting point or allow location access in Settings.",
+                actionTitle: "Edit request",
+                action: session.returnToEditing
+            )
+        case .locationRestricted:
+            MessageStateView(
+                symbol: "location.slash",
+                title: "Location access is unavailable",
+                message: "Via cannot use Current Location on this device. Choose another starting point.",
+                actionTitle: "Edit request",
+                action: session.returnToEditing
+            )
+        case .locationUnavailable:
+            MessageStateView(
+                symbol: "location.slash",
+                title: "Current location unavailable",
+                message: "We couldn't get your current location. Try again or choose a starting point manually.",
+                actionTitle: "Try again",
+                action: { Task { await session.submit() } }
             )
         case .temporarilyUnavailable:
             MessageStateView(
@@ -242,9 +274,19 @@ struct DirectionsPanel: View {
         case .arriveBy(let date): String(localized: "Arrive by \(date.formatted(date: .omitted, time: .shortened))")
         }
     }
+
+    private func endpointTitle(_ endpoint: JourneyEndpoint?) -> String? {
+        guard let endpoint else { return nil }
+        switch endpoint {
+        case .currentLocation:
+            return String(localized: "Current Location")
+        case .place(let place):
+            return place.displayText
+        }
+    }
 }
 
-private enum SearchTarget: String, Identifiable {
+private enum SearchTarget: String, Identifiable, Equatable {
     case origin
     case destination
 
