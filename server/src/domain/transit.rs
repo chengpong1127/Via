@@ -196,6 +196,47 @@ impl TransferEdge {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetroFrequency {
+    /// Seconds from the beginning of the service day.
+    pub start_seconds: u32,
+    /// Seconds from the beginning of the service day.
+    pub end_seconds: u32,
+    pub headway_seconds: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetroStationTiming {
+    pub stop_id: BoardingPointId,
+    #[serde(default)]
+    pub departures_seconds: Vec<u32>,
+    #[serde(default)]
+    pub frequencies: Vec<MetroFrequency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetroTiming {
+    pub service_id: TransitServiceId,
+    pub station_timings: Vec<MetroStationTiming>,
+    /// One positive duration for every adjacent pair in the service pattern.
+    #[serde(default)]
+    pub inter_station_travel_seconds: Vec<u32>,
+}
+
+impl MetroTiming {
+    pub fn new(
+        service_id: TransitServiceId,
+        station_timings: Vec<MetroStationTiming>,
+        inter_station_travel_seconds: Vec<u32>,
+    ) -> Self {
+        Self {
+            service_id,
+            station_timings,
+            inter_station_travel_seconds,
+        }
+    }
+}
+
 impl BikeShareStation {
     pub fn new(
         id: BikeShareStationId,
@@ -216,6 +257,8 @@ pub struct TransitNetwork {
     pub stops: Vec<TransitStop>,
     pub services: Vec<TransitService>,
     pub trips: Vec<ScheduledTrip>,
+    #[serde(default)]
+    pub metro_timings: Vec<MetroTiming>,
     pub bike_share_stations: Vec<BikeShareStation>,
     /// Explicit movement time between distinct Boarding Points. Same-point
     /// transfers use `default_transfer_seconds` for backwards-compatible
@@ -244,6 +287,7 @@ impl PartialEq for TransitNetwork {
             && self.stops == other.stops
             && self.services == other.services
             && self.trips == other.trips
+            && self.metro_timings == other.metro_timings
             && self.bike_share_stations == other.bike_share_stations
             && self.transfer_edges == other.transfer_edges
             && self.default_transfer_seconds == other.default_transfer_seconds
@@ -277,6 +321,7 @@ impl TransitNetwork {
             stops,
             services,
             trips,
+            metro_timings: Vec::new(),
             bike_share_stations,
             transfer_edges: Vec::new(),
             default_transfer_seconds: 120,
@@ -293,6 +338,11 @@ impl TransitNetwork {
 
     pub fn with_transfer_edges(mut self, transfer_edges: Vec<TransferEdge>) -> Self {
         self.transfer_edges = transfer_edges;
+        self
+    }
+
+    pub fn with_metro_timings(mut self, metro_timings: Vec<MetroTiming>) -> Self {
+        self.metro_timings = metro_timings;
         self
     }
 
@@ -377,6 +427,43 @@ impl TransitNetwork {
                 ));
             }
         }
+        let mut metro_timing_services = HashSet::new();
+        for timing in &self.metro_timings {
+            if !metro_timing_services.insert(timing.service_id.clone()) {
+                return Err(TransitNetworkValidationError::DuplicateMetroTiming(
+                    timing.service_id.clone(),
+                ));
+            }
+            let Some(service) = self.service(&timing.service_id) else {
+                return Err(TransitNetworkValidationError::UnknownMetroTimingService(
+                    timing.service_id.clone(),
+                ));
+            };
+            if service.transit_mode != TransitMode::Metro
+                || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
+                || timing.inter_station_travel_seconds.contains(&0)
+            {
+                return Err(TransitNetworkValidationError::InvalidMetroTimingShape(
+                    timing.service_id.clone(),
+                ));
+            }
+            for station_timing in &timing.station_timings {
+                if !service.pattern.contains(&station_timing.stop_id)
+                    || station_timing
+                        .departures_seconds
+                        .windows(2)
+                        .any(|times| times[0] >= times[1])
+                    || station_timing.frequencies.iter().any(|frequency| {
+                        frequency.start_seconds > frequency.end_seconds
+                            || frequency.headway_seconds == 0
+                    })
+                {
+                    return Err(TransitNetworkValidationError::InvalidMetroTimingShape(
+                        timing.service_id.clone(),
+                    ));
+                }
+            }
+        }
         let mut trip_ids = HashSet::new();
         for trip in &self.trips {
             if !trip_ids.insert(trip.id.clone()) {
@@ -422,6 +509,22 @@ impl TransitNetwork {
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.trips
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        self.metro_timings
+            .sort_by(|left, right| left.service_id.as_str().cmp(right.service_id.as_str()));
+        for timing in &mut self.metro_timings {
+            timing
+                .station_timings
+                .sort_by(|left, right| left.stop_id.as_str().cmp(right.stop_id.as_str()));
+            for station_timing in &mut timing.station_timings {
+                station_timing.departures_seconds.sort_unstable();
+                station_timing.frequencies.sort_by(|left, right| {
+                    left.start_seconds
+                        .cmp(&right.start_seconds)
+                        .then(left.end_seconds.cmp(&right.end_seconds))
+                        .then(left.headway_seconds.cmp(&right.headway_seconds))
+                });
+            }
+        }
         self.bike_share_stations
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
@@ -1226,6 +1329,12 @@ pub enum TransitNetworkValidationError {
     UnknownPatternStop(TransitServiceId),
     #[error("Scheduled Trip references unknown Transit Service {0:?}")]
     UnknownTripService(TransitServiceId),
+    #[error("duplicate Metro timing for Transit Service {0:?}")]
+    DuplicateMetroTiming(TransitServiceId),
+    #[error("Metro timing references unknown Transit Service {0:?}")]
+    UnknownMetroTimingService(TransitServiceId),
+    #[error("Metro timing for Transit Service {0:?} has an invalid shape")]
+    InvalidMetroTimingShape(TransitServiceId),
     #[error("Scheduled Trip {0:?} has an invalid shape or calendar")]
     InvalidTripShape(ScheduledRunId),
     #[error("Scheduled Trip {0:?} is not chronological")]

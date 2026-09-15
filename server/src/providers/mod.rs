@@ -12,7 +12,8 @@ pub mod valhalla;
 pub use crate::config::{TdxClient, TdxCredentials, TdxCredentialsError};
 pub use tdx::{TdxRealtimeConfig, TdxRealtimeProvider};
 pub use timing::{
-    CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,
+    CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
+    RealtimeDepartureResolver,
 };
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,

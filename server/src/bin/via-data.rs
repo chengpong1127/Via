@@ -1,17 +1,21 @@
-use std::{error::Error, path::PathBuf, str::FromStr};
+use std::{env, error::Error, path::PathBuf, str::FromStr, sync::Arc};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
-        ArtifactCounts, DataError, DataScope, build_from_raw, fetch_raw_snapshot, load_manifest,
+        ArtifactCounts, DataError, DataScope, build_from_raw,
+        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot, load_manifest,
         load_network_artifact, load_transfer_artifact,
     },
     domain::{
         ids::BoardingPointId,
         transit::{TransitMode, TransitNetwork},
     },
+    providers::{ValhallaConfig, ValhallaProvider},
+    routing::RoutingLimits,
+    street::{StraightLineStreetRouter, StreetRouter},
 };
 
 #[derive(Parser, Debug)]
@@ -52,6 +56,17 @@ struct BuildArgs {
     scope: Option<String>,
     #[arg(long)]
     date: Option<String>,
+    /// Explicitly run the bounded street-backed transfer preprocessor.
+    #[arg(long)]
+    preprocess_transfers: bool,
+    #[arg(long, value_enum)]
+    street_router: Option<BuildStreetRouter>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BuildStreetRouter {
+    Valhalla,
+    StraightLine,
 }
 
 #[derive(Args, Debug)]
@@ -123,7 +138,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Command::Fetch(args) => fetch(args).await?,
-        Command::Build(args) => build(args)?,
+        Command::Build(args) => build(args).await?,
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
@@ -144,9 +159,25 @@ async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
+async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
-    let result = build_from_raw(&args.input, &args.output, scope, args.date)?;
+    if args.street_router.is_some() && !args.preprocess_transfers {
+        return Err("--street-router requires --preprocess-transfers".into());
+    }
+    let result = if args.preprocess_transfers {
+        let street = build_street_router(args.street_router)?;
+        build_from_raw_with_transfer_preprocessing(
+            &args.input,
+            &args.output,
+            scope,
+            args.date,
+            street,
+            RoutingLimits::default(),
+        )
+        .await?
+    } else {
+        build_from_raw(&args.input, &args.output, scope, args.date)?
+    };
     print_counts("built", &result.manifest.counts, &result.manifest.revisions);
     println!(
         "network artifact: {}",
@@ -158,6 +189,35 @@ fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
+}
+
+fn build_street_router(
+    requested: Option<BuildStreetRouter>,
+) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
+    let requested = requested.unwrap_or_else(|| {
+        if env::var_os("VIA_VALHALLA_GRAPH_REVISION").is_some()
+            || env::var_os("VIA_VALHALLA_TILESET_LAST_MODIFIED").is_some()
+        {
+            BuildStreetRouter::Valhalla
+        } else {
+            BuildStreetRouter::StraightLine
+        }
+    });
+    match requested {
+        BuildStreetRouter::StraightLine => Ok(Arc::new(StraightLineStreetRouter::default())),
+        BuildStreetRouter::Valhalla => {
+            let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")
+                .map_err(|_| "Valhalla preprocessing requires VIA_VALHALLA_GRAPH_REVISION")?;
+            let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")
+                .map_err(|_| "Valhalla preprocessing requires VIA_VALHALLA_TILESET_LAST_MODIFIED")?
+                .parse()?;
+            let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
+            if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
+                config.base_url = url::Url::parse(&base_url)?;
+            }
+            Ok(Arc::new(ValhallaProvider::new(config)?))
+        }
+    }
 }
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {

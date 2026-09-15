@@ -4,7 +4,7 @@ use url::Url;
 use via_server::{
     app::build_router_with_realtime_and_network_and_ttl,
     config::{TdxClient, TdxCredentials, load_dotenv},
-    data::load_network_artifact,
+    data::{load_network_artifact, load_transfer_artifact},
     health::DependencyHealth,
     providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
     providers::{TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
@@ -51,6 +51,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = load_network_artifact(Path::new(&transit_network_path))
         .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
+    let transfer_path = env::var("VIA_TRANSFER_SHORTCUTS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(&transit_network_path).with_file_name("transfer-shortcuts.json")
+        });
+    let transfer_index = if transfer_path.exists() {
+        let index = load_transfer_artifact(&transfer_path)
+            .map_err(|error| format!("transfer shortcut artifact is invalid: {error}"))?;
+        index
+            .validate_against(&transit_network)
+            .map_err(|error| format!("transfer shortcut artifact is invalid: {error}"))?;
+        Some(Arc::new(index) as Arc<dyn via_server::routing::TransferIndex>)
+    } else {
+        None
+    };
     let tdx_base_url_value = env::var("VIA_TDX_BASE_URL")
         .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?;
     let tdx_token_url = env::var("TDX_TOKEN_URL").unwrap_or_else(|_| {
@@ -87,13 +104,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_REALTIME_CACHE_TTL);
-    let router = build_router_with_realtime_and_network_and_ttl(
-        provider,
-        Arc::new(realtime),
-        transit_network,
-        cache_ttl,
-    )
-    .await?;
+    let router = if let Some(transfer_index) = transfer_index {
+        via_server::app::build_router_with_realtime_and_network_and_ttl_and_transfer_index(
+            provider,
+            Arc::new(realtime),
+            transit_network,
+            cache_ttl,
+            transfer_index,
+        )
+        .await?
+    } else {
+        build_router_with_realtime_and_network_and_ttl(
+            provider,
+            Arc::new(realtime),
+            transit_network,
+            cache_ttl,
+        )
+        .await?
+    };
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()?;

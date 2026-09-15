@@ -367,9 +367,11 @@ pub struct TransferShortcutArtifact {
 
 /// Builds the request-independent transfer representation used by routing.
 ///
-/// This is a bounded online builder, not the exact ULTRA preprocessing
-/// algorithm. Its output is intentionally the same shortcut/path shape so an
-/// offline artifact can replace it without changing Trip-Based or
+/// This bounded street-backed builder is intended for explicit offline
+/// preprocessing and remains available as a development fallback when no
+/// transfer artifact has been supplied. It does not claim exact ULTRA
+/// preprocessing. Its output is intentionally the same shortcut/path shape
+/// so an offline artifact can replace it without changing Trip-Based or
 /// reconstruction code.
 pub struct TransferShortcutBuilder {
     street: std::sync::Arc<dyn StreetRouter>,

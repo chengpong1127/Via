@@ -23,9 +23,10 @@ use crate::{
     observability::OperationalMetrics,
     providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
     providers::timing::{
-        CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,
+        CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
+        RealtimeDepartureResolver,
     },
-    routing::{PlanningError, PlanningOutcome, RoutingService},
+    routing::{PlanningError, PlanningOutcome, RoutingService, TransferIndex},
     street::{StreetRouter, StreetRoutingError},
 };
 
@@ -91,6 +92,7 @@ where
         realtime,
         transit_network,
         crate::providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
+        None,
     )
     .await
 }
@@ -111,6 +113,29 @@ where
         realtime,
         transit_network,
         realtime_cache_ttl,
+        None,
+    )
+    .await
+}
+
+pub async fn build_router_with_realtime_and_network_and_ttl_and_transfer_index<P>(
+    provider: Arc<P>,
+    realtime: Arc<dyn RealtimeProvider>,
+    transit_network: TransitNetwork,
+    realtime_cache_ttl: std::time::Duration,
+    transfer_index: Arc<dyn TransferIndex>,
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    let (street_router, street_health) = provider_interfaces(provider);
+    build_router_with_realtime_and_network_and_ttl_interfaces(
+        street_router,
+        street_health,
+        realtime,
+        transit_network,
+        realtime_cache_ttl,
+        Some(transfer_index),
     )
     .await
 }
@@ -121,6 +146,7 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     realtime: Arc<dyn RealtimeProvider>,
     transit_network: TransitNetwork,
     realtime_cache_ttl: std::time::Duration,
+    transfer_index: Option<Arc<dyn TransferIndex>>,
 ) -> Result<Router, StreetRoutingError> {
     let realtime = Arc::new(CachedRealtimeProvider::with_ttl(
         realtime,
@@ -128,24 +154,35 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     ));
     let realtime_metrics = realtime.metrics();
     let transit_network = Arc::new(transit_network);
-    let departure_resolver = Arc::new(CompositeDepartureResolver::with_schedule_fallback(
-        transit_network.clone(),
-        Arc::new(RealtimeDepartureResolver::new(
-            realtime.clone(),
+    let metro_departure = Arc::new(MetroDepartureResolver::new(transit_network.clone()));
+    let departure_resolver = Arc::new(
+        CompositeDepartureResolver::with_schedule_fallback(
             transit_network.clone(),
-        )),
-    ));
-    let transfer_index = crate::routing::transfers::TransferShortcutBuilder::new(
-        street_router.clone(),
-        transit_network.clone(),
-    )
-    .build(&crate::routing::RoutingLimits::default())
-    .await
-    .map_err(|_| StreetRoutingError::TemporarilyUnavailable)?;
+            Arc::new(RealtimeDepartureResolver::new(
+                realtime.clone(),
+                transit_network.clone(),
+            )),
+        )
+        .with_adapter("metro_schedule", metro_departure.clone())
+        .with_adapter("metro_frequency", metro_departure),
+    );
+    let transfer_index = if let Some(transfer_index) = transfer_index {
+        transfer_index
+    } else {
+        Arc::new(
+            crate::routing::transfers::TransferShortcutBuilder::new(
+                street_router.clone(),
+                transit_network.clone(),
+            )
+            .build(&crate::routing::RoutingLimits::default())
+            .await
+            .map_err(|_| StreetRoutingError::TemporarilyUnavailable)?,
+        )
+    };
     let metrics = OperationalMetrics::default();
     let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())
         .with_transit_network_arc(transit_network.clone())
-        .with_transfer_index(Arc::new(transfer_index))
+        .with_transfer_index(transfer_index)
         .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
             realtime.clone(),
         )))

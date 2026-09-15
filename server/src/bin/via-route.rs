@@ -23,8 +23,9 @@ use via_server::{
     health::DependencyHealth,
     providers::realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     providers::{
-        CompositeDepartureResolver, RealtimeBikeAvailabilityResolver, RealtimeDepartureResolver,
-        TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
+        CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
+        RealtimeDepartureResolver, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig,
+        ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService, TransferShortcutBuilder},
     street::{StraightLineStreetRouter, StreetRouter},
@@ -107,13 +108,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .await
             .map_err(|error| format!("transfer preprocessing failed: {error}"))?
     };
-    let departure = Arc::new(CompositeDepartureResolver::with_schedule_fallback(
-        network.clone(),
-        Arc::new(RealtimeDepartureResolver::new(
-            cached.clone(),
+    let metro_departure = Arc::new(MetroDepartureResolver::new(network.clone()));
+    let departure = Arc::new(
+        CompositeDepartureResolver::with_schedule_fallback(
             network.clone(),
-        )),
-    ));
+            Arc::new(RealtimeDepartureResolver::new(
+                cached.clone(),
+                network.clone(),
+            )),
+        )
+        .with_adapter("metro_schedule", metro_departure.clone())
+        .with_adapter("metro_frequency", metro_departure),
+    );
     let routing = RoutingService::new(street, departure, cached.clone())
         .with_transit_network_arc(network.clone())
         .with_transfer_index(Arc::new(transfer_index))

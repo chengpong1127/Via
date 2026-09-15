@@ -1,8 +1,13 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use via_server::{
-    data::{DataScope, build_from_raw, load_manifest, load_network_artifact},
+    data::{
+        DataScope, build_from_raw, build_from_raw_with_transfer_preprocessing, load_manifest,
+        load_network_artifact, load_transfer_artifact,
+    },
     domain::transit::{TransitNetwork, TransitService, TransitStop},
+    routing::RoutingLimits,
+    street::StraightLineStreetRouter,
 };
 
 fn temporary_output(name: &str) -> PathBuf {
@@ -79,6 +84,33 @@ fn invalid_network_shapes_fail_validation() {
     )
     .with_revisions("static", "schedule");
     assert!(network.validate().is_err());
+}
+
+#[tokio::test]
+async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/taipei/raw");
+    let output = temporary_output("preprocessed-transfers");
+    let result = build_from_raw_with_transfer_preprocessing(
+        &input,
+        &output,
+        Some(DataScope::TaipeiNewTaipei),
+        Some("2026-09-15".into()),
+        std::sync::Arc::new(StraightLineStreetRouter::default()),
+        RoutingLimits::default(),
+    )
+    .await
+    .unwrap();
+
+    let transfer_index = load_transfer_artifact(&output.join("transfer-shortcuts.json")).unwrap();
+    assert_eq!(
+        transfer_index.len(),
+        result.manifest.counts.transfer_shortcuts
+    );
+    assert_eq!(transfer_index.len(), 1);
+    assert_eq!(
+        result.manifest.transfer_config.max_bike_distance_metres,
+        20_000
+    );
 }
 
 #[test]

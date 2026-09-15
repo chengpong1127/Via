@@ -88,7 +88,8 @@ preprocessing bounds. `built_at` is diagnostic metadata and may vary.
 
 The current static source families are TDX Bus Route/Stop/StopOfRoute/Schedule for
 Taipei and New Taipei, TDX YouBike Station for both cities, TDX Taipei Metro
-station/line/timetable data, and TDX TRA/THSR station and timetable data.
+station/line/StationTimeTable/S2STravelTime/Frequency data, and TDX TRA/THSR
+station and timetable data.
 Provider payload parsing remains inside `via_server::data`; routing consumes
 only the provider-neutral artifact.
 
@@ -160,11 +161,24 @@ test assertions; verify route existence, leg structure, transfers, and
 positive realistic durations.
 
 The initial transfer output is a bounded, generic `TransferShortcutIndex`.
-It preserves multiple alternatives and stores no live BikeShare inventory. If
-the raw snapshot contains a reviewed `transfer-shortcuts.json`, the build
-publishes it; otherwise explicit network transfer edges are published and
-`via-route` uses the same bounded street-backed builder as the server at
-startup. Exact ULTRA preprocessing remains deferred until a reviewed street
-preprocessing artifact is available. `TripBasedIndex` is derived at server or
-CLI startup from the validated network rather than serialized by this first
-tooling version.
+It preserves multiple alternatives and stores no live BikeShare inventory. By
+default, `via-data build` publishes a reviewed raw transfer artifact when one is
+present, or only the explicit static walking edges otherwise. Street-backed
+preprocessing is explicit:
+
+```bash
+cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
+  --input ./data/dev/taipei/raw/2026-09-15 \
+  --output ./data/dev/taipei \
+  --preprocess-transfers --street-router valhalla
+```
+
+Valhalla preprocessing requires `VIA_VALHALLA_GRAPH_REVISION` and
+`VIA_VALHALLA_TILESET_LAST_MODIFIED`; `--street-router straight-line` is
+available for deterministic development fixtures. Exact ULTRA preprocessing
+remains deferred. The server and `via-route` load the sibling
+`transfer-shortcuts.json` artifact (or `VIA_TRANSFER_SHORTCUTS` for the server)
+when it exists; their bounded builder remains only as a fallback when no
+artifact is available. `TripBasedIndex` is derived at server or CLI startup
+from the validated network rather than serialized by this first tooling
+version.

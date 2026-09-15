@@ -8,6 +8,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
 };
 
 use futures_util::stream::{self, StreamExt, TryStreamExt};
@@ -22,8 +23,9 @@ use crate::{
     domain::{
         ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
         transit::{
-            BikeShareStation, ScheduledStopTime, ScheduledTrip, TransferEdge, TransitMode,
-            TransitNetwork, TransitService, TransitStop, default_service_day_boundary,
+            BikeShareStation, MetroFrequency, MetroStationTiming, MetroTiming, ScheduledStopTime,
+            ScheduledTrip, TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop,
+            default_service_day_boundary,
         },
     },
     providers::tdx::{
@@ -31,6 +33,8 @@ use crate::{
         transit_service_id_for_direction,
     },
     routing::transfers::{TransferShortcut, TransferShortcutIndex},
+    routing::{RoutingLimits, TransferShortcutBuilder},
+    street::StreetRouter,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -183,6 +187,8 @@ pub enum DataError {
     InvalidArtifactJson(String),
     #[error("transfer shortcut artifact is invalid: {0}")]
     InvalidTransferArtifact(String),
+    #[error("transfer preprocessing failed: {0}")]
+    TransferPreprocessing(String),
 }
 
 #[derive(Clone, Debug)]
@@ -200,7 +206,17 @@ struct RawDocument {
     value: Value,
 }
 
-type MetroPattern = (String, TransitMode, Vec<(u32, BoardingPointId)>);
+#[derive(Clone, Debug)]
+struct MetroPattern {
+    line_id: String,
+    direction: Option<u8>,
+    label: String,
+    stations: Vec<(u32, BoardingPointId)>,
+}
+
+type MetroTimingKey = (String, Option<u8>, String);
+type MetroFrequencyRange = (u32, u32, u32);
+type MetroTravelKey = (String, Option<u8>, String, String);
 
 #[derive(Default)]
 struct Normalizer {
@@ -210,7 +226,10 @@ struct Normalizer {
     bike_stations: BTreeMap<String, BikeShareStation>,
     transfer_edges: BTreeSet<(String, String, u32)>,
     station_aliases: BTreeMap<String, BoardingPointId>,
-    metro_patterns: BTreeMap<String, MetroPattern>,
+    metro_patterns: BTreeMap<(String, Option<u8>), MetroPattern>,
+    metro_departures: BTreeMap<MetroTimingKey, BTreeSet<u32>>,
+    metro_frequencies: BTreeMap<MetroTimingKey, BTreeSet<MetroFrequencyRange>>,
+    metro_travel_times: BTreeMap<MetroTravelKey, u32>,
 }
 
 impl Normalizer {
@@ -229,6 +248,13 @@ impl Normalizer {
             }
             if path_text.contains("metro") || path_text.contains("rail") {
                 self.normalize_rail(record, &document.relative_path, index, &path_text)?;
+            }
+            if is_metro_station_timetable_path(&path_text)
+                || path_text.contains("s2straveltime")
+                || (path_text.contains("s2s") && path_text.contains("travel"))
+                || path_text.contains("frequency")
+            {
+                self.normalize_metro_timing(record, &path_text)?;
             }
             if path_text.contains("transfer") {
                 self.normalize_transfer(record, &document.relative_path)?;
@@ -342,22 +368,307 @@ impl Normalizer {
                 let sequence = number(record, "StationSequence")
                     .or_else(|| number(record, "Sequence"))
                     .unwrap_or(index as u64) as u32;
+                let direction = number(record, "Direction")
+                    .or_else(|| string(record, "Direction").and_then(|value| value.parse().ok()))
+                    .and_then(|value| u8::try_from(value).ok());
+                let key = (line_id.into(), direction);
                 let entry = self
                     .metro_patterns
-                    .entry(line_id.into())
-                    .or_insert_with(|| (line_id.into(), mode, Vec::new()));
-                entry.2.push((sequence, id));
+                    .entry(key)
+                    .or_insert_with(|| MetroPattern {
+                        line_id: line_id.into(),
+                        direction,
+                        label: display_name(record, &["LineName", "LineNameZh", "LineNameEn"])
+                            .unwrap_or_else(|| line_id.into()),
+                        stations: Vec::new(),
+                    });
+                entry.stations.push((sequence, id));
             }
         }
-        if record.get("Stations").and_then(Value::as_array).is_some()
+        if mode == TransitMode::Metro {
+            self.normalize_metro_line_stations(record);
+        }
+        let has_embedded_stations = record
+            .get("Stations")
+            .and_then(Value::as_array)
+            .is_some_and(|stations| {
+                mode != TransitMode::Metro
+                    || stations.iter().any(|station| {
+                        station.get("Time").is_some()
+                            || station.get("ArrivalTime").is_some()
+                            || station.get("DepartureTime").is_some()
+                    })
+            });
+        if has_embedded_stations
             || record.get("StopTimes").is_some()
             || record.get("stop_times").is_some()
-            || record.get("Timetables").is_some()
             || record.get("TrainInfo").is_some()
+            || (record.get("Timetables").is_some() && !is_metro_station_timetable_path(path_text))
         {
             self.normalize_embedded_trip(record, path, index, mode)?;
         }
         Ok(())
+    }
+
+    fn normalize_metro_line_stations(&mut self, record: &Value) {
+        let Some(line_id) = metro_line_id(record) else {
+            return;
+        };
+        let Some(stations) = record.get("Stations").and_then(Value::as_array) else {
+            return;
+        };
+        let direction = metro_direction(record);
+        let label = display_name(record, &["LineName", "LineNameZh", "LineNameEn"])
+            .unwrap_or_else(|| line_id.clone());
+        for (fallback, station) in stations.iter().enumerate() {
+            let Some(station_value) =
+                string(station, "StationUID").or_else(|| string(station, "StationID"))
+            else {
+                continue;
+            };
+            let station_id = if string(station, "StationUID").is_some() {
+                boarding_point_id(station_value)
+            } else {
+                metro_station_id(self, station, &["StationUID", "StationID"])
+                    .map(BoardingPointId::new)
+                    .unwrap_or_else(|| boarding_point_id(station_value))
+            };
+            if let Some(local_id) = string(station, "StationID") {
+                self.station_aliases
+                    .entry(local_id.into())
+                    .or_insert_with(|| station_id.clone());
+            }
+            let sequence = number(station, "Sequence")
+                .or_else(|| number(station, "StationSequence"))
+                .unwrap_or(fallback as u64) as u32;
+            let entry = self
+                .metro_patterns
+                .entry((line_id.clone(), direction))
+                .or_insert_with(|| MetroPattern {
+                    line_id: line_id.clone(),
+                    direction,
+                    label: label.clone(),
+                    stations: Vec::new(),
+                });
+            entry.stations.push((sequence, station_id));
+        }
+    }
+
+    fn normalize_metro_timing(&mut self, record: &Value, path_text: &str) -> Result<(), DataError> {
+        let Some(line_id) = metro_line_id(record) else {
+            return Ok(());
+        };
+        let direction = metro_direction(record);
+        if path_text.contains("s2straveltime")
+            || (path_text.contains("s2s") && path_text.contains("travel"))
+        {
+            if let (Some(from), Some(to), Some(seconds)) = (
+                metro_station_id(
+                    self,
+                    record,
+                    &["FromStationUID", "FromStationID", "StationUID", "StationID"],
+                ),
+                metro_station_id(
+                    self,
+                    record,
+                    &[
+                        "ToStationUID",
+                        "ToStationID",
+                        "NextStationUID",
+                        "NextStationID",
+                    ],
+                ),
+                metro_duration_seconds(record),
+            ) {
+                self.metro_travel_times
+                    .insert((line_id.clone(), direction, from, to), seconds);
+            }
+            for key in ["TravelTimes", "S2STravelTimes"] {
+                if let Some(values) = record.get(key).and_then(Value::as_array) {
+                    for value in values {
+                        let Some(object) = value.as_object() else {
+                            continue;
+                        };
+                        let mut expanded = Value::Object(object.clone());
+                        let Some(expanded_object) = expanded.as_object_mut() else {
+                            continue;
+                        };
+                        expanded_object
+                            .entry("LineID")
+                            .or_insert_with(|| Value::String(line_id.clone()));
+                        if let Some(direction) = direction {
+                            expanded_object
+                                .entry("Direction")
+                                .or_insert_with(|| Value::from(direction));
+                        }
+                        self.normalize_metro_timing(&expanded, path_text)?;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        let station_id = metro_station_id(self, record, &["StationUID", "StationID"])
+            .unwrap_or_else(|| "*".into());
+        let key = (line_id, direction, station_id);
+        if is_metro_station_timetable_path(path_text) {
+            self.collect_metro_departures(record, &key);
+        }
+        if path_text.contains("frequency") || record.get("Frequency").is_some() {
+            self.collect_metro_frequencies(record, &key);
+        }
+        Ok(())
+    }
+
+    fn collect_metro_departures(&mut self, record: &Value, key: &MetroTimingKey) {
+        for field in ["Time", "DepartureTime", "Departure", "TrainTime"] {
+            if let Some(seconds) = record.get(field).and_then(time_seconds_value) {
+                self.metro_departures
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(seconds);
+            }
+        }
+        for field in ["DepartureTimes", "Departures", "Timetables", "Timetable"] {
+            let Some(values) = record.get(field).and_then(Value::as_array) else {
+                continue;
+            };
+            for value in values {
+                if let Some(seconds) = time_seconds_value(value) {
+                    self.metro_departures
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(seconds);
+                } else if let Some(object) = value.as_object() {
+                    self.collect_metro_departures(&Value::Object(object.clone()), key);
+                }
+            }
+        }
+    }
+
+    fn collect_metro_frequencies(&mut self, record: &Value, key: &MetroTimingKey) {
+        if let Some(frequency) = metro_frequency(record) {
+            self.metro_frequencies
+                .entry(key.clone())
+                .or_default()
+                .insert(frequency);
+        }
+        for field in ["Frequency", "Frequencies", "Headways"] {
+            if let Some(values) = record.get(field).and_then(Value::as_array) {
+                for value in values {
+                    if let Some(object) = value.as_object() {
+                        let mut expanded = Value::Object(object.clone());
+                        if let Some(operation_time) =
+                            record.get("OperationTime").and_then(Value::as_object)
+                        {
+                            let Some(expanded_object) = expanded.as_object_mut() else {
+                                continue;
+                            };
+                            for (field, operation_field) in
+                                [("StartTime", "StartTime"), ("EndTime", "EndTime")]
+                            {
+                                if !expanded_object.contains_key(field) {
+                                    if let Some(value) = operation_time.get(operation_field) {
+                                        expanded_object.insert(field.into(), value.clone());
+                                    }
+                                }
+                            }
+                        }
+                        self.collect_metro_frequencies(&expanded, key);
+                    }
+                }
+            } else if let Some(object) = record.get(field).and_then(Value::as_object) {
+                self.collect_metro_frequencies(&Value::Object(object.clone()), key);
+            }
+        }
+    }
+
+    fn canonical_metro_stop_id(&self, station_id: &str) -> String {
+        self.station_aliases
+            .get(station_id)
+            .map(|id| id.as_str().to_owned())
+            .unwrap_or_else(|| station_id.to_owned())
+    }
+
+    fn metro_travel_seconds(
+        &self,
+        line_id: &str,
+        direction: Option<u8>,
+        pattern: &[BoardingPointId],
+    ) -> Vec<u32> {
+        pattern
+            .windows(2)
+            .filter_map(|stations| {
+                let matches_stations = |from: &str, to: &str| {
+                    (self.canonical_metro_stop_id(from) == stations[0].as_str()
+                        && self.canonical_metro_stop_id(to) == stations[1].as_str())
+                        || (self.canonical_metro_stop_id(from) == stations[1].as_str()
+                            && self.canonical_metro_stop_id(to) == stations[0].as_str())
+                };
+                self.metro_travel_times
+                    .iter()
+                    .find(|((line, record_direction, from, to), _)| {
+                        line == line_id
+                            && (record_direction == &direction || record_direction.is_none())
+                            && matches_stations(from, to)
+                    })
+                    .or_else(|| {
+                        self.metro_travel_times
+                            .iter()
+                            .find(|((line, _, from, to), _)| {
+                                line == line_id && matches_stations(from, to)
+                            })
+                    })
+                    .map(|(_, seconds)| *seconds)
+            })
+            .collect()
+    }
+
+    fn metro_station_timings(
+        &self,
+        line_id: &str,
+        direction: Option<u8>,
+        pattern: &[BoardingPointId],
+    ) -> Vec<MetroStationTiming> {
+        pattern
+            .iter()
+            .filter_map(|stop_id| {
+                let mut departures = BTreeSet::new();
+                let mut frequencies = BTreeSet::new();
+                for ((line, record_direction, station), values) in &self.metro_departures {
+                    if line == line_id
+                        && (record_direction == &direction || record_direction.is_none())
+                        && (self.canonical_metro_stop_id(station) == stop_id.as_str()
+                            || station == "*")
+                    {
+                        departures.extend(values);
+                    }
+                }
+                for ((line, record_direction, station), values) in &self.metro_frequencies {
+                    if line == line_id
+                        && (record_direction == &direction || record_direction.is_none())
+                        && (self.canonical_metro_stop_id(station) == stop_id.as_str()
+                            || station == "*")
+                    {
+                        frequencies.extend(values);
+                    }
+                }
+                (!departures.is_empty() || !frequencies.is_empty()).then(|| MetroStationTiming {
+                    stop_id: stop_id.clone(),
+                    departures_seconds: departures.into_iter().collect(),
+                    frequencies: frequencies
+                        .into_iter()
+                        .map(
+                            |(start_seconds, end_seconds, headway_seconds)| MetroFrequency {
+                                start_seconds,
+                                end_seconds,
+                                headway_seconds,
+                            },
+                        )
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     fn normalize_rail_station(
@@ -707,18 +1018,88 @@ impl Normalizer {
                 }
             }
         }
-        for (line_id, (label, mode, mut pattern)) in self.metro_patterns {
-            pattern.sort_by_key(|(sequence, _)| *sequence);
-            pattern.dedup_by(|left, right| left.1 == right.1);
-            let pattern = pattern.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
-            if pattern.len() >= 2 {
-                let service_id = TransitServiceId::new(format!("metro:{line_id}"));
-                self.services
-                    .entry(service_id.as_str().into())
-                    .or_insert_with(|| {
-                        TransitService::new(service_id, mode, label, "", pattern)
-                            .with_timing_source("metro_schedule")
-                    });
+        let mut line_pattern_counts = BTreeMap::<String, usize>::new();
+        for pattern in self.metro_patterns.values() {
+            *line_pattern_counts
+                .entry(pattern.line_id.clone())
+                .or_default() += 1;
+        }
+        let mut metro_timings = Vec::new();
+        let metro_patterns = std::mem::take(&mut self.metro_patterns);
+        for ((_line_id, _direction), mut metro_pattern) in metro_patterns {
+            for (_, station_id) in &mut metro_pattern.stations {
+                *station_id =
+                    BoardingPointId::new(self.canonical_metro_stop_id(station_id.as_str()));
+            }
+            metro_pattern
+                .stations
+                .sort_by_key(|(sequence, _)| *sequence);
+            metro_pattern
+                .stations
+                .dedup_by(|left, right| left.1 == right.1);
+            let pattern = metro_pattern
+                .stations
+                .iter()
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>();
+            if pattern.len() < 2 {
+                continue;
+            }
+            let service_id = if line_pattern_counts[&metro_pattern.line_id] == 1 {
+                TransitServiceId::new(format!("metro:{}", metro_pattern.line_id))
+            } else {
+                TransitServiceId::new(format!(
+                    "metro:{}::direction={}",
+                    metro_pattern.line_id,
+                    metro_pattern
+                        .direction
+                        .map_or_else(|| "unknown".into(), |direction| direction.to_string())
+                ))
+            };
+            let station_timings = self.metro_station_timings(
+                &metro_pattern.line_id,
+                metro_pattern.direction,
+                &pattern,
+            );
+            let travel_seconds = self.metro_travel_seconds(
+                &metro_pattern.line_id,
+                metro_pattern.direction,
+                &pattern,
+            );
+            let source = if station_timings
+                .iter()
+                .any(|station| !station.departures_seconds.is_empty())
+            {
+                "metro_schedule"
+            } else if station_timings
+                .iter()
+                .any(|station| !station.frequencies.is_empty())
+            {
+                "metro_frequency"
+            } else {
+                "metro_schedule"
+            };
+            self.services
+                .entry(service_id.as_str().into())
+                .and_modify(|service| service.timing_source = Some(source.into()))
+                .or_insert_with(|| {
+                    TransitService::new(
+                        service_id.clone(),
+                        TransitMode::Metro,
+                        metro_pattern.label.clone(),
+                        "",
+                        pattern.clone(),
+                    )
+                    .with_timing_source(source)
+                });
+            if travel_seconds.len() == pattern.len() - 1
+                && travel_seconds.iter().all(|seconds| *seconds > 0)
+            {
+                metro_timings.push(MetroTiming::new(
+                    service_id,
+                    station_timings,
+                    travel_seconds,
+                ));
             }
         }
         TransitNetwork::new(
@@ -728,6 +1109,7 @@ impl Normalizer {
             self.trips.into_values().collect(),
             self.bike_stations.into_values().collect(),
         )
+        .with_metro_timings(metro_timings)
         .with_transfer_edges(
             self.transfer_edges
                 .into_iter()
@@ -849,6 +1231,41 @@ pub fn build_from_raw(
         manifest,
         transfer_index,
     })
+}
+
+/// Build the normal artifact and explicitly replace its static transfer index
+/// with the bounded street-backed result. The caller must opt into this path;
+/// ordinary offline builds only publish existing walking edges or reviewed
+/// transfer artifacts.
+pub async fn build_from_raw_with_transfer_preprocessing(
+    input: &Path,
+    output: &Path,
+    scope: Option<DataScope>,
+    raw_snapshot_date: Option<String>,
+    street: Arc<dyn StreetRouter>,
+    limits: RoutingLimits,
+) -> Result<BuildOutput, DataError> {
+    let mut result = build_from_raw(input, output, scope, raw_snapshot_date)?;
+    let network = Arc::new(result.network.clone());
+    let mut transfer_index = TransferShortcutBuilder::new(street, network)
+        .build(&limits)
+        .await
+        .map_err(|error| DataError::TransferPreprocessing(error.to_string()))?;
+    transfer_index.extend(result.transfer_index.shortcuts());
+    transfer_index
+        .validate_against(&result.network)
+        .map_err(DataError::InvalidTransferArtifact)?;
+    result.manifest.counts.transfer_shortcuts = transfer_index.len();
+    result.manifest.transfer_config = TransferPreprocessingConfig {
+        max_walk_access_metres: limits.max_walking_radius_metres,
+        max_walk_egress_metres: limits.max_walking_radius_metres,
+        max_bike_distance_metres: limits.max_bike_distance_metres,
+        max_alternatives_per_pair: limits.max_bike_connectors,
+    };
+    write_transfer_artifact(output, &transfer_index)?;
+    write_json_atomic(&output.join("manifest.json"), &result.manifest)?;
+    result.transfer_index = transfer_index;
+    Ok(result)
 }
 
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {
@@ -990,6 +1407,16 @@ fn static_sources(scope: DataScope, date: Date) -> Vec<StaticSource> {
             "metro/trtc-station-timetable.json".into(),
         ),
         source(
+            "tdx_metro_s2s_travel_time",
+            "v2/Rail/Metro/S2STravelTime/TRTC".into(),
+            "metro/trtc-s2s-travel-time.json".into(),
+        ),
+        source(
+            "tdx_metro_frequency",
+            "v2/Rail/Metro/Frequency/TRTC".into(),
+            "metro/trtc-frequency.json".into(),
+        ),
+        source(
             "tdx_tra_station",
             "v2/Rail/TRA/Station".into(),
             "tra/station.json".into(),
@@ -1083,6 +1510,112 @@ fn number(value: &Value, key: &str) -> Option<u64> {
     value.get(key).and_then(Value::as_u64)
 }
 
+fn metro_line_id(value: &Value) -> Option<String> {
+    ["LineID", "LineUID", "RouteUID", "RouteID"]
+        .iter()
+        .find_map(|key| string(value, key).map(str::to_owned))
+}
+
+fn is_metro_station_timetable_path(path: &str) -> bool {
+    path.contains("station-timetable")
+        || path.contains("stationtimetable")
+        || path.contains("station_time_table")
+}
+
+fn metro_direction(value: &Value) -> Option<u8> {
+    number(value, "Direction")
+        .or_else(|| string(value, "Direction").and_then(|value| value.parse().ok()))
+        .and_then(|value| u8::try_from(value).ok())
+}
+
+fn metro_station_id(normalizer: &Normalizer, value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let station = string(value, key)?;
+        if key.ends_with("UID") {
+            return Some(boarding_point_id(station).as_str().to_owned());
+        }
+        normalizer
+            .station_aliases
+            .get(&format!("Metro:{station}"))
+            .or_else(|| normalizer.station_aliases.get(station))
+            .map(|id| id.as_str().to_owned())
+            .or_else(|| Some(boarding_point_id(station).as_str().to_owned()))
+    })
+}
+
+fn metro_duration_seconds(value: &Value) -> Option<u32> {
+    [
+        "TravelTimeSeconds",
+        "TravelTime",
+        "RunTimeSeconds",
+        "RunTime",
+        "DurationSeconds",
+        "Duration",
+        "Seconds",
+    ]
+    .iter()
+    .find_map(|key| {
+        value.get(*key).and_then(|value| {
+            value
+                .as_u64()
+                .and_then(|seconds| u32::try_from(seconds).ok())
+                .or_else(|| value.as_str().and_then(|value| time_seconds(Some(value))))
+        })
+    })
+    .or_else(|| {
+        let minutes = number(value, "Minutes").or_else(|| number(value, "Min"))?;
+        let seconds = number(value, "Seconds")
+            .or_else(|| number(value, "Sec"))
+            .unwrap_or(0);
+        u32::try_from(minutes.checked_mul(60)?.checked_add(seconds)?).ok()
+    })
+}
+
+fn metro_frequency(value: &Value) -> Option<(u32, u32, u32)> {
+    let start_seconds = ["StartTime", "Start", "FromTime"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(time_seconds_value))?;
+    let end_seconds = ["EndTime", "End", "ToTime"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(time_seconds_value))?;
+    let headway_seconds = [
+        "HeadwaySeconds",
+        "IntervalSeconds",
+        "FrequencySeconds",
+        "Headway",
+        "Interval",
+        "Frequency",
+    ]
+    .iter()
+    .find_map(|key| value.get(*key).and_then(time_seconds_value))
+    .or_else(|| {
+        [
+            "PeakHeadway",
+            "OffPeakHeadway",
+            "MinHeadwayMins",
+            "MaxHeadwayMins",
+        ]
+        .iter()
+        .find_map(|key| {
+            number(value, key)
+                .and_then(|minutes| minutes.checked_mul(60))
+                .and_then(|seconds| u32::try_from(seconds).ok())
+        })
+    })
+    .or_else(|| {
+        let minutes = number(value, "Minutes").or_else(|| number(value, "Min"))?;
+        let seconds = number(value, "Seconds")
+            .or_else(|| number(value, "Sec"))
+            .unwrap_or(0);
+        u32::try_from(minutes.checked_mul(60)?.checked_add(seconds)?).ok()
+    })?;
+    (start_seconds <= end_seconds && headway_seconds > 0).then_some((
+        start_seconds,
+        end_seconds,
+        headway_seconds,
+    ))
+}
+
 fn display_name(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         let value = value.get(*key)?;
@@ -1148,6 +1681,13 @@ fn time_seconds(value: Option<&str>) -> Option<u32> {
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(0);
     (minute < 60 && second < 60).then(|| hour * 3_600 + minute * 60 + second)
+}
+
+fn time_seconds_value(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|seconds| u32::try_from(seconds).ok())
+        .or_else(|| value.as_str().and_then(|value| time_seconds(Some(value))))
 }
 
 fn service_calendar(value: &Value) -> (Vec<Weekday>, Vec<Date>, Vec<Date>) {
