@@ -5,25 +5,26 @@ Status: Current
 
 ## Decision
 
-Via ranks Journey Options on the server with a versioned, deterministic pipeline. Required Live Status availability is an eligibility gate. Every displayed Journey Option is then classified as **Reliable** or **Feasible**. Journey usefulness is the primary ordering signal: a materially earlier arrival outranks the other class, while Reliable is preferred when arrivals are within the configurable reliability-preference window. Dominance and diversity filters use the same ordering policy.
+Via ranks Journey Options on the server with a versioned, deterministic pipeline. Explicitly impossible actions are an eligibility gate. Every displayed Journey Option is then classified as **Reliable** or **Feasible** from the timing and availability evidence actually used to construct it. Journey usefulness is the primary ordering signal: a materially earlier arrival outranks the other class, while Reliable is preferred when arrivals are within the configurable reliability-preference window. Dominance and diversity filters use the same ordering policy.
 
 The server returns up to three materially different Journey Options in final order. Native clients render that order and the server-supplied class, label, and reasons. They never calculate a score or reorder results.
 
 ## Live Status eligibility
 
-A Journey Option is eligible only when every critical Leg and action has the fresh, semantically usable Live Status that its Travel Mode and operator are expected to supply. Via removes a Journey Option when required Live Status is missing, stale, degraded, unavailable, rate-limited, or unusable. It never substitutes a static schedule for missing expected Live Status.
+A Journey Option is eligible when its critical Legs and actions remain physically and operationally possible. Timing for every transit mode is resolved realtime-first with a static fallback: fresh usable realtime is preferred, while missing, empty, stale, not-yet-departed, timed-out, rate-limited, or failed realtime falls back to the corresponding static schedule or frequency estimate. Static fallback remains valid evidence for `feasible` ranking; it does not claim realtime reliability.
 
 Required evidence is capability-specific:
 
-- a Bus Leg requires a usable Arrival Estimate and any applicable Service Condition;
-- a YouBike Leg requires fresh Bike Availability for both pickup and return, with the required actions enabled;
+- a Bus, Metro, TRA, or THSR Leg uses the selected `EffectiveTrip` timing basis; `RealtimePrediction` and `DelayAdjustedSchedule` are realtime-backed, while `Schedule` and `FrequencyEstimate` are static-backed;
+- applicable Service Conditions remain required only when the source contract supplies them and they are blocking; transit timing does not require fresh realtime when static fallback can calculate the Leg;
+- a YouBike Leg requires pickup and return availability when the provider supplies it; fresh usable realtime can support `reliable`, while missing, stale, degraded, unavailable, or rate-limited availability produces `feasible` unless an action is explicitly disabled or has zero inventory/capacity;
 - a Metro Leg requires each Service Condition that the operator/source contract is expected to provide;
 - Walking is calculated and does not require Live Status; and
 - a datum that an operator does not provide is not treated as missing expected Live Status.
 
-Taipei Metro is the initial explicit exception to a universal Arrival Estimate requirement. Its source does not provide a useful future train Arrival Estimate, so Via calculates expected Metro wait and arrival from published frequency, station-to-station duration, and Transfer duration. A missing future Metro Arrival Estimate is not degradation. Missing or unusable expected Metro Service Conditions still make the affected Journey Option ineligible.
+Taipei Metro can calculate expected wait and arrival from published frequency, station-to-station duration, and Transfer duration when a future train Arrival Estimate is unavailable. Missing future realtime is therefore eligible through static fallback, while an explicitly impossible action or blocking Service Condition still makes the affected Journey Option ineligible.
 
-Schedule data can generate and calculate candidate Legs. It cannot silently replace expected Live Status at the eligibility gate.
+Schedule and frequency data can generate and calculate candidate Legs. The selected timing basis is carried through reconstruction and ranking so the class reflects the evidence used.
 
 ## Reliable and Feasible classes
 
@@ -31,10 +32,10 @@ Every eligible Journey Option has one of two server-owned classes:
 
 | Class | Meaning |
 | --- | --- |
-| `reliable` | All critical Legs and Transfers are feasible and meet every configured safety buffer. |
-| `feasible` | Required Live Status is fresh and the Journey Option remains physically and operationally possible, but at least one configured safety buffer is not met. |
+| `reliable` | All transit timing facts and required YouBike availability facts are backed by fresh usable realtime, and all critical Legs and Transfers meet every configured safety buffer. |
+| `feasible` | The Journey Option remains physically and operationally possible, but at least one timing or availability fact uses static, unknown, stale, degraded, unavailable, or otherwise non-realtime evidence, or a configured safety buffer is not met. |
 
-`feasible` describes a live, possible Journey Option with a tight margin. It does not describe missing or degraded data.
+`feasible` describes a possible Journey Option without claiming that every critical fact is currently backed by fresh realtime. It may also describe a live Journey Option with a tight margin.
 
 The initial safety policy is:
 
@@ -52,7 +53,7 @@ Safety thresholds and station-specific overrides are versioned policy. A larger 
 For one Planning Request and one frozen request-local evidence context, the server:
 
 1. generates Pareto candidates;
-2. removes candidates with unavailable required Live Status or an infeasible critical action;
+2. removes candidates with an explicitly impossible critical action;
 3. classifies each survivor as Reliable or Feasible;
 4. removes candidates dominated under the arrival/class policy;
 5. orders candidates by the arrival/class policy and deterministic tie-breakers;
@@ -133,11 +134,11 @@ The API also returns machine-readable reasons such as `earliest_arrival`, `earli
 
 The implementation is conformant only when automated fixtures prove that:
 
-- missing, stale, degraded, or unusable required Live Status suppresses the affected Journey Option;
+- missing, stale, degraded, not-yet-departed, timed-out, rate-limited, or unusable transit realtime falls back to static timing and classifies the affected Journey Option as Feasible when it remains possible;
 - missing data that an operator is not expected to provide does not create false degradation;
 - a Taipei Metro Journey Option can use a calculated wait without claiming a future train Arrival Estimate;
 - the three-minute and five-minute Transfer safety boundaries classify exactly;
-- zero, one, two, and three bikes and return slots classify exactly;
+- zero bikes or return slots, and disabled pickup or return actions, block the affected Journey Option; unknown or unavailable bike availability remains Feasible;
 - a materially earlier Feasible Journey Option precedes a substantially slower Reliable Journey Option;
 - a Reliable Journey Option precedes a Feasible Journey Option whose arrival is within the configured reliability-preference window;
 - dominance, near-duplicate, five-minute Walking, and 15-minute delay boundaries behave exactly as specified;
@@ -148,7 +149,7 @@ The implementation is conformant only when automated fixtures prove that:
 ## Consequences
 
 - Via can show a possible Journey Option with a tight live margin without weakening the meaning of Reliable Arrival.
-- A feed problem reduces the number of displayed Journey Options instead of producing a schedule-only or degraded substitute.
+- A feed problem lowers confidence to Feasible when the journey remains possible instead of producing a false Reliable claim.
 - The score can be calibrated without changing the eligibility, class, label, or diversity contracts.
 - Clients receive explainable decisions and cannot drift in ranking behavior.
 - The market comparison and calibration guidance are recorded in [the issue #11 ranking research](../research/issue-11-journey-ranking-comparison.md).

@@ -585,6 +585,25 @@ async fn direct_youbike_journey_reconstructs_pickup_ride_and_return() {
     );
     assert_eq!(option["legs"][1]["details"]["available_bikes"], 4);
     assert_eq!(option["legs"][1]["details"]["available_return_slots"], 4);
+    assert_eq!(option["class"], "reliable");
+}
+
+#[tokio::test]
+async fn direct_youbike_journey_survives_missing_realtime_as_feasible() {
+    let network = network();
+    let origin = coordinate(25.099000, 121.499000);
+    let destination = coordinate(25.101500, 121.501500);
+    let body = route_body(
+        direct_bike_street(&network, origin, destination),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["bike_share"]),
+    )
+    .await;
+    let option = option_for_services(&body, &[]);
+
+    assert_eq!(option["class"], "feasible");
+    assert_eq!(option["legs"][1]["details"]["pickup_state"], "unknown");
+    assert_eq!(option["legs"][1]["details"]["return_state"], "unknown");
 }
 
 #[tokio::test]

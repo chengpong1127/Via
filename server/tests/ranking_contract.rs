@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use via_server::domain::realtime::ActionState;
 use via_server::domain::{
     ranking::{
@@ -7,6 +5,7 @@ use via_server::domain::{
         RankingReason, TransferEvidence, TransferKind,
     },
     realtime::FreshnessState,
+    transit_timing::TimingBasis,
 };
 
 fn candidate(key: &str, arrival: i64) -> CandidateJourney {
@@ -18,6 +17,7 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         bike_share_seconds: 0,
         transfer_count: 1,
         main_service_sequence: vec![key.into()],
+        timing_bases: Vec::new(),
         required_live_status: vec![FreshnessState::Fresh],
         transfers: Vec::new(),
         bike_availability: None,
@@ -35,6 +35,41 @@ fn required_live_status_is_an_eligibility_gate() {
 
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].stable_key, "fresh");
+}
+
+#[test]
+fn timing_basis_is_the_reliability_source_of_truth() {
+    let mut realtime = candidate("realtime", 2_000);
+    realtime.timing_bases = vec![TimingBasis::RealtimePrediction];
+    realtime.walking_seconds = 500;
+    let mut delay_adjusted = candidate("delay-adjusted", 2_001);
+    delay_adjusted.timing_bases = vec![TimingBasis::DelayAdjustedSchedule];
+    delay_adjusted.walking_seconds = 400;
+    let mut schedule = candidate("schedule", 2_002);
+    schedule.timing_bases = vec![TimingBasis::Schedule];
+    schedule.walking_seconds = 300;
+    let mut frequency = candidate("frequency", 2_003);
+    frequency.timing_bases = vec![TimingBasis::FrequencyEstimate];
+    frequency.walking_seconds = 200;
+    let mut mixed = candidate("mixed", 2_004);
+    mixed.timing_bases = vec![TimingBasis::RealtimePrediction, TimingBasis::Schedule];
+    mixed.walking_seconds = 100;
+
+    let ranked = RankingPolicy {
+        result_limit: 5,
+        ..RankingPolicy::default()
+    }
+    .rank(vec![realtime, delay_adjusted, schedule, frequency, mixed]);
+
+    let classes = ranked
+        .iter()
+        .map(|journey| (journey.stable_key.as_str(), journey.class))
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(classes["realtime"], JourneyClass::Reliable);
+    assert_eq!(classes["delay-adjusted"], JourneyClass::Reliable);
+    assert_eq!(classes["schedule"], JourneyClass::Feasible);
+    assert_eq!(classes["frequency"], JourneyClass::Feasible);
+    assert_eq!(classes["mixed"], JourneyClass::Feasible);
 }
 
 #[test]
@@ -105,6 +140,30 @@ fn youbike_zero_one_two_and_three_thresholds_are_exact() {
 }
 
 #[test]
+fn unknown_youbike_availability_is_feasible_but_explicit_impossibility_blocks() {
+    let mut unknown = candidate("unknown-bike", 2_000);
+    unknown.bike_availability = Some(BikeActionEvidence {
+        pickup_state: ActionState::Unknown,
+        return_state: ActionState::Unknown,
+        available_bikes: None,
+        available_return_slots: None,
+    });
+    let mut disabled = candidate("disabled-bike", 2_001);
+    disabled.bike_availability = Some(BikeActionEvidence {
+        pickup_state: ActionState::Disabled,
+        return_state: ActionState::Enabled,
+        available_bikes: None,
+        available_return_slots: Some(5),
+    });
+
+    let ranked = RankingPolicy::default().rank(vec![unknown, disabled]);
+
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].stable_key, "unknown-bike");
+    assert_eq!(ranked[0].class, JourneyClass::Feasible);
+}
+
+#[test]
 fn dominance_near_duplicates_and_labels_are_server_owned() {
     let best = candidate("blue-line", 2_000);
     let mut duplicate = candidate("blue-line", 2_240);
@@ -143,10 +202,9 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
     metro.walking_seconds = 240;
     metro.transfer_count = 0;
     metro.main_service_sequence = vec!["metro-blue".into()];
-    let schedule_only = HashSet::from([metro.stable_key.clone()]);
+    metro.timing_bases = vec![TimingBasis::Schedule];
 
-    let ranked =
-        RankingPolicy::default().rank_with_schedule_only(vec![walking, metro], &schedule_only);
+    let ranked = RankingPolicy::default().rank(vec![walking, metro]);
 
     assert_eq!(ranked[0].stable_key, "schedule-only-metro");
     assert_eq!(ranked[0].class, JourneyClass::Feasible);
@@ -157,11 +215,10 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
 #[test]
 fn reliable_journey_wins_when_arrivals_are_within_reliability_window() {
     let reliable = candidate("reliable", 13 * 60);
-    let feasible = candidate("schedule-only", 12 * 60);
-    let schedule_only = HashSet::from([feasible.stable_key.clone()]);
+    let mut feasible = candidate("schedule-only", 12 * 60);
+    feasible.timing_bases = vec![TimingBasis::Schedule];
 
-    let ranked =
-        RankingPolicy::default().rank_with_schedule_only(vec![feasible, reliable], &schedule_only);
+    let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
 
     assert_eq!(ranked[0].stable_key, "reliable");
     assert_eq!(ranked[0].class, JourneyClass::Reliable);
@@ -176,13 +233,13 @@ fn reliability_preference_window_is_configurable() {
     let mut feasible = candidate("schedule-only", 12 * 60);
     feasible.transfer_count = 1;
     feasible.walking_seconds = 600;
-    let schedule_only = HashSet::from([feasible.stable_key.clone()]);
+    feasible.timing_bases = vec![TimingBasis::Schedule];
     let policy = RankingPolicy {
         reliability_preference_window_seconds: 30,
         ..RankingPolicy::default()
     };
 
-    let ranked = policy.rank_with_schedule_only(vec![reliable, feasible], &schedule_only);
+    let ranked = policy.rank(vec![reliable, feasible]);
 
     assert_eq!(ranked[0].stable_key, "schedule-only");
 }
@@ -193,10 +250,9 @@ fn feasible_journey_wins_when_arrival_difference_is_material() {
     let mut feasible = candidate("schedule-only", 15 * 60);
     feasible.transfer_count = 1;
     feasible.walking_seconds = 600;
-    let schedule_only = HashSet::from([feasible.stable_key.clone()]);
+    feasible.timing_bases = vec![TimingBasis::Schedule];
 
-    let ranked =
-        RankingPolicy::default().rank_with_schedule_only(vec![reliable, feasible], &schedule_only);
+    let ranked = RankingPolicy::default().rank(vec![reliable, feasible]);
 
     assert_eq!(ranked[0].stable_key, "schedule-only");
     assert_eq!(ranked[0].class, JourneyClass::Feasible);
@@ -234,10 +290,9 @@ fn near_duplicates_keep_the_option_preferred_by_the_ranking_policy() {
     reliable.main_service_sequence = vec!["shared-service".into()];
     let mut feasible = candidate("schedule-only", 12 * 60);
     feasible.main_service_sequence = vec!["shared-service".into()];
-    let schedule_only = HashSet::from([feasible.stable_key.clone()]);
+    feasible.timing_bases = vec![TimingBasis::Schedule];
 
-    let ranked =
-        RankingPolicy::default().rank_with_schedule_only(vec![feasible, reliable], &schedule_only);
+    let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
 
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].stable_key, "reliable");

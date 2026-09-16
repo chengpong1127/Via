@@ -1003,18 +1003,23 @@ pub fn shortcut_is_usable(
         else {
             return true;
         };
-        let Some(pickup) = availability.get(pickup_station_id) else {
-            return false;
-        };
-        let Some(return_station) = availability.get(return_station_id) else {
-            return false;
-        };
-        pickup.rental_state == crate::domain::realtime::ActionState::Enabled
-            && pickup.available_bikes.is_some_and(|count| count > 0)
-            && return_station.return_state == crate::domain::realtime::ActionState::Enabled
-            && return_station
-                .available_return_slots
-                .is_some_and(|count| count > 0)
+        bike_availability_is_usable(
+            availability.get(pickup_station_id),
+            availability.get(return_station_id),
+        )
+    })
+}
+
+pub fn bike_availability_is_usable(
+    pickup: Option<&BikeAvailability>,
+    return_station: Option<&BikeAvailability>,
+) -> bool {
+    pickup.is_none_or(|availability| {
+        availability.rental_state != crate::domain::realtime::ActionState::Disabled
+            && availability.available_bikes != Some(0)
+    }) && return_station.is_none_or(|availability| {
+        availability.return_state != crate::domain::realtime::ActionState::Disabled
+            && availability.available_return_slots != Some(0)
     })
 }
 

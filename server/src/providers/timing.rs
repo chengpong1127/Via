@@ -16,7 +16,7 @@ use crate::{
         transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
         transit_timing::{
             DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-            ScheduleDepartureResolver,
+            RealtimeFirstDepartureResolver, ScheduleDepartureResolver,
         },
     },
     routing::transfers::{BikeAvailabilityResolver, TransferError},
@@ -555,24 +555,57 @@ impl DepartureResolver for RealtimeDepartureResolver {
     }
 }
 
-/// Selects a timing adapter from provider-neutral service metadata.
-pub struct CompositeDepartureResolver {
+#[derive(Clone)]
+struct StaticDepartureResolver {
     network: Arc<TransitNetwork>,
-    default: Arc<dyn DepartureResolver>,
     fallback: Arc<dyn DepartureResolver>,
     adapters: HashMap<String, Arc<dyn DepartureResolver>>,
+}
+
+#[async_trait]
+impl DepartureResolver for StaticDepartureResolver {
+    async fn next_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        let Some(service) = self.network.service(&query.service_id) else {
+            return Err(DepartureError::InvalidQuery);
+        };
+        let Some(timing_source) = service.timing_source.as_deref() else {
+            return self.fallback.next_departures(query).await;
+        };
+        let Some(adapter) = self.adapters.get(timing_source) else {
+            return self.fallback.next_departures(query).await;
+        };
+        match adapter.next_departures(query.clone()).await {
+            Ok(departures) if !departures.is_empty() => Ok(departures),
+            Ok(_) => self.fallback.next_departures(query).await,
+            Err(adapter_error) => match self.fallback.next_departures(query).await {
+                Ok(departures) if !departures.is_empty() => Ok(departures),
+                Ok(_) | Err(_) => Err(adapter_error),
+            },
+        }
+    }
+}
+
+/// Resolves realtime departures first, then dispatches static timing sources.
+pub struct CompositeDepartureResolver {
+    realtime: Arc<dyn DepartureResolver>,
+    static_resolver: StaticDepartureResolver,
 }
 
 impl CompositeDepartureResolver {
     pub fn with_schedule_fallback(
         network: Arc<TransitNetwork>,
-        fallback_adapter: Arc<dyn DepartureResolver>,
+        realtime_resolver: Arc<dyn DepartureResolver>,
     ) -> Self {
         Self {
-            default: fallback_adapter.clone(),
-            fallback: Arc::new(ScheduleDepartureResolver::new(network.clone())),
-            network,
-            adapters: HashMap::from([(String::from("bus_n1"), fallback_adapter)]),
+            realtime: realtime_resolver,
+            static_resolver: StaticDepartureResolver {
+                fallback: Arc::new(ScheduleDepartureResolver::new(network.clone())),
+                network,
+                adapters: HashMap::new(),
+            },
         }
     }
 
@@ -581,8 +614,17 @@ impl CompositeDepartureResolver {
         timing_source: impl Into<String>,
         adapter: Arc<dyn DepartureResolver>,
     ) -> Self {
-        self.adapters.insert(timing_source.into(), adapter);
+        self.static_resolver
+            .adapters
+            .insert(timing_source.into(), adapter);
         self
+    }
+
+    fn realtime_first(&self) -> RealtimeFirstDepartureResolver {
+        RealtimeFirstDepartureResolver::new(
+            self.realtime.clone(),
+            Arc::new(self.static_resolver.clone()),
+        )
     }
 }
 
@@ -592,160 +634,14 @@ impl DepartureResolver for CompositeDepartureResolver {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(service) = self.network.service(&query.service_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        let Some(timing_source) = service.timing_source.as_deref() else {
-            let scheduled = self.fallback.next_departures(query.clone()).await?;
-            return if scheduled.is_empty() {
-                self.default.next_departures(query).await
-            } else {
-                Ok(scheduled)
-            };
-        };
-        let Some(adapter) = self.adapters.get(timing_source) else {
-            let scheduled = self.fallback.next_departures(query.clone()).await?;
-            return if scheduled.is_empty() {
-                self.default.next_departures(query).await
-            } else {
-                Ok(scheduled)
-            };
-        };
-        let preferred = adapter.next_departures(query.clone()).await;
-        match preferred {
-            Ok(departures) if !departures.is_empty() => Ok(departures),
-            Ok(_) => self.fallback.next_departures(query).await,
-            Err(preferred_error) => match self.fallback.next_departures(query).await {
-                Ok(departures) if !departures.is_empty() => Ok(departures),
-                Ok(_) | Err(_) => Err(preferred_error),
-            },
-        }
+        self.realtime_first().next_departures(query).await
     }
 
     async fn next_departures_batch(
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
-        if queries.is_empty() {
-            return Vec::new();
-        }
-
-        enum FallbackMode {
-            ReturnSchedule,
-            UseDefaultWhenEmpty,
-            PreferOriginalOnFailure(DepartureError),
-        }
-
-        let mut results = (0..queries.len())
-            .map(|_| None::<Result<Vec<EffectiveTrip>, DepartureError>>)
-            .collect::<Vec<_>>();
-        let mut adapter_groups = HashMap::<String, Vec<(usize, DepartureQuery)>>::new();
-        let mut schedule_requests = Vec::<(usize, DepartureQuery, FallbackMode)>::new();
-
-        for (index, query) in queries.iter().cloned().enumerate() {
-            let Some(service) = self.network.service(&query.service_id) else {
-                results[index] = Some(Err(DepartureError::InvalidQuery));
-                continue;
-            };
-            let Some(timing_source) = service.timing_source.as_deref() else {
-                schedule_requests.push((index, query, FallbackMode::UseDefaultWhenEmpty));
-                continue;
-            };
-            if self.adapters.contains_key(timing_source) {
-                adapter_groups
-                    .entry(timing_source.to_owned())
-                    .or_default()
-                    .push((index, query));
-            } else {
-                schedule_requests.push((index, query, FallbackMode::UseDefaultWhenEmpty));
-            }
-        }
-
-        for (timing_source, grouped_queries) in adapter_groups {
-            let adapter = self
-                .adapters
-                .get(&timing_source)
-                .expect("adapter group was checked before dispatch");
-            let grouped_results = adapter
-                .next_departures_batch(
-                    grouped_queries
-                        .iter()
-                        .map(|(_, query)| query.clone())
-                        .collect(),
-                )
-                .await;
-            for (position, (index, query)) in grouped_queries.into_iter().enumerate() {
-                let preferred = grouped_results
-                    .get(position)
-                    .cloned()
-                    .unwrap_or(Err(DepartureError::TemporarilyUnavailable));
-                match preferred {
-                    Ok(departures) if !departures.is_empty() => {
-                        results[index] = Some(Ok(departures));
-                    }
-                    Ok(_) => schedule_requests.push((index, query, FallbackMode::ReturnSchedule)),
-                    Err(error) => schedule_requests.push((
-                        index,
-                        query,
-                        FallbackMode::PreferOriginalOnFailure(error),
-                    )),
-                }
-            }
-        }
-
-        let fallback_queries = schedule_requests
-            .iter()
-            .map(|(_, query, _)| query.clone())
-            .collect::<Vec<_>>();
-        let fallback_results = self.fallback.next_departures_batch(fallback_queries).await;
-        let mut default_requests = Vec::<(usize, DepartureQuery)>::new();
-        for (position, (index, query, mode)) in schedule_requests.into_iter().enumerate() {
-            let scheduled = fallback_results
-                .get(position)
-                .cloned()
-                .unwrap_or(Err(DepartureError::TemporarilyUnavailable));
-            match mode {
-                FallbackMode::ReturnSchedule => results[index] = Some(scheduled),
-                FallbackMode::PreferOriginalOnFailure(error) => {
-                    results[index] = Some(match scheduled {
-                        Ok(departures) if !departures.is_empty() => Ok(departures),
-                        Ok(_) | Err(_) => Err(error),
-                    });
-                }
-                FallbackMode::UseDefaultWhenEmpty => match scheduled {
-                    Ok(departures) if !departures.is_empty() => {
-                        results[index] = Some(Ok(departures));
-                    }
-                    Ok(_) => default_requests.push((index, query)),
-                    Err(error) => results[index] = Some(Err(error)),
-                },
-            }
-        }
-
-        if !default_requests.is_empty() {
-            let default_results = self
-                .default
-                .next_departures_batch(
-                    default_requests
-                        .iter()
-                        .map(|(_, query)| query.clone())
-                        .collect(),
-                )
-                .await;
-            for (position, (index, _)) in default_requests.into_iter().enumerate() {
-                results[index] = Some(
-                    default_results
-                        .get(position)
-                        .cloned()
-                        .unwrap_or(Err(DepartureError::TemporarilyUnavailable)),
-                );
-            }
-        }
-
-        results
-            .into_iter()
-            .map(|result| result.unwrap_or(Err(DepartureError::TemporarilyUnavailable)))
-            .collect()
+        self.realtime_first().next_departures_batch(queries).await
     }
 }
 

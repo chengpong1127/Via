@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use time::{Duration, OffsetDateTime};
 
@@ -453,17 +449,11 @@ impl RoutingService {
         request: PlanningRequest,
         generated: Vec<GeneratedCandidate>,
     ) -> Result<PlanningOutcome, PlanningError> {
-        let schedule_only_keys = generated
-            .iter()
-            .filter(|candidate| candidate.schedule_only)
-            .map(|candidate| candidate.ranking.stable_key.clone())
-            .collect::<HashSet<_>>();
-        let ranked = self.ranking.rank_with_schedule_only(
+        let ranked = self.ranking.rank(
             generated
                 .iter()
                 .map(|candidate| candidate.ranking.clone())
                 .collect(),
-            &schedule_only_keys,
         );
         let mut by_key = generated
             .into_iter()
@@ -563,7 +553,6 @@ impl PlanningContext {
 pub(crate) struct GeneratedCandidate {
     pub(crate) ranking: CandidateJourney,
     pub(crate) option: JourneyOption,
-    pub(crate) schedule_only: bool,
 }
 
 pub(crate) struct DirectWalking {

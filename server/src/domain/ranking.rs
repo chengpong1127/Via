@@ -1,8 +1,11 @@
-use std::{cmp::Ordering, collections::HashSet};
+use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::realtime::{ActionState, FreshnessState};
+use crate::domain::{
+    realtime::{ActionState, FreshnessState},
+    transit_timing::TimingBasis,
+};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
@@ -63,6 +66,7 @@ pub struct CandidateJourney {
     pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
+    pub timing_bases: Vec<TimingBasis>,
     pub required_live_status: Vec<FreshnessState>,
     pub transfers: Vec<TransferEvidence>,
     pub bike_availability: Option<BikeActionEvidence>,
@@ -115,17 +119,9 @@ impl Default for RankingPolicy {
 
 impl RankingPolicy {
     pub fn rank(&self, candidates: Vec<CandidateJourney>) -> Vec<RankedJourney> {
-        self.rank_with_schedule_only(candidates, &HashSet::new())
-    }
-
-    pub fn rank_with_schedule_only(
-        &self,
-        candidates: Vec<CandidateJourney>,
-        schedule_only_keys: &HashSet<String>,
-    ) -> Vec<RankedJourney> {
         let mut eligible: Vec<_> = candidates
             .into_iter()
-            .filter_map(|candidate| self.classify(candidate, schedule_only_keys))
+            .filter_map(|candidate| self.classify(candidate))
             .collect();
 
         eligible = remove_dominated(self, eligible);
@@ -148,11 +144,7 @@ impl RankingPolicy {
         selected
     }
 
-    fn classify(
-        &self,
-        candidate: CandidateJourney,
-        schedule_only_keys: &HashSet<String>,
-    ) -> Option<RankedJourney> {
+    fn classify(&self, candidate: CandidateJourney) -> Option<RankedJourney> {
         if candidate.blocking_condition
             || candidate
                 .required_live_status
@@ -162,7 +154,11 @@ impl RankingPolicy {
             return None;
         }
 
-        let mut class = if schedule_only_keys.contains(&candidate.stable_key) {
+        let mut class = if candidate
+            .timing_bases
+            .iter()
+            .any(|basis| basis.is_static_backed())
+        {
             JourneyClass::Feasible
         } else {
             JourneyClass::Reliable
@@ -183,14 +179,19 @@ impl RankingPolicy {
         }
 
         if let Some(bike) = candidate.bike_availability {
-            if bike.pickup_state != ActionState::Enabled
-                || bike.return_state != ActionState::Enabled
+            if bike.pickup_state == ActionState::Disabled
+                || bike.return_state == ActionState::Disabled
                 || bike.available_bikes == Some(0)
                 || bike.available_return_slots == Some(0)
+            {
+                return None;
+            }
+            if bike.pickup_state != ActionState::Enabled
+                || bike.return_state != ActionState::Enabled
                 || bike.available_bikes.is_none()
                 || bike.available_return_slots.is_none()
             {
-                return None;
+                class = JourneyClass::Feasible;
             }
             if bike.available_bikes < Some(self.reliable_bike_count) {
                 class = JourneyClass::Feasible;

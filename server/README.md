@@ -140,12 +140,14 @@ The shortcut builder is ULTRA-compatible in representation, but exact ULTRA
 offline preprocessing is intentionally deferred until the required static
 street preprocessing artifact exists.
 
-The currently wired TDX timing path is Bus `EstimatedTimeOfArrival` when the
-service metadata selects `bus_n1`, with the static timetable as the deliberate
-fallback for missing or unsupported timing sources and failed Bus realtime.
-The same adapter boundary is ready for TRA, THSR, and Metro
-live-board/timetable/frequency adapters; those live endpoints are not claimed
-as implemented until their payload contracts are available.
+The wired timing path is realtime-first for every transit mode. A normalized
+realtime departure resolver is attempted for Bus, Metro, TRA, and THSR, then
+the service's static schedule or frequency resolver is used when realtime is
+empty, stale, unavailable, or not yet represented. TDX Bus
+`EstimatedTimeOfArrival` is currently the live-board payload used in the
+checked-in provider fixtures; the provider-neutral boundary keeps the same
+fallback semantics for the other modes as their live payload contracts are
+added.
 
 ## Tests
 

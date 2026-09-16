@@ -10,7 +10,9 @@ use crate::{
             Place, PlanningError, RankingReason, Transfer,
         },
         ranking::{BikeActionEvidence, TransferEvidence},
-        realtime::{FreshnessState, RealtimeValue},
+        realtime::{
+            ActionState, BikeAvailability, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
+        },
         transit::{TransitMode, TransitRide},
         transit_timing::TimingBasis,
     },
@@ -393,26 +395,21 @@ async fn append_transfer_path(
                 return_station_id,
                 ..
             } => {
-                let Some(pickup_status) = realtime.bike(pickup_station_id) else {
-                    return Ok(false);
-                };
-                let Some(return_status) = realtime.bike(return_station_id) else {
-                    return Ok(false);
-                };
-                let RealtimeValue::BikeAvailability(pickup) = &pickup_status.value else {
-                    return Ok(false);
-                };
-                let RealtimeValue::BikeAvailability(return_station) = &return_status.value else {
-                    return Ok(false);
-                };
-                let live = vec![
-                    evidence::from_realtime_value(pickup_status),
-                    evidence::from_realtime_value(return_status),
-                ];
+                let (pickup, pickup_live) = effective_bike_availability(
+                    realtime.bike(pickup_station_id),
+                    pickup_station_id,
+                    result.arrival_time,
+                );
+                let (return_station, return_live) = effective_bike_availability(
+                    realtime.bike(return_station_id),
+                    return_station_id,
+                    result.arrival_time,
+                );
+                let live = pickup_live
+                    .into_iter()
+                    .chain(return_live)
+                    .collect::<Vec<_>>();
                 result.live_evidence.extend(live.clone());
-                result
-                    .required_states
-                    .extend([pickup_status.freshness.state, return_status.freshness.state]);
                 if result.bike_availability.is_none() {
                     result.bike_availability = Some(BikeActionEvidence {
                         pickup_state: pickup.rental_state,
@@ -426,8 +423,8 @@ async fn append_transfer_path(
                     &next.1,
                     departure,
                     &path,
-                    pickup,
-                    return_station,
+                    &pickup,
+                    &return_station,
                     live,
                 );
                 leg.id = leg_id;
@@ -466,6 +463,44 @@ fn synthetic_street_path(
             crate::street::Maneuver::arrive(1),
         ],
         attribution: Vec::new(),
+    }
+}
+
+fn effective_bike_availability(
+    status: Option<&NormalizedRealtimeValue>,
+    station_id: &crate::domain::ids::BikeShareStationId,
+    evaluated_at: OffsetDateTime,
+) -> (BikeAvailability, Option<LiveStatusEvidence>) {
+    let Some(status) = status else {
+        return (unknown_bike_availability(station_id, evaluated_at), None);
+    };
+    let RealtimeValue::BikeAvailability(availability) = &status.value else {
+        return (unknown_bike_availability(station_id, evaluated_at), None);
+    };
+    let evidence = Some(evidence::from_realtime_value(status));
+    if status.freshness.state == FreshnessState::Fresh {
+        (availability.clone(), evidence)
+    } else {
+        (
+            unknown_bike_availability(station_id, evaluated_at),
+            evidence,
+        )
+    }
+}
+
+fn unknown_bike_availability(
+    station_id: &crate::domain::ids::BikeShareStationId,
+    received_at: OffsetDateTime,
+) -> BikeAvailability {
+    BikeAvailability {
+        station_id: station_id.clone(),
+        rental_state: ActionState::Unknown,
+        return_state: ActionState::Unknown,
+        available_bikes: None,
+        available_return_slots: None,
+        source_change_at: None,
+        provider_published_at: None,
+        received_at,
     }
 }
 

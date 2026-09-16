@@ -68,6 +68,20 @@ _Avoid_: Recency, updated state
 An estimated arrival whose critical Legs and Transfers remain feasible under current operational data and safety buffers.
 _Avoid_: Fastest route, guaranteed arrival
 
+## Timing and reliability
+
+Every transit mode is resolved realtime-first with static fallback. Realtime
+departures are used only when fresh and usable; empty, stale, missing, future,
+or failed realtime resolution falls back to static timing without removing an
+otherwise valid journey.
+
+`EffectiveTrip.timing_basis` is the source of truth for journey reliability.
+`RealtimePrediction` and `DelayAdjustedSchedule` are realtime-backed;
+`Schedule` and `FrequencyEstimate` are static-backed. A journey is
+`Reliable` only when every transit timing fact and required YouBike
+availability fact is fresh realtime. Otherwise, a valid journey is
+`Feasible`.
+
 ## Transit identity decision
 
 Via currently uses TDX as the authoritative source for Taiwan transit static

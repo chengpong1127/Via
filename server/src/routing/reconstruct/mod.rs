@@ -11,7 +11,6 @@ use crate::{
     domain::{
         journey::{JourneyClass, JourneyMode, JourneyOption, Place, PlanningError},
         ranking::RankedJourney,
-        transit_timing::TimingBasis,
     },
 };
 
@@ -78,16 +77,13 @@ impl RoutingService {
                 transfer_count: candidate.transfer_count,
                 bike_share_seconds: candidate.bike_seconds,
                 main_service_sequence: assembled.main_service_sequence,
+                timing_bases: candidate.timing_bases.clone(),
                 required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
                 bike_availability: assembled.bike_availability,
                 blocking_condition: false,
             },
             option,
-            schedule_only: candidate
-                .timing_bases
-                .iter()
-                .all(|basis| matches!(basis, TimingBasis::Schedule)),
         }))
     }
 
@@ -140,13 +136,13 @@ impl RoutingService {
                 transfer_count: 0,
                 bike_share_seconds: 0,
                 main_service_sequence: Vec::new(),
+                timing_bases: Vec::new(),
                 required_live_status: Vec::new(),
                 transfers: Vec::new(),
                 bike_availability: None,
                 blocking_condition: false,
             },
             option,
-            schedule_only: false,
         }))
     }
 
@@ -214,13 +210,13 @@ impl RoutingService {
                 transfer_count: 0,
                 bike_share_seconds: path.bike_seconds(),
                 main_service_sequence: assembled.main_service_sequence,
+                timing_bases: Vec::new(),
                 required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
                 bike_availability: assembled.bike_availability,
                 blocking_condition: false,
             },
             option,
-            schedule_only: false,
         }))
     }
 
