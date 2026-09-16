@@ -6,8 +6,8 @@ use via_server::{
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         transit::{
-            MetroStationTiming, MetroTiming, TransitMode, TransitNetwork, TransitService,
-            TransitStop,
+            MetroStationTiming, MetroTiming, TransitMode, TransitNetwork,
+            TransitNetworkValidationError, TransitService, TransitStop,
         },
         transit_timing::{
             DepartureQuery, DepartureResolver, ScheduleDepartureResolver, TimingBasis,
@@ -133,7 +133,8 @@ fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
     fs::write(
         input.join("metro/trtc-station-timetable.json"),
         r#"[
-          {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Sequence":1,"TrainNo":"BL-0800","ArrivalTime":"08:00","DepartureTime":"08:00"},{"Sequence":2,"TrainNo":"BL-0805","ArrivalTime":"08:05","DepartureTime":"08:05"}]}
+          {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Sequence":1,"TrainNo":"BL-0800","ArrivalTime":"08:00","DepartureTime":"08:00"},{"Sequence":2,"TrainNo":"BL-0805","ArrivalTime":"08:05","DepartureTime":"08:05"}]},
+          {"LineID":"BL","Direction":1,"StationID":"R03","Timetables":[{"Sequence":1,"TrainNo":"BL-0900","ArrivalTime":"09:00","DepartureTime":"09:00"}]}
         ]"#,
     )
     .unwrap();
@@ -154,17 +155,111 @@ fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
 
     let result = build_from_raw(&input, &output, None, None).unwrap();
     assert!(result.network.trips.is_empty());
-    assert_eq!(result.network.metro_timings.len(), 1);
-    assert_eq!(
-        result.network.metro_timings[0].inter_station_travel_seconds,
-        vec![240]
+    assert_eq!(result.network.metro_timings.len(), 2);
+    assert!(
+        result
+            .network
+            .services
+            .iter()
+            .any(|service| service.id.as_str() == "metro:BL::direction=0")
     );
+    assert!(
+        result
+            .network
+            .services
+            .iter()
+            .any(|service| service.id.as_str() == "metro:BL::direction=1")
+    );
+    let forward_timing = result
+        .network
+        .metro_timings
+        .iter()
+        .find(|timing| timing.service_id.as_str() == "metro:BL::direction=0")
+        .unwrap();
+    let reverse_timing = result
+        .network
+        .metro_timings
+        .iter()
+        .find(|timing| timing.service_id.as_str() == "metro:BL::direction=1")
+        .unwrap();
+    assert_eq!(forward_timing.inter_station_travel_seconds, vec![240]);
     assert_eq!(
-        result.network.metro_timings[0].station_timings[0].departures_seconds,
+        forward_timing.station_timings[0].departures_seconds,
         vec![28_800, 29_100]
     );
+    assert!(
+        forward_timing
+            .station_timings
+            .iter()
+            .all(|station| !station.departures_seconds.contains(&32_400))
+    );
     assert_eq!(
-        result.network.metro_timings[0].station_timings[0].frequencies[0].headway_seconds,
+        forward_timing.station_timings[0].frequencies[0].headway_seconds,
         120
     );
+    assert_eq!(reverse_timing.inter_station_travel_seconds, vec![240]);
+    assert_eq!(
+        reverse_timing
+            .station_timings
+            .iter()
+            .find(|station| station.stop_id.as_str() == "TRTC-R03")
+            .unwrap()
+            .departures_seconds,
+        vec![32_400]
+    );
+}
+
+#[test]
+fn metro_timing_rejects_a_pattern_from_the_opposite_direction() {
+    let first = BoardingPointId::new("TRTC-R03");
+    let second = BoardingPointId::new("TRTC-R10");
+    let service_id = TransitServiceId::new("metro:R::direction=0");
+    let network = TransitNetwork::new(
+        time::Time::from_hms(4, 0, 0).unwrap(),
+        vec![
+            TransitStop::new(
+                first.clone(),
+                "Taipei 101/World Trade Center",
+                via_server::api::RequestCoordinate {
+                    latitude: 25.0339,
+                    longitude: 121.5645,
+                },
+            ),
+            TransitStop::new(
+                second.clone(),
+                "Taipei Main Station",
+                via_server::api::RequestCoordinate {
+                    latitude: 25.0478,
+                    longitude: 121.5170,
+                },
+            ),
+        ],
+        vec![TransitService::new(
+            service_id.clone(),
+            TransitMode::Metro,
+            "Red Line",
+            "Taipei Main Station",
+            vec![first.clone(), second.clone()],
+        )],
+        Vec::new(),
+        Vec::new(),
+    )
+    .with_metro_timings(vec![
+        MetroTiming::new(
+            service_id.clone(),
+            vec![MetroStationTiming {
+                stop_id: first,
+                departures_seconds: vec![28_800],
+                frequencies: Vec::new(),
+            }],
+            vec![240],
+        )
+        .with_pattern(vec![second, BoardingPointId::new("TRTC-R03")]),
+    ])
+    .with_revisions("static", "schedule");
+
+    assert!(matches!(
+        network.validate(),
+        Err(TransitNetworkValidationError::InvalidMetroTimingShape(id)) if id == service_id
+    ));
 }

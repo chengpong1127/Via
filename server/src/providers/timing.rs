@@ -101,7 +101,8 @@ impl MetroDepartureResolver {
             .pattern
             .iter()
             .position(|stop_id| stop_id == board_stop_id)?;
-        if timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
+        if (!timing.pattern.is_empty() && timing.pattern != service.pattern)
+            || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
             || timing.inter_station_travel_seconds.contains(&0)
         {
             return None;

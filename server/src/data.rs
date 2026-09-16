@@ -260,12 +260,14 @@ struct MetroPattern {
     line_id: String,
     direction: Option<u8>,
     label: String,
+    headsign: String,
     stations: Vec<(u32, BoardingPointId)>,
 }
 
 type MetroTimingKey = (String, Option<u8>, String);
 type MetroFrequencyRange = (u32, u32, u32);
 type MetroTravelKey = (String, Option<u8>, String, String);
+type MetroRouteKey = (String, String);
 
 #[derive(Default)]
 struct Normalizer {
@@ -279,6 +281,8 @@ struct Normalizer {
     metro_departures: BTreeMap<MetroTimingKey, BTreeSet<u32>>,
     metro_frequencies: BTreeMap<MetroTimingKey, BTreeSet<MetroFrequencyRange>>,
     metro_travel_times: BTreeMap<MetroTravelKey, u32>,
+    metro_route_paths: BTreeMap<MetroRouteKey, Vec<BoardingPointId>>,
+    metro_headsigns: BTreeMap<(String, Option<u8>, String), String>,
     diagnostics: BuildDiagnostics,
     skipped_services: BTreeSet<String>,
     bus_service_records: usize,
@@ -501,6 +505,7 @@ impl Normalizer {
                         direction,
                         label: display_name(record, &["LineName", "LineNameZh", "LineNameEn"])
                             .unwrap_or_else(|| line_id.into()),
+                        headsign: String::new(),
                         stations: Vec::new(),
                     });
                 entry.stations.push((sequence, id));
@@ -571,6 +576,7 @@ impl Normalizer {
                     line_id: line_id.clone(),
                     direction,
                     label: label.clone(),
+                    headsign: String::new(),
                     stations: Vec::new(),
                 });
             entry.stations.push((sequence, station_id));
@@ -585,6 +591,14 @@ impl Normalizer {
         if path_text.contains("s2straveltime")
             || (path_text.contains("s2s") && path_text.contains("travel"))
         {
+            if let Some(values) = record
+                .get("TravelTimes")
+                .or_else(|| record.get("S2STravelTimes"))
+                .and_then(Value::as_array)
+            {
+                let route_id = metro_route_id(record).unwrap_or_else(|| line_id.clone());
+                self.collect_metro_route_path(&line_id, &route_id, values);
+            }
             if let (Some(from), Some(to), Some(seconds)) = (
                 metro_station_id(
                     self,
@@ -635,12 +649,80 @@ impl Normalizer {
             .unwrap_or_else(|| "*".into());
         let key = (line_id, direction, station_id);
         if is_metro_station_timetable_path(path_text) {
+            if let Some(headsign) = display_name(
+                record,
+                &[
+                    "DestinationStationName",
+                    "DestinationStopNameZh",
+                    "DestinationStopName",
+                ],
+            ) {
+                let destination = metro_station_id(
+                    self,
+                    record,
+                    &[
+                        "DestinationStationUID",
+                        "DestinationStaionID",
+                        "DestinationStationID",
+                    ],
+                )
+                .unwrap_or_else(|| "*".into());
+                self.metro_headsigns
+                    .entry((key.0.clone(), key.1, destination))
+                    .or_insert(headsign);
+            }
             self.collect_metro_departures(record, &key);
         }
         if path_text.contains("frequency") || record.get("Frequency").is_some() {
             self.collect_metro_frequencies(record, &key);
         }
         Ok(())
+    }
+
+    fn collect_metro_route_path(&mut self, line_id: &str, route_id: &str, values: &[Value]) {
+        let mut edges = values
+            .iter()
+            .enumerate()
+            .filter_map(|(fallback, value)| {
+                Some((
+                    number(value, "Sequence").unwrap_or(fallback as u64) as u32,
+                    BoardingPointId::new(metro_station_id(
+                        self,
+                        value,
+                        &["FromStationUID", "FromStationID", "StationUID", "StationID"],
+                    )?),
+                    BoardingPointId::new(metro_station_id(
+                        self,
+                        value,
+                        &[
+                            "ToStationUID",
+                            "ToStationID",
+                            "NextStationUID",
+                            "NextStationID",
+                        ],
+                    )?),
+                ))
+            })
+            .collect::<Vec<_>>();
+        edges.sort_by_key(|(sequence, _, _)| *sequence);
+        let Some((_, first_from, first_to)) = edges.first() else {
+            return;
+        };
+        let mut path = vec![first_from.clone(), first_to.clone()];
+        for (_, from, to) in edges.into_iter().skip(1) {
+            if path.last() != Some(&from) {
+                return;
+            }
+            path.push(to);
+        }
+        let key = (line_id.into(), route_id.into());
+        if self
+            .metro_route_paths
+            .get(&key)
+            .is_none_or(|existing| existing.len() < path.len())
+        {
+            self.metro_route_paths.insert(key, path);
+        }
     }
 
     fn collect_metro_departures(&mut self, record: &Value, key: &MetroTimingKey) {
@@ -723,10 +805,12 @@ impl Normalizer {
             .windows(2)
             .filter_map(|stations| {
                 let matches_stations = |from: &str, to: &str| {
-                    (self.canonical_metro_stop_id(from) == stations[0].as_str()
-                        && self.canonical_metro_stop_id(to) == stations[1].as_str())
-                        || (self.canonical_metro_stop_id(from) == stations[1].as_str()
-                            && self.canonical_metro_stop_id(to) == stations[0].as_str())
+                    self.canonical_metro_stop_id(from) == stations[0].as_str()
+                        && self.canonical_metro_stop_id(to) == stations[1].as_str()
+                };
+                let matches_reversed_stations = |from: &str, to: &str| {
+                    self.canonical_metro_stop_id(from) == stations[1].as_str()
+                        && self.canonical_metro_stop_id(to) == stations[0].as_str()
                 };
                 self.metro_travel_times
                     .iter()
@@ -736,10 +820,27 @@ impl Normalizer {
                             && matches_stations(from, to)
                     })
                     .or_else(|| {
+                        self.metro_travel_times.iter().find(
+                            |((line, record_direction, from, to), _)| {
+                                line == line_id
+                                    && (record_direction == &direction
+                                        || record_direction.is_none())
+                                    && matches_reversed_stations(from, to)
+                            },
+                        )
+                    })
+                    .or_else(|| {
                         self.metro_travel_times
                             .iter()
                             .find(|((line, _, from, to), _)| {
                                 line == line_id && matches_stations(from, to)
+                            })
+                    })
+                    .or_else(|| {
+                        self.metro_travel_times
+                            .iter()
+                            .find(|((line, _, from, to), _)| {
+                                line == line_id && matches_reversed_stations(from, to)
                             })
                     })
                     .map(|(_, seconds)| *seconds)
@@ -760,9 +861,8 @@ impl Normalizer {
                 let mut frequencies = BTreeSet::new();
                 for ((line, record_direction, station), values) in &self.metro_departures {
                     if line == line_id
-                        && (direction.is_none()
-                            || record_direction == &direction
-                            || record_direction.is_none())
+                        && (record_direction == &direction
+                            || (direction.is_none() && record_direction.is_none()))
                         && (self.canonical_metro_stop_id(station) == stop_id.as_str()
                             || station == "*")
                     {
@@ -1221,6 +1321,92 @@ impl Normalizer {
         Ok(())
     }
 
+    fn ordered_metro_pattern(&self, stations: &[(u32, BoardingPointId)]) -> Vec<BoardingPointId> {
+        let mut ordered = stations
+            .iter()
+            .map(|(sequence, station_id)| {
+                (
+                    *sequence,
+                    BoardingPointId::new(self.canonical_metro_stop_id(station_id.as_str())),
+                )
+            })
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|(sequence, _)| *sequence);
+        ordered.dedup_by(|left, right| left.1 == right.1);
+        ordered
+            .into_iter()
+            .map(|(_, station_id)| station_id)
+            .collect()
+    }
+
+    fn normalized_metro_path(&self, path: &[BoardingPointId]) -> Vec<BoardingPointId> {
+        let mut normalized = Vec::with_capacity(path.len());
+        for station_id in path {
+            let station_id =
+                BoardingPointId::new(self.canonical_metro_stop_id(station_id.as_str()));
+            if normalized.last() != Some(&station_id) {
+                normalized.push(station_id);
+            }
+        }
+        normalized
+    }
+
+    fn longest_metro_route_path(&self, line_id: &str) -> Option<Vec<BoardingPointId>> {
+        self.metro_route_paths
+            .iter()
+            .filter(|((line, _), path)| line == line_id && path.len() >= 2)
+            .max_by_key(|(_, path)| path.len())
+            .map(|(_, path)| self.normalized_metro_path(path))
+    }
+
+    fn orient_metro_path(
+        &self,
+        path: Vec<BoardingPointId>,
+        canonical: &[BoardingPointId],
+    ) -> Vec<BoardingPointId> {
+        let positions = canonical
+            .iter()
+            .enumerate()
+            .map(|(index, station_id)| (station_id.as_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        match (
+            path.first()
+                .and_then(|station| positions.get(station.as_str())),
+            path.last()
+                .and_then(|station| positions.get(station.as_str())),
+        ) {
+            (Some(first), Some(last)) if first > last => path.into_iter().rev().collect(),
+            _ => path,
+        }
+    }
+
+    fn metro_headsign(
+        &self,
+        line_id: &str,
+        direction: u8,
+        pattern: &[BoardingPointId],
+        fallback: &str,
+    ) -> String {
+        self.metro_headsigns
+            .iter()
+            .find(|((line, record_direction, destination), headsign)| {
+                line == line_id
+                    && *record_direction == Some(direction)
+                    && pattern.last().is_some_and(|last| {
+                        self.canonical_metro_stop_id(destination) == last.as_str()
+                    })
+                    && !headsign.trim().is_empty()
+            })
+            .map(|(_, headsign)| headsign.clone())
+            .or_else(|| {
+                pattern
+                    .last()
+                    .and_then(|station_id| self.stops.get(station_id.as_str()))
+                    .map(|station| station.name.clone())
+            })
+            .unwrap_or_else(|| fallback.into())
+    }
+
     fn finish(mut self) -> (TransitNetwork, BuildDiagnostics) {
         let mut directional_by_base: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for service_id in self.services.keys() {
@@ -1253,88 +1439,157 @@ impl Normalizer {
                 }
             }
         }
-        let mut line_pattern_counts = BTreeMap::<String, usize>::new();
-        for pattern in self.metro_patterns.values() {
-            *line_pattern_counts
-                .entry(pattern.line_id.clone())
-                .or_default() += 1;
-        }
         let mut metro_timings = Vec::new();
         let metro_patterns = std::mem::take(&mut self.metro_patterns);
-        for ((_line_id, _direction), mut metro_pattern) in metro_patterns {
-            for (_, station_id) in &mut metro_pattern.stations {
-                *station_id =
-                    BoardingPointId::new(self.canonical_metro_stop_id(station_id.as_str()));
+        let mut patterns_by_line = BTreeMap::<String, Vec<MetroPattern>>::new();
+        for (_, pattern) in metro_patterns {
+            patterns_by_line
+                .entry(pattern.line_id.clone())
+                .or_default()
+                .push(pattern);
+        }
+        for (line_id, patterns) in patterns_by_line {
+            let canonical = patterns
+                .iter()
+                .find(|pattern| pattern.direction.is_none())
+                .map(|pattern| self.ordered_metro_pattern(&pattern.stations))
+                .unwrap_or_default();
+            let topology = self
+                .longest_metro_route_path(&line_id)
+                .or_else(|| (!canonical.is_empty()).then(|| canonical.clone()))
+                .map(|path| self.orient_metro_path(path, &canonical));
+
+            let mut directional = BTreeMap::<u8, MetroPattern>::new();
+            for pattern in patterns
+                .iter()
+                .filter(|pattern| pattern.direction.is_some())
+            {
+                let Some(direction) = pattern.direction else {
+                    continue;
+                };
+                let ordered = self.ordered_metro_pattern(&pattern.stations);
+                if ordered.len() < 2 {
+                    continue;
+                }
+                let mut pattern = pattern.clone();
+                pattern.direction = Some(direction);
+                pattern.stations = ordered
+                    .into_iter()
+                    .enumerate()
+                    .map(|(sequence, station_id)| (sequence as u32, station_id))
+                    .collect();
+                directional.insert(direction, pattern);
             }
-            metro_pattern
-                .stations
-                .sort_by_key(|(sequence, _)| *sequence);
-            metro_pattern
-                .stations
-                .dedup_by(|left, right| left.1 == right.1);
-            let pattern = metro_pattern
-                .stations
-                .iter()
-                .map(|(_, id)| id.clone())
-                .collect::<Vec<_>>();
-            if pattern.len() < 2 {
-                continue;
+
+            match directional.len() {
+                0 => {
+                    let Some(topology) = topology else {
+                        continue;
+                    };
+                    for direction in [0, 1] {
+                        let pattern = if direction == 0 {
+                            topology.clone()
+                        } else {
+                            topology.iter().cloned().rev().collect()
+                        };
+                        directional.insert(
+                            direction,
+                            MetroPattern {
+                                line_id: line_id.clone(),
+                                direction: Some(direction),
+                                label: patterns
+                                    .first()
+                                    .map(|pattern| pattern.label.clone())
+                                    .unwrap_or_else(|| line_id.clone()),
+                                headsign: String::new(),
+                                stations: pattern
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(sequence, station_id)| (sequence as u32, station_id))
+                                    .collect(),
+                            },
+                        );
+                    }
+                }
+                1 => {
+                    let (&direction, pattern) = directional.iter().next().expect("one pattern");
+                    let pattern = pattern.clone();
+                    let opposite = 1_u8.saturating_sub(direction);
+                    let opposite_pattern = pattern
+                        .stations
+                        .iter()
+                        .rev()
+                        .enumerate()
+                        .map(|(sequence, (_, station_id))| (sequence as u32, station_id.clone()))
+                        .collect();
+                    directional.insert(
+                        opposite,
+                        MetroPattern {
+                            line_id: line_id.clone(),
+                            direction: Some(opposite),
+                            label: pattern.label.clone(),
+                            headsign: String::new(),
+                            stations: opposite_pattern,
+                        },
+                    );
+                }
+                _ => {}
             }
-            let service_id = if line_pattern_counts[&metro_pattern.line_id] == 1 {
-                TransitServiceId::new(format!("metro:{}", metro_pattern.line_id))
-            } else {
-                TransitServiceId::new(format!(
-                    "metro:{}::direction={}",
-                    metro_pattern.line_id,
-                    metro_pattern
-                        .direction
-                        .map_or_else(|| "unknown".into(), |direction| direction.to_string())
-                ))
-            };
-            let station_timings = self.metro_station_timings(
-                &metro_pattern.line_id,
-                metro_pattern.direction,
-                &pattern,
-            );
-            let travel_seconds = self.metro_travel_seconds(
-                &metro_pattern.line_id,
-                metro_pattern.direction,
-                &pattern,
-            );
-            let source = if station_timings
-                .iter()
-                .any(|station| !station.departures_seconds.is_empty())
-            {
-                "metro_schedule"
-            } else if station_timings
-                .iter()
-                .any(|station| !station.frequencies.is_empty())
-            {
-                "metro_frequency"
-            } else {
-                "metro_schedule"
-            };
-            self.services
-                .entry(service_id.as_str().into())
-                .and_modify(|service| service.timing_source = Some(source.into()))
-                .or_insert_with(|| {
-                    TransitService::new(
-                        service_id.clone(),
-                        TransitMode::Metro,
-                        metro_pattern.label.clone(),
-                        "",
-                        pattern.clone(),
-                    )
-                    .with_timing_source(source)
-                });
-            if travel_seconds.len() == pattern.len() - 1
-                && travel_seconds.iter().all(|seconds| *seconds > 0)
-            {
-                metro_timings.push(MetroTiming::new(
-                    service_id,
-                    station_timings,
-                    travel_seconds,
-                ));
+
+            for (direction, metro_pattern) in directional {
+                let pattern = metro_pattern
+                    .stations
+                    .iter()
+                    .map(|(_, station_id)| station_id.clone())
+                    .collect::<Vec<_>>();
+                if pattern.len() < 2 {
+                    continue;
+                }
+                let service_id =
+                    TransitServiceId::new(format!("metro:{line_id}::direction={direction}"));
+                let station_timings =
+                    self.metro_station_timings(&line_id, Some(direction), &pattern);
+                let travel_seconds = self.metro_travel_seconds(&line_id, Some(direction), &pattern);
+                let source = if station_timings
+                    .iter()
+                    .any(|station| !station.departures_seconds.is_empty())
+                {
+                    "metro_schedule"
+                } else if station_timings
+                    .iter()
+                    .any(|station| !station.frequencies.is_empty())
+                {
+                    "metro_frequency"
+                } else {
+                    "metro_schedule"
+                };
+                let headsign =
+                    self.metro_headsign(&line_id, direction, &pattern, &metro_pattern.headsign);
+                self.services
+                    .entry(service_id.as_str().into())
+                    .and_modify(|service| {
+                        service.timing_source = Some(source.into());
+                        service.headsign = headsign.clone();
+                        service.pattern = pattern.clone();
+                    })
+                    .or_insert_with(|| {
+                        TransitService::new(
+                            service_id.clone(),
+                            TransitMode::Metro,
+                            metro_pattern.label.clone(),
+                            headsign,
+                            pattern.clone(),
+                        )
+                        .with_timing_source(source)
+                    });
+                if travel_seconds.len() == pattern.len() - 1
+                    && travel_seconds.iter().all(|seconds| *seconds > 0)
+                {
+                    metro_timings.push(
+                        MetroTiming::new(service_id, station_timings, travel_seconds)
+                            .with_pattern(pattern),
+                    );
+                }
             }
         }
         let network = TransitNetwork::new(
@@ -2007,6 +2262,12 @@ fn number(value: &Value, key: &str) -> Option<u64> {
 
 fn metro_line_id(value: &Value) -> Option<String> {
     ["LineID", "LineUID", "RouteUID", "RouteID"]
+        .iter()
+        .find_map(|key| string(value, key).map(str::to_owned))
+}
+
+fn metro_route_id(value: &Value) -> Option<String> {
+    ["RouteID", "RouteUID", "LineID", "LineUID"]
         .iter()
         .find_map(|key| string(value, key).map(str::to_owned))
 }

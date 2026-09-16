@@ -40,7 +40,7 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         second_result.manifest.revisions
     );
     assert_eq!(first_result.manifest.counts.stops, 10);
-    assert_eq!(first_result.manifest.counts.services, 5);
+    assert_eq!(first_result.manifest.counts.services, 6);
     assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
     assert_eq!(first_result.manifest.counts.bike_stations, 2);
     assert_eq!(first_result.manifest.counts.transfer_shortcuts, 1);

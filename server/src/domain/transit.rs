@@ -221,6 +221,11 @@ pub struct MetroTiming {
     /// One positive duration for every adjacent pair in the service pattern.
     #[serde(default)]
     pub inter_station_travel_seconds: Vec<u32>,
+    /// The ordered pattern used when the timing was normalized. Older
+    /// artifacts may omit this field; newly built artifacts use it to keep
+    /// directional timing from being attached to the opposite service.
+    #[serde(default)]
+    pub pattern: Vec<BoardingPointId>,
 }
 
 impl MetroTiming {
@@ -233,7 +238,13 @@ impl MetroTiming {
             service_id,
             station_timings,
             inter_station_travel_seconds,
+            pattern: Vec::new(),
         }
+    }
+
+    pub fn with_pattern(mut self, pattern: Vec<BoardingPointId>) -> Self {
+        self.pattern = pattern;
+        self
     }
 }
 
@@ -442,6 +453,7 @@ impl TransitNetwork {
             if service.transit_mode != TransitMode::Metro
                 || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
                 || timing.inter_station_travel_seconds.contains(&0)
+                || (!timing.pattern.is_empty() && timing.pattern != service.pattern)
             {
                 return Err(TransitNetworkValidationError::InvalidMetroTimingShape(
                     timing.service_id.clone(),
