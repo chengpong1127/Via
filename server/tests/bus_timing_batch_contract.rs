@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -66,19 +67,30 @@ impl RealtimeProvider for BatchProvider {
 }
 
 fn network_for(service_ids: &[TransitServiceId]) -> TransitNetwork {
+    network_for_with_scopes(service_ids, &[])
+}
+
+fn network_for_with_scopes(
+    service_ids: &[TransitServiceId],
+    scopes: &[(&str, &str)],
+) -> TransitNetwork {
     let board = BoardingPointId::new("stop-x");
     let downstream = BoardingPointId::new("stop-y");
     let services = service_ids
         .iter()
         .map(|service_id| {
-            TransitService::new(
+            let service = TransitService::new(
                 service_id.clone(),
                 TransitMode::Bus,
                 "Bus",
                 "Downstream",
                 vec![board.clone(), downstream.clone()],
             )
-            .with_timing_source("bus_n1")
+            .with_timing_source("bus_n1");
+            scopes
+                .iter()
+                .find_map(|(id, scope)| (*id == service_id.as_str()).then_some(*scope))
+                .map_or(service.clone(), |scope| service.with_realtime_scope(scope))
         })
         .collect::<Vec<_>>();
     let trips = service_ids
@@ -190,6 +202,60 @@ async fn twenty_logical_bus_needs_use_one_provider_batch() {
         batches[0].boarding_point_ids,
         vec![BoardingPointId::new("stop-x")]
     );
+}
+
+#[tokio::test]
+async fn bus_needs_are_batched_per_realtime_scope() {
+    let service_ids = (0..33)
+        .map(|index| TransitServiceId::new(format!("service-{index}")))
+        .collect::<Vec<_>>();
+    let scopes = service_ids
+        .iter()
+        .enumerate()
+        .map(|(index, service_id)| {
+            (
+                service_id.as_str(),
+                if index < 29 { "Taipei" } else { "NewTaipei" },
+            )
+        })
+        .collect::<Vec<_>>();
+    let values = service_ids
+        .iter()
+        .map(|service_id| value(service_id.as_str(), "stop-x", 60))
+        .collect::<Vec<_>>();
+    let upstream = provider(values);
+    let calls = upstream.calls.clone();
+    let queries = upstream.queries.clone();
+    let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
+    let resolver = RealtimeDepartureResolver::new(Arc::new(upstream), network);
+    let needs = service_ids
+        .iter()
+        .map(|service_id| {
+            DepartureQuery::new(service_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
+        })
+        .collect::<Vec<_>>();
+
+    let results = resolver.next_departures_batch(needs).await;
+
+    assert!(
+        results
+            .iter()
+            .all(|result| result.as_ref().is_ok_and(|trips| !trips.is_empty()))
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    let batches = queries.lock().unwrap();
+    assert_eq!(batches.len(), 2);
+    let batch_sizes = batches
+        .iter()
+        .map(|batch| {
+            (
+                batch.scope.clone().unwrap(),
+                batch.transit_service_ids.len(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    assert_eq!(batch_sizes.get("Taipei"), Some(&29));
+    assert_eq!(batch_sizes.get("NewTaipei"), Some(&4));
 }
 
 #[tokio::test]

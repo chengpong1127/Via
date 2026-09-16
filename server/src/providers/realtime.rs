@@ -171,6 +171,7 @@ impl RealtimeMetrics {
 pub struct ArrivalQuery {
     pub transit_service_ids: Vec<TransitServiceId>,
     pub boarding_point_ids: Vec<BoardingPointId>,
+    pub scope: Option<String>,
 }
 
 impl ArrivalQuery {
@@ -187,11 +188,22 @@ impl ArrivalQuery {
         Self {
             transit_service_ids,
             boarding_point_ids,
+            scope: None,
         }
     }
 
     pub fn for_ride(service_id: TransitServiceId, boarding_point_id: BoardingPointId) -> Self {
         Self::new([service_id], [boarding_point_id])
+    }
+
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
+
+    pub fn with_optional_scope(mut self, scope: Option<String>) -> Self {
+        self.scope = scope;
+        self
     }
 }
 
@@ -199,6 +211,7 @@ impl ArrivalQuery {
 struct ArrivalPair {
     service_id: TransitServiceId,
     boarding_point_id: BoardingPointId,
+    scope: Option<String>,
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -376,6 +389,7 @@ impl RealtimeProvider for CachedRealtimeProvider {
                     .map(|boarding_point_id| ArrivalPair {
                         service_id: service_id.clone(),
                         boarding_point_id: boarding_point_id.clone(),
+                        scope: query.scope.clone(),
                     })
             })
             .collect::<Vec<_>>();
@@ -416,7 +430,8 @@ impl RealtimeProvider for CachedRealtimeProvider {
                         missing_pairs
                             .iter()
                             .map(|pair| pair.boarding_point_id.clone()),
-                    );
+                    )
+                    .with_optional_scope(query.scope.clone());
                     metrics.upstream_request();
                     metrics.arrival_upstream_request();
                     let result = inner.arrival_estimates(fetch_query).await;

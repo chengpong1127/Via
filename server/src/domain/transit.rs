@@ -64,6 +64,9 @@ pub struct TransitService {
     /// an endpoint name or a mode-derived routing rule.
     #[serde(default)]
     pub timing_source: Option<String>,
+    /// Provider-neutral partition metadata used when resolving live arrivals.
+    #[serde(default)]
+    pub realtime_scope: Option<String>,
     pub label: String,
     pub headsign: String,
     pub pattern: Vec<BoardingPointId>,
@@ -89,6 +92,7 @@ impl TransitService {
             id,
             transit_mode,
             timing_source: None,
+            realtime_scope: None,
             label: label.into(),
             headsign: headsign.into(),
             pattern,
@@ -103,6 +107,11 @@ impl TransitService {
 
     pub fn with_timing_source(mut self, source: impl Into<String>) -> Self {
         self.timing_source = Some(source.into());
+        self
+    }
+
+    pub fn with_realtime_scope(mut self, scope: impl Into<String>) -> Self {
+        self.realtime_scope = Some(scope.into());
         self
     }
 }

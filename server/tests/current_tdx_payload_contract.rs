@@ -1,8 +1,8 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use time::Weekday;
 use via_server::{
-    data::build_from_raw,
+    data::{DataScope, build_from_raw},
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         transit::TransitMode,
@@ -23,7 +23,13 @@ fn current_tdx_payloads_normalize_all_static_operator_families() {
     let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_path("artifact");
 
-    let result = build_from_raw(&input, &output, None, Some("2026-09-15".into())).unwrap();
+    let result = build_from_raw(
+        &input,
+        &output,
+        Some(DataScope::TaipeiNewTaipei),
+        Some("2026-09-15".into()),
+    )
+    .unwrap();
 
     assert!(
         result
@@ -68,6 +74,17 @@ fn current_tdx_payloads_normalize_all_static_operator_families() {
             .iter()
             .any(|service| service.id.as_str() == "NWT-242-0::direction=0")
     );
+    assert!(result.network.services.iter().any(|service| {
+        service.transit_mode == TransitMode::Bus
+            && service.realtime_scope.as_deref() == Some("Taipei")
+    }));
+    assert!(result.network.services.iter().any(|service| {
+        service.transit_mode == TransitMode::Bus
+            && service.realtime_scope.as_deref() == Some("NewTaipei")
+    }));
+    assert!(result.network.services.iter().all(|service| {
+        service.transit_mode == TransitMode::Bus || service.realtime_scope.is_none()
+    }));
     assert!(
         result
             .network
@@ -108,6 +125,13 @@ async fn real_tdx_red_line_has_boardable_directional_services() {
     let output = temporary_path("real-red-line-artifact");
     let result = build_from_raw(&input, &output, None, Some("2026-09-15".into())).unwrap();
     let network = Arc::new(result.network);
+    let realtime_scopes = network
+        .services
+        .iter()
+        .filter(|service| service.transit_mode == TransitMode::Bus)
+        .filter_map(|service| service.realtime_scope.as_deref())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(realtime_scopes, BTreeSet::from(["NewTaipei", "Taipei"]));
     let forward_id = TransitServiceId::new("metro:R::direction=0");
     let reverse_id = TransitServiceId::new("metro:R::direction=1");
     let taipei_main = BoardingPointId::new("TRTC-R10");

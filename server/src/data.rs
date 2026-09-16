@@ -246,6 +246,7 @@ struct StaticSource {
     query: Vec<(String, String)>,
     endpoint: String,
     output_path: PathBuf,
+    realtime_scope: Option<String>,
 }
 
 #[derive(Debug)]
@@ -253,6 +254,7 @@ struct RawDocument {
     relative_path: PathBuf,
     bytes: Vec<u8>,
     value: Value,
+    realtime_scope: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -296,13 +298,14 @@ impl Normalizer {
             .relative_path
             .to_string_lossy()
             .to_ascii_lowercase();
+        let realtime_scope = document.realtime_scope.as_deref();
         let records = records(&document.value);
         for (index, record) in records.iter().enumerate() {
             if path_text.contains("bike") {
                 self.normalize_bike(record, &document.relative_path)?;
             }
             if path_text.contains("bus") {
-                self.normalize_bus(record, &document.relative_path, index)?;
+                self.normalize_bus(record, &document.relative_path, index, realtime_scope)?;
             }
             if is_rail_path(&path_text) {
                 self.normalize_rail(record, &document.relative_path, index, &path_text)?;
@@ -353,6 +356,7 @@ impl Normalizer {
         record: &Value,
         path: &Path,
         index: usize,
+        realtime_scope: Option<&str>,
     ) -> Result<(), DataError> {
         if let Some(stops_value) = record.get("Stops") {
             self.bus_service_records += 1;
@@ -418,23 +422,24 @@ impl Normalizer {
                 self.bus_affected_service_ids
                     .insert(service_id.as_str().into());
             }
-            let inserted = self.insert_service(
-                TransitService::new(
-                    service_id.clone(),
-                    TransitMode::Bus,
-                    display_name(record, &["SubRouteName", "RouteName"])
-                        .unwrap_or_else(|| sub_route.into()),
-                    display_name(record, &["DestinationStopNameZh", "DestinationStopName"])
-                        .unwrap_or_default(),
-                    pattern,
-                )
-                .with_timing_source("bus_n1"),
-                path,
-            )?;
+            let mut service = TransitService::new(
+                service_id.clone(),
+                TransitMode::Bus,
+                display_name(record, &["SubRouteName", "RouteName"])
+                    .unwrap_or_else(|| sub_route.into()),
+                display_name(record, &["DestinationStopNameZh", "DestinationStopName"])
+                    .unwrap_or_default(),
+                pattern,
+            )
+            .with_timing_source("bus_n1");
+            if let Some(scope) = realtime_scope {
+                service = service.with_realtime_scope(scope);
+            }
+            let inserted = self.insert_service(service, path)?;
             if !inserted {
                 return Ok(());
             }
-            self.normalize_embedded_trip(record, path, index, TransitMode::Bus)?;
+            self.normalize_embedded_trip(record, path, index, TransitMode::Bus, realtime_scope)?;
             return Ok(());
         }
         if is_bus_stop_catalog_path(path) {
@@ -464,7 +469,7 @@ impl Normalizer {
             || record.get("stop_times").is_some()
             || record.get("Timetables").and_then(Value::as_array).is_some()
         {
-            self.normalize_embedded_trip(record, path, index, TransitMode::Bus)?;
+            self.normalize_embedded_trip(record, path, index, TransitMode::Bus, realtime_scope)?;
         }
         Ok(())
     }
@@ -484,7 +489,7 @@ impl Normalizer {
             TransitMode::Rail
         };
         if let Some(general_timetable) = record.get("GeneralTimetable") {
-            self.normalize_embedded_trip(general_timetable, path, index, mode)?;
+            self.normalize_embedded_trip(general_timetable, path, index, mode, None)?;
             return Ok(());
         }
         if let Some(station_uid) = string(record, "StationUID") {
@@ -533,7 +538,7 @@ impl Normalizer {
             || record.get("DailyTrainInfo").is_some()
             || (record.get("Timetables").is_some() && !is_metro_station_timetable_path(path_text))
         {
-            self.normalize_embedded_trip(record, path, index, mode)?;
+            self.normalize_embedded_trip(record, path, index, mode, None)?;
         }
         Ok(())
     }
@@ -931,6 +936,7 @@ impl Normalizer {
         path: &Path,
         index: usize,
         mode: TransitMode,
+        realtime_scope: Option<&str>,
     ) -> Result<(), DataError> {
         let stop_times = record
             .get("StopTimes")
@@ -957,6 +963,7 @@ impl Normalizer {
                             .saturating_mul(100_000)
                             .saturating_add(timetable_index),
                         mode,
+                        realtime_scope,
                     )?;
                 }
             }
@@ -1076,27 +1083,30 @@ impl Normalizer {
         if distinct_stop_count(&pattern) < 2 {
             return Ok(());
         }
-        let inserted = self.insert_service(
-            TransitService::new(
-                service_id.clone(),
-                mode,
-                service_label,
-                if mode == TransitMode::Bus {
-                    headsign
-                } else {
-                    display_name(train_info, &["EndingStationName", "DestinationStopNameZh"])
-                        .unwrap_or_default()
-                },
-                pattern,
-            )
-            .with_timing_source(match mode {
-                TransitMode::Metro => "metro_schedule",
-                TransitMode::Rail => "tra_schedule",
-                TransitMode::HighSpeedRail => "thsr_schedule",
-                TransitMode::Bus => "bus_n1",
-            }),
-            path,
-        )?;
+        let mut service = TransitService::new(
+            service_id.clone(),
+            mode,
+            service_label,
+            if mode == TransitMode::Bus {
+                headsign
+            } else {
+                display_name(train_info, &["EndingStationName", "DestinationStopNameZh"])
+                    .unwrap_or_default()
+            },
+            pattern,
+        )
+        .with_timing_source(match mode {
+            TransitMode::Metro => "metro_schedule",
+            TransitMode::Rail => "tra_schedule",
+            TransitMode::HighSpeedRail => "thsr_schedule",
+            TransitMode::Bus => "bus_n1",
+        });
+        if mode == TransitMode::Bus {
+            if let Some(scope) = realtime_scope {
+                service = service.with_realtime_scope(scope);
+            }
+        }
+        let inserted = self.insert_service(service, path)?;
         if !inserted {
             return Ok(());
         }
@@ -1228,11 +1238,13 @@ impl Normalizer {
             return Ok(false);
         }
         if let Some(existing) = self.services.get(&key) {
-            if existing.pattern != service.pattern {
+            if existing.pattern != service.pattern
+                || existing.realtime_scope != service.realtime_scope
+            {
                 return Err(DataError::ConflictingIdentity {
                     path: path.into(),
                     id: key,
-                    detail: "TransitService patterns disagree".into(),
+                    detail: "TransitService patterns or realtime scopes disagree".into(),
                 });
             }
         } else {
@@ -1622,7 +1634,21 @@ pub fn build_from_raw(
     scope: Option<DataScope>,
     raw_snapshot_date: Option<String>,
 ) -> Result<BuildOutput, DataError> {
-    let documents = read_documents(input)?;
+    let raw_manifest = read_raw_manifest(input);
+    let source_scope = scope.or_else(|| {
+        raw_manifest
+            .as_ref()
+            .and_then(|manifest| DataScope::from_str(&manifest.scope).ok())
+    });
+    let realtime_scopes = source_scope
+        .map(|scope| {
+            static_sources(scope)
+                .into_iter()
+                .map(|source| (source.output_path, source.realtime_scope))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let documents = read_documents(input, &realtime_scopes)?;
     if documents.is_empty() {
         return Err(DataError::EmptySnapshot(input.into()));
     }
@@ -1700,10 +1726,6 @@ pub fn build_from_raw(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let raw_manifest = input.join("manifest.json");
-    let raw_manifest = fs::read_to_string(&raw_manifest)
-        .ok()
-        .and_then(|body| serde_json::from_str::<RawSnapshotManifest>(&body).ok());
     let manifest_scope = scope
         .map(|scope| scope.as_str().to_owned())
         .or_else(|| raw_manifest.as_ref().map(|manifest| manifest.scope.clone()))
@@ -1931,7 +1953,7 @@ where
     S: FetchSleeper,
     F: FnMut(FetchProgress),
 {
-    let sources = static_sources(scope, date);
+    let sources = static_sources(scope);
     let snapshot = output.join("raw").join(date.to_string());
     fs::create_dir_all(&snapshot).map_err(|error| DataError::Io(snapshot.clone(), error))?;
     let previous_manifest = read_previous_raw_manifest(&snapshot, scope, date);
@@ -2097,7 +2119,7 @@ fn current_retrieved_at() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-fn static_sources(scope: DataScope, _date: Date) -> Vec<StaticSource> {
+fn static_sources(scope: DataScope) -> Vec<StaticSource> {
     let mut sources = Vec::new();
     for (city_key, city) in scope.cities() {
         for (name, endpoint) in [
@@ -2106,10 +2128,11 @@ fn static_sources(scope: DataScope, _date: Date) -> Vec<StaticSource> {
             ("stop-of-route", format!("v2/Bus/StopOfRoute/City/{city}")),
             ("schedule", format!("v2/Bus/Schedule/City/{city}")),
         ] {
-            sources.push(source(
+            sources.push(source_with_realtime_scope(
                 format!("tdx_bus_{city_key}_{name}"),
                 endpoint,
                 format!("bus/{city_key}/{name}.json"),
+                city,
             ));
         }
         sources.push(source(
@@ -2176,10 +2199,30 @@ fn source(key: impl Into<String>, path: String, output_path: String) -> StaticSo
         path,
         query,
         output_path: output_path.into(),
+        realtime_scope: None,
     }
 }
 
-fn read_documents(input: &Path) -> Result<Vec<RawDocument>, DataError> {
+fn source_with_realtime_scope(
+    key: impl Into<String>,
+    path: String,
+    output_path: String,
+    realtime_scope: &str,
+) -> StaticSource {
+    let mut source = source(key, path, output_path);
+    source.realtime_scope = Some(realtime_scope.into());
+    source
+}
+
+fn read_raw_manifest(input: &Path) -> Option<RawSnapshotManifest> {
+    let body = fs::read_to_string(input.join("manifest.json")).ok()?;
+    serde_json::from_str(&body).ok()
+}
+
+fn read_documents(
+    input: &Path,
+    realtime_scopes: &BTreeMap<PathBuf, Option<String>>,
+) -> Result<Vec<RawDocument>, DataError> {
     let mut paths = Vec::new();
     collect_json_paths(input, &mut paths)?;
     paths.sort();
@@ -2191,10 +2234,12 @@ fn read_documents(input: &Path) -> Result<Vec<RawDocument>, DataError> {
             let value = serde_json::from_slice(&bytes)
                 .map_err(|error| DataError::Json(path.clone(), error))?;
             let relative_path = path.strip_prefix(input).unwrap_or(&path).to_path_buf();
+            let realtime_scope = realtime_scopes.get(&relative_path).cloned().flatten();
             Ok(RawDocument {
                 relative_path,
                 bytes,
                 value,
+                realtime_scope,
             })
         })
         .collect()
@@ -2772,7 +2817,7 @@ mod tests {
 
     fn seed_sources(output: &Path, date: Date, skip: &BTreeSet<String>, body: &[u8]) {
         let snapshot = output.join("raw").join(date.to_string());
-        for source in static_sources(DataScope::TaipeiNewTaipei, date) {
+        for source in static_sources(DataScope::TaipeiNewTaipei) {
             if skip.contains(&source.key) {
                 continue;
             }
@@ -2827,14 +2872,13 @@ mod tests {
 
     #[test]
     fn static_sources_match_current_tdx_contracts() {
-        let sources = static_sources(DataScope::TaipeiNewTaipei, test_date());
-        let other_date = Date::from_calendar_date(2026, time::Month::September, 16).unwrap();
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         assert_eq!(
             sources
                 .iter()
                 .map(|source| source.endpoint.as_str())
                 .collect::<Vec<_>>(),
-            static_sources(DataScope::TaipeiNewTaipei, other_date)
+            static_sources(DataScope::TaipeiNewTaipei)
                 .iter()
                 .map(|source| source.endpoint.as_str())
                 .collect::<Vec<_>>()
@@ -2986,7 +3030,7 @@ mod tests {
     async fn partial_snapshot_resumes_without_an_existing_manifest() {
         let output = temporary_output("partial");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         let skip = sources
             .iter()
             .skip(5)
@@ -3023,7 +3067,7 @@ mod tests {
     async fn empty_and_corrupt_sources_are_refetched() {
         let output = temporary_output("broken");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         let skip = sources
             .iter()
             .take(2)
@@ -3049,7 +3093,7 @@ mod tests {
     async fn retry_after_is_honored_before_success() {
         let output = temporary_output("retry-after");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         let skip = sources
             .iter()
             .take(1)
@@ -3080,7 +3124,7 @@ mod tests {
     async fn repeated_rate_limits_fail_after_bounded_retries() {
         let output = temporary_output("retry-failure");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         let skip = sources
             .iter()
             .take(1)
@@ -3147,7 +3191,7 @@ mod tests {
     async fn manifest_contains_reused_and_downloaded_sources_with_hashes() {
         let output = temporary_output("manifest");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         let skip = sources
             .iter()
             .take(1)
@@ -3197,7 +3241,7 @@ mod tests {
     async fn obsolete_manifest_source_identity_forces_a_refetch() {
         let output = temporary_output("obsolete-source");
         let date = test_date();
-        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        let sources = static_sources(DataScope::TaipeiNewTaipei);
         seed_sources(&output, date, &BTreeSet::new(), br#"{"cached":true}"#);
         let old_timetable_key = "tdx_tra_general_train_timetable";
         let old_manifest = RawSnapshotManifest {

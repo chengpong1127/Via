@@ -17,6 +17,77 @@ async fn fixture_base(app: Router) -> url::Url {
 }
 
 #[tokio::test]
+async fn tdx_default_arrival_endpoint_uses_the_explicit_city_scope() {
+    let update_time = (OffsetDateTime::now_utc() - Duration::seconds(30))
+        .format(&Rfc3339)
+        .unwrap();
+    let app = Router::new().route(
+        "/v2/Bus/EstimatedTimeOfArrival/City/NewTaipei",
+        get(
+            move |query: axum::extract::Query<HashMap<String, String>>| {
+                let update_time = update_time.clone();
+                async move {
+                    assert!(query.get("$filter").is_some());
+                    Json(json!([{
+                        "StopUID": "provider-stop",
+                        "SubRouteUID": "provider-service",
+                        "StopStatus": 0,
+                        "EstimateTime": 120,
+                        "UpdateTime": update_time
+                    }]))
+                }
+            },
+        ),
+    );
+    let source = TdxRealtimeProvider::new(
+        TdxRealtimeConfig {
+            base_url: fixture_base(app).await,
+            authority_namespace: "taipei".into(),
+        },
+        "fixture-token",
+    )
+    .unwrap();
+
+    let values = source
+        .arrival_estimates(
+            ArrivalQuery::for_ride(
+                TransitServiceId::new("provider-service"),
+                BoardingPointId::new("provider-stop"),
+            )
+            .with_scope("NewTaipei"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(values.len(), 1);
+}
+
+#[tokio::test]
+async fn tdx_arrivals_reject_missing_and_invalid_scopes_before_http() {
+    let source = TdxRealtimeProvider::new(
+        TdxRealtimeConfig {
+            base_url: fixture_base(Router::new()).await,
+            authority_namespace: "taipei".into(),
+        },
+        "fixture-token",
+    )
+    .unwrap();
+    let service_id = TransitServiceId::new("provider-service");
+    let boarding_point_id = BoardingPointId::new("provider-stop");
+
+    for query in [
+        ArrivalQuery::for_ride(service_id.clone(), boarding_point_id.clone()),
+        ArrivalQuery::for_ride(service_id.clone(), boarding_point_id.clone()).with_scope(""),
+        ArrivalQuery::for_ride(service_id, boarding_point_id).with_scope("../Taipei"),
+    ] {
+        assert_eq!(
+            source.arrival_estimates(query).await,
+            Err(RealtimeError::InvalidConfiguration)
+        );
+    }
+}
+
+#[tokio::test]
 async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
     let update_time = (OffsetDateTime::now_utc() - Duration::seconds(30))
         .format(&Rfc3339)
@@ -50,10 +121,13 @@ async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
     .with_endpoint_paths("feed", "feed");
 
     let values = source
-        .arrival_estimates(ArrivalQuery::for_ride(
-            TransitServiceId::new("provider-service"),
-            BoardingPointId::new("provider-stop"),
-        ))
+        .arrival_estimates(
+            ArrivalQuery::for_ride(
+                TransitServiceId::new("provider-service"),
+                BoardingPointId::new("provider-stop"),
+            )
+            .with_scope("Taipei"),
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -105,10 +179,10 @@ async fn directional_tdx_service_ids_match_static_directional_ids() {
     .with_endpoint_paths("feed", "feed");
     let service_id = transit_service_id_for_direction("provider-service", 1);
     let values = source
-        .arrival_estimates(ArrivalQuery::for_ride(
-            service_id.clone(),
-            BoardingPointId::new("provider-stop"),
-        ))
+        .arrival_estimates(
+            ArrivalQuery::for_ride(service_id.clone(), BoardingPointId::new("provider-stop"))
+                .with_scope("Taipei"),
+        )
         .await
         .unwrap();
 
@@ -162,10 +236,13 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
     .with_endpoint_paths("feed", "feed");
 
     let values = source
-        .arrival_estimates(ArrivalQuery::for_ride(
-            TransitServiceId::new("provider-service"),
-            BoardingPointId::new("provider-stop"),
-        ))
+        .arrival_estimates(
+            ArrivalQuery::for_ride(
+                TransitServiceId::new("provider-service"),
+                BoardingPointId::new("provider-stop"),
+            )
+            .with_scope("Taipei"),
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 2);

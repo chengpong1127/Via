@@ -139,6 +139,25 @@ impl TdxRealtimeProvider {
             .map_err(|_| RealtimeError::InvalidConfiguration)
     }
 
+    fn arrival_path_for_scope(&self, scope: Option<&str>) -> Result<String, RealtimeError> {
+        let scope = scope.ok_or(RealtimeError::InvalidConfiguration)?;
+        if scope.is_empty()
+            || !scope
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+        {
+            return Err(RealtimeError::InvalidConfiguration);
+        }
+        if self.arrival_path == DEFAULT_ARRIVAL_PATH {
+            Ok(format!(
+                "{}/{scope}",
+                self.arrival_path.trim_end_matches('/')
+            ))
+        } else {
+            Ok(self.arrival_path.clone())
+        }
+    }
+
     async fn get_json(
         &self,
         path: &str,
@@ -376,6 +395,7 @@ impl RealtimeProvider for TdxRealtimeProvider {
         if query.transit_service_ids.is_empty() || query.boarding_point_ids.is_empty() {
             return Ok(Vec::new());
         }
+        let arrival_path = self.arrival_path_for_scope(query.scope.as_deref())?;
         let service_ids = query
             .transit_service_ids
             .iter()
@@ -395,7 +415,7 @@ impl RealtimeProvider for TdxRealtimeProvider {
                 odata_in_filter("StopUID", &boarding_point_ids)
             ),
         )];
-        let payload = self.get_json(&self.arrival_path, &query_params).await?;
+        let payload = self.get_json(&arrival_path, &query_params).await?;
         let values =
             self.normalize_payload(&payload, TdxFamily::BusArrival, &query.transit_service_ids)?;
         let requested_services = query

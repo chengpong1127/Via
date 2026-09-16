@@ -1,7 +1,7 @@
 //! Provider adapters for demand-driven departure and BikeShare resolution.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -458,25 +458,39 @@ impl DepartureResolver for RealtimeDepartureResolver {
             return queries.into_iter().map(|_| Ok(Vec::new())).collect();
         }
 
-        let mut unique_pairs = Vec::new();
+        let mut unique_pairs_by_scope = BTreeMap::<
+            Option<String>,
+            Vec<(
+                crate::domain::ids::TransitServiceId,
+                crate::domain::ids::BoardingPointId,
+            )>,
+        >::new();
         let mut seen_pairs = HashSet::new();
         for query in &active_queries {
             let pair = (query.service_id.clone(), query.board_stop_id.clone());
             if seen_pairs.insert(pair.clone()) {
-                unique_pairs.push(pair);
+                let scope = self
+                    .network
+                    .service(&query.service_id)
+                    .and_then(|service| service.realtime_scope.clone());
+                unique_pairs_by_scope.entry(scope).or_default().push(pair);
             }
         }
-        unique_pairs.sort_by(|left, right| {
-            left.0
-                .as_str()
-                .cmp(right.0.as_str())
-                .then(left.1.as_str().cmp(right.1.as_str()))
-        });
-        let batch_count = unique_pairs
-            .len()
-            .div_ceil(MAX_REALTIME_DEPARTURE_BATCH_PAIRS);
+        for pairs in unique_pairs_by_scope.values_mut() {
+            pairs.sort_by(|left, right| {
+                left.0
+                    .as_str()
+                    .cmp(right.0.as_str())
+                    .then(left.1.as_str().cmp(right.1.as_str()))
+            });
+        }
+        let unique_pair_count = seen_pairs.len();
+        let batch_count = unique_pairs_by_scope
+            .values()
+            .map(|pairs| pairs.len().div_ceil(MAX_REALTIME_DEPARTURE_BATCH_PAIRS))
+            .sum();
         self.metrics
-            .record_departure_batch(active_queries.len(), unique_pairs.len(), batch_count);
+            .record_departure_batch(active_queries.len(), unique_pair_count, batch_count);
 
         let mut values_by_pair = HashMap::<
             (
@@ -485,38 +499,41 @@ impl DepartureResolver for RealtimeDepartureResolver {
             ),
             Vec<NormalizedRealtimeValue>,
         >::new();
-        for pairs in unique_pairs.chunks(MAX_REALTIME_DEPARTURE_BATCH_PAIRS) {
-            let requested_pairs = pairs.iter().cloned().collect::<HashSet<_>>();
-            let query = ArrivalQuery::new(
-                pairs.iter().map(|pair| pair.0.clone()),
-                pairs.iter().map(|pair| pair.1.clone()),
-            );
-            let values = match self.realtime.arrival_estimates(query).await {
-                Ok(values) => values,
-                Err(error) => {
-                    let error = map_departure_realtime_error(error);
-                    return queries
-                        .into_iter()
-                        .map(|query| {
-                            if query.limit == 0 {
-                                Ok(Vec::new())
-                            } else {
-                                Err(error.clone())
-                            }
-                        })
-                        .collect();
-                }
-            };
-            for value in values {
-                let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
-                    continue;
+        for (scope, unique_pairs) in unique_pairs_by_scope {
+            for pairs in unique_pairs.chunks(MAX_REALTIME_DEPARTURE_BATCH_PAIRS) {
+                let requested_pairs = pairs.iter().cloned().collect::<HashSet<_>>();
+                let query = ArrivalQuery::new(
+                    pairs.iter().map(|pair| pair.0.clone()),
+                    pairs.iter().map(|pair| pair.1.clone()),
+                )
+                .with_optional_scope(scope.clone());
+                let values = match self.realtime.arrival_estimates(query).await {
+                    Ok(values) => values,
+                    Err(error) => {
+                        let error = map_departure_realtime_error(error);
+                        return queries
+                            .into_iter()
+                            .map(|query| {
+                                if query.limit == 0 {
+                                    Ok(Vec::new())
+                                } else {
+                                    Err(error.clone())
+                                }
+                            })
+                            .collect();
+                    }
                 };
-                let pair = (
-                    arrival.transit_service_id.clone(),
-                    arrival.boarding_point_id.clone(),
-                );
-                if requested_pairs.contains(&pair) {
-                    values_by_pair.entry(pair).or_default().push(value);
+                for value in values {
+                    let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
+                        continue;
+                    };
+                    let pair = (
+                        arrival.transit_service_id.clone(),
+                        arrival.boarding_point_id.clone(),
+                    );
+                    if requested_pairs.contains(&pair) {
+                        values_by_pair.entry(pair).or_default().push(value);
+                    }
                 }
             }
         }
