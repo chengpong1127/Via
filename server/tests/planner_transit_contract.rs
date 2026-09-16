@@ -54,6 +54,24 @@ fn request() -> Value {
 }
 
 fn network(mode: TransitMode, service_id: &str, first_id: &str, second_id: &str) -> TransitNetwork {
+    network_with_timing(
+        mode,
+        service_id,
+        first_id,
+        second_id,
+        10 * 3600 + 600,
+        10 * 3600 + 1_200,
+    )
+}
+
+fn network_with_timing(
+    mode: TransitMode,
+    service_id: &str,
+    first_id: &str,
+    second_id: &str,
+    departure_seconds: u32,
+    arrival_seconds: u32,
+) -> TransitNetwork {
     let first = BoardingPointId::new(first_id);
     let second = BoardingPointId::new(second_id);
     TransitNetwork::new(
@@ -88,8 +106,8 @@ fn network(mode: TransitMode, service_id: &str, first_id: &str, second_id: &str)
             TransitServiceId::new(service_id),
             vec![time::Weekday::Monday],
             vec![
-                ScheduledStopTime::new(10 * 3600 + 600, 10 * 3600 + 600),
-                ScheduledStopTime::new(10 * 3600 + 1_200, 10 * 3600 + 1_200),
+                ScheduledStopTime::new(departure_seconds, departure_seconds),
+                ScheduledStopTime::new(arrival_seconds, arrival_seconds),
             ],
         )],
         vec![BikeShareStation::new(
@@ -216,6 +234,63 @@ async fn transit_candidate_uses_static_schedule_without_a_global_snapshot() {
     );
     assert_eq!(body["network_revision"]["schedule_revision"], "schedule-1");
     assert!(bike_queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn substantially_faster_schedule_only_metro_beats_direct_walking() {
+    let origin = coordinate(25.000, 121.500);
+    let first = coordinate(25.010, 121.510);
+    let second = coordinate(25.015, 121.515);
+    let destination = coordinate(25.020, 121.520);
+    let provider = FakeStreetRouter::builder()
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            path(origin, destination, 65 * 60),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            first,
+            path(origin, first, 120),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            second,
+            destination,
+            path(second, destination, 120),
+        )
+        .build();
+    let app = build_router_with_realtime_and_network(
+        Arc::new(provider),
+        Arc::new(FixtureRealtime::default()),
+        network_with_timing(
+            TransitMode::Metro,
+            "via_metro_blue",
+            "via_boarding_1",
+            "via_boarding_2",
+            10 * 3600 + 120,
+            10 * 3600 + 600,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let body = response_body(app, request()).await;
+    let options = body["journey_options"].as_array().unwrap();
+
+    assert!(!options.is_empty());
+    assert_eq!(options[0]["class"], "feasible");
+    assert_eq!(options[0]["label"], "best_now");
+    assert_eq!(options[0]["arrival_time"], "2026-08-31T10:12:00+08:00");
+    assert!(
+        options[0]["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|leg| leg["mode"] == "transit")
+    );
 }
 
 #[tokio::test]

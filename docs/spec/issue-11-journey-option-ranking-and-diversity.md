@@ -5,7 +5,7 @@ Status: Current
 
 ## Decision
 
-Via ranks Journey Options on the server with a versioned, deterministic pipeline. Required Live Status availability is an eligibility gate. Every displayed Journey Option is then classified as **Reliable** or **Feasible**. Reliable Journey Options always rank before Feasible Journey Options. A generalized cost orders Journey Options within each class; dominance and diversity filters remain separate from that score.
+Via ranks Journey Options on the server with a versioned, deterministic pipeline. Required Live Status availability is an eligibility gate. Every displayed Journey Option is then classified as **Reliable** or **Feasible**. Journey usefulness is the primary ordering signal: a materially earlier arrival outranks the other class, while Reliable is preferred when arrivals are within the configurable reliability-preference window. Dominance and diversity filters use the same ordering policy.
 
 The server returns up to three materially different Journey Options in final order. Native clients render that order and the server-supplied class, label, and reasons. They never calculate a score or reorder results.
 
@@ -54,18 +54,17 @@ For one Planning Request and one frozen request-local evidence context, the serv
 1. generates Pareto candidates;
 2. removes candidates with unavailable required Live Status or an infeasible critical action;
 3. classifies each survivor as Reliable or Feasible;
-4. removes dominated candidates;
-5. calculates generalized cost within each class;
-6. groups and removes near-duplicates;
-7. sorts Reliable before Feasible and by generalized cost within each class;
-8. selects up to three materially different Journey Options, using Feasible options only when Reliable options do not fill the result set; and
-9. applies labels and machine-readable ranking reasons.
+4. removes candidates dominated under the arrival/class policy;
+5. orders candidates by the arrival/class policy and deterministic tie-breakers;
+6. groups and removes near-duplicates, retaining the earlier policy-preferred candidate;
+7. selects up to three materially different Journey Options; and
+8. applies labels and machine-readable ranking reasons.
 
 The calculation pins a `ranking_policy_version`. Identical Planning Request inputs, schedule revision, ranking policy version, and realtime evidence must produce the same ordered results. Cost arithmetic uses deterministic integer or fixed-point operations, not platform-dependent floating-point tie behavior.
 
 ## Generalized cost
 
-Within one class, Via calculates a time-equivalent internal value:
+When calibrated generalized-cost coefficients are available, Via may use a time-equivalent internal value within the same class:
 
 ```text
 generalized_cost =
@@ -78,29 +77,31 @@ generalized_cost =
 
 The coefficients are versioned configuration calibrated against an approved Taipei–New Taipei ordering corpus. They are not rider-facing facts and are not part of the public client contract. Every calculation records the component values and policy version so the order can be explained and replayed.
 
-No coefficient can move a Feasible Journey Option above a Reliable Journey Option. Availability and class are earlier stages, not large score penalties.
+No coefficient can replace the cross-class arrival policy. Availability and class remain explicit product facts, not large score penalties.
 
-Until calibrated coefficients are approved, the deterministic reference order within a class is:
+The deterministic reference comparison is:
 
-1. earlier calculated arrival;
-2. fewer Transfers;
-3. less Walking;
-4. earlier departure; and
-5. stable Journey Option key.
+1. when classes differ and arrivals are more than the configured reliability-preference window apart, earlier calculated arrival;
+2. when classes differ and arrivals are within that window, Reliable class;
+3. for equal classes, earlier calculated arrival;
+4. fewer Transfers;
+5. less Walking;
+6. earlier calculated arrival as a final tie-breaker;
+7. earlier departure; and
+8. stable Journey Option key.
 
-After calibration, the same fields remain the ordered tie-breakers after generalized cost.
+The default reliability-preference window is five minutes and is explicit `RankingPolicy` configuration. After calibration, the same fields remain deterministic tie-breakers.
 
 ## Dominance
 
-Journey Option A dominates Journey Option B when A:
+Journey Option A dominates Journey Option B when A is no worse under the arrival/class comparison policy and:
 
-- has the same or better class;
 - arrives no later;
 - has no more Transfers;
 - has no more Walking; and
 - is strictly better on at least one of those values.
 
-Via removes B before diversity selection. A different Travel Mode or service sequence does not preserve a fully dominated Journey Option.
+For different classes, Reliable is no worse only within the reliability-preference window; outside that window, the earlier arrival is no worse regardless of class. Via removes B before diversity selection. A different Travel Mode or service sequence does not preserve a fully dominated Journey Option.
 
 ## Diversity and result count
 
@@ -120,13 +121,13 @@ Via returns fewer than three Journey Options when availability, feasibility, dom
 
 The server assigns at most one label to each returned Journey Option, in this priority order:
 
-1. **Best now** — only the first-ranked Reliable Journey Option;
+1. **Best now** — the first-ranked selected Journey Option, including a Feasible option when its materially earlier arrival puts it first;
 2. **Fewer transfers** — a returned Journey Option with strictly fewer Transfers than Best now; and
 3. **Less walking** — a returned Journey Option with strictly less Walking than Best now.
 
-If no Reliable Journey Option exists, Via can return Feasible Journey Options but assigns no **Best now** label. A Journey Option that qualifies for both alternative labels receives **Fewer transfers** because it has higher label priority.
+The first option receives `earliest_reliable_arrival` when it is Reliable and `earliest_arrival` when it is Feasible. A Journey Option that qualifies for both alternative labels receives **Fewer transfers** because it has higher label priority.
 
-The API also returns machine-readable reasons such as `earliest_reliable_arrival`, `fewer_transfers`, `less_walking`, `tight_transfer_margin`, `low_pickup_bikes`, and `low_return_slots`. The numeric generalized cost remains internal except in authorized diagnostic output.
+The API also returns machine-readable reasons such as `earliest_arrival`, `earliest_reliable_arrival`, `fewer_transfers`, `less_walking`, `tight_transfer_margin`, `low_pickup_bikes`, and `low_return_slots`. The numeric generalized cost remains internal except in authorized diagnostic output.
 
 ## Validation contract
 
@@ -137,7 +138,8 @@ The implementation is conformant only when automated fixtures prove that:
 - a Taipei Metro Journey Option can use a calculated wait without claiming a future train Arrival Estimate;
 - the three-minute and five-minute Transfer safety boundaries classify exactly;
 - zero, one, two, and three bikes and return slots classify exactly;
-- Reliable Journey Options always precede Feasible Journey Options regardless of generalized cost;
+- a materially earlier Feasible Journey Option precedes a substantially slower Reliable Journey Option;
+- a Reliable Journey Option precedes a Feasible Journey Option whose arrival is within the configured reliability-preference window;
 - dominance, near-duplicate, five-minute Walking, and 15-minute delay boundaries behave exactly as specified;
 - labels follow their definitions and priority;
 - one or two useful Journey Options are returned without filler; and

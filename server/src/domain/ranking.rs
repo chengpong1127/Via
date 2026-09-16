@@ -24,6 +24,7 @@ pub enum JourneyLabel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RankingReason {
+    EarliestArrival,
     EarliestReliableArrival,
     FewerTransfers,
     LessWalking,
@@ -91,6 +92,8 @@ pub struct RankingPolicy {
     pub near_duplicate_arrival_seconds: i64,
     pub material_walking_difference_seconds: u32,
     pub excessive_alternative_delay_seconds: i64,
+    /// Reliability can outweigh an arrival advantage inside this window.
+    pub reliability_preference_window_seconds: u32,
     pub result_limit: usize,
 }
 
@@ -104,6 +107,7 @@ impl Default for RankingPolicy {
             near_duplicate_arrival_seconds: 300,
             material_walking_difference_seconds: 300,
             excessive_alternative_delay_seconds: 900,
+            reliability_preference_window_seconds: 300,
             result_limit: 3,
         }
     }
@@ -124,8 +128,8 @@ impl RankingPolicy {
             .filter_map(|candidate| self.classify(candidate, schedule_only_keys))
             .collect();
 
-        eligible = remove_dominated(eligible);
-        eligible.sort_by(compare_ranked);
+        eligible = remove_dominated(self, eligible);
+        eligible.sort_by(|left, right| self.compare_ranked(left, right));
         eligible = self.remove_near_duplicates(eligible);
 
         let mut selected = Vec::with_capacity(self.result_limit);
@@ -245,42 +249,65 @@ impl RankingPolicy {
             || fewer_transfers
             || less_walking
     }
+
+    fn compare_ranked(&self, left: &RankedJourney, right: &RankedJourney) -> Ordering {
+        compare_primary_preference(self, left, right)
+            .then(left.transfer_count.cmp(&right.transfer_count))
+            .then(left.walking_seconds.cmp(&right.walking_seconds))
+            .then(left.arrival_epoch_seconds.cmp(&right.arrival_epoch_seconds))
+            .then(
+                left.departure_epoch_seconds
+                    .cmp(&right.departure_epoch_seconds),
+            )
+            .then(left.stable_key.cmp(&right.stable_key))
+    }
 }
 
-fn compare_ranked(left: &RankedJourney, right: &RankedJourney) -> Ordering {
-    left.class
-        .cmp(&right.class)
-        .then(left.arrival_epoch_seconds.cmp(&right.arrival_epoch_seconds))
-        .then(left.transfer_count.cmp(&right.transfer_count))
-        .then(left.walking_seconds.cmp(&right.walking_seconds))
-        .then(
-            left.departure_epoch_seconds
-                .cmp(&right.departure_epoch_seconds),
-        )
-        .then(left.stable_key.cmp(&right.stable_key))
+fn compare_primary_preference(
+    policy: &RankingPolicy,
+    left: &RankedJourney,
+    right: &RankedJourney,
+) -> Ordering {
+    let arrival_difference = left
+        .arrival_epoch_seconds
+        .abs_diff(right.arrival_epoch_seconds);
+    if left.class != right.class
+        && arrival_difference <= u64::from(policy.reliability_preference_window_seconds)
+    {
+        compare_classes(left.class, right.class)
+    } else {
+        left.arrival_epoch_seconds.cmp(&right.arrival_epoch_seconds)
+    }
 }
 
-fn remove_dominated(candidates: Vec<RankedJourney>) -> Vec<RankedJourney> {
+fn compare_classes(left: JourneyClass, right: JourneyClass) -> Ordering {
+    match (left, right) {
+        (JourneyClass::Reliable, JourneyClass::Feasible) => Ordering::Less,
+        (JourneyClass::Feasible, JourneyClass::Reliable) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
+
+fn remove_dominated(policy: &RankingPolicy, candidates: Vec<RankedJourney>) -> Vec<RankedJourney> {
     candidates
         .iter()
         .enumerate()
         .filter(|(index, candidate)| {
-            !candidates
-                .iter()
-                .enumerate()
-                .any(|(other_index, other)| index != &other_index && dominates(other, candidate))
+            !candidates.iter().enumerate().any(|(other_index, other)| {
+                index != &other_index && dominates(policy, other, candidate)
+            })
         })
         .map(|(_, candidate)| candidate.clone())
         .collect()
 }
 
-fn dominates(left: &RankedJourney, right: &RankedJourney) -> bool {
-    let no_worse = left.class <= right.class
+fn dominates(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney) -> bool {
+    let no_worse = class_is_no_worse(policy, left, right)
         && left.arrival_epoch_seconds <= right.arrival_epoch_seconds
         && left.transfer_count <= right.transfer_count
         && left.walking_seconds <= right.walking_seconds
         && left.bike_share_seconds <= right.bike_share_seconds;
-    let strictly_better = left.class < right.class
+    let strictly_better = class_is_strictly_better(policy, left, right)
         || left.arrival_epoch_seconds < right.arrival_epoch_seconds
         || left.transfer_count < right.transfer_count
         || left.walking_seconds < right.walking_seconds
@@ -288,19 +315,31 @@ fn dominates(left: &RankedJourney, right: &RankedJourney) -> bool {
     no_worse && strictly_better
 }
 
+fn class_is_no_worse(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney) -> bool {
+    compare_primary_preference(policy, left, right) != Ordering::Greater
+}
+
+fn class_is_strictly_better(
+    policy: &RankingPolicy,
+    left: &RankedJourney,
+    right: &RankedJourney,
+) -> bool {
+    left.class != right.class && compare_primary_preference(policy, left, right) == Ordering::Less
+}
+
 fn apply_labels(options: &mut [RankedJourney]) {
-    let Some(best_index) = options
-        .iter()
-        .position(|option| option.class == JourneyClass::Reliable)
-    else {
+    if options.is_empty() {
         return;
-    };
+    }
+    let best_index = 0;
     let best_transfers = options[best_index].transfer_count;
     let best_walking = options[best_index].walking_seconds;
+    let best_reason = match options[best_index].class {
+        JourneyClass::Reliable => RankingReason::EarliestReliableArrival,
+        JourneyClass::Feasible => RankingReason::EarliestArrival,
+    };
     options[best_index].label = Some(JourneyLabel::BestNow);
-    options[best_index]
-        .ranking_reasons
-        .insert(0, RankingReason::EarliestReliableArrival);
+    options[best_index].ranking_reasons.insert(0, best_reason);
     for (index, option) in options.iter_mut().enumerate() {
         if index == best_index {
             continue;
