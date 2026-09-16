@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         realtime
     };
     let cached = Arc::new(CachedRealtimeProvider::new(realtime));
+    let realtime_metrics = cached.metrics();
     let street = build_street_router(cli.realtime).await?;
     let transfer_path = cli
         .transfer_artifact
@@ -112,10 +113,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let departure = Arc::new(
         CompositeDepartureResolver::with_schedule_fallback(
             network.clone(),
-            Arc::new(RealtimeDepartureResolver::new(
-                cached.clone(),
-                network.clone(),
-            )),
+            Arc::new(
+                RealtimeDepartureResolver::new(cached.clone(), network.clone())
+                    .with_metrics(realtime_metrics.clone()),
+            ),
         )
         .with_adapter("metro_schedule", metro_departure.clone())
         .with_adapter("metro_frequency", metro_departure),
@@ -141,6 +142,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {
+        eprintln!("{}", realtime_metrics.bus_timing_trace());
         print_trace(&result, &trace_events);
     }
     if cli.json {

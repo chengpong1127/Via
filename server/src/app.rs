@@ -158,10 +158,10 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     let departure_resolver = Arc::new(
         CompositeDepartureResolver::with_schedule_fallback(
             transit_network.clone(),
-            Arc::new(RealtimeDepartureResolver::new(
-                realtime.clone(),
-                transit_network.clone(),
-            )),
+            Arc::new(
+                RealtimeDepartureResolver::new(realtime.clone(), transit_network.clone())
+                    .with_metrics(realtime_metrics.clone()),
+            ),
         )
         .with_adapter("metro_schedule", metro_departure.clone())
         .with_adapter("metro_frequency", metro_departure),

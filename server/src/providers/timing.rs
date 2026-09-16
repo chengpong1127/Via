@@ -1,13 +1,18 @@
 //! Provider adapters for demand-driven departure and BikeShare resolution.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 
 use crate::{
     domain::{
         ids::{BikeShareStationId, EffectiveTripId},
-        realtime::{ArrivalState, BikeAvailability, FreshnessState, RealtimeValue},
+        realtime::{
+            ArrivalState, BikeAvailability, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
+        },
         transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
         transit_timing::{
             DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
@@ -17,7 +22,7 @@ use crate::{
     routing::transfers::{BikeAvailabilityResolver, TransferError},
 };
 
-use super::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider};
+use super::realtime::{ArrivalQuery, RealtimeError, RealtimeMetrics, RealtimeProvider};
 
 /// Materializes Metro departures from station-level schedules or headways.
 ///
@@ -249,14 +254,26 @@ fn timing_basis_order(basis: crate::domain::transit_timing::TimingBasis) -> u8 {
 }
 
 /// Resolves TDX arrival observations into complete request-local effective trips.
+const MAX_REALTIME_DEPARTURE_BATCH_PAIRS: usize = 64;
+
 pub struct RealtimeDepartureResolver {
     realtime: Arc<dyn RealtimeProvider>,
     network: Arc<TransitNetwork>,
+    metrics: RealtimeMetrics,
 }
 
 impl RealtimeDepartureResolver {
     pub fn new(realtime: Arc<dyn RealtimeProvider>, network: Arc<TransitNetwork>) -> Self {
-        Self { realtime, network }
+        Self {
+            realtime,
+            network,
+            metrics: RealtimeMetrics::default(),
+        }
+    }
+
+    pub fn with_metrics(mut self, metrics: RealtimeMetrics) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     fn effective_trip(
@@ -363,27 +380,14 @@ impl RealtimeDepartureResolver {
             evidence: vec![evidence],
         })
     }
-}
 
-#[async_trait]
-impl DepartureResolver for RealtimeDepartureResolver {
-    async fn next_departures(
+    fn resolve_query(
         &self,
-        query: DepartureQuery,
-    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        if query.limit == 0 {
-            return Ok(Vec::new());
-        }
-        let values = self
-            .realtime
-            .arrival_estimates(ArrivalQuery::for_ride(
-                query.service_id.clone(),
-                query.board_stop_id.clone(),
-            ))
-            .await
-            .map_err(map_departure_realtime_error)?;
+        query: &DepartureQuery,
+        values: &[NormalizedRealtimeValue],
+    ) -> Vec<EffectiveTrip> {
         let mut departures = values
-            .into_iter()
+            .iter()
             .filter_map(|status| {
                 if status.freshness.state != FreshnessState::Fresh {
                     return None;
@@ -404,7 +408,7 @@ impl DepartureResolver for RealtimeDepartureResolver {
                 if departure_at < query.after {
                     return None;
                 }
-                self.effective_trip(&query, departure_at, arrival.transmitted_at, status)
+                self.effective_trip(query, departure_at, arrival.transmitted_at, status.clone())
             })
             .collect::<Vec<_>>();
         departures.sort_by(|left, right| {
@@ -422,7 +426,115 @@ impl DepartureResolver for RealtimeDepartureResolver {
                 .then(left.id.as_str().cmp(right.id.as_str()))
         });
         departures.truncate(query.limit);
-        Ok(departures)
+        departures
+    }
+}
+
+#[async_trait]
+impl DepartureResolver for RealtimeDepartureResolver {
+    async fn next_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        self.next_departures_batch(vec![query])
+            .await
+            .pop()
+            .unwrap_or(Err(DepartureError::TemporarilyUnavailable))
+    }
+
+    async fn next_departures_batch(
+        &self,
+        queries: Vec<DepartureQuery>,
+    ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
+        if queries.is_empty() {
+            return Vec::new();
+        }
+
+        let active_queries = queries
+            .iter()
+            .filter(|query| query.limit > 0)
+            .collect::<Vec<_>>();
+        if active_queries.is_empty() {
+            return queries.into_iter().map(|_| Ok(Vec::new())).collect();
+        }
+
+        let mut unique_pairs = Vec::new();
+        let mut seen_pairs = HashSet::new();
+        for query in &active_queries {
+            let pair = (query.service_id.clone(), query.board_stop_id.clone());
+            if seen_pairs.insert(pair.clone()) {
+                unique_pairs.push(pair);
+            }
+        }
+        unique_pairs.sort_by(|left, right| {
+            left.0
+                .as_str()
+                .cmp(right.0.as_str())
+                .then(left.1.as_str().cmp(right.1.as_str()))
+        });
+        let batch_count = unique_pairs
+            .len()
+            .div_ceil(MAX_REALTIME_DEPARTURE_BATCH_PAIRS);
+        self.metrics
+            .record_departure_batch(active_queries.len(), unique_pairs.len(), batch_count);
+
+        let mut values_by_pair = HashMap::<
+            (
+                crate::domain::ids::TransitServiceId,
+                crate::domain::ids::BoardingPointId,
+            ),
+            Vec<NormalizedRealtimeValue>,
+        >::new();
+        for pairs in unique_pairs.chunks(MAX_REALTIME_DEPARTURE_BATCH_PAIRS) {
+            let requested_pairs = pairs.iter().cloned().collect::<HashSet<_>>();
+            let query = ArrivalQuery::new(
+                pairs.iter().map(|pair| pair.0.clone()),
+                pairs.iter().map(|pair| pair.1.clone()),
+            );
+            let values = match self.realtime.arrival_estimates(query).await {
+                Ok(values) => values,
+                Err(error) => {
+                    let error = map_departure_realtime_error(error);
+                    return queries
+                        .into_iter()
+                        .map(|query| {
+                            if query.limit == 0 {
+                                Ok(Vec::new())
+                            } else {
+                                Err(error.clone())
+                            }
+                        })
+                        .collect();
+                }
+            };
+            for value in values {
+                let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
+                    continue;
+                };
+                let pair = (
+                    arrival.transit_service_id.clone(),
+                    arrival.boarding_point_id.clone(),
+                );
+                if requested_pairs.contains(&pair) {
+                    values_by_pair.entry(pair).or_default().push(value);
+                }
+            }
+        }
+
+        queries
+            .into_iter()
+            .map(|query| {
+                if query.limit == 0 {
+                    Ok(Vec::new())
+                } else {
+                    let pair = (query.service_id.clone(), query.board_stop_id.clone());
+                    Ok(self.resolve_query(
+                        &query,
+                        values_by_pair.get(&pair).map_or(&[], Vec::as_slice),
+                    ))
+                }
+            })
+            .collect()
     }
 }
 
@@ -491,6 +603,132 @@ impl DepartureResolver for CompositeDepartureResolver {
                 Ok(_) | Err(_) => Err(preferred_error),
             },
         }
+    }
+
+    async fn next_departures_batch(
+        &self,
+        queries: Vec<DepartureQuery>,
+    ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
+        if queries.is_empty() {
+            return Vec::new();
+        }
+
+        enum FallbackMode {
+            ReturnSchedule,
+            UseDefaultWhenEmpty,
+            PreferOriginalOnFailure(DepartureError),
+        }
+
+        let mut results = (0..queries.len())
+            .map(|_| None::<Result<Vec<EffectiveTrip>, DepartureError>>)
+            .collect::<Vec<_>>();
+        let mut adapter_groups = HashMap::<String, Vec<(usize, DepartureQuery)>>::new();
+        let mut schedule_requests = Vec::<(usize, DepartureQuery, FallbackMode)>::new();
+
+        for (index, query) in queries.iter().cloned().enumerate() {
+            let Some(service) = self.network.service(&query.service_id) else {
+                results[index] = Some(Err(DepartureError::InvalidQuery));
+                continue;
+            };
+            let Some(timing_source) = service.timing_source.as_deref() else {
+                schedule_requests.push((index, query, FallbackMode::UseDefaultWhenEmpty));
+                continue;
+            };
+            if self.adapters.contains_key(timing_source) {
+                adapter_groups
+                    .entry(timing_source.to_owned())
+                    .or_default()
+                    .push((index, query));
+            } else {
+                schedule_requests.push((index, query, FallbackMode::UseDefaultWhenEmpty));
+            }
+        }
+
+        for (timing_source, grouped_queries) in adapter_groups {
+            let adapter = self
+                .adapters
+                .get(&timing_source)
+                .expect("adapter group was checked before dispatch");
+            let grouped_results = adapter
+                .next_departures_batch(
+                    grouped_queries
+                        .iter()
+                        .map(|(_, query)| query.clone())
+                        .collect(),
+                )
+                .await;
+            for (position, (index, query)) in grouped_queries.into_iter().enumerate() {
+                let preferred = grouped_results
+                    .get(position)
+                    .cloned()
+                    .unwrap_or(Err(DepartureError::TemporarilyUnavailable));
+                match preferred {
+                    Ok(departures) if !departures.is_empty() => {
+                        results[index] = Some(Ok(departures));
+                    }
+                    Ok(_) => schedule_requests.push((index, query, FallbackMode::ReturnSchedule)),
+                    Err(error) => schedule_requests.push((
+                        index,
+                        query,
+                        FallbackMode::PreferOriginalOnFailure(error),
+                    )),
+                }
+            }
+        }
+
+        let fallback_queries = schedule_requests
+            .iter()
+            .map(|(_, query, _)| query.clone())
+            .collect::<Vec<_>>();
+        let fallback_results = self.fallback.next_departures_batch(fallback_queries).await;
+        let mut default_requests = Vec::<(usize, DepartureQuery)>::new();
+        for (position, (index, query, mode)) in schedule_requests.into_iter().enumerate() {
+            let scheduled = fallback_results
+                .get(position)
+                .cloned()
+                .unwrap_or(Err(DepartureError::TemporarilyUnavailable));
+            match mode {
+                FallbackMode::ReturnSchedule => results[index] = Some(scheduled),
+                FallbackMode::PreferOriginalOnFailure(error) => {
+                    results[index] = Some(match scheduled {
+                        Ok(departures) if !departures.is_empty() => Ok(departures),
+                        Ok(_) | Err(_) => Err(error),
+                    });
+                }
+                FallbackMode::UseDefaultWhenEmpty => match scheduled {
+                    Ok(departures) if !departures.is_empty() => {
+                        results[index] = Some(Ok(departures));
+                    }
+                    Ok(_) => default_requests.push((index, query)),
+                    Err(error) => results[index] = Some(Err(error)),
+                },
+            }
+        }
+
+        if !default_requests.is_empty() {
+            let default_results = self
+                .default
+                .next_departures_batch(
+                    default_requests
+                        .iter()
+                        .map(|(_, query)| query.clone())
+                        .collect(),
+                )
+                .await;
+            for (position, (index, _)) in default_requests.into_iter().enumerate() {
+                results[index] = Some(
+                    default_results
+                        .get(position)
+                        .cloned()
+                        .unwrap_or(Err(DepartureError::TemporarilyUnavailable)),
+                );
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|result| result.unwrap_or(Err(DepartureError::TemporarilyUnavailable)))
+            .collect()
     }
 }
 
