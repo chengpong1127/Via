@@ -28,6 +28,16 @@ pub struct TdxCredentials {
 }
 
 impl TdxCredentials {
+    pub fn from_client_credentials(
+        client_id: impl Into<String>,
+        client_secret: impl Into<String>,
+    ) -> Self {
+        Self {
+            client_id: client_id.into(),
+            client_secret: client_secret.into(),
+        }
+    }
+
     pub fn from_env() -> Result<Self, TdxCredentialsError> {
         let client_id = required_env("TDX_CLIENT_ID")?;
         let client_secret = required_env("TDX_CLIENT_SECRET")?;
@@ -231,6 +241,16 @@ impl TdxClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<TdxRawResponse, TdxClientError> {
+        self.get_raw_with_limit(path, query, MAX_RESPONSE_BYTES)
+            .await
+    }
+
+    pub(crate) async fn get_raw_with_limit(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+        max_response_bytes: usize,
+    ) -> Result<TdxRawResponse, TdxClientError> {
         let mut url = self
             .api_base_url
             .join(path)
@@ -252,12 +272,12 @@ impl TdxClient {
             .map_err(TdxClientError::ApiRequest)?;
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+            .is_some_and(|length| length > max_response_bytes as u64)
         {
             return Err(TdxClientError::ResponseTooLarge);
         }
         let body = response.bytes().await.map_err(TdxClientError::ApiRequest)?;
-        if body.len() > MAX_RESPONSE_BYTES {
+        if body.len() > max_response_bytes {
             return Err(TdxClientError::ResponseTooLarge);
         }
         Ok(TdxRawResponse {

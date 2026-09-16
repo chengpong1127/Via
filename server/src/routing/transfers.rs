@@ -258,17 +258,30 @@ impl TransferShortcutIndex {
     }
 
     pub fn insert(&mut self, shortcut: TransferShortcut) {
+        self.insert_and_report(shortcut);
+    }
+
+    fn insert_and_report(&mut self, shortcut: TransferShortcut) -> bool {
         let alternatives = self.by_from.entry(shortcut.from.clone()).or_default();
         if !alternatives.contains(&shortcut) {
             alternatives.push(shortcut);
+            true
+        } else {
+            false
         }
     }
 
     pub fn extend(&mut self, shortcuts: impl IntoIterator<Item = TransferShortcut>) {
+        self.extend_and_count(shortcuts);
+    }
+
+    fn extend_and_count(&mut self, shortcuts: impl IntoIterator<Item = TransferShortcut>) -> usize {
+        let mut inserted = 0;
         for shortcut in shortcuts {
-            self.insert(shortcut);
+            inserted += usize::from(self.insert_and_report(shortcut));
         }
         self.sort();
+        inserted
     }
 
     pub fn len(&self) -> usize {
@@ -378,6 +391,13 @@ pub struct TransferShortcutBuilder {
     network: std::sync::Arc<TransitNetwork>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransferPreprocessingProgress {
+    pub completed_origin_stops: usize,
+    pub total_origin_stops: usize,
+    pub transfer_shortcuts: usize,
+}
+
 impl TransferShortcutBuilder {
     pub fn new(
         street: std::sync::Arc<dyn StreetRouter>,
@@ -390,6 +410,14 @@ impl TransferShortcutBuilder {
         &self,
         limits: &RoutingLimits,
     ) -> Result<TransferShortcutIndex, StreetRoutingError> {
+        self.build_with_progress(limits, &mut |_| {}).await
+    }
+
+    pub async fn build_with_progress(
+        &self,
+        limits: &RoutingLimits,
+        progress: &mut dyn FnMut(TransferPreprocessingProgress),
+    ) -> Result<TransferShortcutIndex, StreetRoutingError> {
         let mut index = TransferShortcutIndex::from_network(&self.network);
         let stops = self
             .network
@@ -401,7 +429,14 @@ impl TransferShortcutBuilder {
                     .map(|coordinate| (stop.id.clone(), coordinate))
             })
             .collect::<Vec<_>>();
-        for (from_id, from) in &stops {
+        let total_origin_stops = stops.len();
+        let mut transfer_shortcuts = index.len();
+        progress(TransferPreprocessingProgress {
+            completed_origin_stops: 0,
+            total_origin_stops,
+            transfer_shortcuts,
+        });
+        for (completed_origin_stops, (from_id, from)) in stops.iter().enumerate() {
             let mut alternatives = Vec::new();
             for (to_id, to) in &stops {
                 if from_id == to_id
@@ -421,7 +456,12 @@ impl TransferShortcutBuilder {
                     .then(left.signature().cmp(&right.signature()))
             });
             alternatives.truncate(limits.max_bike_connectors.max(1));
-            index.extend(alternatives);
+            transfer_shortcuts += index.extend_and_count(alternatives);
+            progress(TransferPreprocessingProgress {
+                completed_origin_stops: completed_origin_stops + 1,
+                total_origin_stops,
+                transfer_shortcuts,
+            });
         }
         Ok(index)
     }
@@ -629,4 +669,80 @@ pub fn shortcut_is_usable(
                 .available_return_slots
                 .is_some_and(|count| count > 0)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use time::Time;
+
+    use super::*;
+    use crate::{
+        domain::{
+            ids::BoardingPointId,
+            location::RequestCoordinate,
+            transit::{TransitNetwork, TransitStop},
+        },
+        street::StraightLineStreetRouter,
+    };
+
+    #[tokio::test]
+    async fn reports_progress_for_completed_origin_stops() {
+        let network = Arc::new(TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            vec![
+                TransitStop::new(
+                    BoardingPointId::new("a"),
+                    "A",
+                    RequestCoordinate {
+                        latitude: 25.04,
+                        longitude: 121.56,
+                    },
+                ),
+                TransitStop::new(
+                    BoardingPointId::new("b"),
+                    "B",
+                    RequestCoordinate {
+                        latitude: 25.041,
+                        longitude: 121.561,
+                    },
+                ),
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let builder =
+            TransferShortcutBuilder::new(Arc::new(StraightLineStreetRouter::default()), network);
+        let mut reports = Vec::new();
+
+        builder
+            .build_with_progress(&RoutingLimits::default(), &mut |progress| {
+                reports.push(progress)
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reports,
+            vec![
+                TransferPreprocessingProgress {
+                    completed_origin_stops: 0,
+                    total_origin_stops: 2,
+                    transfer_shortcuts: 0,
+                },
+                TransferPreprocessingProgress {
+                    completed_origin_stops: 1,
+                    total_origin_stops: 2,
+                    transfer_shortcuts: 0,
+                },
+                TransferPreprocessingProgress {
+                    completed_origin_stops: 2,
+                    total_origin_stops: 2,
+                    transfer_shortcuts: 0,
+                },
+            ]
+        );
+    }
 }

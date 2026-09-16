@@ -1,12 +1,15 @@
-use std::{env, error::Error, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    env, error::Error, io::IsTerminal, path::PathBuf, str::FromStr, sync::Arc, time::Duration,
+};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
         ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress, build_from_raw,
-        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot_with_progress,
+        build_from_raw_with_transfer_preprocessing_with_progress, fetch_raw_snapshot_with_progress,
         load_manifest, load_network_artifact, load_transfer_artifact,
     },
     domain::{
@@ -14,7 +17,7 @@ use via_server::{
         transit::{TransitMode, TransitNetwork},
     },
     providers::{ValhallaConfig, ValhallaProvider},
-    routing::RoutingLimits,
+    routing::{RoutingLimits, TransferPreprocessingProgress},
     street::{StraightLineStreetRouter, StreetRouter},
 };
 
@@ -203,15 +206,42 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     }
     let result = if args.preprocess_transfers {
         let street = build_street_router(args.street_router)?;
-        build_from_raw_with_transfer_preprocessing(
+        let progress_bar = transfer_progress_bar();
+        let mut progress_started = false;
+        let mut update_progress = |progress: TransferPreprocessingProgress| {
+            let start_progress = !progress_started;
+            if start_progress {
+                progress_bar.reset_elapsed();
+                progress_started = true;
+            }
+            progress_bar.set_length(progress.total_origin_stops as u64);
+            progress_bar.set_position(progress.completed_origin_stops as u64);
+            progress_bar.set_message(format!("shortcuts={}", progress.transfer_shortcuts));
+            if start_progress {
+                progress_bar.set_draw_target(transfer_progress_draw_target());
+                progress_bar.enable_steady_tick(Duration::from_millis(250));
+            }
+        };
+        let result = build_from_raw_with_transfer_preprocessing_with_progress(
             &args.input,
             &args.output,
             scope,
             args.date,
             street,
             RoutingLimits::default(),
+            &mut update_progress,
         )
-        .await?
+        .await;
+        match result {
+            Ok(result) => {
+                progress_bar.finish();
+                result
+            }
+            Err(error) => {
+                progress_bar.abandon();
+                return Err(error.into());
+            }
+        }
     } else {
         build_from_raw(&args.input, &args.output, scope, args.date)?
     };
@@ -227,6 +257,26 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
+}
+
+fn transfer_progress_bar() -> ProgressBar {
+    let progress_bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::hidden());
+    progress_bar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] [{bar:20}] {pos}/{len} {percent:>3}% ETA {eta} {msg}",
+        )
+        .expect("transfer preprocessing progress style is valid")
+        .progress_chars("█░"),
+    );
+    progress_bar
+}
+
+fn transfer_progress_draw_target() -> ProgressDrawTarget {
+    if std::io::stderr().is_terminal() {
+        ProgressDrawTarget::stderr_with_hz(10)
+    } else {
+        ProgressDrawTarget::hidden()
+    }
 }
 
 fn build_street_router(

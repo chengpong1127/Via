@@ -169,21 +169,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn build_live_realtime() -> Result<Arc<dyn RealtimeProvider>, Box<dyn Error>> {
     let base_url = env::var("VIA_TDX_BASE_URL")
-        .or_else(|_| env::var("TDX_API_BASE_URL"))
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
-    let token_url = env::var("TDX_TOKEN_URL").unwrap_or_else(|_| {
-        "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token".into()
-    });
-    let credentials = TdxCredentials::from_env()?;
-    let token_client = TdxClient::with_urls(credentials, &base_url, &token_url)?;
-    let token = token_client.access_token().await?;
-    let authority_namespace =
-        env::var("VIA_TDX_AUTHORITY_NAMESPACE").unwrap_or_else(|_| "tdx".into());
+    let base_url = url::Url::parse(&base_url)?;
+    let tdx_client = TdxClient::with_api_base_url(TdxCredentials::from_env()?, base_url.as_str())?;
     let config = TdxRealtimeConfig {
-        base_url: url::Url::parse(&base_url)?,
-        authority_namespace,
+        base_url: base_url.clone(),
     };
-    let mut provider = TdxRealtimeProvider::new(config, &token)?;
+    let mut provider = TdxRealtimeProvider::new(config, tdx_client)?;
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         provider = provider.with_service_condition_path(path);
     }
@@ -196,8 +188,7 @@ async fn build_street_router(
     if matches!(realtime, RealtimeMode::Fixture) {
         return Ok(Arc::new(StraightLineStreetRouter::default()));
     }
-    let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")
-        .or_else(|_| env::var("VIA_STREET_GRAPH_REVISION"))?;
+    let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")?;
     let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")?.parse()?;
     let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {

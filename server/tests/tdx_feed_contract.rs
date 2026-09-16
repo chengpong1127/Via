@@ -1,9 +1,15 @@
 use std::collections::HashMap;
 
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
+    config::{TdxClient, TdxCredentials},
     domain::ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
     providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider, RealtimeValue},
     providers::tdx::{TdxRealtimeConfig, TdxRealtimeProvider, transit_service_id_for_direction},
@@ -14,6 +20,26 @@ async fn fixture_base(app: Router) -> url::Url {
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     url::Url::parse(&format!("http://{address}/")).unwrap()
+}
+
+async fn fixture_provider(app: Router) -> TdxRealtimeProvider {
+    let app = app.route(
+        "/",
+        post(|| async {
+            Json(json!({
+                "access_token": "fixture-token",
+                "expires_in": 300
+            }))
+        }),
+    );
+    let base_url = fixture_base(app).await;
+    let client = TdxClient::with_urls(
+        TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
+        base_url.as_str(),
+        base_url.as_str(),
+    )
+    .unwrap();
+    TdxRealtimeProvider::new(TdxRealtimeConfig { base_url }, client).unwrap()
 }
 
 #[tokio::test]
@@ -39,14 +65,7 @@ async fn tdx_default_arrival_endpoint_uses_the_explicit_city_scope() {
             },
         ),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap();
+    let source = fixture_provider(app).await;
 
     let values = source
         .arrival_estimates(
@@ -64,14 +83,7 @@ async fn tdx_default_arrival_endpoint_uses_the_explicit_city_scope() {
 
 #[tokio::test]
 async fn tdx_arrivals_reject_missing_and_invalid_scopes_before_http() {
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(Router::new()).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap();
+    let source = fixture_provider(Router::new()).await;
     let service_id = TransitServiceId::new("provider-service");
     let boarding_point_id = BoardingPointId::new("provider-stop");
 
@@ -110,15 +122,9 @@ async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
             },
         ),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app)
+        .await
+        .with_endpoint_paths("feed", "feed");
 
     let values = source
         .arrival_estimates(
@@ -168,15 +174,9 @@ async fn directional_tdx_service_ids_match_static_directional_ids() {
             },
         ),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app)
+        .await
+        .with_endpoint_paths("feed", "feed");
     let service_id = transit_service_id_for_direction("provider-service", 1);
     let values = source
         .arrival_estimates(
@@ -225,15 +225,9 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
             }
         }),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app)
+        .await
+        .with_endpoint_paths("feed", "feed");
 
     let values = source
         .arrival_estimates(
@@ -279,15 +273,9 @@ async fn tdx_bike_availability_is_normalized_inside_the_adapter() {
             }
         }),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app)
+        .await
+        .with_endpoint_paths("feed", "feed");
 
     let values = source
         .bike_availability(&[BikeShareStationId::new("provider-station")])
@@ -333,15 +321,9 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
             },
         ),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_service_condition_path("conditions");
+    let source = fixture_provider(app)
+        .await
+        .with_service_condition_path("conditions");
 
     let values = source
         .service_conditions(&[TransitServiceId::new("provider-service")])
@@ -365,15 +347,9 @@ async fn tdx_rate_limits_are_explicit_realtime_errors() {
         "/feed",
         get(|| async { StatusCode::TOO_MANY_REQUESTS.into_response() }),
     );
-    let source = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: fixture_base(app).await,
-            authority_namespace: "taipei".into(),
-        },
-        "fixture-token",
-    )
-    .unwrap()
-    .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app)
+        .await
+        .with_endpoint_paths("feed", "feed");
     let error = source
         .bike_availability(&[BikeShareStationId::new("provider-station")])
         .await

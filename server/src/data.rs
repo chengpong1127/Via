@@ -33,7 +33,7 @@ use crate::{
         transit_service_id_for_direction,
     },
     routing::transfers::{TransferShortcut, TransferShortcutIndex},
-    routing::{RoutingLimits, TransferShortcutBuilder},
+    routing::{RoutingLimits, TransferPreprocessingProgress, TransferShortcutBuilder},
     street::StreetRouter,
 };
 
@@ -1776,10 +1776,31 @@ pub async fn build_from_raw_with_transfer_preprocessing(
     street: Arc<dyn StreetRouter>,
     limits: RoutingLimits,
 ) -> Result<BuildOutput, DataError> {
+    build_from_raw_with_transfer_preprocessing_with_progress(
+        input,
+        output,
+        scope,
+        raw_snapshot_date,
+        street,
+        limits,
+        &mut |_| {},
+    )
+    .await
+}
+
+pub async fn build_from_raw_with_transfer_preprocessing_with_progress(
+    input: &Path,
+    output: &Path,
+    scope: Option<DataScope>,
+    raw_snapshot_date: Option<String>,
+    street: Arc<dyn StreetRouter>,
+    limits: RoutingLimits,
+    progress: &mut dyn FnMut(TransferPreprocessingProgress),
+) -> Result<BuildOutput, DataError> {
     let mut result = build_from_raw(input, output, scope, raw_snapshot_date)?;
     let network = Arc::new(result.network.clone());
     let mut transfer_index = TransferShortcutBuilder::new(street, network)
-        .build(&limits)
+        .build_with_progress(&limits, progress)
         .await
         .map_err(|error| DataError::TransferPreprocessing(error.to_string()))?;
     transfer_index.extend(result.transfer_index.shortcuts());

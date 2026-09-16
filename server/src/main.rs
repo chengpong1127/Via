@@ -70,30 +70,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let tdx_base_url_value = env::var("VIA_TDX_BASE_URL")
         .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?;
-    let tdx_token_url = env::var("TDX_TOKEN_URL").unwrap_or_else(|_| {
-        "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token".into()
-    });
-    let tdx_bearer_token = match env::var("VIA_TDX_BEARER_TOKEN") {
-        Ok(token) if !token.trim().is_empty() => token,
-        _ => {
-            let credentials = TdxCredentials::from_env()?;
-            TdxClient::with_urls(credentials, &tdx_base_url_value, &tdx_token_url)?
-                .access_token()
-                .await?
-        }
-    };
     let tdx_base_url = Url::parse(&tdx_base_url_value)?;
     if environment == "production" && tdx_base_url.scheme() != "https" {
         return Err("VIA_TDX_BASE_URL must use HTTPS in production".into());
     }
-    let authority_namespace = env::var("VIA_TDX_AUTHORITY_NAMESPACE")
-        .map_err(|_| "VIA_TDX_AUTHORITY_NAMESPACE must identify the TDX authority")?;
+    let tdx_client =
+        TdxClient::with_api_base_url(TdxCredentials::from_env()?, &tdx_base_url_value)?;
     let mut realtime = TdxRealtimeProvider::new(
         TdxRealtimeConfig {
             base_url: tdx_base_url,
-            authority_namespace,
         },
-        &tdx_bearer_token,
+        tdx_client,
     )?;
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         realtime = realtime.with_service_condition_path(path);

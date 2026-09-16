@@ -1,13 +1,10 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
-use futures_util::StreamExt;
-use reqwest::{Client, StatusCode, header};
 use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 use url::Url;
 
 use crate::{
+    config::{TdxClient, TdxClientError},
     domain::{
         ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
         realtime::{
@@ -24,12 +21,12 @@ const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const DEFAULT_BIKE_PATH: &str = "v2/Bike/Availability/Station";
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
+const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TdxRealtimeConfig {
     pub base_url: Url,
-    pub authority_namespace: String,
 }
 
 /// Construct the domain ID for a TDX bus stop or other boarding point.
@@ -61,11 +58,10 @@ pub fn bike_share_station_id(station_uid: impl Into<String>) -> BikeShareStation
 
 pub struct TdxRealtimeProvider {
     base_url: Url,
-    authority_namespace: String,
     arrival_path: String,
     bike_path: String,
     condition_path: Option<String>,
-    client: Client,
+    tdx_client: TdxClient,
     policy: FreshnessPolicy,
 }
 
@@ -73,47 +69,21 @@ pub struct TdxRealtimeProvider {
 pub enum TdxConfigError {
     #[error("TDX realtime configuration is invalid: {0}")]
     InvalidConfiguration(&'static str),
-    #[error("TDX bearer token must not be empty")]
-    EmptyBearerToken,
-    #[error("TDX bearer token contains invalid header characters")]
-    InvalidBearerToken(#[from] header::InvalidHeaderValue),
-    #[error("TDX HTTP client configuration failed")]
-    Client(#[from] reqwest::Error),
 }
 
 impl TdxRealtimeProvider {
-    pub fn new(config: TdxRealtimeConfig, bearer_token: &str) -> Result<Self, TdxConfigError> {
-        if config.authority_namespace.trim().is_empty() {
-            return Err(TdxConfigError::InvalidConfiguration(
-                "authority namespace must not be empty",
-            ));
-        }
+    pub fn new(config: TdxRealtimeConfig, tdx_client: TdxClient) -> Result<Self, TdxConfigError> {
         if config.base_url.host_str().is_none() {
             return Err(TdxConfigError::InvalidConfiguration(
                 "TDX base URL must include a host",
             ));
         }
-        if bearer_token.is_empty() {
-            return Err(TdxConfigError::EmptyBearerToken);
-        }
-        let mut headers = header::HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            header::HeaderValue::from_str(&format!("Bearer {bearer_token}"))?,
-        );
-        let client = Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(8))
-            .user_agent("via-server/1.0")
-            .build()?;
         Ok(Self {
             base_url: config.base_url,
-            authority_namespace: config.authority_namespace,
             arrival_path: DEFAULT_ARRIVAL_PATH.into(),
             bike_path: DEFAULT_BIKE_PATH.into(),
             condition_path: None,
-            client,
+            tdx_client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
         })
     }
@@ -163,41 +133,17 @@ impl TdxRealtimeProvider {
         path: &str,
         query: &[(String, String)],
     ) -> Result<serde_json::Value, RealtimeError> {
-        let mut url = self.endpoint(path)?;
-        url.query_pairs_mut().extend_pairs(
-            query
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str())),
-        );
-        let response = self.client.get(url).send().await.map_err(|error| {
-            if error.is_timeout() {
-                RealtimeError::TimedOut
-            } else {
-                RealtimeError::TemporarilyUnavailable
-            }
-        })?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(RealtimeError::RateLimited);
-        }
-        if !response.status().is_success() {
-            return Err(RealtimeError::TemporarilyUnavailable);
-        }
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-        {
-            return Err(RealtimeError::RejectedPayload);
-        }
-        let mut body = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|_| RealtimeError::TemporarilyUnavailable)?;
-            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-                return Err(RealtimeError::RejectedPayload);
-            }
-            body.extend_from_slice(&chunk);
-        }
-        serde_json::from_slice(&body).map_err(|_| RealtimeError::RejectedPayload)
+        let url = self.endpoint(path)?;
+        let query = query
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let response = self
+            .tdx_client
+            .get_raw_with_limit(url.as_str(), &query, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(map_tdx_error)?;
+        serde_json::from_slice(&response.body).map_err(|_| RealtimeError::RejectedPayload)
     }
 
     fn normalize_payload(
@@ -291,12 +237,7 @@ impl TdxRealtimeProvider {
             published_at,
         );
         Some((
-            observation_id(
-                &self.authority_namespace,
-                stop_uid,
-                service_uid,
-                published_at,
-            ),
+            observation_id(stop_uid, service_uid, published_at),
             RealtimeValue::ArrivalEstimate(value),
         ))
     }
@@ -324,7 +265,7 @@ impl TdxRealtimeProvider {
             received_at,
         );
         Some((
-            observation_id(&self.authority_namespace, station_uid, "bike", published_at),
+            observation_id(station_uid, "bike", published_at),
             RealtimeValue::BikeAvailability(value),
         ))
     }
@@ -368,12 +309,7 @@ impl TdxRealtimeProvider {
             .map(|direction| format!("condition:{direction}"))
             .unwrap_or_else(|| "condition".into());
         Some((
-            observation_id(
-                &self.authority_namespace,
-                service_uid,
-                &condition_key,
-                published_at,
-            ),
+            observation_id(service_uid, &condition_key, published_at),
             RealtimeValue::ServiceCondition(condition),
         ))
     }
@@ -499,6 +435,25 @@ impl RealtimeProvider for TdxRealtimeProvider {
     }
 }
 
+fn map_tdx_error(error: TdxClientError) -> RealtimeError {
+    match error {
+        TdxClientError::InvalidConfiguration => RealtimeError::InvalidConfiguration,
+        TdxClientError::RateLimited | TdxClientError::RateLimitedWithRetryAfter(_) => {
+            RealtimeError::RateLimited
+        }
+        TdxClientError::OAuthRequest(error) | TdxClientError::ApiRequest(error)
+            if error.is_timeout() =>
+        {
+            RealtimeError::TimedOut
+        }
+        TdxClientError::OAuthRequest(_)
+        | TdxClientError::InvalidOAuthResponse(_)
+        | TdxClientError::ApiRequest(_)
+        | TdxClientError::Credentials(_) => RealtimeError::TemporarilyUnavailable,
+        TdxClientError::ResponseTooLarge => RealtimeError::RejectedPayload,
+    }
+}
+
 fn odata_in_filter(field: &str, values: &[String]) -> String {
     let values = values
         .iter()
@@ -589,16 +544,11 @@ fn u32_field(record: &serde_json::Value, field: &str) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-fn observation_id(
-    capability: &str,
-    primary_key: &str,
-    secondary_key: &str,
-    published_at: OffsetDateTime,
-) -> String {
+fn observation_id(primary_key: &str, secondary_key: &str, published_at: OffsetDateTime) -> String {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     digest.update(b"via.realtime.v1\0");
-    digest.update(capability.as_bytes());
+    digest.update(TDX_AUTHORITY_NAMESPACE.as_bytes());
     digest.update(primary_key.as_bytes());
     digest.update(secondary_key.as_bytes());
     digest.update(published_at.unix_timestamp_nanos().to_be_bytes());

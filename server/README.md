@@ -70,9 +70,7 @@ Configuration:
 | `VIA_VALHALLA_GRAPH_REVISION` | Valhalla-owned logical revision label for the loaded graph artifact; required. |
 | `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Valhalla `/status` tileset timestamp expected at startup and during health checks; required. |
 | `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
-| `VIA_TDX_AUTHORITY_NAMESPACE` | TDX authority namespace used to scope deterministic observation IDs; required. |
-| `VIA_TDX_BEARER_TOKEN` | Optional pre-issued TDX access token for the realtime adapter. |
-| `TDX_CLIENT_ID` | Shared TDX OAuth client ID used when a bearer token is not supplied. |
+| `TDX_CLIENT_ID` | Shared TDX OAuth client ID used by the realtime and static-data clients. |
 | `TDX_CLIENT_SECRET` | Shared TDX OAuth client secret used with `TDX_CLIENT_ID`; never passed as a CLI flag or written to artifacts. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional scoped TDX service-condition endpoint path. |
 | `VIA_REALTIME_CACHE_TTL_SECONDS` | In-process realtime cache TTL; defaults to 45 seconds. |
