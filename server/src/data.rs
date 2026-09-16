@@ -226,6 +226,7 @@ pub enum DataError {
 struct StaticSource {
     key: String,
     path: String,
+    query: Vec<(String, String)>,
     endpoint: String,
     output_path: PathBuf,
 }
@@ -277,7 +278,7 @@ impl Normalizer {
             if path_text.contains("bus") {
                 self.normalize_bus(record, &document.relative_path, index)?;
             }
-            if path_text.contains("metro") || path_text.contains("rail") {
+            if is_rail_path(&path_text) {
                 self.normalize_rail(record, &document.relative_path, index, &path_text)?;
             }
             if is_metro_station_timetable_path(&path_text)
@@ -393,6 +394,10 @@ impl Normalizer {
         } else {
             TransitMode::Rail
         };
+        if let Some(general_timetable) = record.get("GeneralTimetable") {
+            self.normalize_embedded_trip(general_timetable, path, index, mode)?;
+            return Ok(());
+        }
         if let Some(station_uid) = string(record, "StationUID") {
             let id = self.normalize_rail_station(record, station_uid, path, mode)?;
             if let Some(line_id) = string(record, "LineID").or_else(|| string(record, "RouteUID")) {
@@ -434,6 +439,8 @@ impl Normalizer {
             || record.get("StopTimes").is_some()
             || record.get("stop_times").is_some()
             || record.get("TrainInfo").is_some()
+            || record.get("GeneralTrainInfo").is_some()
+            || record.get("DailyTrainInfo").is_some()
             || (record.get("Timetables").is_some() && !is_metro_station_timetable_path(path_text))
         {
             self.normalize_embedded_trip(record, path, index, mode)?;
@@ -668,7 +675,9 @@ impl Normalizer {
                 let mut frequencies = BTreeSet::new();
                 for ((line, record_direction, station), values) in &self.metro_departures {
                     if line == line_id
-                        && (record_direction == &direction || record_direction.is_none())
+                        && (direction.is_none()
+                            || record_direction == &direction
+                            || record_direction.is_none())
                         && (self.canonical_metro_stop_id(station) == stop_id.as_str()
                             || station == "*")
                     {
@@ -677,7 +686,9 @@ impl Normalizer {
                 }
                 for ((line, record_direction, station), values) in &self.metro_frequencies {
                     if line == line_id
-                        && (record_direction == &direction || record_direction.is_none())
+                        && (direction.is_none()
+                            || record_direction == &direction
+                            || record_direction.is_none())
                         && (self.canonical_metro_stop_id(station) == stop_id.as_str()
                             || station == "*")
                     {
@@ -775,7 +786,11 @@ impl Normalizer {
             TransitMode::Metro => "metro",
             TransitMode::Bus => "bus",
         };
-        let train_info = record.get("TrainInfo").unwrap_or(record);
+        let train_info = record
+            .get("TrainInfo")
+            .or_else(|| record.get("GeneralTrainInfo"))
+            .or_else(|| record.get("DailyTrainInfo"))
+            .unwrap_or(record);
         let train_no = string(train_info, "TrainNo")
             .or_else(|| string(record, "TripID"))
             .or_else(|| string(record, "TripId"))
@@ -825,18 +840,23 @@ impl Normalizer {
         let mut parsed = Vec::with_capacity(stop_times.len());
         for (fallback, stop_time) in stop_times.iter().enumerate() {
             let stop_id = self.resolve_timetable_stop(stop_time, path, mode, fallback)?;
-            let arrival = time_seconds(
-                string(stop_time, "ArrivalTime")
-                    .or_else(|| string(stop_time, "arrival_time"))
-                    .or_else(|| string(stop_time, "Time")),
-            )
-            .ok_or_else(|| malformed(path, "scheduled arrival time", train_no))?;
             let departure = time_seconds(
                 string(stop_time, "DepartureTime")
                     .or_else(|| string(stop_time, "departure_time"))
                     .or_else(|| string(stop_time, "Time")),
             )
-            .unwrap_or(arrival);
+            .or_else(|| {
+                time_seconds(
+                    string(stop_time, "ArrivalTime").or_else(|| string(stop_time, "arrival_time")),
+                )
+            })
+            .ok_or_else(|| malformed(path, "scheduled departure time", train_no))?;
+            let arrival = time_seconds(
+                string(stop_time, "ArrivalTime")
+                    .or_else(|| string(stop_time, "arrival_time"))
+                    .or_else(|| string(stop_time, "Time")),
+            )
+            .unwrap_or(departure);
             parsed.push((stop_id, ScheduledStopTime::new(arrival, departure)));
         }
         let pattern = parsed.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
@@ -1167,7 +1187,16 @@ pub fn build_from_raw(
         return Err(DataError::EmptySnapshot(input.into()));
     }
     let mut normalizer = Normalizer::default();
-    for document in &documents {
+    for document in documents
+        .iter()
+        .filter(|document| is_station_catalog_document(&document.relative_path))
+    {
+        normalizer.normalize_document(document)?;
+    }
+    for document in documents
+        .iter()
+        .filter(|document| !is_station_catalog_document(&document.relative_path))
+    {
         normalizer.normalize_document(document)?;
     }
     let mut network = normalizer.finish().canonicalize();
@@ -1464,7 +1493,7 @@ where
 
     for source in sources {
         let path = snapshot.join(&source.output_path);
-        if let Some(body) = valid_existing_json(&path) {
+        if let Some(body) = reusable_existing_json(&path, &source, previous_manifest.as_ref()) {
             progress(FetchProgress::Reuse {
                 source_key: source.key.clone(),
                 relative_path: source.output_path.to_string_lossy().into_owned(),
@@ -1524,7 +1553,12 @@ where
 {
     for retry_index in 0..=timing.retry_backoffs.len() {
         limiter.wait(sleeper, progress).await;
-        match client.get_raw(&source.path, &[]).await {
+        let query = source
+            .query
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        match client.get_raw(&source.path, &query).await {
             Ok(response) => return Ok(response),
             Err(error)
                 if matches!(
@@ -1555,6 +1589,22 @@ fn valid_existing_json(path: &Path) -> Option<Vec<u8>> {
         return None;
     }
     Some(body)
+}
+
+fn reusable_existing_json(
+    path: &Path,
+    source: &StaticSource,
+    previous_manifest: Option<&RawSnapshotManifest>,
+) -> Option<Vec<u8>> {
+    let body = valid_existing_json(path)?;
+    let Some(previous_manifest) = previous_manifest else {
+        return Some(body);
+    };
+    let previous = previous_manifest.sources.get(&source.key)?;
+    (previous.endpoint == source.endpoint
+        && previous.path == source.output_path.to_string_lossy()
+        && previous.sha256 == sha256_hex(&body))
+    .then_some(body)
 }
 
 fn read_previous_raw_manifest(
@@ -1598,7 +1648,7 @@ fn current_retrieved_at() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
-fn static_sources(scope: DataScope, date: Date) -> Vec<StaticSource> {
+fn static_sources(scope: DataScope, _date: Date) -> Vec<StaticSource> {
     let mut sources = Vec::new();
     for (city_key, city) in scope.cities() {
         for (name, endpoint) in [
@@ -1647,12 +1697,12 @@ fn static_sources(scope: DataScope, date: Date) -> Vec<StaticSource> {
         ),
         source(
             "tdx_tra_station",
-            "v2/Rail/TRA/Station".into(),
+            "v3/Rail/TRA/Station".into(),
             "tra/station.json".into(),
         ),
         source(
-            "tdx_tra_general_timetable",
-            "v2/Rail/TRA/GeneralTimetable".into(),
+            "tdx_tra_general_train_timetable",
+            "v3/Rail/TRA/GeneralTrainTimetable".into(),
             "tra/general-timetable.json".into(),
         ),
         source(
@@ -1661,19 +1711,21 @@ fn static_sources(scope: DataScope, date: Date) -> Vec<StaticSource> {
             "thsr/station.json".into(),
         ),
         source(
-            "tdx_thsr_daily_timetable",
-            format!("v2/Rail/THSR/DailyTimetable/TrainDate/{}", date),
-            "thsr/daily-timetable.json".into(),
+            "tdx_thsr_general_timetable",
+            "v2/Rail/THSR/GeneralTimetable".into(),
+            "thsr/general-timetable.json".into(),
         ),
     ]);
     sources
 }
 
 fn source(key: impl Into<String>, path: String, output_path: String) -> StaticSource {
+    let query = vec![("$format".into(), "JSON".into())];
     StaticSource {
         key: key.into(),
-        endpoint: path.clone(),
+        endpoint: format!("{path}?$format=JSON"),
         path,
+        query,
         output_path: output_path.into(),
     }
 }
@@ -1721,12 +1773,22 @@ fn collect_json_paths(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), Data
     Ok(())
 }
 
+fn is_station_catalog_document(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "station.json" || name == "trtc-station.json")
+}
+
 fn records(value: &Value) -> Vec<&Value> {
     if let Some(array) = value.as_array() {
         return array.iter().collect();
     }
     if let Some(array) = value.get("value").and_then(Value::as_array) {
         return array.iter().collect();
+    }
+    for key in ["Stations", "TrainTimetables"] {
+        if let Some(array) = value.get(key).and_then(Value::as_array) {
+            return array.iter().collect();
+        }
     }
     vec![value]
 }
@@ -1749,6 +1811,13 @@ fn is_metro_station_timetable_path(path: &str) -> bool {
     path.contains("station-timetable")
         || path.contains("stationtimetable")
         || path.contains("station_time_table")
+}
+
+fn is_rail_path(path: &str) -> bool {
+    path.contains("metro")
+        || path.contains("rail")
+        || path.contains("tra/")
+        || path.contains("thsr/")
 }
 
 fn metro_direction(value: &Value) -> Option<u8> {
@@ -1925,9 +1994,28 @@ fn service_calendar(value: &Value) -> (Vec<Weekday>, Vec<Date>, Vec<Date>) {
         .or_else(|| value.get("OperatingDays"))
         .and_then(Value::as_array)
         .map(|values| values.iter().filter_map(parse_weekday).collect::<Vec<_>>())
-        .filter(|days| !days.is_empty())
+        .or_else(|| {
+            let service_day = value.get("ServiceDay")?.as_object()?;
+            Some(
+                [
+                    ("Monday", Weekday::Monday),
+                    ("Tuesday", Weekday::Tuesday),
+                    ("Wednesday", Weekday::Wednesday),
+                    ("Thursday", Weekday::Thursday),
+                    ("Friday", Weekday::Friday),
+                    ("Saturday", Weekday::Saturday),
+                    ("Sunday", Weekday::Sunday),
+                ]
+                .into_iter()
+                .filter_map(|(key, weekday)| {
+                    service_day_active(service_day, key).then_some(weekday)
+                })
+                .collect(),
+            )
+        })
+        .filter(|days| !days.is_empty() || value.get("ServiceDay").is_some())
         .unwrap_or_else(|| ALL_WEEKDAYS.to_vec());
-    let added = value
+    let mut added: Vec<Date> = value
         .get("AddedServiceDays")
         .and_then(Value::as_array)
         .map(|values| {
@@ -1937,7 +2025,7 @@ fn service_calendar(value: &Value) -> (Vec<Weekday>, Vec<Date>, Vec<Date>) {
                 .collect()
         })
         .unwrap_or_default();
-    let removed = value
+    let mut removed: Vec<Date> = value
         .get("RemovedServiceDays")
         .and_then(Value::as_array)
         .map(|values| {
@@ -1947,7 +2035,67 @@ fn service_calendar(value: &Value) -> (Vec<Weekday>, Vec<Date>, Vec<Date>) {
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(special_days) = value.get("SpecialDays").and_then(Value::as_array) {
+        for special_day in special_days {
+            let Some(status) = number(special_day, "ServiceStatus") else {
+                continue;
+            };
+            for date in special_day_dates(special_day) {
+                match status {
+                    0 => removed.push(date),
+                    1 => added.push(date),
+                    _ => {}
+                }
+            }
+        }
+    }
     (active, added, removed)
+}
+
+fn special_day_dates(value: &Value) -> Vec<Date> {
+    let mut dates = value
+        .get("Dates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(parse_date)
+        .collect::<Vec<_>>();
+    let Some(period) = value.get("DatePeriod").and_then(Value::as_object) else {
+        return dates;
+    };
+    let (Some(mut date), Some(end)) = (
+        period
+            .get("StartDate")
+            .and_then(Value::as_str)
+            .and_then(parse_date),
+        period
+            .get("EndDate")
+            .and_then(Value::as_str)
+            .and_then(parse_date),
+    ) else {
+        return dates;
+    };
+    while date <= end {
+        dates.push(date);
+        let Some(next) = date.next_day() else {
+            break;
+        };
+        date = next;
+    }
+    dates
+}
+
+fn service_day_active(service_day: &serde_json::Map<String, Value>, key: &str) -> bool {
+    service_day
+        .get(key)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .map(|value| value != 0)
+                .or_else(|| value.as_bool())
+        })
+        .unwrap_or(false)
 }
 
 fn parse_weekday(value: &Value) -> Option<Weekday> {
@@ -2053,6 +2201,7 @@ mod tests {
         Success,
         RetryAfterThenSuccess,
         AlwaysRateLimited,
+        PermanentBadRequest,
     }
 
     #[derive(Clone)]
@@ -2088,19 +2237,23 @@ mod tests {
             MockMode::Success => false,
             MockMode::RetryAfterThenSuccess => call == 0,
             MockMode::AlwaysRateLimited => true,
+            MockMode::PermanentBadRequest => false,
         };
-        let mut builder = Response::builder().status(if rate_limited {
+        let status = if matches!(state.mode, MockMode::PermanentBadRequest) {
+            StatusCode::BAD_REQUEST
+        } else if rate_limited {
             StatusCode::TOO_MANY_REQUESTS
         } else {
             StatusCode::OK
-        });
+        };
+        let mut builder = Response::builder().status(status);
         if matches!(state.mode, MockMode::RetryAfterThenSuccess) && call == 0 {
             builder = builder.header(RETRY_AFTER, "7");
         }
         builder
             .header("content-type", "application/json")
             .body(Body::from(
-                json!({"path": uri.path(), "call": call}).to_string(),
+                json!({"path": uri.path(), "query": uri.query(), "call": call}).to_string(),
             ))
             .unwrap()
     }
@@ -2189,6 +2342,133 @@ mod tests {
         let timing = FetchTimingPolicy::default();
         assert_eq!(timing.request_spacing, Duration::from_secs(13));
         assert_eq!(timing.retry_backoffs, TDX_RETRY_BACKOFFS);
+    }
+
+    #[test]
+    fn static_sources_match_current_tdx_contracts() {
+        let sources = static_sources(DataScope::TaipeiNewTaipei, test_date());
+        let other_date = Date::from_calendar_date(2026, time::Month::September, 16).unwrap();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.endpoint.as_str())
+                .collect::<Vec<_>>(),
+            static_sources(DataScope::TaipeiNewTaipei, other_date)
+                .iter()
+                .map(|source| source.endpoint.as_str())
+                .collect::<Vec<_>>()
+        );
+        let actual = sources
+            .iter()
+            .map(|source| {
+                (
+                    source.key.as_str(),
+                    source.path.as_str(),
+                    source.output_path.to_string_lossy().into_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected = vec![
+            (
+                "tdx_bus_taipei_route",
+                "v2/Bus/Route/City/Taipei",
+                "bus/taipei/route.json",
+            ),
+            (
+                "tdx_bus_taipei_stop",
+                "v2/Bus/Stop/City/Taipei",
+                "bus/taipei/stop.json",
+            ),
+            (
+                "tdx_bus_taipei_stop-of-route",
+                "v2/Bus/StopOfRoute/City/Taipei",
+                "bus/taipei/stop-of-route.json",
+            ),
+            (
+                "tdx_bus_taipei_schedule",
+                "v2/Bus/Schedule/City/Taipei",
+                "bus/taipei/schedule.json",
+            ),
+            (
+                "tdx_youbike_taipei_station",
+                "v2/Bike/Station/City/Taipei",
+                "bike/taipei/station.json",
+            ),
+            (
+                "tdx_bus_new-taipei_route",
+                "v2/Bus/Route/City/NewTaipei",
+                "bus/new-taipei/route.json",
+            ),
+            (
+                "tdx_bus_new-taipei_stop",
+                "v2/Bus/Stop/City/NewTaipei",
+                "bus/new-taipei/stop.json",
+            ),
+            (
+                "tdx_bus_new-taipei_stop-of-route",
+                "v2/Bus/StopOfRoute/City/NewTaipei",
+                "bus/new-taipei/stop-of-route.json",
+            ),
+            (
+                "tdx_bus_new-taipei_schedule",
+                "v2/Bus/Schedule/City/NewTaipei",
+                "bus/new-taipei/schedule.json",
+            ),
+            (
+                "tdx_youbike_new-taipei_station",
+                "v2/Bike/Station/City/NewTaipei",
+                "bike/new-taipei/station.json",
+            ),
+            (
+                "tdx_metro_station",
+                "v2/Rail/Metro/Station/TRTC",
+                "metro/trtc-station.json",
+            ),
+            (
+                "tdx_metro_station_of_line",
+                "v2/Rail/Metro/StationOfLine/TRTC",
+                "metro/trtc-station-of-line.json",
+            ),
+            (
+                "tdx_metro_station_timetable",
+                "v2/Rail/Metro/StationTimeTable/TRTC",
+                "metro/trtc-station-timetable.json",
+            ),
+            (
+                "tdx_metro_s2s_travel_time",
+                "v2/Rail/Metro/S2STravelTime/TRTC",
+                "metro/trtc-s2s-travel-time.json",
+            ),
+            (
+                "tdx_metro_frequency",
+                "v2/Rail/Metro/Frequency/TRTC",
+                "metro/trtc-frequency.json",
+            ),
+            ("tdx_tra_station", "v3/Rail/TRA/Station", "tra/station.json"),
+            (
+                "tdx_tra_general_train_timetable",
+                "v3/Rail/TRA/GeneralTrainTimetable",
+                "tra/general-timetable.json",
+            ),
+            (
+                "tdx_thsr_station",
+                "v2/Rail/THSR/Station",
+                "thsr/station.json",
+            ),
+            (
+                "tdx_thsr_general_timetable",
+                "v2/Rail/THSR/GeneralTimetable",
+                "thsr/general-timetable.json",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, path, output)| (key, path, output.to_owned()))
+        .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        for source in sources {
+            assert_eq!(source.query, [("$format".into(), "JSON".into())]);
+            assert_eq!(source.endpoint, format!("{}?$format=JSON", source.path));
+        }
     }
 
     #[tokio::test]
@@ -2407,6 +2687,15 @@ mod tests {
         assert_eq!(report.reused_count, 18);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
+        let downloaded_body = valid_existing_json(
+            &output
+                .join("raw")
+                .join(date.to_string())
+                .join(&sources[0].output_path),
+        )
+        .unwrap();
+        let downloaded_value: Value = serde_json::from_slice(&downloaded_body).unwrap();
+        assert_eq!(downloaded_value["query"], "%24format=JSON");
         for source in sources {
             let body = fs::read(
                 output
@@ -2421,5 +2710,68 @@ mod tests {
             assert_eq!(source_manifest.sha256, sha256_hex(&body));
             assert!(!source_manifest.retrieved_at.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn obsolete_manifest_source_identity_forces_a_refetch() {
+        let output = temporary_output("obsolete-source");
+        let date = test_date();
+        let sources = static_sources(DataScope::TaipeiNewTaipei, date);
+        seed_sources(&output, date, &BTreeSet::new(), br#"{"cached":true}"#);
+        let old_timetable_key = "tdx_tra_general_train_timetable";
+        let old_manifest = RawSnapshotManifest {
+            schema_version: ARTIFACT_SCHEMA_VERSION,
+            scope: DataScope::TaipeiNewTaipei.as_str().into(),
+            date: date.to_string(),
+            sources: sources
+                .iter()
+                .map(|source| {
+                    (
+                        source.key.clone(),
+                        RawSourceMetadata {
+                            endpoint: if source.key == old_timetable_key {
+                                "v2/Rail/TRA/GeneralTimetable?$format=JSON".into()
+                            } else {
+                                source.endpoint.clone()
+                            },
+                            path: source.output_path.to_string_lossy().into_owned(),
+                            sha256: sha256_hex(br#"{"cached":true}"#),
+                            retrieved_at: "2026-09-15T00:00:00Z".into(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let snapshot = output.join("raw").join(date.to_string());
+        write_json_atomic(&snapshot.join("manifest.json"), &old_manifest).unwrap();
+        let (client, state) = mock_client(MockMode::Success).await;
+
+        let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
+        let report = result.unwrap();
+
+        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.downloaded_count, 1);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            report
+                .manifest
+                .sources
+                .get(old_timetable_key)
+                .unwrap()
+                .endpoint,
+            "v3/Rail/TRA/GeneralTrainTimetable?$format=JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_bad_request_is_not_retried() {
+        let output = temporary_output("permanent-400");
+        let (client, state) = mock_client(MockMode::PermanentBadRequest).await;
+
+        let (result, sleeper, _) = run_fetch(&output, &client, fast_timing()).await;
+
+        assert!(matches!(result, Err(DataError::Fetch { .. })));
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
+        assert!(sleeper.waits.is_empty());
     }
 }

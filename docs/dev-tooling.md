@@ -86,10 +86,41 @@ are SHA-256 hashes of canonical normalized content, not wall-clock identities.
 The manifest records source hashes, entity counts, revisions, and transfer
 preprocessing bounds. `built_at` is diagnostic metadata and may vary.
 
-The current static source families are TDX Bus Route/Stop/StopOfRoute/Schedule for
-Taipei and New Taipei, TDX YouBike Station for both cities, TDX Taipei Metro
-station/line/StationTimeTable/S2STravelTime/Frequency data, and TDX TRA/THSR
-station and timetable data.
+The current static sources are the following TDX Basic API datasets. Every
+source is requested with the required `$format=JSON` query parameter; optional
+OData parameters such as `$select`, `$filter`, `$orderby`, `$top`, and `$skip`
+are not used by the snapshot fetcher.
+
+```text
+v2/Bus/Route/City/Taipei
+v2/Bus/Stop/City/Taipei
+v2/Bus/StopOfRoute/City/Taipei
+v2/Bus/Schedule/City/Taipei
+v2/Bike/Station/City/Taipei
+v2/Bus/Route/City/NewTaipei
+v2/Bus/Stop/City/NewTaipei
+v2/Bus/StopOfRoute/City/NewTaipei
+v2/Bus/Schedule/City/NewTaipei
+v2/Bike/Station/City/NewTaipei
+v2/Rail/Metro/Station/TRTC
+v2/Rail/Metro/StationOfLine/TRTC
+v2/Rail/Metro/StationTimeTable/TRTC
+v2/Rail/Metro/S2STravelTime/TRTC
+v2/Rail/Metro/Frequency/TRTC
+v3/Rail/TRA/Station
+v3/Rail/TRA/GeneralTrainTimetable
+v2/Rail/THSR/Station
+v2/Rail/THSR/GeneralTimetable
+```
+
+TRA uses the current Rail v3 station and general train timetable contracts.
+THSR remains a Rail v2 dataset: its date-specific DailyTimetable endpoint is
+still documented, but route planning ingests GeneralTimetable because it
+contains regular train stop times and ServiceDay data without binding the
+static source URL to one operating date. The requested snapshot date remains
+manifest metadata and does not alter the TRA or THSR source URLs. The full
+contract review is recorded in
+[`docs/research/tdx-static-data-contracts-2026.md`](research/tdx-static-data-contracts-2026.md).
 Provider payload parsing remains inside `via_server::data`; routing consumes
 only the provider-neutral artifact.
 
@@ -175,7 +206,10 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
 
 Valhalla preprocessing requires `VIA_VALHALLA_GRAPH_REVISION` and
 `VIA_VALHALLA_TILESET_LAST_MODIFIED`; `--street-router straight-line` is
-available for deterministic development fixtures. Exact ULTRA preprocessing
+available for deterministic development fixtures. The shared TDX fixture set
+is under `server/fixtures/tdx/raw` and uses simplified current-contract
+payloads for both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike.
+Exact ULTRA preprocessing
 remains deferred. The server and `via-route` load the sibling
 `transfer-shortcuts.json` artifact (or `VIA_TRANSFER_SHORTCUTS` for the server)
 when it exists; their bounded builder remains only as a fallback when no

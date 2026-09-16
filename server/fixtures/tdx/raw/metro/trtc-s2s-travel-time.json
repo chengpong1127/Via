@@ -1,0 +1,22 @@
+[
+  {
+    "LineNo": "BL",
+    "LineID": "BL",
+    "RouteID": "BL-1",
+    "TrainType": 1,
+    "TravelTimes": [
+      {
+        "Sequence": 1,
+        "FromStationID": "BL12",
+        "FromStationName": {"Zh_tw": "台北車站", "En": "Taipei Main Station"},
+        "ToStationID": "BL13",
+        "ToStationName": {"Zh_tw": "善導寺", "En": "Shandao Temple"},
+        "RunTime": 240,
+        "StopTime": 0
+      }
+    ],
+    "SrcUpdateTime": "2020-01-31T14:00:00+08:00",
+    "UpdateTime": "2020-05-20T12:00:00+08:00",
+    "VersionID": 2
+  }
+]

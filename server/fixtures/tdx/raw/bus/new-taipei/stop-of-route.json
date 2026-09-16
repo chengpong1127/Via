@@ -1,0 +1,33 @@
+[
+  {
+    "RouteUID": "NWT-242",
+    "RouteID": "242",
+    "RouteName": {"Zh_tw": "242", "En": "242"},
+    "SubRouteUID": "NWT-242-0",
+    "SubRouteID": "242-0",
+    "SubRouteName": {"Zh_tw": "242", "En": "242"},
+    "Direction": 0,
+    "City": "NewTaipei",
+    "CityCode": "NWT",
+    "Stops": [
+      {
+        "StopUID": "NWT-001",
+        "StopID": "001",
+        "StopName": {"Zh_tw": "板橋車站", "En": "Banqiao Station"},
+        "StopBoarding": 0,
+        "StopSequence": 1,
+        "StopPosition": {"PositionLon": 121.4638, "PositionLat": 25.0142}
+      },
+      {
+        "StopUID": "NWT-002",
+        "StopID": "002",
+        "StopName": {"Zh_tw": "府中", "En": "Fuzhong"},
+        "StopBoarding": 0,
+        "StopSequence": 2,
+        "StopPosition": {"PositionLon": 121.4590, "PositionLat": 25.0080}
+      }
+    ],
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  }
+]

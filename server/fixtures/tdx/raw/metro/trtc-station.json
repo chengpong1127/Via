@@ -1,0 +1,20 @@
+[
+  {
+    "StationUID": "TRTC-BL12",
+    "StationID": "BL12",
+    "StationName": {"Zh_tw": "台北車站", "En": "Taipei Main Station", "Ja": "台北駅", "Ko": "타이베이 역"},
+    "StationPosition": {"PositionLon": 121.517415, "PositionLat": 25.04631},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
+  },
+  {
+    "StationUID": "TRTC-BL13",
+    "StationID": "BL13",
+    "StationName": {"Zh_tw": "善導寺", "En": "Shandao Temple", "Ja": "善導寺", "Ko": "산다오사"},
+    "StationPosition": {"PositionLon": 121.523885, "PositionLat": 25.04468},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
+  }
+]

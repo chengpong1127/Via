@@ -1,0 +1,30 @@
+[
+  {
+    "RouteUID": "NWT-242",
+    "RouteID": "242",
+    "RouteName": {"Zh_tw": "242", "En": "242"},
+    "SubRouteUID": "NWT-242-0",
+    "SubRouteID": "242-0",
+    "SubRouteName": {"Zh_tw": "242", "En": "242"},
+    "Direction": 0,
+    "Frequencys": [
+      {
+        "StartTime": "06:00",
+        "EndTime": "22:00",
+        "MinHeadwayMins": 10,
+        "MaxHeadwayMins": 15,
+        "ServiceDay": {
+          "Sunday": 1,
+          "Monday": 1,
+          "Tuesday": 1,
+          "Wednesday": 1,
+          "Thursday": 1,
+          "Friday": 1,
+          "Saturday": 1
+        }
+      }
+    ],
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  }
+]

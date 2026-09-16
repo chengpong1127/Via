@@ -1,0 +1,13 @@
+[
+  {
+    "StationUID": "TPE-BIKE-001",
+    "StationID": "BIKE-001",
+    "AuthorityID": "TPE",
+    "StationName": {"Zh_tw": "台北車站 YouBike", "En": "Taipei Main Station YouBike"},
+    "StationPosition": {"PositionLon": 121.5170, "PositionLat": 25.0478},
+    "BikesCapacity": 30,
+    "ServiceType": 2,
+    "SrcUpdateTime": "2026-09-15T00:00:00+08:00",
+    "UpdateTime": "2026-09-15T00:00:00+08:00"
+  }
+]

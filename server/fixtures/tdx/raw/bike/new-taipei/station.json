@@ -1,0 +1,13 @@
+[
+  {
+    "StationUID": "NWT-BIKE-001",
+    "StationID": "BIKE-001",
+    "AuthorityID": "NWT",
+    "StationName": {"Zh_tw": "板橋車站 YouBike", "En": "Banqiao Station YouBike"},
+    "StationPosition": {"PositionLon": 121.4638, "PositionLat": 25.0142},
+    "BikesCapacity": 24,
+    "ServiceType": 2,
+    "SrcUpdateTime": "2026-09-15T00:00:00+08:00",
+    "UpdateTime": "2026-09-15T00:00:00+08:00"
+  }
+]

@@ -1,0 +1,33 @@
+[
+  {
+    "RouteUID": "TPE-307",
+    "RouteID": "307",
+    "RouteName": {"Zh_tw": "307", "En": "307"},
+    "SubRouteUID": "TPE-307-0",
+    "SubRouteID": "307-0",
+    "SubRouteName": {"Zh_tw": "307", "En": "307"},
+    "Direction": 0,
+    "City": "Taipei",
+    "CityCode": "TPE",
+    "Stops": [
+      {
+        "StopUID": "TPE-001",
+        "StopID": "001",
+        "StopName": {"Zh_tw": "台北車站", "En": "Taipei Main Station"},
+        "StopBoarding": 0,
+        "StopSequence": 1,
+        "StopPosition": {"PositionLon": 121.5170, "PositionLat": 25.0478}
+      },
+      {
+        "StopUID": "TPE-002",
+        "StopID": "002",
+        "StopName": {"Zh_tw": "台北101", "En": "Taipei 101"},
+        "StopBoarding": 0,
+        "StopSequence": 2,
+        "StopPosition": {"PositionLon": 121.5645, "PositionLat": 25.0339}
+      }
+    ],
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  }
+]

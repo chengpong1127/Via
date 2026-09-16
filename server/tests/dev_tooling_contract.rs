@@ -16,7 +16,7 @@ fn temporary_output(name: &str) -> PathBuf {
 
 #[test]
 fn fixture_build_is_offline_deterministic_and_secret_free() {
-    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/taipei/raw");
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let first = temporary_output("artifact-a");
     let second = temporary_output("artifact-b");
     let first_result = build_from_raw(
@@ -39,10 +39,10 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         first_result.manifest.revisions,
         second_result.manifest.revisions
     );
-    assert_eq!(first_result.manifest.counts.stops, 2);
-    assert_eq!(first_result.manifest.counts.services, 1);
-    assert_eq!(first_result.manifest.counts.scheduled_trips, 1);
-    assert_eq!(first_result.manifest.counts.bike_stations, 1);
+    assert_eq!(first_result.manifest.counts.stops, 10);
+    assert_eq!(first_result.manifest.counts.services, 5);
+    assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
+    assert_eq!(first_result.manifest.counts.bike_stations, 2);
     assert_eq!(first_result.manifest.counts.transfer_shortcuts, 1);
 
     let manifest = fs::read_to_string(first.join("manifest.json")).unwrap();
@@ -88,7 +88,7 @@ fn invalid_network_shapes_fail_validation() {
 
 #[tokio::test]
 async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
-    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/taipei/raw");
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_output("preprocessed-transfers");
     let result = build_from_raw_with_transfer_preprocessing(
         &input,
@@ -115,7 +115,7 @@ async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
 
 #[test]
 fn offline_commands_do_not_require_tdx_credentials() {
-    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/taipei/raw");
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_output("offline");
     let result = build_from_raw(&input, &output, None, None);
     assert!(result.is_ok());
@@ -123,7 +123,7 @@ fn offline_commands_do_not_require_tdx_credentials() {
 
 #[test]
 fn fixture_route_uses_the_production_routing_boundary() {
-    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/taipei/raw");
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_output("route");
     build_from_raw(&input, &output, Some(DataScope::TaipeiNewTaipei), None).unwrap();
 

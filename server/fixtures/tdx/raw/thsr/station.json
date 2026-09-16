@@ -1,0 +1,32 @@
+[
+  {
+    "StationUID": "THSR-1000",
+    "StationID": "1000",
+    "StationCode": "TPE",
+    "StationName": {"Zh_tw": "台北", "En": "Taipei", "Ja": "台北", "Ko": "타이베이"},
+    "StationAddress": "臺北市中正區北平西路3號",
+    "OperatorID": "THSR",
+    "StationPosition": {"PositionLon": 121.516983, "PositionLat": 25.04767},
+    "LocationCity": "臺北市",
+    "LocationCityCode": "TPE",
+    "LocationTown": "中正區",
+    "LocationTownCode": "63000010",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 2
+  },
+  {
+    "StationUID": "THSR-1010",
+    "StationID": "1010",
+    "StationCode": "BAC",
+    "StationName": {"Zh_tw": "板橋", "En": "Banqiao", "Ja": "板橋", "Ko": "반차오"},
+    "StationAddress": "新北市板橋區站前路5號",
+    "OperatorID": "THSR",
+    "StationPosition": {"PositionLon": 121.4638, "PositionLat": 25.014214},
+    "LocationCity": "新北市",
+    "LocationCityCode": "NWT",
+    "LocationTown": "板橋區",
+    "LocationTownCode": "65000010",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 2
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "StopUID": "NWT-001",
+    "StopID": "001",
+    "AuthorityID": "NWT",
+    "StopName": {"Zh_tw": "板橋車站", "En": "Banqiao Station"},
+    "StopPosition": {"PositionLon": 121.4638, "PositionLat": 25.0142},
+    "City": "NewTaipei",
+    "CityCode": "NWT",
+    "LocationCityCode": "NWT",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  },
+  {
+    "StopUID": "NWT-002",
+    "StopID": "002",
+    "AuthorityID": "NWT",
+    "StopName": {"Zh_tw": "府中", "En": "Fuzhong"},
+    "StopPosition": {"PositionLon": 121.4590, "PositionLat": 25.0080},
+    "City": "NewTaipei",
+    "CityCode": "NWT",
+    "LocationCityCode": "NWT",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  }
+]

@@ -1,0 +1,34 @@
+[
+  {
+    "StationUID": "TRA-1000",
+    "StationID": "1000",
+    "StationName": {"Zh_tw": "臺北", "En": "Taipei"},
+    "StationAddress": "臺北市中正區北平西路3號",
+    "StationPhone": "02-23713558",
+    "OperatorID": "TRA",
+    "StationClass": "1",
+    "StationPosition": {"PositionLon": 121.51711, "PositionLat": 25.04775},
+    "LocationCity": "臺北市",
+    "LocationCityCode": "TPE",
+    "LocationTown": "中正區",
+    "LocationTownCode": "63000010",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  },
+  {
+    "StationUID": "TRA-1010",
+    "StationID": "1010",
+    "StationName": {"Zh_tw": "萬華", "En": "Wanhua"},
+    "StationAddress": "臺北市萬華區康定路382號",
+    "StationPhone": "02-23068812",
+    "OperatorID": "TRA",
+    "StationClass": "2",
+    "StationPosition": {"PositionLon": 121.49996, "PositionLat": 25.03339},
+    "LocationCity": "臺北市",
+    "LocationCityCode": "TPE",
+    "LocationTown": "萬華區",
+    "LocationTownCode": "63000070",
+    "UpdateTime": "2026-09-15T00:00:00+08:00",
+    "VersionID": 1
+  }
+]

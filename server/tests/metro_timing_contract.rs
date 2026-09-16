@@ -133,7 +133,7 @@ fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
     fs::write(
         input.join("metro/trtc-station-timetable.json"),
         r#"[
-          {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Time":"08:00"},{"Time":"08:05"}]}
+          {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Sequence":1,"TrainNo":"BL-0800","ArrivalTime":"08:00","DepartureTime":"08:00"},{"Sequence":2,"TrainNo":"BL-0805","ArrivalTime":"08:05","DepartureTime":"08:05"}]}
         ]"#,
     )
     .unwrap();
@@ -147,7 +147,7 @@ fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
     fs::write(
         input.join("metro/trtc-frequency.json"),
         r#"[
-          {"LineID":"BL","Direction":0,"Headways":[{"StartTime":"08:00","EndTime":"08:10","MinHeadwayMins":2}]}
+          {"LineID":"BL","Direction":0,"OperationTime":{"StartTime":"06:00","EndTime":"24:00"},"Headways":[{"StartTime":"08:00","EndTime":"08:10","MinHeadwayMins":2,"MaxHeadwayMins":3}]}
         ]"#,
     )
     .unwrap();
