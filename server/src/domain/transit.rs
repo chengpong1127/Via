@@ -604,6 +604,37 @@ impl TransitNetwork {
         )
     }
 
+    /// Return all stops inside a bounded radius in deterministic distance/id order.
+    /// The query uses the same immutable grid as nearest-stop lookup, so callers
+    /// do not need to maintain a second spatial index over the network.
+    pub fn stops_within_radius(
+        &self,
+        coordinate: RequestCoordinate,
+        radius_metres: u32,
+    ) -> Vec<&TransitStop> {
+        points_within_radius_from_grid(
+            &self.indexes().stop_grid,
+            &self.stops,
+            coordinate,
+            radius_metres,
+        )
+    }
+
+    /// Return all bike-share stations inside a bounded radius in deterministic
+    /// distance/id order.
+    pub fn bike_share_stations_within_radius(
+        &self,
+        coordinate: RequestCoordinate,
+        radius_metres: u32,
+    ) -> Vec<&BikeShareStation> {
+        points_within_radius_from_grid(
+            &self.indexes().station_grid,
+            &self.bike_share_stations,
+            coordinate,
+            radius_metres,
+        )
+    }
+
     pub fn transfer_seconds(&self, from: &BoardingPointId, to: &BoardingPointId) -> Option<u32> {
         if from == to {
             return Some(self.default_transfer_seconds);
@@ -1248,6 +1279,64 @@ fn nearest_from_grid<'a, T: SpatialPoint>(
     });
     nearest.truncate(limit);
     nearest
+}
+
+fn points_within_radius_from_grid<'a, T: SpatialPoint>(
+    grid: &SpatialGrid,
+    points: &'a [T],
+    coordinate: RequestCoordinate,
+    radius_metres: u32,
+) -> Vec<&'a T> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    let latitude_delta = f64::from(radius_metres) / 111_320.0;
+    let longitude_scale = 111_320.0 * coordinate.latitude.to_radians().cos().abs().max(0.01);
+    let longitude_delta = f64::from(radius_metres) / longitude_scale;
+    let latitude_min = SpatialCell::from_coordinate(RequestCoordinate {
+        latitude: coordinate.latitude - latitude_delta,
+        longitude: coordinate.longitude,
+    })
+    .latitude;
+    let latitude_max = SpatialCell::from_coordinate(RequestCoordinate {
+        latitude: coordinate.latitude + latitude_delta,
+        longitude: coordinate.longitude,
+    })
+    .latitude;
+    let longitude_min = SpatialCell::from_coordinate(RequestCoordinate {
+        latitude: coordinate.latitude,
+        longitude: coordinate.longitude - longitude_delta,
+    })
+    .longitude;
+    let longitude_max = SpatialCell::from_coordinate(RequestCoordinate {
+        latitude: coordinate.latitude,
+        longitude: coordinate.longitude + longitude_delta,
+    })
+    .longitude;
+    let mut indices = HashSet::new();
+    for latitude in latitude_min..=latitude_max {
+        for longitude in longitude_min..=longitude_max {
+            if let Some(cell) = grid.cells.get(&SpatialCell {
+                latitude,
+                longitude,
+            }) {
+                indices.extend(cell.iter().copied());
+            }
+        }
+    }
+
+    let mut nearby = indices
+        .into_iter()
+        .filter_map(|index| points.get(index))
+        .filter(|point| distance_metres(coordinate, point.coordinate()) <= u64::from(radius_metres))
+        .collect::<Vec<_>>();
+    nearby.sort_by(|left, right| {
+        distance_metres(coordinate, left.coordinate())
+            .cmp(&distance_metres(coordinate, right.coordinate()))
+            .then(left.stable_id().cmp(right.stable_id()))
+    });
+    nearby
 }
 
 fn distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u64 {

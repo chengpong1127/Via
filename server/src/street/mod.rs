@@ -79,6 +79,24 @@ pub struct RoutingConstraints {
 pub enum MatrixOrientation {
     OneToMany,
     ManyToOne,
+    ManyToMany,
+}
+
+/// Maximum source and target counts accepted by a street provider's matrix
+/// endpoint. Implementations may override the conservative default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatrixLimits {
+    pub max_sources: usize,
+    pub max_targets: usize,
+}
+
+impl Default for MatrixLimits {
+    fn default() -> Self {
+        Self {
+            max_sources: 32,
+            max_targets: 32,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -207,6 +225,10 @@ pub enum StreetRoutingError {
 
 #[async_trait]
 pub trait StreetRouter: Send + Sync {
+    fn matrix_limits(&self) -> MatrixLimits {
+        MatrixLimits::default()
+    }
+
     async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError>;
 
     async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError>;

@@ -216,7 +216,14 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
             }
             progress_bar.set_length(progress.total_origin_stops as u64);
             progress_bar.set_position(progress.completed_origin_stops as u64);
-            progress_bar.set_message(format!("shortcuts={}", progress.transfer_shortcuts));
+            progress_bar.set_message(format!(
+                "current_candidates={} pickups={} returns={} street_matrix_batches={} shortcuts={}",
+                progress.current_candidates,
+                progress.pickups,
+                progress.returns,
+                progress.street_matrix_batches,
+                progress.transfer_shortcuts
+            ));
             if start_progress {
                 progress_bar.set_draw_target(transfer_progress_draw_target());
                 progress_bar.enable_steady_tick(Duration::from_millis(250));

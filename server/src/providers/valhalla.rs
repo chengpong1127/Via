@@ -19,9 +19,9 @@ use url::Url;
 use crate::{
     health::DependencyHealth,
     street::{
-        Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixQuery, MatrixResult,
-        Metres, RouteQuery, RoutingConstraints, RoutingTimeKind, Seconds, StreetPath, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
+        Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixLimits, MatrixQuery,
+        MatrixResult, Metres, RouteQuery, RoutingConstraints, RoutingTimeKind, Seconds, StreetPath,
+        StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -392,6 +392,13 @@ impl DependencyHealth for ValhallaProvider {
 
 #[async_trait]
 impl StreetRouter for ValhallaProvider {
+    fn matrix_limits(&self) -> MatrixLimits {
+        MatrixLimits {
+            max_sources: self.config.max_sources,
+            max_targets: self.config.max_targets,
+        }
+    }
+
     async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
         query.validate()?;
         self.execute(
