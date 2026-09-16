@@ -5,7 +5,7 @@ use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
-        ArtifactCounts, DataError, DataScope, FetchProgress, build_from_raw,
+        ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress, build_from_raw,
         build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot_with_progress,
         load_manifest, load_network_artifact, load_transfer_artifact,
     },
@@ -215,6 +215,7 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     } else {
         build_from_raw(&args.input, &args.output, scope, args.date)?
     };
+    print_build_diagnostics(&result.diagnostics);
     print_counts("built", &result.manifest.counts, &result.manifest.revisions);
     println!(
         "network artifact: {}",
@@ -479,6 +480,30 @@ fn print_counts(
         counts.bike_stations,
         counts.transfer_shortcuts
     );
+}
+
+fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
+    for skipped in &diagnostics.skipped_services {
+        println!(
+            "SKIP service={} reason={} stops={}",
+            skipped.service_id, skipped.reason, skipped.stops
+        );
+    }
+    println!(
+        "skipped malformed/degenerate services: {}",
+        diagnostics.skipped_services.len()
+    );
+    if diagnostics.malformed_bus_records > 0
+        || diagnostics.unresolved_bus_stop_references > 0
+        || diagnostics.duplicate_bus_stop_artifacts_removed > 0
+    {
+        println!(
+            "normalization diagnostics: malformed_bus_records={} unresolved_bus_stop_references={} duplicate_bus_stop_artifacts_removed={}",
+            diagnostics.malformed_bus_records,
+            diagnostics.unresolved_bus_stop_references,
+            diagnostics.duplicate_bus_stop_artifacts_removed
+        );
+    }
 }
 
 fn parse_date(value: &str) -> Result<Date, DataError> {

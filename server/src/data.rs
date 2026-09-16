@@ -45,6 +45,7 @@ const TDX_RETRY_BACKOFFS: [Duration; 4] = [
     Duration::from_secs(60),
     Duration::from_secs(120),
 ];
+const SECONDS_PER_SERVICE_DAY: u32 = 86_400;
 const ALL_WEEKDAYS: [Weekday; 7] = [
     Weekday::Monday,
     Weekday::Tuesday,
@@ -177,6 +178,22 @@ pub struct BuildOutput {
     pub network: TransitNetwork,
     pub manifest: ArtifactManifest,
     pub transfer_index: TransferShortcutIndex,
+    pub diagnostics: BuildDiagnostics,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildDiagnostics {
+    pub skipped_services: Vec<SkippedService>,
+    pub malformed_bus_records: usize,
+    pub unresolved_bus_stop_references: usize,
+    pub duplicate_bus_stop_artifacts_removed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedService {
+    pub service_id: String,
+    pub reason: String,
+    pub stops: usize,
 }
 
 #[derive(Debug, Error)]
@@ -262,6 +279,11 @@ struct Normalizer {
     metro_departures: BTreeMap<MetroTimingKey, BTreeSet<u32>>,
     metro_frequencies: BTreeMap<MetroTimingKey, BTreeSet<MetroFrequencyRange>>,
     metro_travel_times: BTreeMap<MetroTravelKey, u32>,
+    diagnostics: BuildDiagnostics,
+    skipped_services: BTreeSet<String>,
+    bus_service_records: usize,
+    bus_affected_service_ids: BTreeSet<String>,
+    bus_source_path: Option<PathBuf>,
 }
 
 impl Normalizer {
@@ -328,33 +350,73 @@ impl Normalizer {
         path: &Path,
         index: usize,
     ) -> Result<(), DataError> {
-        if let Some(stops) = record.get("Stops").and_then(Value::as_array) {
-            let sub_route = string(record, "SubRouteUID").or_else(|| string(record, "ServiceUID"));
+        if let Some(stops_value) = record.get("Stops") {
+            self.bus_service_records += 1;
+            self.bus_source_path
+                .get_or_insert_with(|| path.to_path_buf());
+            let Some(stops) = stops_value.as_array() else {
+                self.diagnostics.malformed_bus_records += 1;
+                return Ok(());
+            };
+            let sub_route = string(record, "SubRouteUID")
+                .or_else(|| string(record, "ServiceUID"))
+                .filter(|value| !value.trim().is_empty());
             let Some(sub_route) = sub_route else {
+                self.diagnostics.malformed_bus_records += 1;
                 return Ok(());
             };
             let direction = number(record, "Direction").and_then(|value| u8::try_from(value).ok());
+            let malformed_direction = record.get("Direction").is_none() || direction.is_none();
+            if malformed_direction {
+                self.diagnostics.malformed_bus_records += 1;
+            }
             let service_id = direction
                 .map(|direction| transit_service_id_for_direction(sub_route, direction))
                 .unwrap_or_else(|| transit_service_id(sub_route));
-            let mut ordered = stops
-                .iter()
-                .enumerate()
-                .map(|(fallback, stop)| {
-                    (
-                        number(stop, "StopSequence").unwrap_or(fallback as u64),
-                        stop,
-                    )
-                })
-                .collect::<Vec<_>>();
+            if malformed_direction {
+                self.bus_affected_service_ids
+                    .insert(service_id.as_str().into());
+            }
+            let mut seen_sequences = BTreeSet::new();
+            let mut ordered = Vec::with_capacity(stops.len());
+            for (fallback, stop) in stops.iter().enumerate() {
+                let sequence = number(stop, "StopSequence");
+                if sequence.is_none_or(|sequence| !seen_sequences.insert(sequence)) {
+                    self.diagnostics.malformed_bus_records += 1;
+                    self.bus_affected_service_ids
+                        .insert(service_id.as_str().into());
+                }
+                ordered.push((sequence.unwrap_or(fallback as u64), stop));
+            }
             ordered.sort_by_key(|(sequence, _)| *sequence);
             let mut pattern = Vec::with_capacity(ordered.len());
-            for (_, stop) in ordered {
-                pattern.push(self.normalize_stop(stop, path, "bus")?);
+            // A repeated UID at a different sequence is a legitimate loop stop.
+            // Only an exact sequence/UID repeat is an empty duplicate artifact.
+            let mut seen_sequence_stops = BTreeSet::new();
+            for (sequence, stop) in ordered {
+                let stop_id = match self.normalize_stop(stop, path, "bus") {
+                    Ok(stop_id) => stop_id,
+                    Err(DataError::MalformedSource { .. }) => {
+                        self.diagnostics.unresolved_bus_stop_references += 1;
+                        self.bus_affected_service_ids
+                            .insert(service_id.as_str().into());
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !seen_sequence_stops.insert((sequence, stop_id.as_str().to_owned())) {
+                    self.diagnostics.duplicate_bus_stop_artifacts_removed += 1;
+                    continue;
+                }
+                pattern.push(stop_id);
             }
-            self.insert_service(
+            if distinct_stop_count(&pattern) < 2 {
+                self.bus_affected_service_ids
+                    .insert(service_id.as_str().into());
+            }
+            let inserted = self.insert_service(
                 TransitService::new(
-                    service_id,
+                    service_id.clone(),
                     TransitMode::Bus,
                     display_name(record, &["SubRouteName", "RouteName"])
                         .unwrap_or_else(|| sub_route.into()),
@@ -365,11 +427,34 @@ impl Normalizer {
                 .with_timing_source("bus_n1"),
                 path,
             )?;
+            if !inserted {
+                return Ok(());
+            }
             self.normalize_embedded_trip(record, path, index, TransitMode::Bus)?;
             return Ok(());
         }
+        if is_bus_stop_catalog_path(path) {
+            if record.get("StopUID").is_none() {
+                self.diagnostics.malformed_bus_records += 1;
+                return Ok(());
+            }
+            match self.normalize_stop(record, path, "bus") {
+                Ok(_) => {}
+                Err(DataError::MalformedSource { .. }) => {
+                    self.diagnostics.malformed_bus_records += 1;
+                }
+                Err(error) => return Err(error),
+            }
+            return Ok(());
+        }
         if string(record, "StopUID").is_some() {
-            let _ = self.normalize_stop(record, path, "bus")?;
+            match self.normalize_stop(record, path, "bus") {
+                Ok(_) => {}
+                Err(DataError::MalformedSource { .. }) => {
+                    self.diagnostics.malformed_bus_records += 1;
+                }
+                Err(error) => return Err(error),
+            }
         }
         if record.get("StopTimes").is_some()
             || record.get("stop_times").is_some()
@@ -777,9 +862,6 @@ impl Normalizer {
             }
             return Ok(());
         };
-        if stop_times.len() < 2 {
-            return Ok(());
-        }
         let operator = match mode {
             TransitMode::HighSpeedRail => "thsr",
             TransitMode::Rail => "tra",
@@ -797,6 +879,11 @@ impl Normalizer {
             .or_else(|| string(record, "ServiceUID"))
             .or_else(|| string(record, "SubRouteUID"))
             .unwrap_or("trip");
+        let overnight = train_info
+            .get("Overnight")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || string(train_info, "OverNightStationID").is_some();
         let service_id = if mode == TransitMode::Bus {
             let sub_route = string(record, "SubRouteUID").unwrap_or(train_no);
             number(record, "Direction")
@@ -818,6 +905,9 @@ impl Normalizer {
         } else {
             TransitServiceId::new(format!("{operator}:{train_no}"))
         };
+        if stop_times.len() < 2 {
+            return Ok(());
+        }
         let service_label = if mode == TransitMode::Bus {
             let sub_route = string(record, "SubRouteUID").unwrap_or(train_no);
             display_name(record, &["SubRouteName", "RouteName"])
@@ -838,9 +928,19 @@ impl Normalizer {
             })
             .unwrap_or_default();
         let mut parsed = Vec::with_capacity(stop_times.len());
+        let mut previous_departure = 0;
         for (fallback, stop_time) in stop_times.iter().enumerate() {
-            let stop_id = self.resolve_timetable_stop(stop_time, path, mode, fallback)?;
-            let departure = time_seconds(
+            let stop_id = match self.resolve_timetable_stop(stop_time, path, mode, fallback) {
+                Ok(stop_id) => stop_id,
+                Err(DataError::MalformedSource { .. }) if mode == TransitMode::Bus => {
+                    self.diagnostics.unresolved_bus_stop_references += 1;
+                    self.bus_affected_service_ids
+                        .insert(service_id.as_str().into());
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let raw_departure = time_seconds(
                 string(stop_time, "DepartureTime")
                     .or_else(|| string(stop_time, "departure_time"))
                     .or_else(|| string(stop_time, "Time")),
@@ -851,16 +951,32 @@ impl Normalizer {
                 )
             })
             .ok_or_else(|| malformed(path, "scheduled departure time", train_no))?;
-            let arrival = time_seconds(
+            let raw_arrival = time_seconds(
                 string(stop_time, "ArrivalTime")
                     .or_else(|| string(stop_time, "arrival_time"))
                     .or_else(|| string(stop_time, "Time")),
             )
-            .unwrap_or(departure);
+            .unwrap_or(raw_departure);
+            let arrival = if overnight {
+                lift_time_after(raw_arrival, previous_departure)
+                    .ok_or_else(|| malformed(path, "scheduled arrival time", train_no))?
+            } else {
+                raw_arrival
+            };
+            let departure = if overnight {
+                lift_time_after(raw_departure, arrival)
+                    .ok_or_else(|| malformed(path, "scheduled departure time", train_no))?
+            } else {
+                raw_departure
+            };
+            previous_departure = departure;
             parsed.push((stop_id, ScheduledStopTime::new(arrival, departure)));
         }
         let pattern = parsed.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
-        self.insert_service(
+        if distinct_stop_count(&pattern) < 2 {
+            return Ok(());
+        }
+        let inserted = self.insert_service(
             TransitService::new(
                 service_id.clone(),
                 mode,
@@ -881,6 +997,9 @@ impl Normalizer {
             }),
             path,
         )?;
+        if !inserted {
+            return Ok(());
+        }
         let trip_id = string(train_info, "TrainDate")
             .map(|date| format!("{operator}:{train_no}:{date}"))
             .unwrap_or_else(|| format!("{operator}:{train_no}:{index}"));
@@ -905,19 +1024,28 @@ impl Normalizer {
         if let Some(station_uid) =
             string(record, "StationUID").or_else(|| string(record, "StopUID"))
         {
+            if station_uid.trim().is_empty() {
+                return Err(malformed(path, "timetable stop", "empty stop ID"));
+            }
+            let id = boarding_point_id(station_uid);
             if let Some(coordinate) = coordinate(record) {
                 let stop = TransitStop::new(
-                    boarding_point_id(station_uid),
+                    id.clone(),
                     display_name(record, &["StationName", "StopName"])
                         .unwrap_or_else(|| station_uid.into()),
                     coordinate,
                 );
                 self.insert_stop(stop, path)?;
+            } else if !self.stops.contains_key(id.as_str()) {
+                return Err(malformed(path, "timetable stop", station_uid));
             }
-            return Ok(boarding_point_id(station_uid));
+            return Ok(id);
         }
         let local = string(record, "StationID").or_else(|| string(record, "StopID"));
         if let Some(local) = local {
+            if local.trim().is_empty() {
+                return Err(malformed(path, "timetable stop", "empty stop ID"));
+            }
             if let Some(id) = self
                 .station_aliases
                 .get(&format!("{mode:?}:{local}"))
@@ -953,16 +1081,19 @@ impl Normalizer {
     ) -> Result<BoardingPointId, DataError> {
         let stop_uid =
             string(record, "StopUID").ok_or_else(|| malformed(path, kind, "missing StopUID"))?;
+        if stop_uid.trim().is_empty() {
+            return Err(malformed(path, kind, "empty StopUID"));
+        }
         let id = boarding_point_id(stop_uid);
         let Some(coordinate) =
-            coordinate(record).or_else(|| self.stops.get(stop_uid).map(|stop| stop.coordinate))
+            coordinate(record).or_else(|| self.stops.get(id.as_str()).map(|stop| stop.coordinate))
         else {
             return Err(malformed(path, kind, stop_uid));
         };
         let stop = TransitStop::new(
             id.clone(),
             display_name(record, &["StopName", "StopNameZh", "StopNameEn"])
-                .or_else(|| self.stops.get(stop_uid).map(|stop| stop.name.clone()))
+                .or_else(|| self.stops.get(id.as_str()).map(|stop| stop.name.clone()))
                 .unwrap_or_else(|| stop_uid.into()),
             coordinate,
         );
@@ -986,8 +1117,16 @@ impl Normalizer {
         Ok(())
     }
 
-    fn insert_service(&mut self, service: TransitService, path: &Path) -> Result<(), DataError> {
+    fn insert_service(&mut self, service: TransitService, path: &Path) -> Result<bool, DataError> {
         let key = service.id.as_str().to_owned();
+        let usable_stops = distinct_stop_count(&service.pattern);
+        if usable_stops < 2 {
+            self.skip_service(&service.id, "pattern_too_short", usable_stops);
+            return Ok(false);
+        }
+        if self.skipped_services.contains(&key) {
+            return Ok(false);
+        }
         if let Some(existing) = self.services.get(&key) {
             if existing.pattern != service.pattern {
                 return Err(DataError::ConflictingIdentity {
@@ -999,10 +1138,26 @@ impl Normalizer {
         } else {
             self.services.insert(key, service);
         }
-        Ok(())
+        Ok(true)
+    }
+
+    fn skip_service(&mut self, service_id: &TransitServiceId, reason: &str, stops: usize) {
+        let key = service_id.as_str().to_owned();
+        if self.skipped_services.insert(key.clone()) {
+            self.diagnostics.skipped_services.push(SkippedService {
+                service_id: key.clone(),
+                reason: reason.into(),
+                stops,
+            });
+        }
+        self.services.remove(&key);
+        self.trips.retain(|_, trip| trip.service_id.as_str() != key);
     }
 
     fn insert_trip(&mut self, trip: ScheduledTrip, path: &Path) -> Result<(), DataError> {
+        if self.skipped_services.contains(trip.service_id.as_str()) {
+            return Ok(());
+        }
         let key = trip.id.as_str().to_owned();
         if let Some(existing) = self.trips.get(&key) {
             if existing != &trip {
@@ -1037,7 +1192,36 @@ impl Normalizer {
         Ok(())
     }
 
-    fn finish(mut self) -> TransitNetwork {
+    fn validate_diagnostics(&self) -> Result<(), DataError> {
+        const MIN_SYSTEMIC_BUS_RECORDS: usize = 8;
+        const SYSTEMIC_BUS_RECORD_RATIO: usize = 4;
+
+        let total = self.bus_service_records;
+        let affected = self.bus_affected_service_ids.len();
+        let malformed = self.diagnostics.malformed_bus_records;
+        let systemic = total > 0
+            && (affected == total
+                || malformed >= total
+                || (affected >= MIN_SYSTEMIC_BUS_RECORDS
+                    && affected * SYSTEMIC_BUS_RECORD_RATIO >= total)
+                || (malformed >= MIN_SYSTEMIC_BUS_RECORDS
+                    && malformed * SYSTEMIC_BUS_RECORD_RATIO >= total));
+        if systemic {
+            return Err(DataError::MalformedSource {
+                path: self
+                    .bus_source_path
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("bus/stop-of-route.json")),
+                kind: "bus normalization",
+                detail: format!(
+                    "systemic schema mismatch: {affected} of {total} service records were degenerate or had unusable stops; malformed records={malformed}"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> (TransitNetwork, BuildDiagnostics) {
         let mut directional_by_base: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for service_id in self.services.keys() {
             if let Some((base, _)) = service_id.split_once("::direction=") {
@@ -1153,7 +1337,7 @@ impl Normalizer {
                 ));
             }
         }
-        TransitNetwork::new(
+        let network = TransitNetwork::new(
             default_service_day_boundary(),
             self.stops.into_values().collect(),
             self.services.into_values().collect(),
@@ -1172,7 +1356,8 @@ impl Normalizer {
                     )
                 })
                 .collect(),
-        )
+        );
+        (network, self.diagnostics)
     }
 }
 
@@ -1195,11 +1380,19 @@ pub fn build_from_raw(
     }
     for document in documents
         .iter()
-        .filter(|document| !is_station_catalog_document(&document.relative_path))
+        .filter(|document| is_bus_stop_of_route_document(&document.relative_path))
     {
         normalizer.normalize_document(document)?;
     }
-    let mut network = normalizer.finish().canonicalize();
+    for document in documents.iter().filter(|document| {
+        !is_station_catalog_document(&document.relative_path)
+            && !is_bus_stop_of_route_document(&document.relative_path)
+    }) {
+        normalizer.normalize_document(document)?;
+    }
+    normalizer.validate_diagnostics()?;
+    let (mut network, diagnostics) = normalizer.finish();
+    network = network.canonicalize();
     if network.stops.is_empty() {
         return Err(DataError::EmptyNetwork);
     }
@@ -1290,6 +1483,7 @@ pub fn build_from_raw(
         network,
         manifest,
         transfer_index,
+        diagnostics,
     })
 }
 
@@ -1774,8 +1968,18 @@ fn collect_json_paths(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), Data
 }
 
 fn is_station_catalog_document(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        name == "station.json" || name == "stop.json" || name == "trtc-station.json"
+    })
+}
+
+fn is_bus_stop_catalog_path(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "stop.json")
+}
+
+fn is_bus_stop_of_route_document(path: &Path) -> bool {
     path.file_name()
-        .is_some_and(|name| name == "station.json" || name == "trtc-station.json")
+        .is_some_and(|name| name == "stop-of-route.json")
 }
 
 fn records(value: &Value) -> Vec<&Value> {
@@ -1981,11 +2185,27 @@ fn time_seconds(value: Option<&str>) -> Option<u32> {
     (minute < 60 && second < 60).then(|| hour * 3_600 + minute * 60 + second)
 }
 
+fn lift_time_after(time: u32, lower_bound: u32) -> Option<u32> {
+    let mut lifted = time;
+    while lifted < lower_bound {
+        lifted = lifted.checked_add(SECONDS_PER_SERVICE_DAY)?;
+    }
+    Some(lifted)
+}
+
 fn time_seconds_value(value: &Value) -> Option<u32> {
     value
         .as_u64()
         .and_then(|seconds| u32::try_from(seconds).ok())
         .or_else(|| value.as_str().and_then(|value| time_seconds(Some(value))))
+}
+
+fn distinct_stop_count(pattern: &[BoardingPointId]) -> usize {
+    pattern
+        .iter()
+        .map(BoardingPointId::as_str)
+        .collect::<BTreeSet<_>>()
+        .len()
 }
 
 fn service_calendar(value: &Value) -> (Vec<Weekday>, Vec<Date>, Vec<Date>) {
