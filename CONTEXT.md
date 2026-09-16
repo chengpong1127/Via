@@ -109,3 +109,23 @@ _Avoid_: Tracking event, behavioral profile
 **Feedback Report**:
 An explicit report that a rider sends about a Journey Planning problem. It excludes the origin, destination, and Journey details unless the rider separately chooses to include them after a preview.
 _Avoid_: Support ticket, automatic report
+
+## Infrastructure decisions
+
+TDX static snapshot fetching keeps its small internal timing policy. The
+request limiter, deterministic retry schedule, `Retry-After` handling, progress
+events, and snapshot reuse/resume are one coupled workflow; introducing a
+generic retry middleware would add adapters without removing that behavior.
+
+`TdxCredentials` remains a redacted internal `String` container. Via has no
+constant-time secret comparison, and a `SecretString` wrapper would add access
+noise without changing the existing formatting boundary. The single Axum
+request-timeout middleware also remains internal because it returns Via's
+structured `request_timeout` response directly.
+
+Geographic calculations use the shared `RequestCoordinate` helpers. Spatial
+candidate selection and routing thresholds intentionally use the existing
+rounded local planar approximation; offline straight-line estimates and CLI
+distance display intentionally use Haversine distance. These named semantics
+avoid a new geographic dependency while preserving the different accuracy
+requirements.

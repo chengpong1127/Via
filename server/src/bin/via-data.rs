@@ -443,12 +443,7 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     for stop in network.nearest_stops(coordinate, args.limit.max(1)) {
         println!(
             "{:.0}m  {}  {}  {}",
-            distance_metres(
-                args.lat,
-                args.lon,
-                stop.coordinate.latitude,
-                stop.coordinate.longitude
-            ),
+            coordinate.haversine_distance_metres(stop.coordinate),
             stop.id.as_str(),
             stop.name,
             service_labels(&network, &stop.id)
@@ -463,12 +458,7 @@ fn inspect_bike_near(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     for station in network.nearest_bike_share_stations(coordinate, args.limit.max(1)) {
         println!(
             "{:.0}m  {}  {} ({:.6}, {:.6})",
-            distance_metres(
-                args.lat,
-                args.lon,
-                station.coordinate.latitude,
-                station.coordinate.longitude
-            ),
+            coordinate.haversine_distance_metres(station.coordinate),
             station.id.as_str(),
             station.name,
             station.coordinate.latitude,
@@ -605,14 +595,4 @@ fn mode_name(mode: TransitMode) -> &'static str {
         TransitMode::Rail => "TRA",
         TransitMode::HighSpeedRail => "THSR",
     }
-}
-
-fn distance_metres(from_lat: f64, from_lon: f64, to_lat: f64, to_lon: f64) -> f64 {
-    let radius = 6_371_000.0;
-    let lat1 = from_lat.to_radians();
-    let lat2 = to_lat.to_radians();
-    let dlat = (to_lat - from_lat).to_radians();
-    let dlon = (to_lon - from_lon).to_radians();
-    let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
-    radius * 2.0 * a.sqrt().asin()
 }

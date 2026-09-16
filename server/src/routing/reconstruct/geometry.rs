@@ -44,10 +44,7 @@ pub(crate) fn straight_geometry(from: RequestCoordinate, to: RequestCoordinate) 
 }
 
 pub(crate) fn transit_leg_distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u32 {
-    let latitude = ((from.latitude + to.latitude) / 2.0).to_radians();
-    let latitude_metres = (to.latitude - from.latitude).abs() * 111_320.0;
-    let longitude_metres = (to.longitude - from.longitude).abs() * 111_320.0 * latitude.cos();
-    (latitude_metres.hypot(longitude_metres)).round() as u32
+    from.planar_distance_metres(to) as u32
 }
 
 pub(crate) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {

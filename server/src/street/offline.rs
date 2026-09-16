@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 
+use crate::domain::location::RequestCoordinate;
+
 use super::{
     Coordinate, Maneuver, MatrixCell, MatrixQuery, MatrixResult, Metres, RouteQuery, Seconds,
     StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -29,7 +31,15 @@ impl StraightLineStreetRouter {
         origin: Coordinate,
         destination: Coordinate,
     ) -> (Seconds, Metres) {
-        let distance = distance_metres(origin, destination).round() as u32;
+        let distance = RequestCoordinate {
+            latitude: origin.latitude(),
+            longitude: origin.longitude(),
+        }
+        .haversine_distance_metres(RequestCoordinate {
+            latitude: destination.latitude(),
+            longitude: destination.longitude(),
+        })
+        .round() as u32;
         let speed = match mode {
             StreetTravelMode::Walking => self.walking_speed_metres_per_second,
             StreetTravelMode::Bicycle => self.bicycle_speed_metres_per_second,
@@ -85,15 +95,4 @@ impl StreetRouter for StraightLineStreetRouter {
             attribution: Vec::new(),
         })
     }
-}
-
-fn distance_metres(from: Coordinate, to: Coordinate) -> f64 {
-    let radius = 6_371_000.0;
-    let from_lat = from.latitude().to_radians();
-    let to_lat = to.latitude().to_radians();
-    let delta_lat = (to.latitude() - from.latitude()).to_radians();
-    let delta_lon = (to.longitude() - from.longitude()).to_radians();
-    let haversine = (delta_lat / 2.0).sin().powi(2)
-        + from_lat.cos() * to_lat.cos() * (delta_lon / 2.0).sin().powi(2);
-    radius * 2.0 * haversine.sqrt().asin()
 }

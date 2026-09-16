@@ -15,7 +15,9 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
 use super::ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId};
 use super::{
-    journey::JourneyMode, location::RequestCoordinate, normalize_to_taipei, taipei_offset,
+    journey::JourneyMode,
+    location::{METRES_PER_DEGREE, RequestCoordinate},
+    normalize_to_taipei, taipei_offset,
 };
 
 pub const DEFAULT_MAX_TRANSFERS: usize = 2;
@@ -1249,7 +1251,7 @@ fn nearest_from_grid<'a, T: SpatialPoint>(
             let worst_distance = indices
                 .iter()
                 .filter_map(|index| points.get(*index))
-                .map(|point| distance_metres(coordinate, point.coordinate()))
+                .map(|point| coordinate.planar_distance_metres(point.coordinate()))
                 .max()
                 .unwrap_or(0);
             let mut added_cell = false;
@@ -1273,8 +1275,9 @@ fn nearest_from_grid<'a, T: SpatialPoint>(
         .filter_map(|index| points.get(index))
         .collect::<Vec<_>>();
     nearest.sort_by(|left, right| {
-        distance_metres(coordinate, left.coordinate())
-            .cmp(&distance_metres(coordinate, right.coordinate()))
+        coordinate
+            .planar_distance_metres(left.coordinate())
+            .cmp(&coordinate.planar_distance_metres(right.coordinate()))
             .then(left.stable_id().cmp(right.stable_id()))
     });
     nearest.truncate(limit);
@@ -1291,8 +1294,9 @@ fn points_within_radius_from_grid<'a, T: SpatialPoint>(
         return Vec::new();
     }
 
-    let latitude_delta = f64::from(radius_metres) / 111_320.0;
-    let longitude_scale = 111_320.0 * coordinate.latitude.to_radians().cos().abs().max(0.01);
+    let latitude_delta = f64::from(radius_metres) / METRES_PER_DEGREE;
+    let longitude_scale =
+        METRES_PER_DEGREE * coordinate.latitude.to_radians().cos().abs().max(0.01);
     let longitude_delta = f64::from(radius_metres) / longitude_scale;
     let latitude_min = SpatialCell::from_coordinate(RequestCoordinate {
         latitude: coordinate.latitude - latitude_delta,
@@ -1329,21 +1333,17 @@ fn points_within_radius_from_grid<'a, T: SpatialPoint>(
     let mut nearby = indices
         .into_iter()
         .filter_map(|index| points.get(index))
-        .filter(|point| distance_metres(coordinate, point.coordinate()) <= u64::from(radius_metres))
+        .filter(|point| {
+            coordinate.planar_distance_metres(point.coordinate()) <= u64::from(radius_metres)
+        })
         .collect::<Vec<_>>();
     nearby.sort_by(|left, right| {
-        distance_metres(coordinate, left.coordinate())
-            .cmp(&distance_metres(coordinate, right.coordinate()))
+        coordinate
+            .planar_distance_metres(left.coordinate())
+            .cmp(&coordinate.planar_distance_metres(right.coordinate()))
             .then(left.stable_id().cmp(right.stable_id()))
     });
     nearby
-}
-
-fn distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u64 {
-    let latitude = ((from.latitude + to.latitude) / 2.0).to_radians();
-    let north = (to.latitude - from.latitude) * 111_320.0;
-    let east = (to.longitude - from.longitude) * 111_320.0 * latitude.cos();
-    north.hypot(east).max(0.0).round() as u64
 }
 
 fn cell_lower_bound_metres(coordinate: RequestCoordinate, cell: SpatialCell) -> u64 {
@@ -1353,13 +1353,10 @@ fn cell_lower_bound_metres(coordinate: RequestCoordinate, cell: SpatialCell) -> 
     let longitude_max = longitude_min + SPATIAL_CELL_DEGREES;
     let latitude = coordinate.latitude.clamp(latitude_min, latitude_max);
     let longitude = coordinate.longitude.clamp(longitude_min, longitude_max);
-    distance_metres(
-        coordinate,
-        RequestCoordinate {
-            latitude,
-            longitude,
-        },
-    )
+    coordinate.planar_distance_metres(RequestCoordinate {
+        latitude,
+        longitude,
+    })
 }
 
 fn results_or_next(

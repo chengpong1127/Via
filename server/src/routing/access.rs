@@ -458,32 +458,15 @@ fn nearby_stations<'a>(
     limit: usize,
     limits: &RoutingLimits,
 ) -> Vec<&'a BikeShareStation> {
-    let mut stations = network
-        .bike_share_stations
-        .iter()
-        .filter(|station| {
-            geographic_coordinate_distance(
-                coordinate,
-                Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
-                    .expect("validated station coordinate"),
-            ) <= u64::from(limits.max_bike_search_radius_metres)
-        })
-        .collect::<Vec<_>>();
-    stations.sort_by(|left, right| {
-        geographic_coordinate_distance(
-            coordinate,
-            Coordinate::try_new(left.coordinate.latitude, left.coordinate.longitude)
-                .expect("validated station coordinate"),
-        )
-        .cmp(&geographic_coordinate_distance(
-            coordinate,
-            Coordinate::try_new(right.coordinate.latitude, right.coordinate.longitude)
-                .expect("validated station coordinate"),
-        ))
-        .then(left.id.as_str().cmp(right.id.as_str()))
-    });
-    stations.truncate(limit.max(1));
-    stations
+    let request_coordinate = RequestCoordinate {
+        latitude: coordinate.latitude(),
+        longitude: coordinate.longitude(),
+    };
+    network
+        .bike_share_stations_within_radius(request_coordinate, limits.max_bike_search_radius_metres)
+        .into_iter()
+        .take(limit.max(1))
+        .collect()
 }
 
 fn coordinate(station: &BikeShareStation) -> Result<Coordinate, StreetRoutingError> {
@@ -501,12 +484,9 @@ fn nearby_stops(
         longitude: coordinate.longitude(),
     };
     network
-        .nearest_stops(request_coordinate, limit.max(1))
+        .stops_within_radius(request_coordinate, limits.max_walking_radius_metres)
         .into_iter()
-        .filter(|stop| {
-            geographic_distance_metres(request_coordinate, stop.coordinate)
-                <= u64::from(limits.max_walking_radius_metres)
-        })
+        .take(limit.max(1))
         .filter_map(|stop| {
             Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
                 .ok()
@@ -523,18 +503,4 @@ pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
         }),
         MatrixCell::Unreachable => None,
     }
-}
-
-fn geographic_distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u64 {
-    let latitude = ((from.latitude + to.latitude) / 2.0).to_radians();
-    let north = (to.latitude - from.latitude) * 111_320.0;
-    let east = (to.longitude - from.longitude) * 111_320.0 * latitude.cos();
-    north.hypot(east).max(0.0).round() as u64
-}
-
-fn geographic_coordinate_distance(from: Coordinate, to: Coordinate) -> u64 {
-    let latitude = ((from.latitude() + to.latitude()) / 2.0).to_radians();
-    let north = (to.latitude() - from.latitude()) * 111_320.0;
-    let east = (to.longitude() - from.longitude()) * 111_320.0 * latitude.cos();
-    north.hypot(east).max(0.0).round() as u64
 }
