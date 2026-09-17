@@ -27,7 +27,6 @@ use super::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
         },
         status::RealtimeContext,
-        transfers::TransferPath,
     },
     evidence, geometry,
 };
@@ -120,17 +119,7 @@ pub(crate) async fn assemble(
                     .stop_place(&shortcut.to)
                     .ok_or(PlanningError::Internal)?;
                 let connector_start = result.legs.len();
-                if !append_transit_transfer(
-                    service,
-                    context,
-                    &from,
-                    &to,
-                    shortcut.duration_seconds,
-                    &shortcut.path,
-                    &mut result,
-                )
-                .await?
-                {
+                if !append_transit_transfer(&from, &to, shortcut.duration_seconds, &mut result) {
                     return Ok(None);
                 }
                 if let Some(from_leg) = result
@@ -312,40 +301,13 @@ pub(crate) async fn assemble_direct_endpoint(
     Ok(Some(result))
 }
 
-async fn append_transit_transfer(
-    service: &RoutingService,
-    context: &PlanningContext,
+fn append_transit_transfer(
     from: &Place,
     to: &Place,
     duration_seconds: u32,
-    path: &TransferPath,
     result: &mut ReconstructedLegs,
-) -> Result<bool, PlanningError> {
-    let distance_metres = path
-        .legs
-        .iter()
-        .map(|leg| match leg {
-            crate::routing::transfers::TransferLeg::Walk {
-                distance_metres, ..
-            } => *distance_metres,
-        })
-        .sum();
-    let walking_path = match hydrate_path(
-        service,
-        context,
-        from,
-        to,
-        StreetTravelMode::Walking,
-        result.arrival_time,
-    )
-    .await?
-    {
-        Some(mut path) => {
-            path.duration = crate::street::Seconds(duration_seconds);
-            path
-        }
-        None => synthetic_street_path(from, to, duration_seconds, distance_metres),
-    };
+) -> bool {
+    let walking_path = synthetic_street_path(from, to, duration_seconds, 0);
     let departure = result.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(duration_seconds));
     let leg_id = format!("candidate_leg_{}", result.legs.len());
@@ -360,7 +322,7 @@ async fn append_transit_transfer(
     result.walking_seconds = result.walking_seconds.saturating_add(duration_seconds);
     result.arrival_time = arrival;
     evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
-    Ok(true)
+    true
 }
 
 async fn append_endpoint_path(

@@ -6,8 +6,7 @@ use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
         ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress, build_from_raw,
-        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot_with_progress,
-        load_manifest, load_network_artifact, load_transfer_artifact,
+        fetch_raw_snapshot_with_progress, load_manifest, load_network_artifact,
     },
     domain::{
         ids::BoardingPointId,
@@ -53,17 +52,12 @@ struct BuildArgs {
     scope: Option<String>,
     #[arg(long)]
     date: Option<String>,
-    /// Materialize the static public-transit transfer artifact.
-    #[arg(long)]
-    preprocess_transfers: bool,
 }
 
 #[derive(Args, Debug)]
 struct ValidateArgs {
     #[arg(long)]
     artifact: PathBuf,
-    #[arg(long)]
-    transfer_artifact: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -187,21 +181,12 @@ fn duration_text(duration: std::time::Duration) -> String {
 
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
-    let result = if args.preprocess_transfers {
-        build_from_raw_with_transfer_preprocessing(&args.input, &args.output, scope, args.date)
-            .await?
-    } else {
-        build_from_raw(&args.input, &args.output, scope, args.date)?
-    };
+    let result = build_from_raw(&args.input, &args.output, scope, args.date)?;
     print_build_diagnostics(&result.diagnostics);
     print_counts("built", &result.manifest.counts, &result.manifest.revisions);
     println!(
         "network artifact: {}",
         args.output.join("transit-network.json").display()
-    );
-    println!(
-        "transfer artifact: {}",
-        args.output.join("transfer-shortcuts.json").display()
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
@@ -209,24 +194,12 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let network = load_network_artifact(&args.artifact)?;
-    let transfer_path = args
-        .transfer_artifact
-        .unwrap_or_else(|| args.artifact.with_file_name("transfer-shortcuts.json"));
-    let transfer_count = if transfer_path.exists() {
-        let index = load_transfer_artifact(&transfer_path)?;
-        index
-            .validate_against(&network)
-            .map_err(DataError::InvalidTransferArtifact)?;
-        index.len()
-    } else {
-        network.transfer_edges.len()
-    };
     let counts = ArtifactCounts {
         stops: network.stops.len(),
         services: network.services.len(),
         scheduled_trips: network.trips.len(),
         bike_stations: network.bike_share_stations.len(),
-        transfer_shortcuts: transfer_count,
+        transfer_edges: network.transfer_edges.len(),
     };
     print_counts(
         "validated",
@@ -371,7 +344,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
             bike_stations: network.bike_share_stations.len(),
-            transfer_shortcuts: network.transfer_edges.len(),
+            transfer_edges: network.transfer_edges.len(),
         });
     println!("network revision: {}", network.static_network_revision);
     println!("schedule revision: {}", network.schedule_revision);
@@ -395,7 +368,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         );
     }
     println!("BikeShare station count: {}", counts.bike_stations);
-    println!("transfer shortcut count: {}", counts.transfer_shortcuts);
+    println!("transfer edge count: {}", counts.transfer_edges);
     println!("service-day boundary: {}", network.service_day_boundary);
     Ok(())
 }
@@ -412,12 +385,12 @@ fn print_counts(
     );
     println!("  schedule revision: {}", revisions.schedule_revision);
     println!(
-        "  stops={} services={} scheduled_trips={} bike_stations={} transfer_shortcuts={}",
+        "  stops={} services={} scheduled_trips={} bike_stations={} transfer_edges={}",
         counts.stops,
         counts.services,
         counts.scheduled_trips,
         counts.bike_stations,
-        counts.transfer_shortcuts
+        counts.transfer_edges
     );
 }
 

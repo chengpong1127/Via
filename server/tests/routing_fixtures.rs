@@ -8,7 +8,7 @@ use via_server::{
     domain::{
         ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
         realtime::{NormalizedRealtimeValue, RealtimeValue},
-        transit::{TransitNetwork, TransitStop},
+        transit::{TransferEdge, TransitNetwork, TransitStop},
     },
     providers::{
         CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
@@ -16,24 +16,15 @@ use via_server::{
         realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     },
     routing::TransferIndex,
-    routing::{
-        RoutingService,
-        transfers::{TransferShortcut, TransferShortcutIndex},
-    },
+    routing::{RoutingService, transfers::TransferShortcutIndex},
     street::{
         Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
     },
 };
 
 const NETWORK_JSON: &str = include_str!("../fixtures/routing/network.json");
-const TRANSFERS_JSON: &str = include_str!("../fixtures/routing/transfer-shortcuts.json");
-
 fn network() -> TransitNetwork {
     TransitNetwork::from_artifact_json(NETWORK_JSON).unwrap()
-}
-
-fn transfers() -> TransferShortcutIndex {
-    TransferShortcutIndex::from_artifact_json(TRANSFERS_JSON).unwrap()
 }
 
 const BUS_REALTIME_JSON: &str = include_str!("../fixtures/routing/realtime/bus.json");
@@ -285,7 +276,6 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
     );
     let service = RoutingService::new(Arc::new(street), departure, cached.clone())
         .with_transit_network_arc(network)
-        .with_transfer_index(Arc::new(transfers()))
         .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(cached)));
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()
 }
@@ -866,7 +856,7 @@ async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
 #[test]
 fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     let network = network();
-    let transfers = transfers();
+    let transfers = TransferShortcutIndex::from_network(&network);
 
     assert_eq!(network.stops.len(), 18);
     assert_eq!(network.services.len(), 10);
@@ -874,10 +864,7 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     assert_eq!(network.metro_timings.len(), 3);
     assert_eq!(network.bike_share_stations.len(), 2);
     assert_eq!(transfers.len(), 12);
-    assert!(
-        transfers.validate_against(&network).is_ok(),
-        "fixture transfer artifact should validate"
-    );
+    assert!(network.validate().is_ok());
     assert!(
         transfers
             .transfers_from(&BoardingPointId::new("F-TRA-B"))
@@ -898,29 +885,27 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
 
 #[test]
 fn transfer_fixture_rejects_unknown_zero_duration_and_self_transfers() {
-    let network = network();
-
-    let unknown = TransferShortcutIndex::new([TransferShortcut::walking(
+    let mut unknown = network();
+    unknown.transfer_edges.push(TransferEdge::new(
         BoardingPointId::new("F-M1"),
         BoardingPointId::new("F-UNKNOWN"),
         120,
-        180,
-    )]);
-    assert!(unknown.validate_against(&network).is_err());
+    ));
+    assert!(unknown.validate().is_err());
 
-    let zero_duration = TransferShortcutIndex::new([TransferShortcut::walking(
+    let mut zero_duration = network();
+    zero_duration.transfer_edges.push(TransferEdge::new(
         BoardingPointId::new("F-M2-RED"),
         BoardingPointId::new("F-M2-BLUE"),
         0,
-        0,
-    )]);
-    assert!(zero_duration.validate_against(&network).is_err());
+    ));
+    assert!(zero_duration.validate().is_err());
 
-    let self_transfer = TransferShortcutIndex::new([TransferShortcut::walking(
+    let mut self_transfer = network();
+    self_transfer.transfer_edges.push(TransferEdge::new(
         BoardingPointId::new("F-M1"),
         BoardingPointId::new("F-M1"),
         120,
-        180,
-    )]);
-    assert!(self_transfer.validate_against(&network).is_err());
+    ));
+    assert!(self_transfer.validate().is_err());
 }

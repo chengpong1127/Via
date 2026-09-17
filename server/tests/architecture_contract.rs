@@ -136,7 +136,15 @@ fn reconstruction_modules_have_explicit_responsibilities() {
     assert!(source("src/routing/reconstruct/mod.rs").contains("legs::assemble"));
     assert!(source("src/routing/reconstruct/legs.rs").contains("append_transit_transfer"));
     assert!(source("src/routing/reconstruct/legs.rs").contains("append_endpoint_path"));
-    assert!(source("src/routing/reconstruct/legs.rs").contains("hydrate_path"));
+    let legs = source("src/routing/reconstruct/legs.rs");
+    let transfer = legs
+        .split_once("fn append_transit_transfer")
+        .and_then(|(_, rest)| rest.split_once("async fn append_endpoint_path"))
+        .map(|(transfer, _)| transfer)
+        .expect("transfer reconstruction function should be present");
+    assert!(transfer.contains("synthetic_street_path"));
+    assert!(!transfer.contains("hydrate_path"));
+    assert!(!transfer.contains("service.street_path("));
     assert!(source("src/routing/reconstruct/evidence.rs").contains("summary_from_evidence"));
 }
 

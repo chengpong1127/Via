@@ -6,89 +6,22 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
 use crate::domain::{ids::BoardingPointId, transit::TransitNetwork};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TransferLeg {
-    Walk {
-        duration_seconds: u32,
-        distance_metres: u32,
-    },
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferPath {
-    pub legs: Vec<TransferLeg>,
-}
-
-impl TransferPath {
-    pub fn walking(duration_seconds: u32, distance_metres: u32) -> Self {
-        Self {
-            legs: vec![TransferLeg::Walk {
-                duration_seconds,
-                distance_metres,
-            }],
-        }
-    }
-
-    pub fn duration_seconds(&self) -> u32 {
-        self.legs.iter().fold(0, |total, leg| {
-            total.saturating_add(match leg {
-                TransferLeg::Walk {
-                    duration_seconds, ..
-                } => *duration_seconds,
-            })
-        })
-    }
-
-    pub fn walking_seconds(&self) -> u32 {
-        self.duration_seconds()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransferShortcut {
     pub from: BoardingPointId,
     pub to: BoardingPointId,
     pub duration_seconds: u32,
-    pub walking_seconds: u32,
-    pub path: TransferPath,
 }
 
 impl TransferShortcut {
-    pub fn walking(
-        from: BoardingPointId,
-        to: BoardingPointId,
-        duration_seconds: u32,
-        distance_metres: u32,
-    ) -> Self {
-        Self::from_path(
-            from,
-            to,
-            TransferPath::walking(duration_seconds, distance_metres),
-        )
-    }
-
-    pub fn from_path(from: BoardingPointId, to: BoardingPointId, path: TransferPath) -> Self {
-        let duration_seconds = path.duration_seconds();
+    pub fn new(from: BoardingPointId, to: BoardingPointId, duration_seconds: u32) -> Self {
         Self {
             from,
             to,
             duration_seconds,
-            walking_seconds: path.walking_seconds(),
-            path,
         }
-    }
-
-    fn signature(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.from.as_str(),
-            self.to.as_str(),
-            self.duration_seconds
-        )
     }
 }
 
@@ -115,7 +48,7 @@ impl TransferShortcutIndex {
 
     pub fn from_network(network: &TransitNetwork) -> Self {
         Self::new(network.transfer_edges.iter().map(|edge| {
-            TransferShortcut::walking(edge.from.clone(), edge.to.clone(), edge.duration_seconds, 0)
+            TransferShortcut::new(edge.from.clone(), edge.to.clone(), edge.duration_seconds)
         }))
     }
 
@@ -158,54 +91,8 @@ impl TransferShortcutIndex {
                 .cmp(right.from.as_str())
                 .then(left.to.as_str().cmp(right.to.as_str()))
                 .then(left.duration_seconds.cmp(&right.duration_seconds))
-                .then(left.signature().cmp(&right.signature()))
         });
         shortcuts
-    }
-
-    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&TransferShortcutArtifact {
-            schema_version: 1,
-            shortcuts: self.shortcuts(),
-        })
-    }
-
-    pub fn from_artifact_json(input: &str) -> Result<Self, serde_json::Error> {
-        let artifact = serde_json::from_str::<TransferShortcutArtifact>(input)?;
-        Ok(Self::new(artifact.shortcuts))
-    }
-
-    pub fn validate_against(&self, network: &TransitNetwork) -> Result<(), String> {
-        for shortcut in self.shortcuts() {
-            if shortcut.from == shortcut.to {
-                return Err(format!(
-                    "transfer shortcut {} -> {} is a self-transfer",
-                    shortcut.from.as_str(),
-                    shortcut.to.as_str()
-                ));
-            }
-            if network.stop(&shortcut.from).is_none() || network.stop(&shortcut.to).is_none() {
-                return Err(format!(
-                    "transfer shortcut references unknown endpoint {} -> {}",
-                    shortcut.from.as_str(),
-                    shortcut.to.as_str()
-                ));
-            }
-            if shortcut.duration_seconds == 0
-                || shortcut.path.legs.iter().any(|leg| match leg {
-                    TransferLeg::Walk {
-                        duration_seconds, ..
-                    } => *duration_seconds == 0,
-                })
-            {
-                return Err(format!(
-                    "transfer shortcut {} -> {} has a non-positive duration",
-                    shortcut.from.as_str(),
-                    shortcut.to.as_str()
-                ));
-            }
-        }
-        Ok(())
     }
 
     fn sort(&mut self) {
@@ -215,16 +102,9 @@ impl TransferShortcutIndex {
                     .as_str()
                     .cmp(right.to.as_str())
                     .then(left.duration_seconds.cmp(&right.duration_seconds))
-                    .then(left.walking_seconds.cmp(&right.walking_seconds))
             });
         }
     }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransferShortcutArtifact {
-    pub schema_version: u32,
-    pub shortcuts: Vec<TransferShortcut>,
 }
 
 impl TransferIndex for TransferShortcutIndex {
@@ -272,12 +152,5 @@ mod tests {
             index.transfers_from(&BoardingPointId::new("a"))[0].duration_seconds,
             90
         );
-        assert!(index.shortcuts().iter().all(|shortcut| {
-            shortcut
-                .path
-                .legs
-                .iter()
-                .all(|leg| matches!(leg, TransferLeg::Walk { .. }))
-        }));
     }
 }

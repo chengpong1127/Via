@@ -519,6 +519,17 @@ impl TransitNetwork {
                     to: edge.to.clone(),
                 });
             }
+            if edge.from == edge.to {
+                return Err(TransitNetworkValidationError::SelfTransfer(
+                    edge.from.clone(),
+                ));
+            }
+            if edge.duration_seconds == 0 {
+                return Err(TransitNetworkValidationError::ZeroTransferDuration {
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -557,6 +568,8 @@ impl TransitNetwork {
                 .then(left.to.as_str().cmp(right.to.as_str()))
                 .then(left.duration_seconds.cmp(&right.duration_seconds))
         });
+        self.transfer_edges
+            .dedup_by(|left, right| left.from == right.from && left.to == right.to);
         self.indexes = Arc::new(OnceLock::new());
         self
     }
@@ -1448,6 +1461,13 @@ pub enum TransitNetworkValidationError {
     NonChronologicalTrip(ScheduledRunId),
     #[error("transfer edge references unknown endpoints {from:?} -> {to:?}")]
     UnknownTransferEndpoint {
+        from: BoardingPointId,
+        to: BoardingPointId,
+    },
+    #[error("transfer edge is a self-transfer at {0:?}")]
+    SelfTransfer(BoardingPointId),
+    #[error("transfer edge has zero duration {from:?} -> {to:?}")]
+    ZeroTransferDuration {
         from: BoardingPointId,
         to: BoardingPointId,
     },

@@ -152,12 +152,6 @@ impl RoutingService {
         self
     }
 
-    pub fn with_transfer_index(mut self, transfer_index: Arc<dyn TransferIndex>) -> Self {
-        self.transfer_index = transfer_index;
-        self.rebuild_default_algorithm();
-        self
-    }
-
     pub fn with_bike_availability(mut self, resolver: Arc<dyn BikeAvailabilityResolver>) -> Self {
         self.bike_availability = Some(resolver);
         self.rebuild_default_algorithm();

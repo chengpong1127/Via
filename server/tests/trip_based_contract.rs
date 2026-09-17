@@ -264,11 +264,10 @@ async fn walking_transfer_shortcut_expands_a_second_service() {
         ])),
         ..Default::default()
     };
-    let transfer = TransferShortcutIndex::new([TransferShortcut::walking(
+    let transfer = TransferShortcutIndex::new([TransferShortcut::new(
         BoardingPointId::new("b"),
         BoardingPointId::new("c"),
         60,
-        100,
     )]);
     let router = TripBasedRouter::new(network, Arc::new(resolver), Arc::new(transfer));
     let candidates = router.route(query("a", "d")).await.unwrap();
@@ -392,11 +391,10 @@ async fn pareto_keeps_earlier_extra_transfer_and_later_direct_result() {
         ])),
         ..Default::default()
     };
-    let transfer = TransferShortcutIndex::new([TransferShortcut::walking(
+    let transfer = TransferShortcutIndex::new([TransferShortcut::new(
         BoardingPointId::new("b"),
         BoardingPointId::new("c"),
         60,
-        100,
     )]);
     let router = TripBasedRouter::new(network, Arc::new(resolver), Arc::new(transfer));
     let candidates = router.route(query("a", "d")).await.unwrap();
@@ -448,18 +446,8 @@ async fn duplicate_timing_needs_are_coalesced() {
 #[test]
 fn transfer_index_preserves_multiple_nondominated_alternatives() {
     let index = TransferShortcutIndex::new([
-        TransferShortcut::walking(
-            BoardingPointId::new("b"),
-            BoardingPointId::new("c"),
-            120,
-            100,
-        ),
-        TransferShortcut::walking(
-            BoardingPointId::new("b"),
-            BoardingPointId::new("c"),
-            180,
-            50,
-        ),
+        TransferShortcut::new(BoardingPointId::new("b"), BoardingPointId::new("c"), 120),
+        TransferShortcut::new(BoardingPointId::new("b"), BoardingPointId::new("c"), 180),
     ]);
     assert_eq!(index.transfers_from(&BoardingPointId::new("b")).len(), 2);
 }

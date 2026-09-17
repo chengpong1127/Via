@@ -4,7 +4,7 @@ The development data flow is deliberately offline-first:
 
 ```text
 TDX → via-data fetch → immutable raw snapshot → via-data build
-  → validated TransitNetwork + transfer shortcuts → server / via-route
+  → validated TransitNetwork.transfer_edges → server / via-route
 ```
 
 The first supported scope is `taipei-new-taipei`. Static artifacts are not
@@ -77,15 +77,13 @@ The build output is:
 
 ```text
 transit-network.json
-transfer-shortcuts.json
 manifest.json
 ```
 
 The network is canonicalized and validated before it is published. Revisions
 are SHA-256 hashes of canonical normalized content, not wall-clock identities.
-The manifest records source hashes, entity counts, and revisions. Static
-transfer artifacts are projections of the normalized network's transfer edges;
-`built_at` is diagnostic metadata and may vary.
+The manifest records source hashes, entity counts including `transfer_edges`,
+and revisions. `built_at` is diagnostic metadata and may vary.
 
 The current static sources are the following TDX Basic API datasets. Every
 source is requested with the required `$format=JSON` query parameter; optional
@@ -105,6 +103,7 @@ v2/Bus/Schedule/City/NewTaipei
 v2/Bike/Station/City/NewTaipei
 v2/Rail/Metro/Station/TRTC
 v2/Rail/Metro/StationOfLine/TRTC
+v2/Rail/Metro/LineTransfer/TRTC
 v2/Rail/Metro/StationTimeTable/TRTC
 v2/Rail/Metro/S2STravelTime/TRTC
 v2/Rail/Metro/Frequency/TRTC
@@ -192,21 +191,15 @@ for a Bus + Metro or YouBike + Metro check. Live arrival times are not brittle
 test assertions; verify route existence, leg structure, transfers, and
 positive realistic durations.
 
-The transfer output is a generic `TransferShortcutIndex` projected directly
-from the normalized public-transit transfer edges. It stores no live BikeShare
-inventory. The compatibility flag for materializing this artifact is:
+`TransferShortcutIndex` is an in-memory index projected directly from the
+validated `TransitNetwork.transfer_edges` at server or CLI startup. It stores no
+live BikeShare inventory, and public-transit transfer reconstruction does not
+call Valhalla. There is no separate transfer preprocessing flag or persisted
+transfer artifact. The shared TDX fixture set is under
+`server/fixtures/tdx/raw` and uses simplified current-contract payloads for
+both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike.
 
-```bash
-cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
-  --input ./data/dev/taipei/raw/2026-09-15 \
-  --output ./data/dev/taipei \
-  --preprocess-transfers
-```
-
-The flag performs no street-router calls or matrix work. The shared TDX fixture
-set is under `server/fixtures/tdx/raw` and uses simplified current-contract
-payloads for both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike. The
-server and `via-route` load the sibling `transfer-shortcuts.json` artifact when
-it exists; otherwise they derive the same index directly from the validated
-network. `TripBasedIndex` is derived at server or CLI startup from the
-validated network rather than serialized by this first tooling version.
+The TRTC LineTransfer feed also includes inter-operator records. The normalizer
+keeps those records only when both canonical boarding points are present in the
+selected static station scope; it does not invent geographic or BikeShare
+transfers for omitted operators.

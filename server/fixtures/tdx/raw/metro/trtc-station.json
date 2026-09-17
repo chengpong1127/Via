@@ -16,5 +16,14 @@
     "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
     "UpdateTime": "2023-07-14T00:00:00+08:00",
     "VersionID": 3
+  },
+  {
+    "StationUID": "TRTC-R10",
+    "StationID": "R10",
+    "StationName": {"Zh_tw": "台北車站", "En": "Taipei Main Station"},
+    "StationPosition": {"PositionLon": 121.517415, "PositionLat": 25.04631},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
   }
 ]

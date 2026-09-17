@@ -34,7 +34,7 @@ use crate::{
     routing::transfers::TransferShortcutIndex,
 };
 
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
 const TDX_RETRY_BACKOFFS: [Duration; 4] = [
     Duration::from_secs(15),
@@ -84,15 +84,12 @@ impl FromStr for DataScope {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TransferPreprocessingConfig {}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactCounts {
     pub stops: usize,
     pub services: usize,
     pub scheduled_trips: usize,
     pub bike_stations: usize,
-    pub transfer_shortcuts: usize,
+    pub transfer_edges: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,7 +107,6 @@ pub struct ArtifactManifest {
     pub sources: BTreeMap<String, String>,
     pub counts: ArtifactCounts,
     pub revisions: ArtifactRevisions,
-    pub transfer_config: TransferPreprocessingConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -214,8 +210,6 @@ pub enum DataError {
     InvalidArtifact(#[from] crate::domain::transit::TransitNetworkValidationError),
     #[error("artifact JSON is invalid: {0}")]
     InvalidArtifactJson(String),
-    #[error("transfer shortcut artifact is invalid: {0}")]
-    InvalidTransferArtifact(String),
 }
 
 #[derive(Clone, Debug)]
@@ -297,7 +291,11 @@ impl Normalizer {
                 self.normalize_metro_timing(record, &path_text)?;
             }
             if path_text.contains("transfer") {
-                self.normalize_transfer(record, &document.relative_path)?;
+                if path_text.contains("line-transfer") {
+                    self.normalize_metro_line_transfer(record, &document.relative_path)?;
+                } else {
+                    self.normalize_transfer(record, &document.relative_path)?;
+                }
             }
         }
         Ok(())
@@ -1288,6 +1286,35 @@ impl Normalizer {
         Ok(())
     }
 
+    fn normalize_metro_line_transfer(
+        &mut self,
+        record: &Value,
+        path: &Path,
+    ) -> Result<(), DataError> {
+        let from = string(record, "FromStationUID").or_else(|| string(record, "FromStationID"));
+        let to = string(record, "ToStationUID").or_else(|| string(record, "ToStationID"));
+        let duration = number(record, "TransferTime")
+            .and_then(|minutes| minutes.checked_mul(60))
+            .and_then(|seconds| u32::try_from(seconds).ok());
+        if let (Some(from), Some(to), Some(duration)) = (from, to, duration) {
+            let from = self.canonical_metro_stop_id(from);
+            let to = self.canonical_metro_stop_id(to);
+            // TDX also publishes inter-operator interchange records from this
+            // endpoint. Keep only edges whose boarding points belong to the
+            // station catalogs included in the selected static scope.
+            if from != to && self.stops.contains_key(&from) && self.stops.contains_key(&to) {
+                self.transfer_edges.insert((from, to, duration));
+            }
+        } else if from.is_some() || to.is_some() || record.get("TransferTime").is_some() {
+            return Err(malformed(
+                path,
+                "metro line transfer",
+                "missing endpoint or positive duration",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_diagnostics(&self) -> Result<(), DataError> {
         const MIN_SYSTEMIC_BUS_RECORDS: usize = 8;
         const SYSTEMIC_BUS_RECORD_RATIO: usize = 4;
@@ -1666,9 +1693,6 @@ pub fn build_from_raw(
     network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
     network.validate()?;
     let transfer_index = TransferShortcutIndex::from_network(&network);
-    transfer_index
-        .validate_against(&network)
-        .map_err(DataError::InvalidTransferArtifact)?;
 
     let sources = documents
         .iter()
@@ -1698,16 +1722,14 @@ pub fn build_from_raw(
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
             bike_stations: network.bike_share_stations.len(),
-            transfer_shortcuts: transfer_index.len(),
+            transfer_edges: transfer_index.len(),
         },
         revisions: ArtifactRevisions {
             static_network_revision: static_revision,
             schedule_revision,
         },
-        transfer_config: TransferPreprocessingConfig::default(),
     };
     write_network_artifact(output, &network)?;
-    write_transfer_artifact(output, &transfer_index)?;
     write_json_atomic(&output.join("manifest.json"), &manifest)?;
     Ok(BuildOutput {
         network,
@@ -1715,19 +1737,6 @@ pub fn build_from_raw(
         transfer_index,
         diagnostics,
     })
-}
-
-/// Materialize the static public-transit transfer artifact.
-///
-/// The compatibility entry point remains available for tooling, but transfer
-/// materialization is now just a projection of `TransitNetwork.transfer_edges`.
-pub async fn build_from_raw_with_transfer_preprocessing(
-    input: &Path,
-    output: &Path,
-    scope: Option<DataScope>,
-    raw_snapshot_date: Option<String>,
-) -> Result<BuildOutput, DataError> {
-    build_from_raw(input, output, scope, raw_snapshot_date)
 }
 
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {
@@ -1745,22 +1754,6 @@ pub fn write_network_artifact(output: &Path, network: &TransitNetwork) -> Result
     let body = serde_json::to_string_pretty(&network.clone().canonicalize())
         .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
     write_text_atomic(&output.join("transit-network.json"), &body)
-}
-
-pub fn load_transfer_artifact(path: &Path) -> Result<TransferShortcutIndex, DataError> {
-    let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
-    TransferShortcutIndex::from_artifact_json(&body)
-        .map_err(|error| DataError::InvalidTransferArtifact(error.to_string()))
-}
-
-pub fn write_transfer_artifact(
-    output: &Path,
-    index: &TransferShortcutIndex,
-) -> Result<(), DataError> {
-    let body = index
-        .canonical_json()
-        .map_err(|error| DataError::InvalidTransferArtifact(error.to_string()))?;
-    write_text_atomic(&output.join("transfer-shortcuts.json"), &body)
 }
 
 pub async fn fetch_raw_snapshot(
@@ -2082,6 +2075,11 @@ fn static_sources(scope: DataScope) -> Vec<StaticSource> {
             "tdx_metro_station_of_line",
             "v2/Rail/Metro/StationOfLine/TRTC".into(),
             "metro/trtc-station-of-line.json".into(),
+        ),
+        source(
+            "tdx_metro_line_transfer",
+            "v2/Rail/Metro/LineTransfer/TRTC".into(),
+            "metro/trtc-line-transfer.json".into(),
         ),
         source(
             "tdx_metro_station_timetable",
@@ -2886,6 +2884,11 @@ mod tests {
                 "metro/trtc-station-of-line.json",
             ),
             (
+                "tdx_metro_line_transfer",
+                "v2/Rail/Metro/LineTransfer/TRTC",
+                "metro/trtc-line-transfer.json",
+            ),
+            (
                 "tdx_metro_station_timetable",
                 "v2/Rail/Metro/StationTimeTable/TRTC",
                 "metro/trtc-station-timetable.json",
@@ -2937,9 +2940,9 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 19);
+        assert_eq!(report.reused_count, 20);
         assert_eq!(report.downloaded_count, 0);
-        assert_eq!(report.manifest.sources.len(), 19);
+        assert_eq!(report.manifest.sources.len(), 20);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
         assert!(sleeper.waits.is_empty());
@@ -2981,9 +2984,9 @@ mod tests {
         let report = result.unwrap();
 
         assert_eq!(report.reused_count, 5);
-        assert_eq!(report.downloaded_count, 14);
-        assert_eq!(report.manifest.sources.len(), 19);
-        assert_eq!(state.data_calls.load(Ordering::Relaxed), 14);
+        assert_eq!(report.downloaded_count, 15);
+        assert_eq!(report.manifest.sources.len(), 20);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 15);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 1);
         assert!(
             output
@@ -3013,7 +3016,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 17);
+        assert_eq!(report.reused_count, 18);
         assert_eq!(report.downloaded_count, 2);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert!(valid_existing_json(&snapshot.join(&sources[0].output_path)).is_some());
@@ -3036,7 +3039,7 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert_eq!(sleeper.waits, vec![Duration::from_secs(7)]);
@@ -3113,7 +3116,7 @@ mod tests {
         let (second, _, _) = run_fetch(&output, &client, fast_timing()).await;
 
         assert_eq!(first.unwrap().downloaded_count, 0);
-        assert_eq!(second.unwrap().reused_count, 19);
+        assert_eq!(second.unwrap().reused_count, 20);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
     }
@@ -3140,7 +3143,7 @@ mod tests {
         let manifest: RawSnapshotManifest =
             serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
 
-        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         let downloaded_body = valid_existing_json(
@@ -3205,7 +3208,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         assert_eq!(

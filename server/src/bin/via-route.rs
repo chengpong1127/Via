@@ -11,7 +11,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningRequest, SelectedPlace},
     config::{TdxClient, TdxCredentials, load_dotenv},
-    data::{load_network_artifact, load_transfer_artifact},
+    data::load_network_artifact,
     domain::{
         ids::{BikeShareStationId, TransitServiceId},
         journey::{JourneyMode, PlanningOutcome},
@@ -27,7 +27,7 @@ use via_server::{
         RealtimeDepartureResolver, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig,
         ValhallaProvider,
     },
-    routing::{RoutingLimits, RoutingService, TransferShortcutIndex},
+    routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
 };
 
@@ -57,8 +57,6 @@ struct Cli {
     modes: String,
     #[arg(long, value_enum, default_value_t = RealtimeMode::Fixture)]
     realtime: RealtimeMode,
-    #[arg(long)]
-    transfer_artifact: Option<PathBuf>,
     #[arg(long)]
     trace: bool,
     #[arg(long)]
@@ -93,19 +91,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cached = Arc::new(CachedRealtimeProvider::new(realtime));
     let realtime_metrics = cached.metrics();
     let street = build_street_router(cli.realtime).await?;
-    let transfer_path = cli
-        .transfer_artifact
-        .clone()
-        .unwrap_or_else(|| cli.network.with_file_name("transfer-shortcuts.json"));
-    let transfer_index = if transfer_path.exists() {
-        let index = load_transfer_artifact(&transfer_path)?;
-        index
-            .validate_against(&network)
-            .map_err(|error| format!("transfer artifact is invalid: {error}"))?;
-        index
-    } else {
-        TransferShortcutIndex::from_network(&network)
-    };
     let metro_departure = Arc::new(MetroDepartureResolver::new(network.clone()));
     let departure = Arc::new(
         CompositeDepartureResolver::with_schedule_fallback(
@@ -120,7 +105,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let routing = RoutingService::new(street, departure, cached.clone())
         .with_transit_network_arc(network.clone())
-        .with_transfer_index(Arc::new(transfer_index))
         .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
             cached.clone(),
         )))

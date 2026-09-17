@@ -51,7 +51,20 @@
     {"id": "fixture-bike-a", "name": "Fixture YouBike A", "coordinate": {"latitude": 25.099500, "longitude": 121.499500}},
     {"id": "fixture-bike-b", "name": "Fixture YouBike B", "coordinate": {"latitude": 25.101000, "longitude": 121.501000}}
   ],
-  "transfer_edges": [],
+  "transfer_edges": [
+    {"from": "F-M1", "to": "F-TRA-B", "duration_seconds": 120},
+    {"from": "F-M2-BLUE", "to": "F-M2-BUS", "duration_seconds": 120},
+    {"from": "F-M2-BLUE", "to": "F-M2-RED", "duration_seconds": 120},
+    {"from": "F-M2-BUS", "to": "F-M2-BLUE", "duration_seconds": 120},
+    {"from": "F-M2-RED", "to": "F-M2-BLUE", "duration_seconds": 120},
+    {"from": "F-M3-BLUE", "to": "F-M3-BUS", "duration_seconds": 120},
+    {"from": "F-M3-BLUE", "to": "F-M3-GREEN", "duration_seconds": 120},
+    {"from": "F-M3-BUS", "to": "F-M3-BLUE", "duration_seconds": 120},
+    {"from": "F-M3-GREEN", "to": "F-M3-BLUE", "duration_seconds": 120},
+    {"from": "F-TRA-B", "to": "F-M1", "duration_seconds": 120},
+    {"from": "F-MISS-M-IN", "to": "F-MISS-M-OUT", "duration_seconds": 120},
+    {"from": "F-MISS-M-OUT", "to": "F-MISS-M-IN", "duration_seconds": 120}
+  ],
   "default_transfer_seconds": 120,
   "static_network_revision": "routing-fixture-static",
   "schedule_revision": "routing-fixture-schedule"

@@ -26,7 +26,7 @@ use crate::{
         CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
         RealtimeDepartureResolver,
     },
-    routing::{PlanningError, PlanningOutcome, RoutingService, TransferIndex},
+    routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{StreetRouter, StreetRoutingError},
 };
 
@@ -92,7 +92,6 @@ where
         realtime,
         transit_network,
         crate::providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
-        None,
     )
     .await
 }
@@ -113,29 +112,6 @@ where
         realtime,
         transit_network,
         realtime_cache_ttl,
-        None,
-    )
-    .await
-}
-
-pub async fn build_router_with_realtime_and_network_and_ttl_and_transfer_index<P>(
-    provider: Arc<P>,
-    realtime: Arc<dyn RealtimeProvider>,
-    transit_network: TransitNetwork,
-    realtime_cache_ttl: std::time::Duration,
-    transfer_index: Arc<dyn TransferIndex>,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    let (street_router, street_health) = provider_interfaces(provider);
-    build_router_with_realtime_and_network_and_ttl_interfaces(
-        street_router,
-        street_health,
-        realtime,
-        transit_network,
-        realtime_cache_ttl,
-        Some(transfer_index),
     )
     .await
 }
@@ -146,7 +122,6 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     realtime: Arc<dyn RealtimeProvider>,
     transit_network: TransitNetwork,
     realtime_cache_ttl: std::time::Duration,
-    transfer_index: Option<Arc<dyn TransferIndex>>,
 ) -> Result<Router, StreetRoutingError> {
     let realtime = Arc::new(CachedRealtimeProvider::with_ttl(
         realtime,
@@ -166,15 +141,9 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
         .with_adapter("metro_schedule", metro_departure.clone())
         .with_adapter("metro_frequency", metro_departure),
     );
-    let transfer_index = if let Some(transfer_index) = transfer_index {
-        transfer_index
-    } else {
-        Arc::new(crate::routing::transfers::TransferShortcutIndex::from_network(&transit_network))
-    };
     let metrics = OperationalMetrics::default();
     let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())
         .with_transit_network_arc(transit_network.clone())
-        .with_transfer_index(transfer_index)
         .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
             realtime.clone(),
         )))

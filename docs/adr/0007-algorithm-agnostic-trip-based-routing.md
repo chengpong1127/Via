@@ -33,8 +33,10 @@ and availability are owned by endpoint routing and never appear in
 Trip-Based departure resolution is algorithmically lazy and request-local,
 while cached provider calls can still be coalesced per frontier. Schedule,
 realtime, delay-adjusted, and frequency policies remain provider composition
-details. Static transfer artifact generation is a trivial serialization of the
-network's transfer edges and has no street-router or matrix dependency. RAPTOR
-or CSA may later implement `RoutingAlgorithm` with unrelated internal indexes.
+details. There is no separate static transfer artifact: the canonical network
+persists the transfer edges and runtime derives its in-memory index from that
+network. Transfer reconstruction has no street-router or matrix dependency.
+RAPTOR or CSA may later implement `RoutingAlgorithm` with unrelated internal
+indexes.
 Reconstruction consumes `JourneyCandidate` directly;
 `RouteGraph` is not part of the production architecture.

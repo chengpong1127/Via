@@ -26,9 +26,7 @@ pub use bike::{
     bike_availability_is_usable,
 };
 pub use service::{RoutingLimits, RoutingService};
-pub use transfers::{
-    TransferIndex, TransferLeg, TransferPath, TransferShortcut, TransferShortcutIndex,
-};
+pub use transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};
 pub use trip_based::{TripBasedIndex, TripBasedLimits, TripBasedRouter};
 
 pub type RouteQuery = crate::api::PlanningRequest;

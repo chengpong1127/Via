@@ -72,11 +72,14 @@ _Avoid_: Fastest route, guaranteed arrival
 
 ## Transfer architecture
 
-Static transfers come from `TransitNetwork.transfer_edges` and are indexed by
-`TransferShortcutIndex`. Transfer materialization never calls Valhalla or a
-street router and does not create city-wide BikeShare shortcuts. YouBike
-remains a query-time access/egress mode; any future transit → BikeShare →
-transit support must be demand-driven rather than offline preprocessing.
+Static public-transit transfers are normalized into `TransitNetwork.transfer_edges`,
+which is the only persistent source of truth. `TransferShortcutIndex` is an
+in-memory index derived from the validated network at runtime. There is no
+separate transfer preprocessing phase or `transfer-shortcuts.json` artifact.
+Public-transit transfer reconstruction uses the static duration and synthetic
+walking geometry; it never calls Valhalla or a street router. YouBike remains
+only query-time origin/destination connectivity and never appears in static
+transit transfer edges.
 
 ## Timing and reliability
 

@@ -1,10 +1,7 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use via_server::{
-    data::{
-        DataScope, build_from_raw, build_from_raw_with_transfer_preprocessing, load_manifest,
-        load_network_artifact, load_transfer_artifact,
-    },
+    data::{DataScope, build_from_raw, load_manifest, load_network_artifact},
     domain::transit::{TransitNetwork, TransitService, TransitStop},
 };
 
@@ -37,11 +34,18 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         first_result.manifest.revisions,
         second_result.manifest.revisions
     );
-    assert_eq!(first_result.manifest.counts.stops, 10);
+    assert_eq!(first_result.manifest.counts.stops, 11);
     assert_eq!(first_result.manifest.counts.services, 6);
     assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
     assert_eq!(first_result.manifest.counts.bike_stations, 2);
-    assert_eq!(first_result.manifest.counts.transfer_shortcuts, 2);
+    assert_eq!(first_result.manifest.counts.transfer_edges, 2);
+    assert_eq!(first_result.network.transfer_edges.len(), 2);
+    assert!(
+        first_result.network.transfer_seconds(
+            &via_server::domain::ids::BoardingPointId::new("TRTC-BL12"),
+            &via_server::domain::ids::BoardingPointId::new("TRTC-R10"),
+        ) == Some(240)
+    );
 
     let manifest = fs::read_to_string(first.join("manifest.json")).unwrap();
     assert!(!manifest.contains("TDX_CLIENT_SECRET"));
@@ -50,7 +54,7 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         load_manifest(&first.join("manifest.json"))
             .unwrap()
             .schema_version,
-        1
+        2
     );
     assert_eq!(
         load_network_artifact(&first.join("transit-network.json")).unwrap(),
@@ -84,26 +88,21 @@ fn invalid_network_shapes_fail_validation() {
     assert!(network.validate().is_err());
 }
 
-#[tokio::test]
-async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
+#[test]
+fn build_writes_transfers_only_in_the_network_artifact() {
     let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_output("preprocessed-transfers");
-    let result = build_from_raw_with_transfer_preprocessing(
+    let result = build_from_raw(
         &input,
         &output,
         Some(DataScope::TaipeiNewTaipei),
         Some("2026-09-15".into()),
     )
-    .await
     .unwrap();
 
-    let transfer_index = load_transfer_artifact(&output.join("transfer-shortcuts.json")).unwrap();
-    assert_eq!(
-        transfer_index.len(),
-        result.manifest.counts.transfer_shortcuts
-    );
-    assert_eq!(transfer_index.len(), 2);
-    assert_eq!(result.manifest.transfer_config, Default::default());
+    assert_eq!(result.network.transfer_edges.len(), 2);
+    assert!(!output.join("transfer-shortcuts.json").exists());
+    assert_eq!(result.manifest.counts.transfer_edges, 2);
 }
 
 #[test]
