@@ -6,7 +6,6 @@
       "to": "F-MISS-M-OUT",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -14,7 +13,6 @@
       "to": "F-MISS-M-IN",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -22,7 +20,6 @@
       "to": "F-M2-BLUE",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -30,7 +27,6 @@
       "to": "F-M2-RED",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -38,7 +34,6 @@
       "to": "F-M2-BLUE",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -46,7 +41,6 @@
       "to": "F-M2-BUS",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -54,7 +48,6 @@
       "to": "F-M3-GREEN",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -62,7 +55,6 @@
       "to": "F-M3-BLUE",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -70,7 +62,6 @@
       "to": "F-M3-BUS",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -78,7 +69,6 @@
       "to": "F-M3-BLUE",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 30}}]}
     },
     {
@@ -86,7 +76,6 @@
       "to": "F-M1",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 180}}]}
     },
     {
@@ -94,7 +83,6 @@
       "to": "F-TRA-B",
       "duration_seconds": 120,
       "walking_seconds": 120,
-      "bike_seconds": 0,
       "path": {"legs": [{"Walk": {"duration_seconds": 120, "distance_metres": 180}}]}
     }
   ]

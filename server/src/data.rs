@@ -8,7 +8,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -32,9 +31,7 @@ use crate::{
         bike_share_station_id, boarding_point_id, transit_service_id,
         transit_service_id_for_direction,
     },
-    routing::transfers::{TransferShortcut, TransferShortcutIndex},
-    routing::{RoutingLimits, TransferPreprocessingProgress, TransferShortcutBuilder},
-    street::StreetRouter,
+    routing::transfers::TransferShortcutIndex,
 };
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 1;
@@ -86,24 +83,8 @@ impl FromStr for DataScope {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TransferPreprocessingConfig {
-    pub max_walk_access_metres: u32,
-    pub max_walk_egress_metres: u32,
-    pub max_bike_distance_metres: u32,
-    pub max_alternatives_per_pair: usize,
-}
-
-impl Default for TransferPreprocessingConfig {
-    fn default() -> Self {
-        Self {
-            max_walk_access_metres: 600,
-            max_walk_egress_metres: 600,
-            max_bike_distance_metres: 8_000,
-            max_alternatives_per_pair: 4,
-        }
-    }
-}
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TransferPreprocessingConfig {}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactCounts {
@@ -235,8 +216,6 @@ pub enum DataError {
     InvalidArtifactJson(String),
     #[error("transfer shortcut artifact is invalid: {0}")]
     InvalidTransferArtifact(String),
-    #[error("transfer preprocessing failed: {0}")]
-    TransferPreprocessing(String),
 }
 
 #[derive(Clone, Debug)]
@@ -1292,8 +1271,13 @@ impl Normalizer {
             .or_else(|| number(record, "duration_seconds"))
             .and_then(|value| u32::try_from(value).ok());
         if let (Some(from), Some(to), Some(duration)) = (from, to, duration) {
+            let from: String = from.into();
+            let to: String = to.into();
             self.transfer_edges
-                .insert((from.into(), to.into(), duration));
+                .insert((from.clone(), to.clone(), duration));
+            if from != to {
+                self.transfer_edges.insert((to, from, duration));
+            }
         } else if record.get("FromStopUID").is_some() || record.get("from").is_some() {
             return Err(malformed(
                 path,
@@ -1681,38 +1665,7 @@ pub fn build_from_raw(
     let schedule_revision = revision_for_network(&network, true)?;
     network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
     network.validate()?;
-    let transfer_index = documents
-        .iter()
-        .find(|document| {
-            document
-                .relative_path
-                .file_name()
-                .is_some_and(|name| name == "transfer-shortcuts.json")
-        })
-        .map(|document| {
-            TransferShortcutIndex::from_artifact_json(
-                std::str::from_utf8(&document.bytes)
-                    .map_err(|error| DataError::InvalidTransferArtifact(error.to_string()))?,
-            )
-            .map_err(|error| DataError::InvalidTransferArtifact(error.to_string()))
-        })
-        .transpose()?
-        .unwrap_or_else(|| {
-            TransferShortcutIndex::new(
-                network
-                    .transfer_edges
-                    .iter()
-                    .filter(|edge| edge.duration_seconds > 0)
-                    .map(|edge| {
-                        TransferShortcut::walking(
-                            edge.from.clone(),
-                            edge.to.clone(),
-                            edge.duration_seconds,
-                            0,
-                        )
-                    }),
-            )
-        });
+    let transfer_index = TransferShortcutIndex::from_network(&network);
     transfer_index
         .validate_against(&network)
         .map_err(DataError::InvalidTransferArtifact)?;
@@ -1764,60 +1717,17 @@ pub fn build_from_raw(
     })
 }
 
-/// Build the normal artifact and explicitly replace its static transfer index
-/// with the bounded street-backed result. The caller must opt into this path;
-/// ordinary offline builds only publish existing walking edges or reviewed
-/// transfer artifacts.
+/// Materialize the static public-transit transfer artifact.
+///
+/// The compatibility entry point remains available for tooling, but transfer
+/// materialization is now just a projection of `TransitNetwork.transfer_edges`.
 pub async fn build_from_raw_with_transfer_preprocessing(
     input: &Path,
     output: &Path,
     scope: Option<DataScope>,
     raw_snapshot_date: Option<String>,
-    street: Arc<dyn StreetRouter>,
-    limits: RoutingLimits,
 ) -> Result<BuildOutput, DataError> {
-    build_from_raw_with_transfer_preprocessing_with_progress(
-        input,
-        output,
-        scope,
-        raw_snapshot_date,
-        street,
-        limits,
-        &mut |_| {},
-    )
-    .await
-}
-
-pub async fn build_from_raw_with_transfer_preprocessing_with_progress(
-    input: &Path,
-    output: &Path,
-    scope: Option<DataScope>,
-    raw_snapshot_date: Option<String>,
-    street: Arc<dyn StreetRouter>,
-    limits: RoutingLimits,
-    progress: &mut dyn FnMut(TransferPreprocessingProgress),
-) -> Result<BuildOutput, DataError> {
-    let mut result = build_from_raw(input, output, scope, raw_snapshot_date)?;
-    let network = Arc::new(result.network.clone());
-    let mut transfer_index = TransferShortcutBuilder::new(street, network)
-        .build_with_progress(&limits, progress)
-        .await
-        .map_err(|error| DataError::TransferPreprocessing(error.to_string()))?;
-    transfer_index.extend(result.transfer_index.shortcuts());
-    transfer_index
-        .validate_against(&result.network)
-        .map_err(DataError::InvalidTransferArtifact)?;
-    result.manifest.counts.transfer_shortcuts = transfer_index.len();
-    result.manifest.transfer_config = TransferPreprocessingConfig {
-        max_walk_access_metres: limits.max_walking_radius_metres,
-        max_walk_egress_metres: limits.max_walking_radius_metres,
-        max_bike_distance_metres: limits.max_bike_distance_metres,
-        max_alternatives_per_pair: limits.max_bike_connectors,
-    };
-    write_transfer_artifact(output, &transfer_index)?;
-    write_json_atomic(&output.join("manifest.json"), &result.manifest)?;
-    result.transfer_index = transfer_index;
-    Ok(result)
+    build_from_raw(input, output, scope, raw_snapshot_date)
 }
 
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {
@@ -2310,7 +2220,7 @@ fn records(value: &Value) -> Vec<&Value> {
     if let Some(array) = value.get("value").and_then(Value::as_array) {
         return array.iter().collect();
     }
-    for key in ["Stations", "TrainTimetables"] {
+    for key in ["Stations", "TrainTimetables", "shortcuts"] {
         if let Some(array) = value.get(key).and_then(Value::as_array) {
             return array.iter().collect();
         }

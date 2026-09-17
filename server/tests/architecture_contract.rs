@@ -134,7 +134,8 @@ fn reconstruction_modules_have_explicit_responsibilities() {
         );
     }
     assert!(source("src/routing/reconstruct/mod.rs").contains("legs::assemble"));
-    assert!(source("src/routing/reconstruct/legs.rs").contains("append_transfer_path"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("append_transit_transfer"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("append_endpoint_path"));
     assert!(source("src/routing/reconstruct/legs.rs").contains("hydrate_path"));
     assert!(source("src/routing/reconstruct/evidence.rs").contains("summary_from_evidence"));
 }
@@ -178,13 +179,7 @@ fn routing_has_no_legacy_transit_pipeline() {
 #[test]
 fn obsolete_routing_files_are_deleted() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing");
-    for file in [
-        "discover.rs",
-        "enrich.rs",
-        "bike.rs",
-        "graph.rs",
-        "search.rs",
-    ] {
+    for file in ["discover.rs", "enrich.rs", "graph.rs", "search.rs"] {
         assert!(
             !root.join(file).exists(),
             "obsolete routing file remains: {file}"

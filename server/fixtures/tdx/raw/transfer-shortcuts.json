@@ -6,7 +6,6 @@
       "to": "TPE-002",
       "duration_seconds": 600,
       "walking_seconds": 600,
-      "bike_seconds": 0,
       "path": {
         "legs": [
           {"Walk": {"duration_seconds": 600, "distance_metres": 1200}}

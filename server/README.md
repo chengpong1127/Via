@@ -121,11 +121,12 @@ PlanningRequest → RoutingService → street access/egress
 `RoutingAlgorithm` exposes only algorithm-neutral access/egress facts and
 `JourneyCandidate` results. `TripBasedRouter` uses a private `TripBasedIndex`,
 resolves complete `EffectiveTrip` instances lazily through `DepartureResolver`,
-and expands `TransferShortcutIndex` alternatives. Street access, egress,
-bicycle, matrix, and path calculations stay behind the Valhalla provider
-boundary; timetable lookup uses the immutable `TransitNetwork` artifact. The
-checked-in tests use injected fixtures, while a production deployment must
-publish a reviewed artifact at `VIA_TRANSIT_NETWORK`.
+and expands static public-transit `TransferShortcutIndex` alternatives derived
+from `TransitNetwork.transfer_edges`. Street access, egress, bicycle, matrix,
+and path calculations stay behind the Valhalla provider boundary; timetable
+lookup uses the immutable `TransitNetwork` artifact. The checked-in tests use
+injected fixtures, while a production deployment must publish a reviewed
+artifact at `VIA_TRANSIT_NETWORK`.
 
 Transit timing is provider-neutral across Bus, Metro, conventional rail, and
 high-speed rail. A `DepartureResolver` receives only a service, boarding point,
@@ -133,12 +134,12 @@ and ready time, then returns normalized `EffectiveTrip` instances with complete
 stop timing, timing basis, and optional evidence. Routing and Pareto search do
 not choose timing sources by `TransitMode`.
 
-Walking and YouBike are transfer semantics, not transit departures. A
-`TransferShortcut` retains its decomposed walk/bike path, while runtime
-availability is fetched only for stations referenced by explored shortcuts.
-The shortcut builder is ULTRA-compatible in representation, but exact ULTRA
-offline preprocessing is intentionally deferred until the required static
-street preprocessing artifact exists.
+Walking and YouBike are endpoint connector semantics, not transit departures.
+An `EndpointPath` may contain Walk/BikeShare/Walk legs before or after transit;
+`TransferShortcut` contains only a static public-transit interchange. Runtime
+BikeShare availability is fetched only for stations referenced by endpoint
+paths. Transfer materialization is a direct projection of
+`TransitNetwork.transfer_edges` and never invokes Valhalla or a street router.
 
 The wired timing path is realtime-first for every transit mode. A normalized
 realtime departure resolver is attempted for Bus, Metro, TRA, and THSR, then

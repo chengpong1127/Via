@@ -108,12 +108,6 @@ pub(crate) fn required_station_ids(
                 .required_station_ids()
                 .into_iter()
                 .chain(candidate.egress.required_station_ids())
-                .chain(candidate.segments.iter().flat_map(|segment| match segment {
-                    crate::routing::algorithm::JourneySegment::Transfer { shortcut } => {
-                        shortcut.required_station_ids()
-                    }
-                    crate::routing::algorithm::JourneySegment::Transit { .. } => Vec::new(),
-                }))
         })
         .collect()
 }

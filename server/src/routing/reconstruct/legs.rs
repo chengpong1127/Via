@@ -22,11 +22,12 @@ use crate::{
 use super::{
     super::{
         algorithm::{JourneyCandidate, JourneySegment},
+        bike::{EndpointLeg, EndpointPath},
         service::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
         },
         status::RealtimeContext,
-        transfers::{TransferLeg, TransferPath},
+        transfers::TransferPath,
     },
     evidence, geometry,
 };
@@ -85,12 +86,12 @@ pub(crate) async fn assemble(
         .stop_place(&candidate.access.stop_id)
         .ok_or(PlanningError::Internal)?;
     let access_path = candidate.access.path.clone().unwrap_or_else(|| {
-        TransferPath::walking(
+        EndpointPath::walking(
             candidate.access.walking_seconds,
             candidate.access.distance_metres,
         )
     });
-    if !append_transfer_path(
+    if !append_endpoint_path(
         service,
         context,
         &origin,
@@ -119,14 +120,14 @@ pub(crate) async fn assemble(
                     .stop_place(&shortcut.to)
                     .ok_or(PlanningError::Internal)?;
                 let connector_start = result.legs.len();
-                if !append_transfer_path(
+                if !append_transit_transfer(
                     service,
                     context,
                     &from,
                     &to,
+                    shortcut.duration_seconds,
                     &shortcut.path,
                     &mut result,
-                    realtime,
                 )
                 .await?
                 {
@@ -246,12 +247,12 @@ pub(crate) async fn assemble(
         .stop_place(&candidate.egress.stop_id)
         .ok_or(PlanningError::Internal)?;
     let egress_path = candidate.egress.path.clone().unwrap_or_else(|| {
-        TransferPath::walking(
+        EndpointPath::walking(
             candidate.egress.walking_seconds,
             candidate.egress.distance_metres,
         )
     });
-    if !append_transfer_path(
+    if !append_endpoint_path(
         service,
         context,
         &final_stop,
@@ -270,10 +271,10 @@ pub(crate) async fn assemble(
     Ok(Some(result))
 }
 
-pub(crate) async fn assemble_direct_transfer(
+pub(crate) async fn assemble_direct_endpoint(
     service: &RoutingService,
     request: &PlanningRequest,
-    path: &TransferPath,
+    path: &EndpointPath,
     departure: OffsetDateTime,
     realtime: &RealtimeContext,
     context: &PlanningContext,
@@ -292,7 +293,7 @@ pub(crate) async fn assemble_direct_transfer(
     };
     let origin = service.origin_place(request);
     let destination = service.destination_place(request);
-    if !append_transfer_path(
+    if !append_endpoint_path(
         service,
         context,
         &origin,
@@ -311,23 +312,74 @@ pub(crate) async fn assemble_direct_transfer(
     Ok(Some(result))
 }
 
-async fn append_transfer_path(
+async fn append_transit_transfer(
     service: &RoutingService,
     context: &PlanningContext,
     from: &Place,
     to: &Place,
+    duration_seconds: u32,
     path: &TransferPath,
+    result: &mut ReconstructedLegs,
+) -> Result<bool, PlanningError> {
+    let distance_metres = path
+        .legs
+        .iter()
+        .map(|leg| match leg {
+            crate::routing::transfers::TransferLeg::Walk {
+                distance_metres, ..
+            } => *distance_metres,
+        })
+        .sum();
+    let walking_path = match hydrate_path(
+        service,
+        context,
+        from,
+        to,
+        StreetTravelMode::Walking,
+        result.arrival_time,
+    )
+    .await?
+    {
+        Some(mut path) => {
+            path.duration = crate::street::Seconds(duration_seconds);
+            path
+        }
+        None => synthetic_street_path(from, to, duration_seconds, distance_metres),
+    };
+    let departure = result.arrival_time;
+    let arrival = departure + Duration::seconds(i64::from(duration_seconds));
+    let leg_id = format!("candidate_leg_{}", result.legs.len());
+    result.legs.push(walking_leg(
+        leg_id,
+        from,
+        to,
+        departure,
+        arrival,
+        &walking_path,
+    ));
+    result.walking_seconds = result.walking_seconds.saturating_add(duration_seconds);
+    result.arrival_time = arrival;
+    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+    Ok(true)
+}
+
+async fn append_endpoint_path(
+    service: &RoutingService,
+    context: &PlanningContext,
+    from: &Place,
+    to: &Place,
+    path: &EndpointPath,
     result: &mut ReconstructedLegs,
     realtime: &RealtimeContext,
 ) -> Result<bool, PlanningError> {
     let bike_index = path
         .legs
         .iter()
-        .position(|leg| matches!(leg, TransferLeg::BikeShare { .. }));
+        .position(|leg| matches!(leg, EndpointLeg::BikeShare { .. }));
     let mut current = from.clone();
     for (index, leg) in path.legs.iter().enumerate() {
         let next = match leg {
-            TransferLeg::BikeShare {
+            EndpointLeg::BikeShare {
                 pickup_station_id,
                 return_station_id,
                 ..
@@ -339,22 +391,22 @@ async fn append_transfer_path(
                     .station_place(return_station_id)
                     .ok_or(PlanningError::Internal)?,
             ),
-            TransferLeg::Walk { .. } if bike_index.is_some_and(|bike| index < bike) => (
+            EndpointLeg::Walk { .. } if bike_index.is_some_and(|bike| index < bike) => (
                 current.clone(),
                 service
                     .station_place(match path.legs.get(bike_index.unwrap()) {
-                        Some(TransferLeg::BikeShare {
+                        Some(EndpointLeg::BikeShare {
                             pickup_station_id, ..
                         }) => pickup_station_id,
                         _ => unreachable!(),
                     })
                     .ok_or(PlanningError::Internal)?,
             ),
-            TransferLeg::Walk { .. } => (current.clone(), to.clone()),
+            EndpointLeg::Walk { .. } => (current.clone(), to.clone()),
         };
         let mode = match leg {
-            TransferLeg::Walk { .. } => StreetTravelMode::Walking,
-            TransferLeg::BikeShare { .. } => StreetTravelMode::Bicycle,
+            EndpointLeg::Walk { .. } => StreetTravelMode::Walking,
+            EndpointLeg::BikeShare { .. } => StreetTravelMode::Bicycle,
         };
         let path = match hydrate_path(
             service,
@@ -368,7 +420,7 @@ async fn append_transfer_path(
         {
             Some(path) => path,
             None if path.legs.len() == 1 && mode == StreetTravelMode::Walking => {
-                let TransferLeg::Walk {
+                let EndpointLeg::Walk {
                     duration_seconds,
                     distance_metres,
                 } = &path.legs[0]
@@ -383,14 +435,14 @@ async fn append_transfer_path(
         let arrival = departure + Duration::seconds(i64::from(path.duration.0));
         let leg_id = format!("candidate_leg_{}", result.legs.len());
         match leg {
-            TransferLeg::Walk { .. } => {
+            EndpointLeg::Walk { .. } => {
                 result.legs.push(walking_leg(
                     leg_id, &next.0, &next.1, departure, arrival, &path,
                 ));
                 result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
                 evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
             }
-            TransferLeg::BikeShare {
+            EndpointLeg::BikeShare {
                 pickup_station_id,
                 return_station_id,
                 ..

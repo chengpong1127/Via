@@ -27,7 +27,7 @@ use via_server::{
         RealtimeDepartureResolver, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig,
         ValhallaProvider,
     },
-    routing::{RoutingLimits, RoutingService, TransferShortcutBuilder},
+    routing::{RoutingLimits, RoutingService, TransferShortcutIndex},
     street::{StraightLineStreetRouter, StreetRouter},
 };
 
@@ -104,10 +104,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map_err(|error| format!("transfer artifact is invalid: {error}"))?;
         index
     } else {
-        TransferShortcutBuilder::new(street.clone(), network.clone())
-            .build(&RoutingLimits::default())
-            .await
-            .map_err(|error| format!("transfer preprocessing failed: {error}"))?
+        TransferShortcutIndex::from_network(&network)
     };
     let metro_departure = Arc::new(MetroDepartureResolver::new(network.clone()));
     let departure = Arc::new(

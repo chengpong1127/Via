@@ -21,18 +21,20 @@ time)` and returns complete request-scoped `EffectiveTrip` instances. Runtime
 trip IDs are synthetic unless a scheduled run identity is available; they are
 not persistent aliases.
 
-`TransferShortcutIndex` stores multiple walking/YouBike transfer alternatives
-and preserves decomposed path metadata for reconstruction. YouBike availability
-is a separate runtime constraint and never implements `DepartureResolver`. The
-current shortcut builder is ULTRA-compatible in representation; exact ULTRA
-preprocessing may replace the builder when the offline street artifact
-supports it.
+`TransferShortcutIndex` is a direct index of static public-transit interchange
+edges from `TransitNetwork.transfer_edges`. A `TransferShortcut` contains only
+boarding-point endpoints and a static walking/interchange duration. BikeShare
+remains a demand-driven endpoint connector before or after transit; its paths
+and availability are owned by endpoint routing and never appear in
+`JourneySegment::Transfer`.
 
 ## Consequences
 
 Trip-Based departure resolution is algorithmically lazy and request-local,
 while cached provider calls can still be coalesced per frontier. Schedule,
 realtime, delay-adjusted, and frequency policies remain provider composition
-details. RAPTOR or CSA may later implement `RoutingAlgorithm` with unrelated
-internal indexes. Reconstruction consumes `JourneyCandidate` directly;
+details. Static transfer artifact generation is a trivial serialization of the
+network's transfer edges and has no street-router or matrix dependency. RAPTOR
+or CSA may later implement `RoutingAlgorithm` with unrelated internal indexes.
+Reconstruction consumes `JourneyCandidate` directly;
 `RouteGraph` is not part of the production architecture.

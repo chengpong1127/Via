@@ -19,7 +19,7 @@ use crate::{
             RealtimeFirstDepartureResolver, ScheduleDepartureResolver,
         },
     },
-    routing::transfers::{BikeAvailabilityResolver, TransferError},
+    routing::bike::{BikeAvailabilityError, BikeAvailabilityResolver},
 };
 
 use super::realtime::{ArrivalQuery, RealtimeError, RealtimeMetrics, RealtimeProvider};
@@ -645,7 +645,7 @@ impl DepartureResolver for CompositeDepartureResolver {
     }
 }
 
-/// Normalized realtime BikeShare availability for Trip-Based transfer checks.
+/// Normalized realtime BikeShare availability for endpoint connector checks.
 pub struct RealtimeBikeAvailabilityResolver {
     realtime: Arc<dyn RealtimeProvider>,
 }
@@ -661,12 +661,12 @@ impl BikeAvailabilityResolver for RealtimeBikeAvailabilityResolver {
     async fn availability(
         &self,
         station_ids: &[BikeShareStationId],
-    ) -> Result<HashMap<BikeShareStationId, BikeAvailability>, TransferError> {
+    ) -> Result<HashMap<BikeShareStationId, BikeAvailability>, BikeAvailabilityError> {
         let values = self
             .realtime
             .bike_availability(station_ids)
             .await
-            .map_err(map_transfer_realtime_error)?;
+            .map_err(map_bike_realtime_error)?;
         Ok(values
             .into_iter()
             .filter_map(|status| {
@@ -694,10 +694,10 @@ fn map_departure_realtime_error(error: RealtimeError) -> DepartureError {
     }
 }
 
-fn map_transfer_realtime_error(error: RealtimeError) -> TransferError {
+fn map_bike_realtime_error(error: RealtimeError) -> BikeAvailabilityError {
     if error.is_transient() {
-        TransferError::TemporarilyUnavailable
+        BikeAvailabilityError::TemporarilyUnavailable
     } else {
-        TransferError::InvalidResponse
+        BikeAvailabilityError::InvalidResponse
     }
 }

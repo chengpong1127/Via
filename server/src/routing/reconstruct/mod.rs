@@ -16,9 +16,9 @@ use crate::{
 
 use super::{
     algorithm::JourneyCandidate,
+    bike::EndpointPath,
     service::{GeneratedCandidate, PlanningContext, RoutingService},
     status::RealtimeContext,
-    transfers::TransferPath,
 };
 
 pub(crate) use geometry::{taipei_now, to_street_coordinate};
@@ -149,7 +149,7 @@ impl RoutingService {
     pub(crate) async fn reconstruct_direct_bike_candidate(
         &self,
         request: &PlanningRequest,
-        path: &TransferPath,
+        path: &EndpointPath,
         realtime: &RealtimeContext,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
@@ -162,7 +162,7 @@ impl RoutingService {
             | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
         };
         let Some(assembled) =
-            legs::assemble_direct_transfer(self, request, path, departure, realtime, context)
+            legs::assemble_direct_endpoint(self, request, path, departure, realtime, context)
                 .await?
         else {
             return Ok(None);

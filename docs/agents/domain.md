@@ -18,9 +18,10 @@ Read the current server flow as `street access/egress → RoutingAlgorithm →
 TripBasedRouter → reconstruct → rank`. `RoutingAlgorithm` is the public
 algorithm-neutral boundary; Trip-Based owns its private index. `DepartureResolver`
 resolves runtime `EffectiveTrip` values and `TransferShortcutIndex` represents
- walking and YouBike alternatives. `RouteGraph` is removed from this flow.
- Direct walking and direct BikeShare are independent candidates; BikeShare used
- around transit is represented by the same decomposed `TransferShortcut` shape.
+static public-transit interchange edges only. `RouteGraph` is removed from this
+flow. Direct walking and direct BikeShare are independent candidates; BikeShare
+around transit is represented by endpoint connectors before or after the transit
+search, never by a transfer shortcut.
  Realtime is demand-driven and request-local; there is no global realtime refresh
  planner. iOS networking is
 `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI → APIClient`, while

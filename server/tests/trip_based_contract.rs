@@ -3,10 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use time::{Duration, Time, Weekday, macros::datetime};
-use via_server::domain::ids::{
-    BikeShareStationId, BoardingPointId, EffectiveTripId, TransitServiceId,
-};
-use via_server::domain::realtime::{ActionState, BikeAvailability};
+use via_server::domain::ids::{BoardingPointId, EffectiveTripId, TransitServiceId};
 use via_server::domain::transit::{
     ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService, TransitStop,
 };
@@ -16,10 +13,7 @@ use via_server::domain::transit_timing::{
 };
 use via_server::providers::timing::CompositeDepartureResolver;
 use via_server::routing::algorithm::RoutingAlgorithm;
-use via_server::routing::transfers::{
-    BikeAvailabilityResolver, TransferError, TransferIndex, TransferPath, TransferShortcut,
-    TransferShortcutIndex,
-};
+use via_server::routing::transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};
 use via_server::routing::trip_based::TripBasedRouter;
 use via_server::routing::{AccessPoint, AlgorithmQuery, EgressPoint, JourneySegment};
 
@@ -120,31 +114,6 @@ impl DepartureResolver for FixtureResolver {
             .collect::<Vec<_>>();
         result.truncate(query.limit);
         Ok(result)
-    }
-}
-
-#[derive(Clone)]
-struct FixtureBikeAvailability {
-    values: Arc<HashMap<BikeShareStationId, BikeAvailability>>,
-    calls: Arc<Mutex<Vec<Vec<BikeShareStationId>>>>,
-}
-
-#[async_trait]
-impl BikeAvailabilityResolver for FixtureBikeAvailability {
-    async fn availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<HashMap<BikeShareStationId, BikeAvailability>, TransferError> {
-        self.calls.lock().unwrap().push(station_ids.to_vec());
-        Ok(station_ids
-            .iter()
-            .filter_map(|id| {
-                self.values
-                    .get(id)
-                    .cloned()
-                    .map(|value| (id.clone(), value))
-            })
-            .collect())
     }
 }
 
@@ -314,107 +283,6 @@ async fn walking_transfer_shortcut_expands_a_second_service() {
     }));
 }
 
-fn bike_status(id: &str, bikes: u32, slots: u32) -> BikeAvailability {
-    BikeAvailability {
-        station_id: BikeShareStationId::new(id),
-        rental_state: ActionState::Enabled,
-        return_state: ActionState::Enabled,
-        available_bikes: Some(bikes),
-        available_return_slots: Some(slots),
-        source_change_at: None,
-        provider_published_at: None,
-        received_at: datetime!(2026-08-31 10:00 UTC),
-    }
-}
-
-#[tokio::test]
-async fn unavailable_fast_bike_shortcut_keeps_a_slower_alternative() {
-    let network = network(&[("first", &["a", "b"]), ("second", &["c", "d"])]);
-    let resolver = FixtureResolver {
-        trips: Arc::new(HashMap::from([
-            (
-                TransitServiceId::new("first"),
-                vec![trip(
-                    "first-trip",
-                    "first",
-                    &["a", "b"],
-                    &[60, 600],
-                    &[60, 600],
-                    false,
-                )],
-            ),
-            (
-                TransitServiceId::new("second"),
-                vec![trip(
-                    "second-trip",
-                    "second",
-                    &["c", "d"],
-                    &[1_200, 1_800],
-                    &[1_200, 1_800],
-                    false,
-                )],
-            ),
-        ])),
-        ..Default::default()
-    };
-    let fast = TransferShortcut::bike_share(
-        BoardingPointId::new("b"),
-        BoardingPointId::new("c"),
-        TransferPath::walking_and_bike(
-            30,
-            10,
-            BikeShareStationId::new("empty-pickup"),
-            BikeShareStationId::new("return"),
-            60,
-            100,
-            30,
-            10,
-        ),
-    );
-    let slow = TransferShortcut::bike_share(
-        BoardingPointId::new("b"),
-        BoardingPointId::new("c"),
-        TransferPath::walking_and_bike(
-            60,
-            20,
-            BikeShareStationId::new("usable-pickup"),
-            BikeShareStationId::new("return"),
-            180,
-            300,
-            60,
-            20,
-        ),
-    );
-    let transfer = TransferShortcutIndex::new([fast, slow]);
-    let bike = FixtureBikeAvailability {
-        values: Arc::new(HashMap::from([
-            (
-                BikeShareStationId::new("empty-pickup"),
-                bike_status("empty-pickup", 0, 2),
-            ),
-            (
-                BikeShareStationId::new("usable-pickup"),
-                bike_status("usable-pickup", 2, 2),
-            ),
-            (
-                BikeShareStationId::new("return"),
-                bike_status("return", 2, 2),
-            ),
-        ])),
-        calls: Arc::new(Mutex::new(Vec::new())),
-    };
-    let router = TripBasedRouter::new(network, Arc::new(resolver), Arc::new(transfer))
-        .with_bike_availability(Arc::new(bike));
-    let candidates = router.route(query("a", "d")).await.unwrap();
-    assert!(candidates.iter().any(|candidate| {
-        candidate.bike_seconds == 180
-            && candidate
-                .segments
-                .iter()
-                .any(|segment| matches!(segment, JourneySegment::Transfer { .. }))
-    }));
-}
-
 #[tokio::test]
 async fn trip_reached_from_an_earlier_index_is_not_rescanned() {
     let network = network(&[("line", &["a", "b", "c"])]);
@@ -575,108 +443,6 @@ async fn duplicate_timing_needs_are_coalesced() {
     );
     router.route(query).await.unwrap();
     assert_eq!(calls.lock().unwrap().len(), 1);
-}
-
-async fn bike_transfer_result(
-    pickup_bikes: u32,
-    return_slots: u32,
-) -> Vec<via_server::routing::JourneyCandidate> {
-    let network = network(&[("first", &["a", "b"]), ("second", &["c", "d"])]);
-    let resolver = FixtureResolver {
-        trips: Arc::new(HashMap::from([
-            (
-                TransitServiceId::new("first"),
-                vec![trip(
-                    "first-trip",
-                    "first",
-                    &["a", "b"],
-                    &[60, 600],
-                    &[60, 600],
-                    false,
-                )],
-            ),
-            (
-                TransitServiceId::new("second"),
-                vec![trip(
-                    "second-trip",
-                    "second",
-                    &["c", "d"],
-                    &[1_200, 1_800],
-                    &[1_200, 1_800],
-                    false,
-                )],
-            ),
-        ])),
-        ..Default::default()
-    };
-    let bike = TransferShortcut::bike_share(
-        BoardingPointId::new("b"),
-        BoardingPointId::new("c"),
-        TransferPath::bike_share(
-            BikeShareStationId::new("pickup"),
-            BikeShareStationId::new("return"),
-            60,
-            100,
-        ),
-    );
-    let walk = TransferShortcut::walking(
-        BoardingPointId::new("b"),
-        BoardingPointId::new("c"),
-        180,
-        300,
-    );
-    let bike_availability = FixtureBikeAvailability {
-        values: Arc::new(HashMap::from([
-            (
-                BikeShareStationId::new("pickup"),
-                bike_status("pickup", pickup_bikes, 2),
-            ),
-            (
-                BikeShareStationId::new("return"),
-                bike_status("return", 2, return_slots),
-            ),
-        ])),
-        calls: Arc::new(Mutex::new(Vec::new())),
-    };
-    TripBasedRouter::new(
-        network,
-        Arc::new(resolver),
-        Arc::new(TransferShortcutIndex::new([bike, walk])),
-    )
-    .with_bike_availability(Arc::new(bike_availability))
-    .route(query("a", "d"))
-    .await
-    .unwrap()
-}
-
-#[tokio::test]
-async fn available_bike_and_return_slot_make_shortcut_usable() {
-    let candidates = bike_transfer_result(1, 1).await;
-    assert!(
-        candidates
-            .iter()
-            .any(|candidate| candidate.bike_seconds == 60)
-    );
-}
-
-#[tokio::test]
-async fn no_bike_keeps_the_walking_alternative() {
-    let candidates = bike_transfer_result(0, 1).await;
-    assert!(
-        candidates
-            .iter()
-            .any(|candidate| candidate.bike_seconds == 0)
-    );
-}
-
-#[tokio::test]
-async fn no_return_slot_keeps_the_walking_alternative() {
-    let candidates = bike_transfer_result(1, 0).await;
-    assert!(
-        candidates
-            .iter()
-            .any(|candidate| candidate.bike_seconds == 0)
-    );
 }
 
 #[test]

@@ -83,8 +83,9 @@ manifest.json
 
 The network is canonicalized and validated before it is published. Revisions
 are SHA-256 hashes of canonical normalized content, not wall-clock identities.
-The manifest records source hashes, entity counts, revisions, and transfer
-preprocessing bounds. `built_at` is diagnostic metadata and may vary.
+The manifest records source hashes, entity counts, and revisions. Static
+transfer artifacts are projections of the normalized network's transfer edges;
+`built_at` is diagnostic metadata and may vary.
 
 The current static sources are the following TDX Basic API datasets. Every
 source is requested with the required `$format=JSON` query parameter; optional
@@ -191,28 +192,21 @@ for a Bus + Metro or YouBike + Metro check. Live arrival times are not brittle
 test assertions; verify route existence, leg structure, transfers, and
 positive realistic durations.
 
-The initial transfer output is a bounded, generic `TransferShortcutIndex`.
-It preserves multiple alternatives and stores no live BikeShare inventory. By
-default, `via-data build` publishes a reviewed raw transfer artifact when one is
-present, or only the explicit static walking edges otherwise. Street-backed
-preprocessing is explicit:
+The transfer output is a generic `TransferShortcutIndex` projected directly
+from the normalized public-transit transfer edges. It stores no live BikeShare
+inventory. The compatibility flag for materializing this artifact is:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
   --input ./data/dev/taipei/raw/2026-09-15 \
   --output ./data/dev/taipei \
-  --preprocess-transfers --street-router valhalla
+  --preprocess-transfers
 ```
 
-Valhalla preprocessing requires `VIA_VALHALLA_GRAPH_REVISION` and
-`VIA_VALHALLA_TILESET_LAST_MODIFIED`; `--street-router straight-line` is
-available for deterministic development fixtures. The shared TDX fixture set
-is under `server/fixtures/tdx/raw` and uses simplified current-contract
-payloads for both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike.
-Exact ULTRA preprocessing
-remains deferred. The server and `via-route` load the sibling
-`transfer-shortcuts.json` artifact (or `VIA_TRANSFER_SHORTCUTS` for the server)
-when it exists; their bounded builder remains only as a fallback when no
-artifact is available. `TripBasedIndex` is derived at server or CLI startup
-from the validated network rather than serialized by this first tooling
-version.
+The flag performs no street-router calls or matrix work. The shared TDX fixture
+set is under `server/fixtures/tdx/raw` and uses simplified current-contract
+payloads for both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike. The
+server and `via-route` load the sibling `transfer-shortcuts.json` artifact when
+it exists; otherwise they derive the same index directly from the validated
+network. `TripBasedIndex` is derived at server or CLI startup from the
+validated network rather than serialized by this first tooling version.

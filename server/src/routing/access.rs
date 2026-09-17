@@ -16,8 +16,8 @@ use crate::{
 
 use super::{
     algorithm::{AccessPoint, EgressPoint},
+    bike::EndpointPath,
     service::RoutingLimits,
-    transfers::TransferPath,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,7 +219,7 @@ pub(crate) async fn discover_bike_endpoint_points(
                 access.push(AccessPoint::with_path(
                     point.stop_id.clone(),
                     departure_time,
-                    TransferPath::walking_and_bike(
+                    EndpointPath::walking_and_bike(
                         access_metric.duration_seconds,
                         access_metric.distance_metres,
                         pickup.id.clone(),
@@ -302,7 +302,7 @@ pub(crate) async fn discover_bike_endpoint_points(
                 }
                 egress.push(EgressPoint::with_path(
                     point.stop_id.clone(),
-                    TransferPath::walking_and_bike(
+                    EndpointPath::walking_and_bike(
                         access_metric.duration_seconds,
                         access_metric.distance_metres,
                         pickup.id.clone(),
@@ -342,7 +342,7 @@ pub(crate) async fn discover_direct_bike_paths(
     access_constraints: RoutingConstraints,
     egress_constraints: RoutingConstraints,
     limits: &RoutingLimits,
-) -> Result<Vec<TransferPath>, StreetRoutingError> {
+) -> Result<Vec<EndpointPath>, StreetRoutingError> {
     let origin = Coordinate::try_new(origin.latitude, origin.longitude)?;
     let destination = Coordinate::try_new(destination.latitude, destination.longitude)?;
     let pickups = nearby_stations(network, origin, limits.max_bike_pickup_stations, limits);
@@ -399,7 +399,7 @@ pub(crate) async fn discover_direct_bike_paths(
             else {
                 continue;
             };
-            paths.push(TransferPath::walking_and_bike(
+            paths.push(EndpointPath::walking_and_bike(
                 access.duration_seconds,
                 access.distance_metres,
                 pickup.id.clone(),

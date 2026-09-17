@@ -2,6 +2,7 @@
 
 pub(crate) mod access;
 pub mod algorithm;
+pub mod bike;
 pub mod reconstruct;
 pub mod transfers;
 pub mod trip_based;
@@ -20,11 +21,13 @@ pub use algorithm::{
     AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm,
     RoutingError,
 };
+pub use bike::{
+    BikeAvailabilityError, BikeAvailabilityResolver, EndpointLeg, EndpointPath,
+    bike_availability_is_usable,
+};
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{
-    BikeAvailabilityResolver, TransferError, TransferIndex, TransferLeg, TransferPath,
-    TransferPreprocessingProgress, TransferShortcut, TransferShortcutBuilder,
-    TransferShortcutIndex,
+    TransferIndex, TransferLeg, TransferPath, TransferShortcut, TransferShortcutIndex,
 };
 pub use trip_based::{TripBasedIndex, TripBasedLimits, TripBasedRouter};
 

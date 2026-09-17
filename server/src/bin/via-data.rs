@@ -1,24 +1,18 @@
-use std::{
-    env, error::Error, io::IsTerminal, path::PathBuf, str::FromStr, sync::Arc, time::Duration,
-};
+use std::{error::Error, path::PathBuf, str::FromStr};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use clap::{Args, Parser, Subcommand};
 use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
         ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress, build_from_raw,
-        build_from_raw_with_transfer_preprocessing_with_progress, fetch_raw_snapshot_with_progress,
+        build_from_raw_with_transfer_preprocessing, fetch_raw_snapshot_with_progress,
         load_manifest, load_network_artifact, load_transfer_artifact,
     },
     domain::{
         ids::BoardingPointId,
         transit::{TransitMode, TransitNetwork},
     },
-    providers::{ValhallaConfig, ValhallaProvider},
-    routing::{RoutingLimits, TransferPreprocessingProgress},
-    street::{StraightLineStreetRouter, StreetRouter},
 };
 
 #[derive(Parser, Debug)]
@@ -59,17 +53,9 @@ struct BuildArgs {
     scope: Option<String>,
     #[arg(long)]
     date: Option<String>,
-    /// Explicitly run the bounded street-backed transfer preprocessor.
+    /// Materialize the static public-transit transfer artifact.
     #[arg(long)]
     preprocess_transfers: bool,
-    #[arg(long, value_enum)]
-    street_router: Option<BuildStreetRouter>,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum BuildStreetRouter {
-    Valhalla,
-    StraightLine,
 }
 
 #[derive(Args, Debug)]
@@ -201,54 +187,9 @@ fn duration_text(duration: std::time::Duration) -> String {
 
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
-    if args.street_router.is_some() && !args.preprocess_transfers {
-        return Err("--street-router requires --preprocess-transfers".into());
-    }
     let result = if args.preprocess_transfers {
-        let street = build_street_router(args.street_router)?;
-        let progress_bar = transfer_progress_bar();
-        let mut progress_started = false;
-        let mut update_progress = |progress: TransferPreprocessingProgress| {
-            let start_progress = !progress_started;
-            if start_progress {
-                progress_bar.reset_elapsed();
-                progress_started = true;
-            }
-            progress_bar.set_length(progress.total_origin_stops as u64);
-            progress_bar.set_position(progress.completed_origin_stops as u64);
-            progress_bar.set_message(format!(
-                "current_candidates={} pickups={} returns={} street_matrix_batches={} shortcuts={}",
-                progress.current_candidates,
-                progress.pickups,
-                progress.returns,
-                progress.street_matrix_batches,
-                progress.transfer_shortcuts
-            ));
-            if start_progress {
-                progress_bar.set_draw_target(transfer_progress_draw_target());
-                progress_bar.enable_steady_tick(Duration::from_millis(250));
-            }
-        };
-        let result = build_from_raw_with_transfer_preprocessing_with_progress(
-            &args.input,
-            &args.output,
-            scope,
-            args.date,
-            street,
-            RoutingLimits::default(),
-            &mut update_progress,
-        )
-        .await;
-        match result {
-            Ok(result) => {
-                progress_bar.finish();
-                result
-            }
-            Err(error) => {
-                progress_bar.abandon();
-                return Err(error.into());
-            }
-        }
+        build_from_raw_with_transfer_preprocessing(&args.input, &args.output, scope, args.date)
+            .await?
     } else {
         build_from_raw(&args.input, &args.output, scope, args.date)?
     };
@@ -264,55 +205,6 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
-}
-
-fn transfer_progress_bar() -> ProgressBar {
-    let progress_bar = ProgressBar::with_draw_target(Some(0), ProgressDrawTarget::hidden());
-    progress_bar.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] [{bar:20}] {pos}/{len} {percent:>3}% ETA {eta} {msg}",
-        )
-        .expect("transfer preprocessing progress style is valid")
-        .progress_chars("█░"),
-    );
-    progress_bar
-}
-
-fn transfer_progress_draw_target() -> ProgressDrawTarget {
-    if std::io::stderr().is_terminal() {
-        ProgressDrawTarget::stderr_with_hz(10)
-    } else {
-        ProgressDrawTarget::hidden()
-    }
-}
-
-fn build_street_router(
-    requested: Option<BuildStreetRouter>,
-) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    let requested = requested.unwrap_or_else(|| {
-        if env::var_os("VIA_VALHALLA_GRAPH_REVISION").is_some()
-            || env::var_os("VIA_VALHALLA_TILESET_LAST_MODIFIED").is_some()
-        {
-            BuildStreetRouter::Valhalla
-        } else {
-            BuildStreetRouter::StraightLine
-        }
-    });
-    match requested {
-        BuildStreetRouter::StraightLine => Ok(Arc::new(StraightLineStreetRouter::default())),
-        BuildStreetRouter::Valhalla => {
-            let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")
-                .map_err(|_| "Valhalla preprocessing requires VIA_VALHALLA_GRAPH_REVISION")?;
-            let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")
-                .map_err(|_| "Valhalla preprocessing requires VIA_VALHALLA_TILESET_LAST_MODIFIED")?
-                .parse()?;
-            let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
-            if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
-                config.base_url = url::Url::parse(&base_url)?;
-            }
-            Ok(Arc::new(ValhallaProvider::new(config)?))
-        }
-    }
 }
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {

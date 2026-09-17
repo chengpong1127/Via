@@ -21,7 +21,9 @@ The means used for a Leg: Walking, Bus, Metro, or YouBike. Bus, Metro, and YouBi
 _Avoid_: Tool, transportation type
 
 **Transfer**:
-The transition between two Legs, including the time and failure risk involved.
+The static public-transit interchange between two Boarding Points, including the
+time and failure risk involved. A YouBike path is an endpoint connector, not a
+Transfer.
 _Avoid_: Change
 
 **Guidance**:
@@ -67,6 +69,14 @@ _Avoid_: Recency, updated state
 **Reliable Arrival**:
 An estimated arrival whose critical Legs and Transfers remain feasible under current operational data and safety buffers.
 _Avoid_: Fastest route, guaranteed arrival
+
+## Transfer architecture
+
+Static transfers come from `TransitNetwork.transfer_edges` and are indexed by
+`TransferShortcutIndex`. Transfer materialization never calls Valhalla or a
+street router and does not create city-wide BikeShare shortcuts. YouBike
+remains a query-time access/egress mode; any future transit → BikeShare →
+transit support must be demand-driven rather than offline preprocessing.
 
 ## Timing and reliability
 

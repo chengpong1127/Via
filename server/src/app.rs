@@ -169,15 +169,7 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     let transfer_index = if let Some(transfer_index) = transfer_index {
         transfer_index
     } else {
-        Arc::new(
-            crate::routing::transfers::TransferShortcutBuilder::new(
-                street_router.clone(),
-                transit_network.clone(),
-            )
-            .build(&crate::routing::RoutingLimits::default())
-            .await
-            .map_err(|_| StreetRoutingError::TemporarilyUnavailable)?,
-        )
+        Arc::new(crate::routing::transfers::TransferShortcutIndex::from_network(&transit_network))
     };
     let metrics = OperationalMetrics::default();
     let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())

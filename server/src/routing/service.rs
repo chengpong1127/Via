@@ -25,11 +25,12 @@ use crate::{
 use super::{
     access,
     algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
+    bike::{BikeAvailabilityResolver, EndpointPath},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
     status,
-    transfers::{BikeAvailabilityResolver, TransferIndex, TransferPath, TransferShortcutIndex},
+    transfers::{TransferIndex, TransferShortcutIndex},
     trip_based::TripBasedRouter,
 };
 
@@ -284,7 +285,7 @@ impl RoutingService {
             .await
             {
                 Ok(paths) => {
-                    let station_ids = paths.iter().flat_map(TransferPath::required_station_ids);
+                    let station_ids = paths.iter().flat_map(EndpointPath::required_station_ids);
                     let (realtime, bike_failed) = status::collect_bike_values_individually(
                         self.realtime.as_ref(),
                         station_ids,

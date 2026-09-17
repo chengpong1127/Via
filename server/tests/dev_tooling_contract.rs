@@ -6,8 +6,6 @@ use via_server::{
         load_network_artifact, load_transfer_artifact,
     },
     domain::transit::{TransitNetwork, TransitService, TransitStop},
-    routing::RoutingLimits,
-    street::StraightLineStreetRouter,
 };
 
 fn temporary_output(name: &str) -> PathBuf {
@@ -43,7 +41,7 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
     assert_eq!(first_result.manifest.counts.services, 6);
     assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
     assert_eq!(first_result.manifest.counts.bike_stations, 2);
-    assert_eq!(first_result.manifest.counts.transfer_shortcuts, 1);
+    assert_eq!(first_result.manifest.counts.transfer_shortcuts, 2);
 
     let manifest = fs::read_to_string(first.join("manifest.json")).unwrap();
     assert!(!manifest.contains("TDX_CLIENT_SECRET"));
@@ -95,8 +93,6 @@ async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
         &output,
         Some(DataScope::TaipeiNewTaipei),
         Some("2026-09-15".into()),
-        std::sync::Arc::new(StraightLineStreetRouter::default()),
-        RoutingLimits::default(),
     )
     .await
     .unwrap();
@@ -106,11 +102,8 @@ async fn explicit_transfer_preprocessing_writes_the_generic_artifact() {
         transfer_index.len(),
         result.manifest.counts.transfer_shortcuts
     );
-    assert_eq!(transfer_index.len(), 1);
-    assert_eq!(
-        result.manifest.transfer_config.max_bike_distance_metres,
-        20_000
-    );
+    assert_eq!(transfer_index.len(), 2);
+    assert_eq!(result.manifest.transfer_config, Default::default());
 }
 
 #[test]
