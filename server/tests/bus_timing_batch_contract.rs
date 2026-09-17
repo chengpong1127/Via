@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use time::{Duration, OffsetDateTime, macros::datetime};
 use via_server::{
     domain::{
-        ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+        ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         realtime::{
             ArrivalEstimate, ArrivalState, Freshness, FreshnessState, NormalizedRealtimeValue,
             RealtimeValue,
@@ -98,7 +98,7 @@ fn network_for_with_scopes(
         .enumerate()
         .map(|(index, service_id)| {
             ScheduledTrip::weekdays(
-                ScheduledRunId::new(format!("run-{index}")),
+                ScheduledTripId::new(format!("run-{index}")),
                 service_id.clone(),
                 vec![time::Weekday::Monday],
                 vec![

@@ -19,14 +19,8 @@ macro_rules! opaque_id {
     };
 }
 
-opaque_id!(OperatorId);
-opaque_id!(StopPlaceId);
 opaque_id!(BoardingPointId);
 opaque_id!(BikeShareStationId);
 opaque_id!(TransitServiceId);
-opaque_id!(ServicePatternId);
-opaque_id!(ScheduledRunId);
-// A query-scoped identity for a concrete trip instance. Scheduled trips may
-// use a stable ScheduledRunId; realtime-generated values are request-scoped.
+opaque_id!(ScheduledTripId);
 opaque_id!(EffectiveTripId);
-opaque_id!(VehicleId);

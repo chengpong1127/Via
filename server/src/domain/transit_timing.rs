@@ -12,7 +12,7 @@ use futures_util::future::join_all;
 use time::{Date, OffsetDateTime};
 
 use super::{
-    ids::{BoardingPointId, EffectiveTripId, ScheduledRunId, TransitServiceId},
+    ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
     realtime::{FreshnessState, NormalizedRealtimeValue},
     transit::TransitNetwork,
 };
@@ -71,7 +71,7 @@ impl DepartureQuery {
 pub struct EffectiveTrip {
     pub id: EffectiveTripId,
     pub service_id: TransitServiceId,
-    pub scheduled_run_id: Option<ScheduledRunId>,
+    pub scheduled_trip_id: Option<ScheduledTripId>,
     pub stop_times: Vec<EffectiveStopTime>,
     pub timing_basis: TimingBasis,
     pub observed_at: Option<OffsetDateTime>,
@@ -96,7 +96,7 @@ impl EffectiveTrip {
     pub fn from_scheduled(
         network: &TransitNetwork,
         service_day: Date,
-        trip_id: &ScheduledRunId,
+        trip_id: &ScheduledTripId,
     ) -> Option<Self> {
         let trip = network.trips.iter().find(|trip| &trip.id == trip_id)?;
         let service = network.service(&trip.service_id)?;
@@ -118,7 +118,7 @@ impl EffectiveTrip {
         Some(Self {
             id: EffectiveTripId::new(trip.id.as_str()),
             service_id: trip.service_id.clone(),
-            scheduled_run_id: Some(trip.id.clone()),
+            scheduled_trip_id: Some(trip.id.clone()),
             stop_times,
             timing_basis: TimingBasis::Schedule,
             observed_at: None,

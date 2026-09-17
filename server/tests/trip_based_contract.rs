@@ -75,7 +75,7 @@ fn trip(
     EffectiveTrip {
         id: EffectiveTripId::new(id),
         service_id: TransitServiceId::new(service_id),
-        scheduled_run_id: (!realtime).then(|| via_server::domain::ids::ScheduledRunId::new(id)),
+        scheduled_trip_id: (!realtime).then(|| via_server::domain::ids::ScheduledTripId::new(id)),
         stop_times,
         timing_basis: if realtime {
             TimingBasis::RealtimePrediction
@@ -480,7 +480,7 @@ async fn departure_resolver_falls_back_to_schedule() {
         stops,
         services,
         vec![ScheduledTrip::weekdays(
-            via_server::domain::ids::ScheduledRunId::new("run"),
+            via_server::domain::ids::ScheduledTripId::new("run"),
             TransitServiceId::new("line"),
             vec![Weekday::Monday],
             vec![

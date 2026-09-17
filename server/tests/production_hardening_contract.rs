@@ -1,6 +1,6 @@
 use time::{OffsetDateTime, Weekday, macros::datetime};
 use via_server::domain::{
-    ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+    ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
     journey::JourneyMode,
     location::RequestCoordinate,
     transit::{
@@ -77,7 +77,7 @@ fn explicit_transfer_edges_connect_distinct_boarding_points() {
         ],
         vec![
             ScheduledTrip::weekdays(
-                ScheduledRunId::new("bus-run"),
+                ScheduledTripId::new("bus-run"),
                 TransitServiceId::new("bus"),
                 vec![Weekday::Monday],
                 vec![
@@ -86,7 +86,7 @@ fn explicit_transfer_edges_connect_distinct_boarding_points() {
                 ],
             ),
             ScheduledTrip::weekdays(
-                ScheduledRunId::new("metro-run"),
+                ScheduledTripId::new("metro-run"),
                 TransitServiceId::new("metro"),
                 vec![Weekday::Monday],
                 vec![
@@ -125,7 +125,7 @@ fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
         vec![point.clone(), point.clone()],
     );
     let trip = ScheduledTrip::weekdays(
-        ScheduledRunId::new("trip"),
+        ScheduledTripId::new("trip"),
         service.id.clone(),
         Vec::new(),
         vec![

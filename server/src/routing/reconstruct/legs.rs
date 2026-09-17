@@ -187,8 +187,8 @@ pub(crate) async fn assemble(
                     ride: TransitRide {
                         transit_mode: service_data.transit_mode,
                         service_id: trip.service_id.clone(),
-                        trip_id: trip.scheduled_run_id.clone().unwrap_or_else(|| {
-                            crate::domain::ids::ScheduledRunId::new(format!(
+                        trip_id: trip.scheduled_trip_id.clone().unwrap_or_else(|| {
+                            crate::domain::ids::ScheduledTripId::new(format!(
                                 "effective:{}",
                                 trip.id.as_str()
                             ))

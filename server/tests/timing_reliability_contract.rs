@@ -42,7 +42,7 @@ fn trip(timing_basis: TimingBasis, evidence: Vec<NormalizedRealtimeValue>) -> Ef
     EffectiveTrip {
         id: EffectiveTripId::new("effective-trip"),
         service_id: TransitServiceId::new("service"),
-        scheduled_run_id: None,
+        scheduled_trip_id: None,
         stop_times: vec![
             EffectiveStopTime {
                 stop_id: BoardingPointId::new("stop-a"),

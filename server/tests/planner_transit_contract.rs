@@ -10,7 +10,7 @@ use via_server::{
     api::RequestCoordinate,
     app::{build_router_with_network, build_router_with_realtime_and_network},
     domain::{
-        ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId},
+        ids::{BikeShareStationId, BoardingPointId, ScheduledTripId, TransitServiceId},
         realtime::{
             ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, Freshness,
             FreshnessReason, FreshnessState,
@@ -102,7 +102,7 @@ fn network_with_timing(
             vec![first, second],
         )],
         vec![ScheduledTrip::weekdays(
-            ScheduledRunId::new("via_run_1"),
+            ScheduledTripId::new("via_run_1"),
             TransitServiceId::new(service_id),
             vec![time::Weekday::Monday],
             vec![
@@ -657,7 +657,7 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
         ],
         vec![
             ScheduledTrip::weekdays(
-                ScheduledRunId::new("bus-run"),
+                ScheduledTripId::new("bus-run"),
                 TransitServiceId::new("bus"),
                 vec![time::Weekday::Monday],
                 vec![
@@ -666,7 +666,7 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
                 ],
             ),
             ScheduledTrip::weekdays(
-                ScheduledRunId::new("metro-run"),
+                ScheduledTripId::new("metro-run"),
                 TransitServiceId::new("metro"),
                 vec![time::Weekday::Monday],
                 vec![

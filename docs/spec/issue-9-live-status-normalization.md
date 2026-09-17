@@ -43,7 +43,7 @@ All IDs are typed and opaque. An ID from one entity type cannot be used as anoth
 | YouBike Station | A rental location with versioned position, capacity, and supported bike classes. It is not a Boarding Point. |
 | Transit Service | A rider-recognizable Bus or Metro service. |
 | Service Pattern | One ordered sequence of Boarding Points for a Transit Service, direction, and variant. Provider direction values are adapter inputs, not canonical direction values. |
-| Scheduled Run | One planned traversal of a Service Pattern on a Service Day. It is optional for feeds that cannot identify a run reliably. |
+| Scheduled Trip | One planned traversal of a Service Pattern on a Service Day. It is optional for feeds that cannot identify a trip reliably. |
 | Vehicle | A physical Bus or train when stable identity is available. Live Status never requires it. |
 | Service Calendar | The recurring active days and explicit added or removed Service Days for scheduled service. |
 | Observation | One immutable normalized statement that Via received from a source. |
@@ -134,7 +134,7 @@ boarding_point_id
 transit_service_id
 service_pattern_id
 service_day
-scheduled_run_id?       // absent when the source cannot identify it safely
+scheduled_trip_id?       // absent when the source cannot identify it safely
 vehicle_id?             // absent when identity is missing or unstable
 scheduled_arrival_at?
 predicted_arrival_at?
@@ -154,7 +154,7 @@ Canonical states are:
 - `not_operating`;
 - `unknown`.
 
-The adapter preserves the raw status in provenance and performs an explicit mapping. TDX N1 nulls and sentinel meanings remain distinct; none is coerced to a zero-second arrival. A prediction is matched by Service Pattern and Boarding Point. Scheduled Run and Vehicle are refinements, not required join keys.
+The adapter preserves the raw status in provenance and performs an explicit mapping. TDX N1 nulls and sentinel meanings remain distinct; none is coerced to a zero-second arrival. A prediction is matched by Service Pattern and Boarding Point. Scheduled Trip and Vehicle are refinements, not required join keys.
 
 Schedule-only time is not an Arrival Estimate. It is scheduled network data with `schedule_only` evidence. A2 or vehicle-position observations may corroborate an Arrival Estimate, but they do not become Via predictions unless Via later owns and validates a separate prediction model.
 
@@ -258,7 +258,7 @@ Routing may retain the opaque provenance reference for explanation and diagnosis
 | TDX Bus N1 | Arrival Estimate after explicit null, sentinel, time-anchor, and status mapping. |
 | TDX Bus plate number | Optional Vehicle alias; never required identity or a client field. |
 | TDX Metro station and line IDs | Provider aliases for Stop Places, Boarding Points, Transit Services, and Service Patterns according to source precision. |
-| TDX Metro timetable/frequency | Scheduled runs or frequency windows attached to a Service Calendar. |
+| TDX Metro timetable/frequency | Scheduled trips or frequency windows attached to a Service Calendar. |
 | TDX Metro Alert | Service Condition only for operators covered by that endpoint. |
 | TDX YouBike `StationUID` | Provider alias for a YouBike Station. |
 | TDX YouBike availability | Bike Availability with separate source-change, publication, and receipt times. |
@@ -274,7 +274,7 @@ The implementation is conformant only when automated fixtures prove that:
 - same-named Metro stations across operators do not merge without an explicit mapping;
 - provider direction values cannot leak into routing as unexplained numeric codes;
 - Bus nulls and every N1 sentinel map to distinct canonical states;
-- an optional Vehicle or Scheduled Run never prevents a valid Bus Arrival Estimate join;
+- an optional Vehicle or Scheduled Trip never prevents a valid Bus Arrival Estimate join;
 - service after midnight resolves against the correct Service Day;
 - an old YouBike source-change time does not by itself mark a successfully refreshed feed stale;
 - disabled rental or return state overrides a positive count, while unknown remains different from zero;

@@ -18,7 +18,7 @@ owns `TripBasedIndex` and its trip-segment search state.
 Algorithms consume the shared static `TransitNetwork`, a `DepartureResolver`,
 and a `TransferIndex`. A resolver receives `(service, boarding point, ready
 time)` and returns complete request-scoped `EffectiveTrip` instances. Runtime
-trip IDs are synthetic unless a scheduled run identity is available; they are
+trip IDs are synthetic unless a scheduled trip identity is available; they are
 not persistent aliases.
 
 `TransferShortcutIndex` is a direct index of static public-transit interchange

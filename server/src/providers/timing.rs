@@ -150,7 +150,7 @@ impl MetroDepartureResolver {
                 departure_at.unix_timestamp_nanos()
             )),
             service_id: service_id.clone(),
-            scheduled_run_id: None,
+            scheduled_trip_id: None,
             stop_times,
             timing_basis,
             observed_at: None,
@@ -372,7 +372,7 @@ impl RealtimeDepartureResolver {
                 departure_at.unix_timestamp_nanos()
             )),
             service_id: query.service_id.clone(),
-            scheduled_run_id: None,
+            scheduled_trip_id: None,
             stop_times,
             timing_basis: crate::domain::transit_timing::TimingBasis::RealtimePrediction,
             observed_at: Some(observed_at),

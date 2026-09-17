@@ -105,6 +105,21 @@ canonical identity registry or persist aliases while TDX is the sole current
 transit provider. Revisit reconciliation only if Via combines multiple
 providers that describe the same logical entities.
 
+## Transit identity vocabulary
+
+Via's normalized transit domain uses these identities:
+
+- `BoardingPointId`: routing-level transit boarding/alighting node. Via does
+  not currently model `StopPlace` separately.
+- `BikeShareStationId`: YouBike/BikeShare station identity.
+- `TransitServiceId`: a transit service and its ordered stop pattern identity.
+- `ScheduledTripId`: stable identity of a timetable-defined trip.
+- `EffectiveTripId`: runtime identity of a concrete trip used by routing. It
+  may reference a `ScheduledTripId`, or exist without one for a dynamically
+  generated trip.
+
+Via intentionally uses “Trip” rather than “Run” in its domain vocabulary.
+
 ## Privacy and Telemetry
 
 **Planning Request**:

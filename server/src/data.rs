@@ -20,7 +20,7 @@ use time::{Date, Weekday, format_description::well_known::Rfc3339};
 use crate::{
     config::{TdxClient, TdxClientError, TdxCredentials},
     domain::{
-        ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+        ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{
             BikeShareStation, MetroFrequency, MetroStationTiming, MetroTiming, ScheduledStopTime,
             ScheduledTrip, TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop,
@@ -1092,7 +1092,7 @@ impl Normalizer {
             .unwrap_or_else(|| format!("{operator}:{train_no}:{index}"));
         let (active_weekdays, added_days, removed_days) = service_calendar(record);
         let trip = ScheduledTrip::weekdays(
-            ScheduledRunId::new(trip_id),
+            ScheduledTripId::new(trip_id),
             service_id,
             active_weekdays,
             parsed.into_iter().map(|(_, time)| time).collect(),

@@ -1,6 +1,6 @@
 use time::{OffsetDateTime, Weekday, macros::datetime};
 use via_server::domain::{
-    ids::{BoardingPointId, ScheduledRunId, TransitServiceId},
+    ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
     journey::JourneyMode,
     location::RequestCoordinate,
     transit::{
@@ -22,7 +22,7 @@ fn stop(id: &str, name: &str) -> TransitStop {
 
 fn trip(id: &str, service_id: &str, times: &[(u32, u32)]) -> ScheduledTrip {
     ScheduledTrip::weekdays(
-        ScheduledRunId::new(id),
+        ScheduledTripId::new(id),
         TransitServiceId::new(service_id),
         vec![Weekday::Monday],
         times

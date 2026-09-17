@@ -13,7 +13,7 @@ use std::{
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
-use super::ids::{BikeShareStationId, BoardingPointId, ScheduledRunId, TransitServiceId};
+use super::ids::{BikeShareStationId, BoardingPointId, ScheduledTripId, TransitServiceId};
 use super::{
     journey::JourneyMode,
     location::{METRES_PER_DEGREE, RequestCoordinate},
@@ -77,11 +77,6 @@ pub struct TransitService {
     pub service_condition_required: bool,
 }
 
-/// A provider-neutral service pattern. The ordered stop pattern and service
-/// identity are routing data; `label` is display metadata and must not be used
-/// as the graph identity.
-pub type TransitServicePattern = TransitService;
-
 impl TransitService {
     pub fn new(
         id: TransitServiceId,
@@ -137,7 +132,7 @@ impl ScheduledStopTime {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledTrip {
-    pub id: ScheduledRunId,
+    pub id: ScheduledTripId,
     pub service_id: TransitServiceId,
     pub active_weekdays: Vec<Weekday>,
     #[serde(default)]
@@ -149,7 +144,7 @@ pub struct ScheduledTrip {
 
 impl ScheduledTrip {
     pub fn weekdays(
-        id: ScheduledRunId,
+        id: ScheduledTripId,
         service_id: TransitServiceId,
         active_weekdays: Vec<Weekday>,
         stop_times: Vec<ScheduledStopTime>,
@@ -885,7 +880,7 @@ impl TransitNetwork {
         &self,
         service_day: Date,
         service_id: &TransitServiceId,
-        trip_id: &ScheduledRunId,
+        trip_id: &ScheduledTripId,
         board_stop_id: &BoardingPointId,
         alight_stop_id: &BoardingPointId,
     ) -> Option<TransitRide> {
@@ -960,7 +955,7 @@ impl TransitNetwork {
         Some(TransitRide {
             transit_mode: service.transit_mode,
             service_id: service.id.clone(),
-            trip_id: ScheduledRunId::new(format!(
+            trip_id: ScheduledTripId::new(format!(
                 "topology:{}:{}:{}",
                 service.id.as_str(),
                 board_stop_id.as_str(),
@@ -1438,7 +1433,7 @@ pub enum TransitNetworkValidationError {
     #[error("duplicate Transit Service {0:?}")]
     DuplicateService(TransitServiceId),
     #[error("duplicate Scheduled Trip {0:?}")]
-    DuplicateTrip(ScheduledRunId),
+    DuplicateTrip(ScheduledTripId),
     #[error("duplicate bike-share station {0:?}")]
     DuplicateStation(BikeShareStationId),
     #[error("invalid coordinate for bike-share station {0:?}")]
@@ -1456,9 +1451,9 @@ pub enum TransitNetworkValidationError {
     #[error("Metro timing for Transit Service {0:?} has an invalid shape")]
     InvalidMetroTimingShape(TransitServiceId),
     #[error("Scheduled Trip {0:?} has an invalid shape or calendar")]
-    InvalidTripShape(ScheduledRunId),
+    InvalidTripShape(ScheduledTripId),
     #[error("Scheduled Trip {0:?} is not chronological")]
-    NonChronologicalTrip(ScheduledRunId),
+    NonChronologicalTrip(ScheduledTripId),
     #[error("transfer edge references unknown endpoints {from:?} -> {to:?}")]
     UnknownTransferEndpoint {
         from: BoardingPointId,
@@ -1512,7 +1507,7 @@ pub enum TransitQuery {
 pub struct TransitRide {
     pub transit_mode: TransitMode,
     pub service_id: TransitServiceId,
-    pub trip_id: ScheduledRunId,
+    pub trip_id: ScheduledTripId,
     pub board_stop_id: BoardingPointId,
     pub alight_stop_id: BoardingPointId,
     pub scheduled_departure: OffsetDateTime,
