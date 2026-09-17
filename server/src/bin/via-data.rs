@@ -1,17 +1,21 @@
-use std::{error::Error, path::PathBuf, str::FromStr};
+use std::{error::Error, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 use time::Date;
 use via_server::{
     config::{TdxCredentials, load_dotenv},
     data::{
-        ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress, build_from_raw,
-        fetch_raw_snapshot_with_progress, load_manifest, load_network_artifact,
+        ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress,
+        StaticTransferPolicy, build_from_raw_with_street, fetch_raw_snapshot_with_progress,
+        load_manifest, load_network_artifact,
     },
     domain::{
         ids::BoardingPointId,
         transit::{TransitMode, TransitNetwork},
     },
+    health::DependencyHealth,
+    providers::{ValhallaConfig, ValhallaProvider},
+    street::StreetRouter,
 };
 
 #[derive(Parser, Debug)]
@@ -181,7 +185,16 @@ fn duration_text(duration: std::time::Duration) -> String {
 
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
-    let result = build_from_raw(&args.input, &args.output, scope, args.date)?;
+    let street = build_street_router().await?;
+    let result = build_from_raw_with_street(
+        &args.input,
+        &args.output,
+        scope,
+        args.date,
+        street.as_ref(),
+        StaticTransferPolicy::default(),
+    )
+    .await?;
     print_build_diagnostics(&result.diagnostics);
     print_counts("built", &result.manifest.counts, &result.manifest.revisions);
     println!(
@@ -190,6 +203,24 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
+}
+
+async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
+    let graph_revision = std::env::var("VIA_VALHALLA_GRAPH_REVISION")?;
+    let tileset_last_modified = std::env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")?.parse()?;
+    let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
+    if let Ok(base_url) = std::env::var("VIA_VALHALLA_URL") {
+        config.base_url = url::Url::parse(&base_url)?;
+    }
+    // Static discovery evaluates many bounded matrices. Keep the request
+    // concurrency bounded and allow a slower matrix to finish publication;
+    // runtime routing retains the stricter provider default.
+    config.request_timeout = Duration::from_secs(5);
+    let provider = ValhallaProvider::new(config)?;
+    if !provider.healthy().await {
+        return Err("Valhalla is not healthy for the configured graph artifact".into());
+    }
+    Ok(Arc::new(provider))
 }
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
@@ -414,6 +445,20 @@ fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
             diagnostics.malformed_bus_records,
             diagnostics.unresolved_bus_stop_references,
             diagnostics.duplicate_bus_stop_artifacts_removed
+        );
+    }
+    if let Some(transfer) = &diagnostics.transfer_discovery {
+        println!(
+            "static transfer discovery: boarding_points={} source_points_processed={} geometric_candidate_pairs={} matrix_requests={} reachable_walking_pairs={} inferred_edges_kept={} explicit_edges_kept={} total_transfer_edges={} wall_clock_ms={}",
+            transfer.boarding_points,
+            transfer.source_points_processed,
+            transfer.geometric_candidate_pairs,
+            transfer.matrix_requests,
+            transfer.reachable_walking_pairs,
+            transfer.inferred_edges_kept,
+            transfer.explicit_edges_kept,
+            transfer.total_transfer_edges,
+            transfer.build_wall_clock_milliseconds,
         );
     }
 }

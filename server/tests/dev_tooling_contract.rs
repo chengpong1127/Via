@@ -1,8 +1,12 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use via_server::{
-    data::{DataScope, build_from_raw, load_manifest, load_network_artifact},
+    data::{
+        DataScope, StaticTransferPolicy, build_from_raw, build_from_raw_with_street, load_manifest,
+        load_network_artifact,
+    },
     domain::transit::{TransitNetwork, TransitService, TransitStop},
+    street::StraightLineStreetRouter,
 };
 
 fn temporary_output(name: &str) -> PathBuf {
@@ -103,6 +107,40 @@ fn build_writes_transfers_only_in_the_network_artifact() {
     assert_eq!(result.network.transfer_edges.len(), 2);
     assert!(!output.join("transfer-shortcuts.json").exists());
     assert_eq!(result.manifest.counts.transfer_edges, 2);
+}
+
+#[tokio::test]
+async fn enriched_build_publishes_walking_transfers_in_the_network_artifact() {
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
+    let output = temporary_output("enriched-artifact");
+    let street = StraightLineStreetRouter::default();
+    let result = build_from_raw_with_street(
+        &input,
+        &output,
+        Some(DataScope::TaipeiNewTaipei),
+        Some("2026-09-15".into()),
+        &street,
+        StaticTransferPolicy::default(),
+    )
+    .await
+    .unwrap();
+
+    let discovery = result.diagnostics.transfer_discovery.unwrap();
+    assert_eq!(discovery.boarding_points, result.network.stops.len());
+    assert_eq!(
+        discovery.source_points_processed,
+        result.network.stops.len()
+    );
+    assert_eq!(
+        discovery.total_transfer_edges,
+        result.network.transfer_edges.len()
+    );
+    assert!(discovery.inferred_edges_kept > 0);
+    assert!(!output.join("transfer-shortcuts.json").exists());
+    assert_eq!(
+        load_network_artifact(&output.join("transit-network.json")).unwrap(),
+        result.network
+    );
 }
 
 #[test]

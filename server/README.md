@@ -34,11 +34,13 @@ Development data and route debugging commands are documented in
 [`docs/dev-tooling.md`](../docs/dev-tooling.md). In brief, copy the repository
 example environment file with `cp .env.example .env`; `via-data fetch` and
 `via-route --realtime live` use the shared `TDX_CLIENT_ID`/
-`TDX_CLIENT_SECRET` OAuth configuration, while build, validation, inspection,
-and fixture routing remain fully offline.
+`TDX_CLIENT_SECRET` OAuth configuration. Static builds also require the healthy
+configured Valhalla graph because they validate inferred walking transfers;
+validation, inspection, and fixture routing remain offline after an artifact
+exists.
 
-Start the pinned Valhalla 3.8.3 image, then build the checked-in deterministic
-street fixture:
+Start the pinned Valhalla 3.8.3 image before running a real static-data build
+or the live route debugger:
 
 ```sh
 docker compose up -d valhalla
@@ -66,7 +68,7 @@ Configuration:
 | Variable | Meaning |
 | --- | --- |
 | `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and TDX URLs. |
-| `VIA_VALHALLA_URL` | Valhalla base URL; defaults to `http://127.0.0.1:8002/`. |
+| `VIA_VALHALLA_URL` | Valhalla base URL; the development environment uses `http://valhalla:8002/` (fallback: `http://127.0.0.1:8002/`). |
 | `VIA_VALHALLA_GRAPH_REVISION` | Valhalla-owned logical revision label for the loaded graph artifact; required. |
 | `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Valhalla `/status` tileset timestamp expected at startup and during health checks; required. |
 | `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |

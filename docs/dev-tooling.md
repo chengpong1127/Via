@@ -32,8 +32,8 @@ cached only in the current process and never written to snapshots, artifacts,
 manifests, or traces.
 
 `via-data fetch` and `via-route --realtime live` require these credentials.
-Build, validate, inspect, and `via-route --realtime fixture` work without a
-`.env` file or network access.
+Build additionally requires a healthy local Valhalla graph; validate, inspect,
+and `via-route --realtime fixture` remain offline after an artifact exists.
 
 ## CLI hierarchy
 
@@ -72,6 +72,17 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
 Fetch preserves provider response bodies under `raw/<date>/`, writes source
 hashes and retrieval metadata to `raw/<date>/manifest.json`, uses bounded
 concurrency and timeouts, and fails without writing an incomplete manifest.
+
+Before the build, start the repository Valhalla service and configure
+`VIA_VALHALLA_URL`, `VIA_VALHALLA_GRAPH_REVISION`, and
+`VIA_VALHALLA_TILESET_LAST_MODIFIED`. In the current development environment,
+the URL is `http://valhalla:8002/`. The normal build discovers bounded,
+provider-validated walking transfers between public-transit BoardingPoints and
+merges them into `TransitNetwork.transfer_edges`; no second transfer artifact is
+created. The default build policy uses a 500 m geometric radius, an 8-minute /
+800 m walking bound, at most 16 matrix candidates, and at most 12 inferred
+outgoing transfers per source. The build prints candidate, matrix,
+reachability, fan-out, and elapsed time diagnostics.
 
 The build output is:
 
@@ -201,5 +212,6 @@ both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike.
 
 The TRTC LineTransfer feed also includes inter-operator records. The normalizer
 keeps those records only when both canonical boarding points are present in the
-selected static station scope; it does not invent geographic or BikeShare
-transfers for omitted operators.
+selected static station scope. The build-stage walking enrichment considers only
+the public-transit BoardingPoints present in that normalized network and never
+adds BikeShare stations to `transfer_edges`.

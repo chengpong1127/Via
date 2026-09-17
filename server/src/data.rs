@@ -34,6 +34,11 @@ use crate::{
     routing::transfers::TransferShortcutIndex,
 };
 
+pub mod static_transfers;
+pub use static_transfers::{
+    StaticTransferPolicy, TransferDiscoveryDiagnostics, enrich_network_with_static_transfers,
+};
+
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 2;
 const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
 const TDX_RETRY_BACKOFFS: [Duration; 4] = [
@@ -164,6 +169,7 @@ pub struct BuildDiagnostics {
     pub malformed_bus_records: usize,
     pub unresolved_bus_stop_references: usize,
     pub duplicate_bus_stop_artifacts_removed: usize,
+    pub transfer_discovery: Option<TransferDiscoveryDiagnostics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,6 +216,8 @@ pub enum DataError {
     InvalidArtifact(#[from] crate::domain::transit::TransitNetworkValidationError),
     #[error("artifact JSON is invalid: {0}")]
     InvalidArtifactJson(String),
+    #[error("static transfer discovery failed: {0}")]
+    StaticTransferDiscovery(#[from] crate::street::StreetRoutingError),
 }
 
 #[derive(Clone, Debug)]
@@ -1271,10 +1279,11 @@ impl Normalizer {
         if let (Some(from), Some(to), Some(duration)) = (from, to, duration) {
             let from: String = from.into();
             let to: String = to.into();
-            self.transfer_edges
-                .insert((from.clone(), to.clone(), duration));
             if from != to {
-                self.transfer_edges.insert((to, from, duration));
+                // Preserve the direction published by the provider. Reverse
+                // movement must be present as its own provider record or be
+                // independently discovered by the walking enricher.
+                self.transfer_edges.insert((from, to, duration));
             }
         } else if record.get("FromStopUID").is_some() || record.get("from").is_some() {
             return Err(malformed(
@@ -1639,12 +1648,53 @@ impl Normalizer {
     }
 }
 
+struct NormalizedSnapshot {
+    network: TransitNetwork,
+    diagnostics: BuildDiagnostics,
+    documents: Vec<RawDocument>,
+    manifest_scope: String,
+    raw_snapshot_date: Option<String>,
+}
+
 pub fn build_from_raw(
     input: &Path,
     output: &Path,
     scope: Option<DataScope>,
     raw_snapshot_date: Option<String>,
 ) -> Result<BuildOutput, DataError> {
+    let snapshot = normalize_raw_snapshot(input, scope, raw_snapshot_date)?;
+    finish_build(snapshot, output)
+}
+
+/// Build and publish the normal static artifact after enriching its explicit
+/// transfers with provider-validated walking transfers.
+pub async fn build_from_raw_with_street(
+    input: &Path,
+    output: &Path,
+    scope: Option<DataScope>,
+    raw_snapshot_date: Option<String>,
+    street: &dyn crate::street::StreetRouter,
+    policy: StaticTransferPolicy,
+) -> Result<BuildOutput, DataError> {
+    let started = Instant::now();
+    let mut snapshot = normalize_raw_snapshot(input, scope, raw_snapshot_date)?;
+    let (network, transfer_diagnostics) =
+        enrich_network_with_static_transfers(snapshot.network, street, policy).await?;
+    snapshot.network = network;
+    snapshot.diagnostics.transfer_discovery = Some(transfer_diagnostics);
+    let mut result = finish_build(snapshot, output)?;
+    if let Some(transfer) = &mut result.diagnostics.transfer_discovery {
+        transfer.build_wall_clock_milliseconds =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    }
+    Ok(result)
+}
+
+fn normalize_raw_snapshot(
+    input: &Path,
+    scope: Option<DataScope>,
+    raw_snapshot_date: Option<String>,
+) -> Result<NormalizedSnapshot, DataError> {
     let raw_manifest = read_raw_manifest(input);
     let source_scope = scope.or_else(|| {
         raw_manifest
@@ -1688,6 +1738,29 @@ pub fn build_from_raw(
     if network.stops.is_empty() {
         return Err(DataError::EmptyNetwork);
     }
+    let manifest_scope = scope
+        .map(|scope| scope.as_str().to_owned())
+        .or_else(|| raw_manifest.as_ref().map(|manifest| manifest.scope.clone()))
+        .unwrap_or_else(|| "unknown".into());
+    let raw_snapshot_date =
+        raw_snapshot_date.or_else(|| raw_manifest.map(|manifest| manifest.date));
+    Ok(NormalizedSnapshot {
+        network,
+        diagnostics,
+        documents,
+        manifest_scope,
+        raw_snapshot_date,
+    })
+}
+
+fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutput, DataError> {
+    let NormalizedSnapshot {
+        mut network,
+        diagnostics,
+        documents,
+        manifest_scope,
+        raw_snapshot_date,
+    } = snapshot;
     let static_revision = revision_for_network(&network, false)?;
     let schedule_revision = revision_for_network(&network, true)?;
     network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
@@ -1703,12 +1776,6 @@ pub fn build_from_raw(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let manifest_scope = scope
-        .map(|scope| scope.as_str().to_owned())
-        .or_else(|| raw_manifest.as_ref().map(|manifest| manifest.scope.clone()))
-        .unwrap_or_else(|| "unknown".into());
-    let raw_snapshot_date =
-        raw_snapshot_date.or_else(|| raw_manifest.map(|manifest| manifest.date));
     let manifest = ArtifactManifest {
         schema_version: ARTIFACT_SCHEMA_VERSION,
         scope: manifest_scope,
