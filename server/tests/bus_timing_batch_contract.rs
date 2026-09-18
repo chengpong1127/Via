@@ -197,6 +197,74 @@ async fn twenty_logical_bus_needs_use_one_provider_batch() {
 }
 
 #[tokio::test]
+async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
+    let service_id = TransitServiceId::new("service-a");
+    let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
+    let resolver = RealtimeDepartureResolver::new(
+        Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
+        network,
+    );
+
+    let departures = resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await;
+
+    let trip = &departures.unwrap()[0];
+    assert_eq!(trip.scheduled_trip_id, None);
+    assert_eq!(trip.stop_times[0].departure_at, NOW + Duration::seconds(60));
+    assert_eq!(trip.stop_times[1].arrival_at, NOW + Duration::seconds(660));
+    assert!(
+        trip.stop_times
+            .windows(2)
+            .all(|times| times[0].departure_at <= times[1].arrival_at)
+    );
+}
+
+#[tokio::test]
+async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() {
+    let service_id = TransitServiceId::new("service-a");
+    let mut network = network_for(std::slice::from_ref(&service_id));
+    network.trips.clear();
+    let resolver = RealtimeDepartureResolver::new(
+        Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
+        Arc::new(network),
+    );
+
+    let departures = resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await;
+
+    let trip = &departures.unwrap()[0];
+    assert_eq!(trip.scheduled_trip_id, None);
+    assert_eq!(trip.stop_times[1].arrival_at, NOW + Duration::seconds(180));
+    assert!(
+        trip.stop_times
+            .windows(2)
+            .all(|times| times[0].departure_at <= times[1].arrival_at)
+    );
+}
+
+#[tokio::test]
+async fn malformed_static_timing_shape_is_rejected_for_realtime_expansion() {
+    let service_id = TransitServiceId::new("service-a");
+    let mut network = network_for(std::slice::from_ref(&service_id));
+    network.trips[0].stop_times = vec![
+        ScheduledStopTime::new(10_000, 10_100),
+        ScheduledStopTime::new(10_050, 10_050),
+    ];
+    let resolver = RealtimeDepartureResolver::new(
+        Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
+        Arc::new(network),
+    );
+
+    let departures = resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await;
+
+    assert!(departures.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn bus_needs_are_batched_per_realtime_scope() {
     let service_ids = (0..33)
         .map(|index| TransitServiceId::new(format!("service-{index}")))

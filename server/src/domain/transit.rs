@@ -582,7 +582,64 @@ impl TransitNetwork {
     }
 
     pub fn service(&self, id: &TransitServiceId) -> Option<&TransitService> {
-        self.services.iter().find(|service| &service.id == id)
+        let index = self.indexes().service_by_id.get(id).copied()?;
+        self.services.get(index)
+    }
+
+    pub fn services_at_stop(&self, stop_id: &BoardingPointId) -> &[TransitServiceId] {
+        self.indexes()
+            .services_by_stop
+            .get(stop_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn modes_at_stop(&self, stop_id: &BoardingPointId) -> &[TransitMode] {
+        self.indexes()
+            .modes_by_stop
+            .get(stop_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn scheduled_trip(&self, id: &ScheduledTripId) -> Option<&ScheduledTrip> {
+        let index = self.indexes().scheduled_trip_by_id.get(id).copied()?;
+        self.trips.get(index)
+    }
+
+    pub(crate) fn scheduled_trip_at(&self, index: usize) -> Option<&ScheduledTrip> {
+        self.trips.get(index)
+    }
+
+    pub(crate) fn scheduled_trip_indices(
+        &self,
+        service_id: &TransitServiceId,
+        board_index: usize,
+    ) -> &[usize] {
+        self.indexes()
+            .scheduled_trip_indices_by_service_stop
+            .get(service_id)
+            .and_then(|by_stop| by_stop.get(board_index))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub(crate) fn representative_trip(
+        &self,
+        service_id: &TransitServiceId,
+    ) -> Option<&ScheduledTrip> {
+        let index = self
+            .indexes()
+            .representative_trip_by_service
+            .get(service_id)
+            .copied()?;
+        self.trips.get(index)
+    }
+
+    pub(crate) fn has_invalid_timing_shape(&self, service_id: &TransitServiceId) -> bool {
+        self.indexes()
+            .invalid_timing_shape_by_service
+            .contains(service_id)
     }
 
     pub fn service_day(&self, instant: OffsetDateTime) -> Date {
@@ -619,48 +676,15 @@ impl TransitNetwork {
             .skip(board_index + 1)
             .find_map(|(index, id)| (id == to_stop_id).then_some(index))?;
 
-        let shape = self
-            .trips
+        let durations = self
+            .indexes()
+            .segment_durations_by_service
+            .get(service_id)?;
+        let duration = durations
+            .get(board_index..alight_index)?
             .iter()
-            .filter(|trip| &trip.service_id == service_id)
-            .find_map(|trip| {
-                let board = trip.stop_times.get(board_index)?;
-                let alight = trip.stop_times.get(alight_index)?;
-                Some((board.departure_seconds, alight.arrival_seconds))
-            });
-        let (departure_seconds, arrival_seconds) = shape.unwrap_or_else(|| {
-            let duration = self.estimated_travel_seconds(service, board_index, alight_index);
-            (0, duration)
-        });
-        arrival_seconds
-            .checked_sub(departure_seconds)
-            .filter(|duration| *duration > 0)
-    }
-
-    fn estimated_travel_seconds(
-        &self,
-        service: &TransitService,
-        board_index: usize,
-        alight_index: usize,
-    ) -> u32 {
-        self.trips
-            .iter()
-            .filter(|trip| trip.service_id == service.id)
-            .filter_map(|trip| {
-                let board = trip.stop_times.get(board_index)?;
-                let alight = trip.stop_times.get(alight_index)?;
-                Some(
-                    alight
-                        .arrival_seconds
-                        .saturating_sub(board.departure_seconds),
-                )
-            })
-            .find(|duration| *duration > 0)
-            .unwrap_or_else(|| {
-                u32::try_from(alight_index.saturating_sub(board_index))
-                    .unwrap_or(u32::MAX)
-                    .saturating_mul(120)
-            })
+            .try_fold(0_u32, |total, duration| total.checked_add(*duration))?;
+        (duration > 0).then_some(duration)
     }
 
     fn indexes(&self) -> &TransitIndexes {
@@ -671,6 +695,14 @@ impl TransitNetwork {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TransitIndexes {
     stop_grid: SpatialGrid,
+    service_by_id: HashMap<TransitServiceId, usize>,
+    services_by_stop: HashMap<BoardingPointId, Vec<TransitServiceId>>,
+    modes_by_stop: HashMap<BoardingPointId, Vec<TransitMode>>,
+    scheduled_trip_indices_by_service_stop: HashMap<TransitServiceId, Vec<Vec<usize>>>,
+    scheduled_trip_by_id: HashMap<ScheduledTripId, usize>,
+    representative_trip_by_service: HashMap<TransitServiceId, usize>,
+    segment_durations_by_service: HashMap<TransitServiceId, Vec<u32>>,
+    invalid_timing_shape_by_service: HashSet<TransitServiceId>,
 }
 
 impl TransitIndexes {
@@ -678,6 +710,98 @@ impl TransitIndexes {
         let mut indexes = Self::default();
         for (index, stop) in network.stops.iter().enumerate() {
             indexes.stop_grid.insert(stop.coordinate, index);
+        }
+        for (index, service) in network.services.iter().enumerate() {
+            indexes.service_by_id.insert(service.id.clone(), index);
+            for stop_id in &service.pattern {
+                indexes
+                    .services_by_stop
+                    .entry(stop_id.clone())
+                    .or_default()
+                    .push(service.id.clone());
+                indexes
+                    .modes_by_stop
+                    .entry(stop_id.clone())
+                    .or_default()
+                    .push(service.transit_mode);
+            }
+        }
+        for service_ids in indexes.services_by_stop.values_mut() {
+            service_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+            service_ids.dedup();
+        }
+        for modes in indexes.modes_by_stop.values_mut() {
+            modes.sort_by_key(|mode| *mode as u8);
+            modes.dedup();
+        }
+        for (trip_index, trip) in network.trips.iter().enumerate() {
+            indexes
+                .scheduled_trip_by_id
+                .insert(trip.id.clone(), trip_index);
+            let Some(service_index) = indexes.service_by_id.get(&trip.service_id).copied() else {
+                continue;
+            };
+            let service = &network.services[service_index];
+            if trip.stop_times.len() != service.pattern.len() {
+                continue;
+            }
+            let trip_indices = indexes
+                .scheduled_trip_indices_by_service_stop
+                .entry(trip.service_id.clone())
+                .or_insert_with(|| vec![Vec::new(); service.pattern.len()]);
+            for trip_indices_at_stop in trip_indices.iter_mut().take(trip.stop_times.len()) {
+                trip_indices_at_stop.push(trip_index);
+            }
+            if trip.stop_times.windows(2).any(|times| {
+                times[0].arrival_seconds > times[0].departure_seconds
+                    || times[0].departure_seconds > times[1].arrival_seconds
+            }) {
+                indexes
+                    .invalid_timing_shape_by_service
+                    .insert(trip.service_id.clone());
+                continue;
+            }
+            let replace_representative = indexes
+                .representative_trip_by_service
+                .get(&trip.service_id)
+                .is_none_or(|current| network.trips[*current].id.as_str() > trip.id.as_str());
+            if replace_representative {
+                indexes
+                    .representative_trip_by_service
+                    .insert(trip.service_id.clone(), trip_index);
+            }
+        }
+        for trip_indices_by_stop in indexes.scheduled_trip_indices_by_service_stop.values_mut() {
+            for (board_index, trip_indices) in trip_indices_by_stop.iter_mut().enumerate() {
+                trip_indices.sort_by(|left, right| {
+                    let left_trip = &network.trips[*left];
+                    let right_trip = &network.trips[*right];
+                    left_trip.stop_times[board_index]
+                        .departure_seconds
+                        .cmp(&right_trip.stop_times[board_index].departure_seconds)
+                        .then(left_trip.id.as_str().cmp(right_trip.id.as_str()))
+                });
+            }
+        }
+        for service in &network.services {
+            let durations = indexes
+                .representative_trip_by_service
+                .get(&service.id)
+                .map(|trip_index| {
+                    let trip = &network.trips[*trip_index];
+                    trip.stop_times
+                        .windows(2)
+                        .map(|times| {
+                            times[1]
+                                .arrival_seconds
+                                .saturating_sub(times[0].departure_seconds)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![120; service.pattern.len().saturating_sub(1)]);
+            indexes
+                .segment_durations_by_service
+                .insert(service.id.clone(), durations);
         }
         indexes
     }

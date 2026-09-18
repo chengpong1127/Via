@@ -282,6 +282,187 @@ async fn walking_transfer_shortcut_expands_a_second_service() {
 }
 
 #[tokio::test]
+async fn same_stop_transfer_uses_default_transfer_seconds() {
+    let network = network(&[("first", &["a", "x"]), ("second", &["x", "d"])]);
+    let resolver = FixtureResolver {
+        trips: Arc::new(HashMap::from([
+            (
+                TransitServiceId::new("first"),
+                vec![trip(
+                    "first-trip",
+                    "first",
+                    &["a", "x"],
+                    &[60, 300],
+                    &[60, 300],
+                    false,
+                )],
+            ),
+            (
+                TransitServiceId::new("second"),
+                vec![trip(
+                    "second-trip",
+                    "second",
+                    &["x", "d"],
+                    &[420, 900],
+                    &[420, 900],
+                    false,
+                )],
+            ),
+        ])),
+        ..Default::default()
+    };
+    let router = TripBasedRouter::new(
+        network,
+        Arc::new(resolver),
+        Arc::new(TransferShortcutIndex::default()),
+    );
+
+    let candidates = router.route(query("a", "d")).await.unwrap();
+
+    assert!(candidates.iter().any(|candidate| {
+        candidate.transit_service_sequence()
+            == vec![
+                TransitServiceId::new("first"),
+                TransitServiceId::new("second"),
+            ]
+            && candidate.transfer_count == 1
+    }));
+}
+
+#[tokio::test]
+async fn same_stop_transfer_is_not_boardable_before_default_transfer_time() {
+    let network = network(&[("first", &["a", "x"]), ("second", &["x", "d"])]);
+    let resolver = FixtureResolver {
+        trips: Arc::new(HashMap::from([
+            (
+                TransitServiceId::new("first"),
+                vec![trip(
+                    "first-trip",
+                    "first",
+                    &["a", "x"],
+                    &[60, 300],
+                    &[60, 300],
+                    false,
+                )],
+            ),
+            (
+                TransitServiceId::new("second"),
+                vec![trip(
+                    "second-trip",
+                    "second",
+                    &["x", "d"],
+                    &[359, 900],
+                    &[359, 900],
+                    false,
+                )],
+            ),
+        ])),
+        ..Default::default()
+    };
+    let router = TripBasedRouter::new(
+        network,
+        Arc::new(resolver),
+        Arc::new(TransferShortcutIndex::default()),
+    );
+
+    assert!(router.route(query("a", "d")).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn same_service_does_not_create_a_pointless_transfer_round() {
+    let network = network(&[("line", &["a", "x", "d"])]);
+    let resolver = resolver(vec![trip(
+        "line-trip",
+        "line",
+        &["a", "x", "d"],
+        &[60, 300, 600],
+        &[60, 300, 600],
+        false,
+    )]);
+    let router = TripBasedRouter::new(
+        network,
+        Arc::new(resolver),
+        Arc::new(TransferShortcutIndex::default()),
+    );
+
+    let candidates = router.route(query("a", "d")).await.unwrap();
+
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.transfer_count == 0)
+    );
+}
+
+#[tokio::test]
+async fn same_stop_and_walking_transfers_compete() {
+    let network = network(&[
+        ("first", &["a", "x"]),
+        ("same-stop", &["x", "d"]),
+        ("walking", &["y", "d"]),
+    ]);
+    let resolver = FixtureResolver {
+        trips: Arc::new(HashMap::from([
+            (
+                TransitServiceId::new("first"),
+                vec![trip(
+                    "first-trip",
+                    "first",
+                    &["a", "x"],
+                    &[60, 300],
+                    &[60, 300],
+                    false,
+                )],
+            ),
+            (
+                TransitServiceId::new("same-stop"),
+                vec![trip(
+                    "same-stop-trip",
+                    "same-stop",
+                    &["x", "d"],
+                    &[420, 900],
+                    &[420, 900],
+                    false,
+                )],
+            ),
+            (
+                TransitServiceId::new("walking"),
+                vec![trip(
+                    "walking-trip",
+                    "walking",
+                    &["y", "d"],
+                    &[390, 800],
+                    &[390, 800],
+                    false,
+                )],
+            ),
+        ])),
+        ..Default::default()
+    };
+    let transfer = TransferShortcutIndex::new([TransferShortcut::new(
+        BoardingPointId::new("x"),
+        BoardingPointId::new("y"),
+        60,
+    )]);
+    let router = TripBasedRouter::new(network, Arc::new(resolver), Arc::new(transfer));
+
+    let candidates = router.route(query("a", "d")).await.unwrap();
+    let sequences = candidates
+        .iter()
+        .map(|candidate| candidate.transit_service_sequence())
+        .collect::<Vec<_>>();
+
+    assert!(sequences.contains(&vec![
+        TransitServiceId::new("first"),
+        TransitServiceId::new("same-stop"),
+    ]));
+    assert!(sequences.contains(&vec![
+        TransitServiceId::new("first"),
+        TransitServiceId::new("walking"),
+    ]));
+}
+
+#[tokio::test]
 async fn trip_reached_from_an_earlier_index_is_not_rescanned() {
     let network = network(&[("line", &["a", "b", "c"])]);
     let resolver = resolver(vec![trip(
@@ -499,6 +680,113 @@ async fn departure_resolver_falls_back_to_schedule() {
     let departures = resolver.next_departures(query).await.unwrap();
     assert_eq!(departures.len(), 1);
     assert!(matches!(departures[0].timing_basis, TimingBasis::Schedule));
+}
+
+#[tokio::test]
+async fn schedule_departures_use_indexed_service_day_order_and_exceptions() {
+    let board = stop("a");
+    let destination = stop("b");
+    let service_id = TransitServiceId::new("line");
+    let services = vec![TransitService::new(
+        service_id.clone(),
+        TransitMode::Bus,
+        "line",
+        "b",
+        vec![board.id.clone(), destination.id.clone()],
+    )];
+    let monday = time::macros::date!(2026 - 08 - 31);
+    let network = Arc::new(TransitNetwork::new(
+        Time::from_hms(4, 0, 0).unwrap(),
+        vec![board, destination],
+        services,
+        vec![
+            ScheduledTrip::weekdays(
+                via_server::domain::ids::ScheduledTripId::new("weekday"),
+                service_id.clone(),
+                vec![Weekday::Monday],
+                vec![
+                    ScheduledStopTime::new(36_600, 36_600),
+                    ScheduledStopTime::new(37_200, 37_200),
+                ],
+            ),
+            ScheduledTrip::weekdays(
+                via_server::domain::ids::ScheduledTripId::new("added"),
+                service_id.clone(),
+                vec![Weekday::Tuesday],
+                vec![
+                    ScheduledStopTime::new(36_900, 36_900),
+                    ScheduledStopTime::new(37_500, 37_500),
+                ],
+            )
+            .with_service_day_exceptions(vec![monday], Vec::new()),
+            ScheduledTrip::weekdays(
+                via_server::domain::ids::ScheduledTripId::new("removed"),
+                service_id.clone(),
+                vec![Weekday::Monday],
+                vec![
+                    ScheduledStopTime::new(36_300, 36_300),
+                    ScheduledStopTime::new(36_900, 36_900),
+                ],
+            )
+            .with_service_day_exceptions(Vec::new(), vec![monday]),
+            ScheduledTrip::weekdays(
+                via_server::domain::ids::ScheduledTripId::new("after-midnight"),
+                service_id.clone(),
+                vec![Weekday::Monday],
+                vec![
+                    ScheduledStopTime::new(90_000, 90_000),
+                    ScheduledStopTime::new(90_600, 90_600),
+                ],
+            ),
+        ],
+    ));
+    let resolver = via_server::domain::transit_timing::ScheduleDepartureResolver::new(network);
+
+    let departures = resolver
+        .next_departures(DepartureQuery::new(
+            service_id.clone(),
+            BoardingPointId::new("a"),
+            datetime!(2026-08-31 10:05 +08:00),
+            3,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        departures
+            .iter()
+            .map(|trip| trip.scheduled_trip_id.as_ref().unwrap().as_str())
+            .collect::<Vec<_>>(),
+        vec!["weekday", "added", "after-midnight"]
+    );
+
+    let after_midnight = resolver
+        .next_departures(DepartureQuery::new(
+            service_id.clone(),
+            BoardingPointId::new("a"),
+            datetime!(2026-09-01 00:55 +08:00),
+            1,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        after_midnight[0]
+            .scheduled_trip_id
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "after-midnight"
+    );
+
+    let no_match = resolver
+        .next_departures(DepartureQuery::new(
+            service_id,
+            BoardingPointId::new("a"),
+            datetime!(2026-09-02 05:00 +08:00),
+            1,
+        ))
+        .await
+        .unwrap();
+    assert!(no_match.is_empty());
 }
 
 #[tokio::test]

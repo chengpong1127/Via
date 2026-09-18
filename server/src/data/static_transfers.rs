@@ -4,13 +4,13 @@
 //! `StreetRouter` boundary. The only persisted result is still
 //! `TransitNetwork.transfer_edges`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use futures_util::{StreamExt, stream};
 
 use crate::{
     domain::{
-        ids::BoardingPointId,
+        ids::{BoardingPointId, TransitServiceId},
         transit::{TransferEdge, TransitMode, TransitNetwork, TransitStop},
     },
     street::{
@@ -65,6 +65,7 @@ struct Candidate {
     id: BoardingPointId,
     coordinate: Coordinate,
     modes: Vec<TransitMode>,
+    services: Vec<TransitServiceId>,
 }
 
 struct SourceCandidates {
@@ -84,6 +85,8 @@ struct SourceDiscovery {
 struct MeasuredEdge {
     edge: TransferEdge,
     distance_metres: u32,
+    modes: Vec<TransitMode>,
+    services: Vec<TransitServiceId>,
 }
 
 /// Add inferred walking transfers to a normalized network and return build
@@ -188,19 +191,6 @@ fn source_candidates(
     network: &TransitNetwork,
     policy: StaticTransferPolicy,
 ) -> Result<Vec<SourceCandidates>, StreetRoutingError> {
-    let mut modes_by_stop = HashMap::<BoardingPointId, Vec<TransitMode>>::new();
-    for service in &network.services {
-        for stop_id in &service.pattern {
-            let modes = modes_by_stop.entry(stop_id.clone()).or_default();
-            if !modes.contains(&service.transit_mode) {
-                modes.push(service.transit_mode);
-            }
-        }
-    }
-    for modes in modes_by_stop.values_mut() {
-        modes.sort_by_key(|mode| *mode as u8);
-    }
-
     network
         .stops
         .iter()
@@ -220,10 +210,8 @@ fn source_candidates(
                         Candidate {
                             id: candidate.id.clone(),
                             coordinate: coordinate(candidate)?,
-                            modes: modes_by_stop
-                                .get(&candidate.id)
-                                .cloned()
-                                .unwrap_or_default(),
+                            modes: network.modes_at_stop(&candidate.id).to_vec(),
+                            services: network.services_at_stop(&candidate.id).to_vec(),
                         },
                     ))
                 })
@@ -321,6 +309,8 @@ async fn discover_source(
             measured.push(MeasuredEdge {
                 edge: TransferEdge::new(source.id.clone(), candidate.id.clone(), duration.0),
                 distance_metres: distance.0,
+                modes: candidate.modes.clone(),
+                services: candidate.services.clone(),
             });
         }
     }
@@ -332,6 +322,7 @@ async fn discover_source(
             .then(left.distance_metres.cmp(&right.distance_metres))
             .then(left.edge.to.as_str().cmp(right.edge.to.as_str()))
     });
+    measured = prune_dominated_measured_edges(measured);
     measured.truncate(policy.max_inferred_transfers_per_source);
 
     Ok(SourceDiscovery {
@@ -343,6 +334,38 @@ async fn discover_source(
     })
 }
 
+fn prune_dominated_measured_edges(mut measured: Vec<MeasuredEdge>) -> Vec<MeasuredEdge> {
+    measured.sort_by(|left, right| {
+        left.edge
+            .duration_seconds
+            .cmp(&right.edge.duration_seconds)
+            .then(left.distance_metres.cmp(&right.distance_metres))
+            .then(left.edge.to.as_str().cmp(right.edge.to.as_str()))
+    });
+    let mut retained = Vec::with_capacity(measured.len());
+    for candidate in measured {
+        if retained
+            .iter()
+            .any(|dominant| measured_edge_dominates(dominant, &candidate))
+        {
+            continue;
+        }
+        retained.push(candidate);
+    }
+    retained
+}
+
+fn measured_edge_dominates(left: &MeasuredEdge, right: &MeasuredEdge) -> bool {
+    left.edge.duration_seconds <= right.edge.duration_seconds
+        && !left.services.is_empty()
+        && !right.services.is_empty()
+        && right
+            .services
+            .iter()
+            .all(|service| left.services.contains(service))
+        && right.modes.iter().all(|mode| left.modes.contains(mode))
+}
+
 fn coordinate(stop: &TransitStop) -> Result<Coordinate, StreetRoutingError> {
     Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
 }
@@ -351,14 +374,17 @@ fn coordinate(stop: &TransitStop) -> Result<Coordinate, StreetRoutingError> {
 mod tests {
     use crate::{
         domain::{
-            ids::BoardingPointId,
+            ids::{BoardingPointId, TransitServiceId},
             location::RequestCoordinate,
             transit::{TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop},
         },
         street::{FakeStreetRouter, Metres, Seconds, StreetTravelMode},
     };
 
-    use super::{StaticTransferPolicy, enrich_network_with_static_transfers};
+    use super::{
+        MeasuredEdge, StaticTransferPolicy, enrich_network_with_static_transfers,
+        prune_dominated_measured_edges,
+    };
 
     fn coordinate(latitude: f64, longitude: f64) -> RequestCoordinate {
         RequestCoordinate {
@@ -585,5 +611,65 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn service_coverage_pruning_keeps_unique_services_and_modes() {
+        let common = TransitServiceId::new("common");
+        let unique = TransitServiceId::new("unique");
+        let metro = TransitServiceId::new("metro");
+        let measured = vec![
+            MeasuredEdge {
+                edge: TransferEdge::new(
+                    BoardingPointId::new("source"),
+                    BoardingPointId::new("dominating"),
+                    100,
+                ),
+                distance_metres: 100,
+                modes: vec![TransitMode::Bus],
+                services: vec![common.clone()],
+            },
+            MeasuredEdge {
+                edge: TransferEdge::new(
+                    BoardingPointId::new("source"),
+                    BoardingPointId::new("dominated"),
+                    120,
+                ),
+                distance_metres: 120,
+                modes: vec![TransitMode::Bus],
+                services: vec![common],
+            },
+            MeasuredEdge {
+                edge: TransferEdge::new(
+                    BoardingPointId::new("source"),
+                    BoardingPointId::new("unique-service"),
+                    130,
+                ),
+                distance_metres: 130,
+                modes: vec![TransitMode::Bus],
+                services: vec![unique],
+            },
+            MeasuredEdge {
+                edge: TransferEdge::new(
+                    BoardingPointId::new("source"),
+                    BoardingPointId::new("unique-mode"),
+                    140,
+                ),
+                distance_metres: 140,
+                modes: vec![TransitMode::Metro],
+                services: vec![metro],
+            },
+        ];
+
+        let retained = prune_dominated_measured_edges(measured);
+        let destinations = retained
+            .iter()
+            .map(|edge| edge.edge.to.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            destinations,
+            vec!["dominating", "unique-service", "unique-mode"]
+        );
     }
 }

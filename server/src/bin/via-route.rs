@@ -51,6 +51,8 @@ struct Cli {
     arrive_by: Option<String>,
     #[arg(long, default_value = "transit")]
     modes: String,
+    #[arg(long)]
+    max_departures_per_query: Option<usize>,
     #[arg(long, value_enum, default_value_t = RealtimeMode::Fixture)]
     realtime: RealtimeMode,
     #[arg(long)]
@@ -69,6 +71,12 @@ enum RealtimeMode {
 async fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
     let cli = Cli::parse();
+    if cli.trace {
+        tracing_subscriber::fmt()
+            .with_env_filter("via::routing=debug")
+            .without_time()
+            .init();
+    }
     let network = Arc::new(load_network_artifact(&cli.network)?);
 
     let realtime: Arc<dyn RealtimeProvider> = match cli.realtime {
@@ -99,9 +107,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_adapter("metro_schedule", metro_departure.clone())
         .with_adapter("metro_frequency", metro_departure),
     );
+    let mut limits = RoutingLimits::default();
+    if let Some(max_departures) = cli.max_departures_per_query {
+        limits.max_departures_per_query = max_departures;
+    }
     let routing = RoutingService::new(street, departure, cached.clone())
         .with_transit_network_arc(network.clone())
-        .with_limits(RoutingLimits::default());
+        .with_limits(limits);
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("ACCESS");

@@ -98,7 +98,7 @@ impl EffectiveTrip {
         service_day: Date,
         trip_id: &ScheduledTripId,
     ) -> Option<Self> {
-        let trip = network.trips.iter().find(|trip| &trip.id == trip_id)?;
+        let trip = network.scheduled_trip(trip_id)?;
         let service = network.service(&trip.service_id)?;
         if !trip.runs_on(service_day) || trip.stop_times.len() != service.pattern.len() {
             return None;
@@ -298,15 +298,24 @@ impl DepartureResolver for ScheduleDepartureResolver {
             .position(|stop_id| stop_id == &query.board_stop_id)
             .ok_or(DepartureError::InvalidQuery)?;
         let service_day = self.network.service_day(query.after);
-        let mut departures = self
+        let service_day_start = self.network.service_day_start(service_day);
+        let after_seconds = u32::try_from((query.after - service_day_start).whole_seconds().max(0))
+            .unwrap_or(u32::MAX);
+        let trip_indices = self
             .network
-            .trips
+            .scheduled_trip_indices(&query.service_id, board_index);
+        let first_candidate = trip_indices.partition_point(|trip_index| {
+            self.network
+                .scheduled_trip_at(*trip_index)
+                .is_some_and(|trip| trip.stop_times[board_index].departure_seconds < after_seconds)
+        });
+        let mut departures = trip_indices[first_candidate..]
             .iter()
-            .filter(|trip| trip.service_id == query.service_id && trip.runs_on(service_day))
-            .filter_map(|trip| {
-                let effective =
-                    EffectiveTrip::from_scheduled(&self.network, service_day, &trip.id)?;
-                (effective.stop_times[board_index].departure_at >= query.after).then_some(effective)
+            .filter_map(|trip_index| {
+                let trip = self.network.scheduled_trip_at(*trip_index)?;
+                trip.runs_on(service_day)
+                    .then(|| EffectiveTrip::from_scheduled(&self.network, service_day, &trip.id))
+                    .flatten()
             })
             .collect::<Vec<_>>();
         departures.sort_by(|left, right| {

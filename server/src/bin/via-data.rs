@@ -56,6 +56,8 @@ struct BuildArgs {
     scope: Option<String>,
     #[arg(long)]
     date: Option<String>,
+    #[arg(long)]
+    geometric_radius_metres: Option<u32>,
 }
 
 #[derive(Args, Debug)]
@@ -185,13 +187,17 @@ fn duration_text(duration: std::time::Duration) -> String {
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
     let street = build_street_router().await?;
+    let mut policy = StaticTransferPolicy::default();
+    if let Some(radius) = args.geometric_radius_metres {
+        policy.max_geometric_radius_metres = radius;
+    }
     let result = build_from_raw_with_street(
         &args.input,
         &args.output,
         scope,
         args.date,
         street.as_ref(),
-        StaticTransferPolicy::default(),
+        policy,
     )
     .await?;
     print_build_diagnostics(&result.diagnostics);

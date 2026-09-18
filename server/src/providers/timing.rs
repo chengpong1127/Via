@@ -283,9 +283,10 @@ impl RealtimeDepartureResolver {
             .pattern
             .iter()
             .position(|stop_id| stop_id == &query.board_stop_id)?;
-        let shape = self.network.trips.iter().find(|trip| {
-            trip.service_id == query.service_id && trip.stop_times.len() == service.pattern.len()
-        });
+        let shape = self.network.representative_trip(&query.service_id);
+        if shape.is_none() && self.network.has_invalid_timing_shape(&query.service_id) {
+            return None;
+        }
         let board_departure = shape.map(|trip| trip.stop_times[board_index].departure_seconds);
         let service_day = self.network.service_day(departure_at);
         let service_day_start = self.network.service_day_start(service_day);
