@@ -3,9 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use time::{Duration, Time, Weekday, macros::datetime};
-use via_server::domain::ids::{
-    BikeShareStationId, BoardingPointId, EffectiveTripId, TransitServiceId,
-};
+use via_server::domain::ids::{BoardingPointId, EffectiveTripId, TransitServiceId};
 use via_server::domain::transit::{
     ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService, TransitStop,
 };
@@ -17,11 +15,7 @@ use via_server::providers::timing::CompositeDepartureResolver;
 use via_server::routing::algorithm::RoutingAlgorithm;
 use via_server::routing::transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};
 use via_server::routing::trip_based::TripBasedRouter;
-use via_server::routing::{
-    AccessPoint, AlgorithmQuery, BikeShareDirectPath, BikeShareDirectQuery, BikeShareError,
-    BikeShareExpansion, BikeShareExpansionQuery, BikeShareOperator, BikeShareOriginAccess,
-    BikeShareOriginQuery, BikeShareTransfer, EgressPoint, JourneySegment,
-};
+use via_server::routing::{AccessPoint, AlgorithmQuery, EgressPoint, JourneySegment};
 
 fn stop(id: &str) -> TransitStop {
     TransitStop::new(
@@ -56,7 +50,6 @@ fn network(service_ids_and_patterns: &[(&str, &[&str])]) -> Arc<TransitNetwork> 
         Time::from_hms(4, 0, 0).unwrap(),
         stops,
         services,
-        Vec::new(),
         Vec::new(),
     ))
 }
@@ -143,122 +136,6 @@ fn query(from: &str, to: &str) -> AlgorithmQuery {
         vec![EgressPoint::new(BoardingPointId::new(to), 0, 0)],
         datetime!(2026-08-31 10:00 UTC),
     )
-}
-
-#[derive(Clone, Default)]
-struct FixtureBikeOperator {
-    batch_sizes: Arc<Mutex<Vec<usize>>>,
-}
-
-#[async_trait]
-impl BikeShareOperator for FixtureBikeOperator {
-    async fn expand_batch(
-        &self,
-        queries: Vec<BikeShareExpansionQuery>,
-    ) -> Result<Vec<BikeShareExpansion>, BikeShareError> {
-        self.batch_sizes.lock().unwrap().push(queries.len());
-        Ok(queries
-            .into_iter()
-            .map(|query| {
-                if query.from_stop_id != BoardingPointId::new("b") {
-                    return BikeShareExpansion::default();
-                }
-                BikeShareExpansion {
-                    transfers: vec![BikeShareTransfer {
-                        from_stop_id: BoardingPointId::new("b"),
-                        to_stop_id: BoardingPointId::new("d"),
-                        pickup_station_id: BikeShareStationId::new("pickup"),
-                        return_station_id: BikeShareStationId::new("return"),
-                        access_walk_seconds: 60,
-                        access_walk_metres: 100,
-                        bike_seconds: 300,
-                        bike_metres: 1_000,
-                        egress_walk_seconds: 60,
-                        egress_walk_metres: 100,
-                    }],
-                    ..BikeShareExpansion::default()
-                }
-            })
-            .collect())
-    }
-
-    async fn expand_origins_batch(
-        &self,
-        queries: Vec<BikeShareOriginQuery>,
-    ) -> Result<Vec<Vec<BikeShareOriginAccess>>, BikeShareError> {
-        Ok(queries.into_iter().map(|_| Vec::new()).collect())
-    }
-
-    async fn expand_direct_batch(
-        &self,
-        queries: Vec<BikeShareDirectQuery>,
-    ) -> Result<Vec<Vec<BikeShareDirectPath>>, BikeShareError> {
-        Ok(queries.into_iter().map(|_| Vec::new()).collect())
-    }
-}
-
-#[tokio::test]
-async fn bike_share_expansion_is_batched_between_transit_services() {
-    let network = network(&[("first", &["a", "b", "c"]), ("second", &["d", "e"])]);
-    let resolver = FixtureResolver {
-        trips: Arc::new(HashMap::from([
-            (
-                TransitServiceId::new("first"),
-                vec![trip(
-                    "first-trip",
-                    "first",
-                    &["a", "b", "c"],
-                    &[60, 600, 900],
-                    &[60, 600, 900],
-                    false,
-                )],
-            ),
-            (
-                TransitServiceId::new("second"),
-                vec![trip(
-                    "second-trip",
-                    "second",
-                    &["d", "e"],
-                    &[1_200, 1_800],
-                    &[1_200, 1_800],
-                    false,
-                )],
-            ),
-        ])),
-        ..Default::default()
-    };
-    let bike_operator = FixtureBikeOperator::default();
-    let batch_sizes = bike_operator.batch_sizes.clone();
-    let router = TripBasedRouter::new(
-        network,
-        Arc::new(resolver),
-        Arc::new(TransferShortcutIndex::default()),
-    )
-    .with_bike_operator(Arc::new(bike_operator));
-
-    let candidates = router
-        .route(
-            query("a", "e").with_destination(via_server::api::RequestCoordinate {
-                latitude: 25.0,
-                longitude: 121.5,
-            }),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(*batch_sizes.lock().unwrap(), vec![2, 1]);
-    assert!(candidates.iter().any(|candidate| {
-        candidate
-            .segments
-            .iter()
-            .any(|segment| matches!(segment, JourneySegment::BikeShareTransfer { .. }))
-            && candidate
-                .segments
-                .iter()
-                .filter(|segment| matches!(segment, JourneySegment::Transit { .. }))
-                .count()
-                == 2
-    }));
 }
 
 #[tokio::test]
@@ -610,7 +487,6 @@ async fn departure_resolver_falls_back_to_schedule() {
                 ScheduledStopTime::new(36_120, 36_120),
             ],
         )],
-        Vec::new(),
     ));
     let resolver =
         CompositeDepartureResolver::with_schedule_fallback(schedule, Arc::new(FailingResolver));
@@ -677,7 +553,6 @@ fn network_with_mode(
         Time::from_hms(4, 0, 0).unwrap(),
         stops,
         services,
-        Vec::new(),
         Vec::new(),
     ))
 }

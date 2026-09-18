@@ -1,22 +1,15 @@
-//! The algorithm-neutral boundary used by Via's routing service.
-//!
-//! The boundary carries access/egress facts in and feasible candidate journeys
-//! out, without exposing Trip-Based search internals to the service layer.
+//! Algorithm-neutral routing boundary.
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use crate::api::RequestCoordinate;
 use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
     transit_timing::TimingBasis,
 };
 
-use super::{
-    EffectiveTrip, MobilityPath, TransferShortcut,
-    bike::{BikeShareTransfer, MobilityLeg},
-};
+use super::{EffectiveTrip, TransferShortcut};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {
@@ -24,9 +17,7 @@ pub struct AccessPoint {
     pub departure_at: OffsetDateTime,
     pub available_at: OffsetDateTime,
     pub walking_seconds: u32,
-    pub bike_seconds: u32,
     pub distance_metres: u32,
-    pub path: Option<MobilityPath>,
 }
 
 impl AccessPoint {
@@ -42,35 +33,8 @@ impl AccessPoint {
             departure_at,
             available_at,
             walking_seconds,
-            bike_seconds: 0,
             distance_metres,
-            path: None,
         }
-    }
-
-    pub fn with_path(
-        stop_id: BoardingPointId,
-        departure_at: OffsetDateTime,
-        path: MobilityPath,
-        distance_metres: u32,
-    ) -> Self {
-        Self {
-            stop_id,
-            departure_at,
-            available_at: departure_at
-                + time::Duration::seconds(i64::from(path.duration_seconds())),
-            walking_seconds: path.walking_seconds(),
-            bike_seconds: path.bike_seconds(),
-            distance_metres,
-            path: Some(path),
-        }
-    }
-
-    pub fn required_station_ids(&self) -> Vec<crate::domain::ids::BikeShareStationId> {
-        self.path
-            .as_ref()
-            .map(MobilityPath::required_station_ids)
-            .unwrap_or_default()
     }
 }
 
@@ -78,9 +42,7 @@ impl AccessPoint {
 pub struct EgressPoint {
     pub stop_id: BoardingPointId,
     pub walking_seconds: u32,
-    pub bike_seconds: u32,
     pub distance_metres: u32,
-    pub path: Option<MobilityPath>,
 }
 
 impl EgressPoint {
@@ -88,27 +50,8 @@ impl EgressPoint {
         Self {
             stop_id,
             walking_seconds,
-            bike_seconds: 0,
             distance_metres,
-            path: None,
         }
-    }
-
-    pub fn with_path(stop_id: BoardingPointId, path: MobilityPath, distance_metres: u32) -> Self {
-        Self {
-            stop_id,
-            walking_seconds: path.walking_seconds(),
-            bike_seconds: path.bike_seconds(),
-            distance_metres,
-            path: Some(path),
-        }
-    }
-
-    pub fn required_station_ids(&self) -> Vec<crate::domain::ids::BikeShareStationId> {
-        self.path
-            .as_ref()
-            .map(MobilityPath::required_station_ids)
-            .unwrap_or_default()
     }
 }
 
@@ -122,7 +65,6 @@ pub struct AlgorithmQuery {
     pub max_candidates: usize,
     pub max_expansions: usize,
     pub max_journey_duration_seconds: u32,
-    pub destination: Option<RequestCoordinate>,
 }
 
 impl AlgorithmQuery {
@@ -140,7 +82,6 @@ impl AlgorithmQuery {
             max_candidates: 16,
             max_expansions: 2_000,
             max_journey_duration_seconds: 4 * 60 * 60,
-            destination: None,
         }
     }
 
@@ -162,11 +103,6 @@ impl AlgorithmQuery {
         self.latest_arrival = Some(latest_arrival);
         self
     }
-
-    pub fn with_destination(mut self, destination: RequestCoordinate) -> Self {
-        self.destination = Some(destination);
-        self
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,16 +115,13 @@ pub enum JourneySegment {
     WalkingTransfer {
         shortcut: TransferShortcut,
     },
-    BikeShareTransfer {
-        transfer: BikeShareTransfer,
-    },
 }
 
 impl JourneySegment {
     pub fn service_id(&self) -> Option<&TransitServiceId> {
         match self {
             Self::Transit { trip, .. } => Some(&trip.service_id),
-            Self::WalkingTransfer { .. } | Self::BikeShareTransfer { .. } => None,
+            Self::WalkingTransfer { .. } => None,
         }
     }
 }
@@ -201,7 +134,6 @@ pub struct JourneyCandidate {
     pub departure_time: OffsetDateTime,
     pub arrival_time: OffsetDateTime,
     pub walking_seconds: u32,
-    pub bike_seconds: u32,
     pub transfer_count: u32,
     pub uncertainty_seconds: Option<u32>,
     pub evidence: Vec<NormalizedRealtimeValue>,
@@ -220,29 +152,23 @@ impl JourneyCandidate {
     pub fn dominates(&self, other: &Self) -> bool {
         let no_worse = self.arrival_time <= other.arrival_time
             && self.walking_seconds <= other.walking_seconds
-            && self.bike_seconds <= other.bike_seconds
             && self.transfer_count <= other.transfer_count;
         let strictly_better = self.arrival_time < other.arrival_time
             || self.walking_seconds < other.walking_seconds
-            || self.bike_seconds < other.bike_seconds
             || self.transfer_count < other.transfer_count;
         no_worse && strictly_better
     }
 
     pub fn signature(&self) -> String {
         let access = format!(
-            "access:{}:{}:{}:{}",
+            "access:{}:{}",
             self.access.stop_id.as_str(),
-            self.access.walking_seconds,
-            self.access.bike_seconds,
-            mobility_path_signature(self.access.path.as_ref()),
+            self.access.walking_seconds
         );
         let egress = format!(
-            "egress:{}:{}:{}:{}",
+            "egress:{}:{}",
             self.egress.stop_id.as_str(),
-            self.egress.walking_seconds,
-            self.egress.bike_seconds,
-            mobility_path_signature(self.egress.path.as_ref()),
+            self.egress.walking_seconds
         );
         let mut parts = vec![access];
         parts.extend(self.segments.iter().map(|segment| match segment {
@@ -251,59 +177,24 @@ impl JourneyCandidate {
                 board_index,
                 alight_index,
             } => format!(
-                    "transit:{}:{}:{}:{}",
-                    trip.id.as_str(),
-                    board_index,
-                    alight_index,
-                    trip.stop_times[*board_index]
-                        .departure_at
-                        .unix_timestamp_nanos()
-                ),
+                "transit:{}:{}:{}:{}",
+                trip.id.as_str(),
+                board_index,
+                alight_index,
+                trip.stop_times[*board_index]
+                    .departure_at
+                    .unix_timestamp_nanos()
+            ),
             JourneySegment::WalkingTransfer { shortcut } => format!(
                 "transfer:{}:{}:{}",
                 shortcut.from.as_str(),
                 shortcut.to.as_str(),
                 shortcut.duration_seconds
             ),
-            JourneySegment::BikeShareTransfer { transfer } => format!(
-                "bike-transfer:{}:{}:{}:{}:{}:{}",
-                transfer.from_stop_id.as_str(),
-                transfer.to_stop_id.as_str(),
-                transfer.pickup_station_id.as_str(),
-                transfer.return_station_id.as_str(),
-                transfer.bike_seconds,
-                transfer.duration_seconds(),
-            ),
         }));
         parts.push(egress);
         parts.join("|")
     }
-}
-
-fn mobility_path_signature(path: Option<&MobilityPath>) -> String {
-    let Some(path) = path else {
-        return "walking".into();
-    };
-    path.legs
-        .iter()
-        .map(|leg| match leg {
-            MobilityLeg::Walk {
-                duration_seconds,
-                distance_metres,
-            } => format!("walk:{duration_seconds}:{distance_metres}"),
-            MobilityLeg::BikeShare {
-                pickup_station_id,
-                return_station_id,
-                duration_seconds,
-                distance_metres,
-            } => format!(
-                "bike:{}:{}:{duration_seconds}:{distance_metres}",
-                pickup_station_id.as_str(),
-                return_station_id.as_str()
-            ),
-        })
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]

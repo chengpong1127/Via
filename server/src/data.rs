@@ -22,25 +22,20 @@ use crate::{
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{
-            BikeShareStation, MetroFrequency, MetroStationTiming, MetroTiming, ScheduledStopTime,
-            ScheduledTrip, TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop,
+            MetroFrequency, MetroStationTiming, MetroTiming, ScheduledStopTime, ScheduledTrip,
+            TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop,
             default_service_day_boundary,
         },
     },
-    providers::tdx::{
-        bike_share_station_id, boarding_point_id, transit_service_id,
-        transit_service_id_for_direction,
-    },
+    providers::tdx::{boarding_point_id, transit_service_id, transit_service_id_for_direction},
 };
 
 pub mod static_transfers;
 pub use static_transfers::{
-    BikeShareConnectorDiscoveryDiagnostics, StaticBikeSharePolicy, StaticTransferPolicy,
-    TransferDiscoveryDiagnostics, enrich_network_with_static_bike_share_connectors,
-    enrich_network_with_static_transfers,
+    StaticTransferPolicy, TransferDiscoveryDiagnostics, enrich_network_with_static_transfers,
 };
 
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 3;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 4;
 const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
 const TDX_RETRY_BACKOFFS: [Duration; 4] = [
     Duration::from_secs(15),
@@ -94,10 +89,7 @@ pub struct ArtifactCounts {
     pub stops: usize,
     pub services: usize,
     pub scheduled_trips: usize,
-    pub bike_stations: usize,
     pub transfer_edges: usize,
-    #[serde(default)]
-    pub bike_share_connectors: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,7 +251,6 @@ struct Normalizer {
     stops: BTreeMap<String, TransitStop>,
     services: BTreeMap<String, TransitService>,
     trips: BTreeMap<String, ScheduledTrip>,
-    bike_stations: BTreeMap<String, BikeShareStation>,
     transfer_edges: BTreeSet<(String, String, u32)>,
     station_aliases: BTreeMap<String, BoardingPointId>,
     metro_patterns: BTreeMap<(String, Option<u8>), MetroPattern>,
@@ -284,9 +275,6 @@ impl Normalizer {
         let realtime_scope = document.realtime_scope.as_deref();
         let records = records(&document.value);
         for (index, record) in records.iter().enumerate() {
-            if path_text.contains("bike") {
-                self.normalize_bike(record, &document.relative_path)?;
-            }
             if path_text.contains("bus") {
                 self.normalize_bus(record, &document.relative_path, index, realtime_scope)?;
             }
@@ -307,33 +295,6 @@ impl Normalizer {
                     self.normalize_transfer(record, &document.relative_path)?;
                 }
             }
-        }
-        Ok(())
-    }
-
-    fn normalize_bike(&mut self, record: &Value, path: &Path) -> Result<(), DataError> {
-        let Some(station_uid) = string(record, "StationUID") else {
-            return Ok(());
-        };
-        let coordinate =
-            coordinate(record).ok_or_else(|| malformed(path, "bike station", station_uid))?;
-        let station = BikeShareStation::new(
-            bike_share_station_id(station_uid),
-            display_name(record, &["StationName", "StationNameEn"])
-                .unwrap_or_else(|| station_uid.into()),
-            coordinate,
-        );
-        let key = station.id.as_str().to_owned();
-        if let Some(existing) = self.bike_stations.get(&key) {
-            if existing != &station {
-                return Err(DataError::ConflictingIdentity {
-                    path: path.into(),
-                    id: key,
-                    detail: "BikeShareStation records disagree".into(),
-                });
-            }
-        } else {
-            self.bike_stations.insert(key, station);
         }
         Ok(())
     }
@@ -1631,7 +1592,6 @@ impl Normalizer {
             self.stops.into_values().collect(),
             self.services.into_values().collect(),
             self.trips.into_values().collect(),
-            self.bike_stations.into_values().collect(),
         )
         .with_metro_timings(metro_timings)
         .with_transfer_edges(
@@ -1682,15 +1642,7 @@ pub async fn build_from_raw_with_street(
     let mut snapshot = normalize_raw_snapshot(input, scope, raw_snapshot_date)?;
     let (network, transfer_diagnostics) =
         enrich_network_with_static_transfers(snapshot.network, street, policy).await?;
-    let (network, bike_diagnostics) = enrich_network_with_static_bike_share_connectors(
-        network,
-        street,
-        StaticBikeSharePolicy::default(),
-    )
-    .await?;
     snapshot.network = network;
-    let mut transfer_diagnostics = transfer_diagnostics;
-    transfer_diagnostics.bike_share_connectors = Some(bike_diagnostics);
     snapshot.diagnostics.transfer_discovery = Some(transfer_diagnostics);
     let mut result = finish_build(snapshot, output)?;
     if let Some(transfer) = &mut result.diagnostics.transfer_discovery {
@@ -1796,9 +1748,7 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
             stops: network.stops.len(),
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
-            bike_stations: network.bike_share_stations.len(),
             transfer_edges: network.transfer_edges.len(),
-            bike_share_connectors: network.bike_share_connectors.len(),
         },
         revisions: ArtifactRevisions {
             static_network_revision: static_revision,
@@ -2116,11 +2066,6 @@ fn static_sources(scope: DataScope) -> Vec<StaticSource> {
                 city,
             ));
         }
-        sources.push(source(
-            format!("tdx_youbike_{city_key}_station"),
-            format!("v2/Bike/Station/City/{city}"),
-            format!("bike/{city_key}/station.json"),
-        ));
     }
     sources.extend([
         source(
@@ -2213,6 +2158,13 @@ fn read_documents(
     collect_json_paths(input, &mut paths)?;
     paths.sort();
     paths.retain(|path| path.file_name().is_none_or(|name| name != "manifest.json"));
+    if !realtime_scopes.is_empty() {
+        paths.retain(|path| {
+            path.strip_prefix(input)
+                .ok()
+                .is_some_and(|relative| realtime_scopes.contains_key(relative))
+        });
+    }
     paths
         .into_iter()
         .map(|path| {
@@ -2644,7 +2596,6 @@ fn revision_for_network(network: &TransitNetwork, schedule: bool) -> Result<Stri
     if schedule {
         network.stops.clear();
         network.services.clear();
-        network.bike_share_stations.clear();
         network.transfer_edges.clear();
     } else {
         network.trips.clear();
@@ -2901,11 +2852,6 @@ mod tests {
                 "bus/taipei/schedule.json",
             ),
             (
-                "tdx_youbike_taipei_station",
-                "v2/Bike/Station/City/Taipei",
-                "bike/taipei/station.json",
-            ),
-            (
                 "tdx_bus_new-taipei_route",
                 "v2/Bus/Route/City/NewTaipei",
                 "bus/new-taipei/route.json",
@@ -2924,11 +2870,6 @@ mod tests {
                 "tdx_bus_new-taipei_schedule",
                 "v2/Bus/Schedule/City/NewTaipei",
                 "bus/new-taipei/schedule.json",
-            ),
-            (
-                "tdx_youbike_new-taipei_station",
-                "v2/Bike/Station/City/NewTaipei",
-                "bike/new-taipei/station.json",
             ),
             (
                 "tdx_metro_station",
@@ -2997,9 +2938,9 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 20);
+        assert_eq!(report.reused_count, 18);
         assert_eq!(report.downloaded_count, 0);
-        assert_eq!(report.manifest.sources.len(), 20);
+        assert_eq!(report.manifest.sources.len(), 18);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
         assert!(sleeper.waits.is_empty());
@@ -3041,9 +2982,9 @@ mod tests {
         let report = result.unwrap();
 
         assert_eq!(report.reused_count, 5);
-        assert_eq!(report.downloaded_count, 15);
-        assert_eq!(report.manifest.sources.len(), 20);
-        assert_eq!(state.data_calls.load(Ordering::Relaxed), 15);
+        assert_eq!(report.downloaded_count, 13);
+        assert_eq!(report.manifest.sources.len(), 18);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 13);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 1);
         assert!(
             output
@@ -3073,7 +3014,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.reused_count, 16);
         assert_eq!(report.downloaded_count, 2);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert!(valid_existing_json(&snapshot.join(&sources[0].output_path)).is_some());
@@ -3096,7 +3037,7 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 19);
+        assert_eq!(report.reused_count, 17);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert_eq!(sleeper.waits, vec![Duration::from_secs(7)]);
@@ -3173,7 +3114,7 @@ mod tests {
         let (second, _, _) = run_fetch(&output, &client, fast_timing()).await;
 
         assert_eq!(first.unwrap().downloaded_count, 0);
-        assert_eq!(second.unwrap().reused_count, 20);
+        assert_eq!(second.unwrap().reused_count, 18);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
     }
@@ -3200,7 +3141,7 @@ mod tests {
         let manifest: RawSnapshotManifest =
             serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
 
-        assert_eq!(report.reused_count, 19);
+        assert_eq!(report.reused_count, 17);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         let downloaded_body = valid_existing_json(
@@ -3265,7 +3206,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 19);
+        assert_eq!(report.reused_count, 17);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         assert_eq!(

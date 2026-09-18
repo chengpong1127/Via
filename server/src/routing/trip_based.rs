@@ -13,7 +13,6 @@ use time::{Duration, OffsetDateTime};
 
 use crate::domain::{
     ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
-    realtime::BikeAvailability,
     transit::TransitNetwork,
     transit_timing::{
         DepartureError, DepartureQuery, DepartureResolver, EffectiveTrip, TimingBasis,
@@ -22,10 +21,6 @@ use crate::domain::{
 
 use super::{
     AccessPoint, AlgorithmQuery, JourneyCandidate, JourneySegment, RoutingAlgorithm, RoutingError,
-    bike::{
-        BikeAvailabilityResolver, BikeShareExpansionQuery, BikeShareOperator, BikeShareTransfer,
-        MobilityLeg, MobilityPath, bike_availability_is_usable,
-    },
     transfers::{TransferIndex, TransferShortcut},
 };
 
@@ -166,8 +161,6 @@ pub struct TripBasedRouter {
     index: Arc<TripBasedIndex>,
     departure_resolver: Arc<dyn DepartureResolver>,
     transfer_index: Arc<dyn TransferIndex>,
-    bike_availability: Option<Arc<dyn BikeAvailabilityResolver>>,
-    bike_operator: Option<Arc<dyn BikeShareOperator>>,
     limits: TripBasedLimits,
 }
 
@@ -183,24 +176,12 @@ impl TripBasedRouter {
             index,
             departure_resolver,
             transfer_index,
-            bike_availability: None,
-            bike_operator: None,
             limits: TripBasedLimits::default(),
         }
     }
 
     pub fn with_limits(mut self, limits: TripBasedLimits) -> Self {
         self.limits = limits;
-        self
-    }
-
-    pub fn with_bike_availability(mut self, resolver: Arc<dyn BikeAvailabilityResolver>) -> Self {
-        self.bike_availability = Some(resolver);
-        self
-    }
-
-    pub fn with_bike_operator(mut self, operator: Arc<dyn BikeShareOperator>) -> Self {
-        self.bike_operator = Some(operator);
         self
     }
 
@@ -222,7 +203,6 @@ struct SearchPath {
     access: AccessPoint,
     segments: Vec<JourneySegment>,
     walking_seconds: u32,
-    bike_seconds: u32,
     transfer_count: u32,
     evidence: Vec<crate::domain::realtime::NormalizedRealtimeValue>,
     timing_bases: Vec<TimingBasis>,
@@ -231,12 +211,10 @@ struct SearchPath {
 
 impl SearchPath {
     fn from_access(access: AccessPoint) -> Self {
-        let bike_seconds = access.bike_seconds;
         Self {
             walking_seconds: access.walking_seconds,
             access,
             segments: Vec::new(),
-            bike_seconds,
             transfer_count: 0,
             evidence: Vec::new(),
             timing_bases: Vec::new(),
@@ -252,19 +230,6 @@ impl SearchPath {
         next.walking_seconds = next
             .walking_seconds
             .saturating_add(shortcut.duration_seconds);
-        next
-    }
-
-    fn with_bike_transfer(&self, transfer: &BikeShareTransfer) -> Self {
-        let mut next = self.clone();
-        next.segments.push(JourneySegment::BikeShareTransfer {
-            transfer: transfer.clone(),
-        });
-        next.walking_seconds = next
-            .walking_seconds
-            .saturating_add(transfer.walking_seconds());
-        next.bike_seconds = next.bike_seconds.saturating_add(transfer.bike_seconds);
-        next.transfer_count = next.transfer_count.saturating_add(1);
         next
     }
 
@@ -300,13 +265,6 @@ struct TripState {
     path: SearchPath,
 }
 
-struct BikeShareNeed {
-    query: BikeShareExpansionQuery,
-    arrival_at: OffsetDateTime,
-    round: usize,
-    path: SearchPath,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct DepartureCacheKey(DepartureQuery);
 
@@ -316,7 +274,6 @@ struct ReachedTripLabel {
     departure_at: OffsetDateTime,
     transfer_count: u32,
     walking_seconds: u32,
-    bike_seconds: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -324,7 +281,6 @@ struct DynamicLabel {
     ready_at: OffsetDateTime,
     transfer_count: u32,
     walking_seconds: u32,
-    bike_seconds: u32,
 }
 
 #[async_trait]
@@ -351,33 +307,7 @@ impl RoutingAlgorithm for TripBasedRouter {
         let mut reached_index = HashMap::<(EffectiveTripId, usize), Vec<ReachedTripLabel>>::new();
         let mut dynamic_best =
             HashMap::<(TransitServiceId, usize, usize), Vec<DynamicLabel>>::new();
-        let mut availability_cache =
-            HashMap::<crate::domain::ids::BikeShareStationId, BikeAvailability>::new();
-        let initial_needs = self.initial_needs(&query);
-        let mut initial_station_ids = query
-            .origin_access
-            .iter()
-            .flat_map(AccessPoint::required_station_ids)
-            .collect::<Vec<_>>();
-        initial_station_ids.extend(
-            query
-                .destination_egress
-                .iter()
-                .flat_map(super::EgressPoint::required_station_ids),
-        );
-        let initial_availability = self
-            .collect_station_availability(&initial_station_ids, &mut availability_cache)
-            .await;
-        let mut needs = initial_needs
-            .into_iter()
-            .filter(|need| {
-                need.path
-                    .access
-                    .path
-                    .as_ref()
-                    .is_none_or(|path| path_is_usable(path, &initial_availability))
-            })
-            .collect::<Vec<_>>();
+        let mut needs = self.initial_needs(&query);
         let mut candidates = Vec::new();
         let mut expansions = 0usize;
 
@@ -403,32 +333,12 @@ impl RoutingAlgorithm for TripBasedRouter {
                 continue;
             }
             let mut next_needs = Vec::new();
-            let mut bike_needs = Vec::new();
             for state in states {
                 if expansions >= limits.max_expansions {
                     break;
                 }
                 expansions += 1;
-                self.scan_state(
-                    &query,
-                    &limits,
-                    &state,
-                    &initial_availability,
-                    &mut candidates,
-                    &mut next_needs,
-                    &mut bike_needs,
-                );
-            }
-            if let Some(operator) = &self.bike_operator {
-                self.expand_bike_needs(
-                    operator,
-                    bike_needs,
-                    &query,
-                    &limits,
-                    &mut candidates,
-                    &mut next_needs,
-                )
-                .await;
+                self.scan_state(&query, &limits, &state, &mut candidates, &mut next_needs);
             }
             if expansions >= limits.max_expansions {
                 break;
@@ -459,8 +369,6 @@ impl TripBasedRouter {
                 path: path.clone(),
             });
             for shortcut in self.transfer_index.transfers_from(&access.stop_id) {
-                // Availability is checked before a shortcut is expanded. A
-                // bike-less request still retains the walking alternative.
                 needs.push(BoardingNeed {
                     stop_id: shortcut.to.clone(),
                     ready_at: access.available_at
@@ -536,11 +444,9 @@ impl TripBasedRouter {
                         best.ready_at <= need.ready_at
                             && best.transfer_count <= need.path.transfer_count
                             && best.walking_seconds <= need.path.walking_seconds
-                            && best.bike_seconds <= need.path.bike_seconds
                             && (best.ready_at < need.ready_at
                                 || best.transfer_count < need.path.transfer_count
-                                || best.walking_seconds < need.path.walking_seconds
-                                || best.bike_seconds < need.path.bike_seconds)
+                                || best.walking_seconds < need.path.walking_seconds)
                     })
                 }) {
                     continue;
@@ -552,7 +458,6 @@ impl TripBasedRouter {
                         ready_at: need.ready_at,
                         transfer_count: need.path.transfer_count,
                         walking_seconds: need.path.walking_seconds,
-                        bike_seconds: need.path.bike_seconds,
                     });
                 let query = DepartureQuery::new(
                     service_id.clone(),
@@ -580,7 +485,6 @@ impl TripBasedRouter {
                         departure_at,
                         transfer_count: need.path.transfer_count,
                         walking_seconds: need.path.walking_seconds,
-                        bike_seconds: need.path.bike_seconds,
                     };
                     if reached_index.get(&reached_key).is_some_and(|labels| {
                         labels.iter().any(|reached| {
@@ -588,12 +492,10 @@ impl TripBasedRouter {
                                 && reached.departure_at <= current_label.departure_at
                                 && reached.transfer_count <= current_label.transfer_count
                                 && reached.walking_seconds <= current_label.walking_seconds
-                                && reached.bike_seconds <= current_label.bike_seconds
                                 && (reached.board_index < current_label.board_index
                                     || reached.departure_at < current_label.departure_at
                                     || reached.transfer_count < current_label.transfer_count
-                                    || reached.walking_seconds < current_label.walking_seconds
-                                    || reached.bike_seconds < current_label.bike_seconds)
+                                    || reached.walking_seconds < current_label.walking_seconds)
                         })
                     }) {
                         continue;
@@ -604,12 +506,10 @@ impl TripBasedRouter {
                             && current_label.departure_at <= reached.departure_at
                             && current_label.transfer_count <= reached.transfer_count
                             && current_label.walking_seconds <= reached.walking_seconds
-                            && current_label.bike_seconds <= reached.bike_seconds
                             && (current_label.board_index < reached.board_index
                                 || current_label.departure_at < reached.departure_at
                                 || current_label.transfer_count < reached.transfer_count
-                                || current_label.walking_seconds < reached.walking_seconds
-                                || current_label.bike_seconds < reached.bike_seconds))
+                                || current_label.walking_seconds < reached.walking_seconds))
                     });
                     labels.push(current_label);
                     let changed = need
@@ -635,148 +535,13 @@ impl TripBasedRouter {
         states
     }
 
-    async fn collect_station_availability(
-        &self,
-        station_ids: &[crate::domain::ids::BikeShareStationId],
-        availability_cache: &mut HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
-    ) -> HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability> {
-        let Some(resolver) = &self.bike_availability else {
-            return HashMap::new();
-        };
-        let mut station_ids = station_ids.to_vec();
-        station_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        station_ids.dedup();
-        if station_ids.is_empty() {
-            return HashMap::new();
-        }
-        let missing_station_ids = station_ids
-            .iter()
-            .filter(|station_id| !availability_cache.contains_key(*station_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !missing_station_ids.is_empty() {
-            if let Ok(availability) = resolver.availability(&missing_station_ids).await {
-                availability_cache.extend(availability);
-            }
-        }
-        station_ids
-            .into_iter()
-            .filter_map(|station_id| {
-                availability_cache
-                    .get(&station_id)
-                    .cloned()
-                    .map(|availability| (station_id, availability))
-            })
-            .collect()
-    }
-
-    async fn expand_bike_needs(
-        &self,
-        operator: &Arc<dyn BikeShareOperator>,
-        bike_needs: Vec<BikeShareNeed>,
-        query: &AlgorithmQuery,
-        limits: &TripBasedLimits,
-        candidates: &mut Vec<JourneyCandidate>,
-        next_needs: &mut Vec<BoardingNeed>,
-    ) {
-        if bike_needs.is_empty() {
-            return;
-        }
-        let mut unique_queries = Vec::<BikeShareExpansionQuery>::new();
-        let mut query_indexes = HashMap::<String, usize>::new();
-        let mut indexed_needs = Vec::with_capacity(bike_needs.len());
-        for need in bike_needs {
-            let key = bike_expansion_key(&need.query);
-            let index = if let Some(index) = query_indexes.get(&key) {
-                *index
-            } else {
-                let index = unique_queries.len();
-                unique_queries.push(need.query.clone());
-                query_indexes.insert(key, index);
-                index
-            };
-            indexed_needs.push((need, index));
-        }
-        let Ok(expansions) = operator.expand_batch(unique_queries).await else {
-            return;
-        };
-        for (need, expansion_index) in indexed_needs {
-            let Some(expansion) = expansions.get(expansion_index) else {
-                continue;
-            };
-            for transfer in &expansion.transfers {
-                if transfer.from_stop_id != need.query.from_stop_id
-                    || transfer.duration_seconds() > limits.max_journey_duration_seconds
-                    || transfer.to_stop_id == transfer.from_stop_id
-                {
-                    continue;
-                }
-                let path = need.path.with_bike_transfer(transfer);
-                next_needs.push(BoardingNeed {
-                    stop_id: transfer.to_stop_id.clone(),
-                    ready_at: need.arrival_at
-                        + Duration::seconds(i64::from(transfer.duration_seconds())),
-                    round: need.round + 1,
-                    previous_service: need
-                        .path
-                        .segments
-                        .iter()
-                        .rev()
-                        .find_map(JourneySegment::service_id)
-                        .cloned(),
-                    path,
-                });
-            }
-            for mobility_path in &expansion.destination_paths {
-                let arrival_time = need.arrival_at
-                    + Duration::seconds(i64::from(mobility_path.duration_seconds()));
-                if query
-                    .latest_arrival
-                    .is_some_and(|latest| arrival_time > latest)
-                    || arrival_time - query.departure_time
-                        > Duration::seconds(i64::from(limits.max_journey_duration_seconds))
-                {
-                    continue;
-                }
-                let egress = super::EgressPoint::with_path(
-                    need.query.from_stop_id.clone(),
-                    mobility_path.clone(),
-                    mobility_path.distance_metres(),
-                );
-                let mut path = need.path.clone();
-                path.walking_seconds = path
-                    .walking_seconds
-                    .saturating_add(mobility_path.walking_seconds());
-                path.bike_seconds = path
-                    .bike_seconds
-                    .saturating_add(mobility_path.bike_seconds());
-                candidates.push(JourneyCandidate {
-                    access: path.access.clone(),
-                    egress,
-                    segments: path.segments,
-                    departure_time: path.access.departure_at,
-                    arrival_time,
-                    walking_seconds: path.walking_seconds,
-                    bike_seconds: path.bike_seconds,
-                    transfer_count: path.transfer_count,
-                    uncertainty_seconds: path.uncertainty_seconds,
-                    evidence: path.evidence.clone(),
-                    timing_bases: path.timing_bases.clone(),
-                });
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn scan_state(
         &self,
         query: &AlgorithmQuery,
         limits: &TripBasedLimits,
         state: &TripState,
-        availability: &HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
         candidates: &mut Vec<JourneyCandidate>,
         next_needs: &mut Vec<BoardingNeed>,
-        bike_needs: &mut Vec<BikeShareNeed>,
     ) {
         for alight_index in (state.board_index + 1)..state.trip.stop_times.len() {
             let stop_time = &state.trip.stop_times[alight_index];
@@ -794,20 +559,8 @@ impl TripBasedRouter {
                 if egress.stop_id != stop_time.stop_id {
                     continue;
                 }
-                if !egress
-                    .path
-                    .as_ref()
-                    .is_none_or(|path| path_is_usable(path, availability))
-                {
-                    continue;
-                }
-                let arrival_time = arrival_at_stop
-                    + Duration::seconds(i64::from(
-                        egress
-                            .path
-                            .as_ref()
-                            .map_or(egress.walking_seconds, |path| path.duration_seconds()),
-                    ));
+                let arrival_time =
+                    arrival_at_stop + Duration::seconds(i64::from(egress.walking_seconds));
                 if query
                     .latest_arrival
                     .is_some_and(|latest| arrival_time > latest)
@@ -819,7 +572,6 @@ impl TripBasedRouter {
                 let mut path = state.path.clone();
                 path.segments.push(transit_segment.clone());
                 path.walking_seconds = path.walking_seconds.saturating_add(egress.walking_seconds);
-                path.bike_seconds = path.bike_seconds.saturating_add(egress.bike_seconds);
                 candidates.push(JourneyCandidate {
                     access: path.access.clone(),
                     egress: egress.clone(),
@@ -827,7 +579,6 @@ impl TripBasedRouter {
                     departure_time: path.access.departure_at,
                     arrival_time,
                     walking_seconds: path.walking_seconds,
-                    bike_seconds: path.bike_seconds,
                     transfer_count: path.transfer_count,
                     uncertainty_seconds: path.uncertainty_seconds,
                     evidence: path.evidence.clone(),
@@ -835,21 +586,6 @@ impl TripBasedRouter {
                 });
             }
 
-            if self.bike_operator.is_some() {
-                let mut path = state.path.clone();
-                path.segments.push(transit_segment.clone());
-                bike_needs.push(BikeShareNeed {
-                    query: BikeShareExpansionQuery {
-                        from_stop_id: stop_time.stop_id.clone(),
-                        ready_at: arrival_at_stop,
-                        destination: query.destination,
-                        max_journey_duration_seconds: limits.max_journey_duration_seconds,
-                    },
-                    arrival_at: arrival_at_stop,
-                    round: state.round,
-                    path,
-                });
-            }
             if state.round >= limits.max_transfers {
                 continue;
             }
@@ -868,26 +604,6 @@ impl TripBasedRouter {
             }
         }
     }
-}
-
-fn path_is_usable(
-    path: &MobilityPath,
-    availability: &HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
-) -> bool {
-    if !path.uses_bike_share() {
-        return true;
-    }
-    path.legs.iter().all(|leg| match leg {
-        MobilityLeg::Walk { .. } => true,
-        MobilityLeg::BikeShare {
-            pickup_station_id,
-            return_station_id,
-            ..
-        } => bike_availability_is_usable(
-            availability.get(pickup_station_id),
-            availability.get(return_station_id),
-        ),
-    })
 }
 
 fn pareto_candidates(
@@ -919,21 +635,4 @@ fn pareto_candidates(
     });
     pareto.truncate(limit.max(1));
     Ok(pareto)
-}
-
-fn bike_expansion_key(query: &BikeShareExpansionQuery) -> String {
-    let destination = query.destination.map(|coordinate| {
-        format!(
-            ":{}:{}",
-            coordinate.latitude.to_bits(),
-            coordinate.longitude.to_bits()
-        )
-    });
-    format!(
-        "{}:{}:{}{}",
-        query.from_stop_id.as_str(),
-        query.ready_at.unix_timestamp_nanos(),
-        query.max_journey_duration_seconds,
-        destination.unwrap_or_default()
-    )
 }

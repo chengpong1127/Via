@@ -2,10 +2,7 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{
-    realtime::{ActionState, FreshnessState},
-    transit_timing::TimingBasis,
-};
+use crate::domain::{realtime::FreshnessState, transit_timing::TimingBasis};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
@@ -32,8 +29,6 @@ pub enum RankingReason {
     FewerTransfers,
     LessWalking,
     TightTransferMargin,
-    LowPickupBikes,
-    LowReturnSlots,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,27 +44,17 @@ pub struct TransferEvidence {
     pub available_seconds: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BikeActionEvidence {
-    pub pickup_state: ActionState,
-    pub return_state: ActionState,
-    pub available_bikes: Option<u32>,
-    pub available_return_slots: Option<u32>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateJourney {
     pub stable_key: String,
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
-    pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
     pub timing_bases: Vec<TimingBasis>,
     pub required_live_status: Vec<FreshnessState>,
     pub transfers: Vec<TransferEvidence>,
-    pub bike_availability: Option<BikeActionEvidence>,
     pub blocking_condition: bool,
 }
 
@@ -82,7 +67,6 @@ pub struct RankedJourney {
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
-    pub bike_share_seconds: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
 }
@@ -92,7 +76,6 @@ pub struct RankingPolicy {
     pub version: String,
     pub metro_transfer_buffer_seconds: u32,
     pub bus_transfer_buffer_seconds: u32,
-    pub reliable_bike_count: u32,
     pub near_duplicate_arrival_seconds: i64,
     pub material_walking_difference_seconds: u32,
     pub excessive_alternative_delay_seconds: i64,
@@ -107,7 +90,6 @@ impl Default for RankingPolicy {
             version: "1".into(),
             metro_transfer_buffer_seconds: 180,
             bus_transfer_buffer_seconds: 300,
-            reliable_bike_count: 3,
             near_duplicate_arrival_seconds: 300,
             material_walking_difference_seconds: 300,
             excessive_alternative_delay_seconds: 900,
@@ -178,31 +160,6 @@ impl RankingPolicy {
             }
         }
 
-        if let Some(bike) = candidate.bike_availability {
-            if bike.pickup_state == ActionState::Disabled
-                || bike.return_state == ActionState::Disabled
-                || bike.available_bikes == Some(0)
-                || bike.available_return_slots == Some(0)
-            {
-                return None;
-            }
-            if bike.pickup_state != ActionState::Enabled
-                || bike.return_state != ActionState::Enabled
-                || bike.available_bikes.is_none()
-                || bike.available_return_slots.is_none()
-            {
-                class = JourneyClass::Feasible;
-            }
-            if bike.available_bikes < Some(self.reliable_bike_count) {
-                class = JourneyClass::Feasible;
-                push_unique(&mut reasons, RankingReason::LowPickupBikes);
-            }
-            if bike.available_return_slots < Some(self.reliable_bike_count) {
-                class = JourneyClass::Feasible;
-                push_unique(&mut reasons, RankingReason::LowReturnSlots);
-            }
-        }
-
         Some(RankedJourney {
             stable_key: candidate.stable_key,
             class,
@@ -211,7 +168,6 @@ impl RankingPolicy {
             departure_epoch_seconds: candidate.departure_epoch_seconds,
             arrival_epoch_seconds: candidate.arrival_epoch_seconds,
             walking_seconds: candidate.walking_seconds,
-            bike_share_seconds: candidate.bike_share_seconds,
             transfer_count: candidate.transfer_count,
             main_service_sequence: candidate.main_service_sequence,
         })
@@ -306,13 +262,11 @@ fn dominates(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney
     let no_worse = class_is_no_worse(policy, left, right)
         && left.arrival_epoch_seconds <= right.arrival_epoch_seconds
         && left.transfer_count <= right.transfer_count
-        && left.walking_seconds <= right.walking_seconds
-        && left.bike_share_seconds <= right.bike_share_seconds;
+        && left.walking_seconds <= right.walking_seconds;
     let strictly_better = class_is_strictly_better(policy, left, right)
         || left.arrival_epoch_seconds < right.arrival_epoch_seconds
         || left.transfer_count < right.transfer_count
-        || left.walking_seconds < right.walking_seconds
-        || left.bike_share_seconds < right.bike_share_seconds;
+        || left.walking_seconds < right.walking_seconds;
     no_worse && strictly_better
 }
 

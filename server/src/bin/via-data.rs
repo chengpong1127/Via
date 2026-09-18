@@ -75,7 +75,6 @@ enum InspectCommand {
     Stop(StopArgs),
     Service(ServiceArgs),
     NearbyStops(NearbyArgs),
-    BikeNear(NearbyArgs),
     Stats(StatsArgs),
 }
 
@@ -229,9 +228,7 @@ fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
         stops: network.stops.len(),
         services: network.services.len(),
         scheduled_trips: network.trips.len(),
-        bike_stations: network.bike_share_stations.len(),
         transfer_edges: network.transfer_edges.len(),
-        bike_share_connectors: network.bike_share_connectors.len(),
     };
     print_counts(
         "validated",
@@ -249,7 +246,6 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
         InspectCommand::Stop(args) => inspect_stop(args),
         InspectCommand::Service(args) => inspect_service(args),
         InspectCommand::NearbyStops(args) => inspect_nearby_stops(args),
-        InspectCommand::BikeNear(args) => inspect_bike_near(args),
         InspectCommand::Stats(args) => inspect_stats(args),
     }
 }
@@ -349,22 +345,6 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn inspect_bike_near(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact.artifact)?;
-    let coordinate = coordinate(args.lat, args.lon)?;
-    for station in network.nearest_bike_share_stations(coordinate, args.limit.max(1)) {
-        println!(
-            "{:.0}m  {}  {} ({:.6}, {:.6})",
-            coordinate.haversine_distance_metres(station.coordinate),
-            station.id.as_str(),
-            station.name,
-            station.coordinate.latitude,
-            station.coordinate.longitude
-        );
-    }
-    Ok(())
-}
-
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     let network = load_network_artifact(&args.artifact.artifact)?;
     let manifest_path = args.artifact.artifact.with_file_name("manifest.json");
@@ -375,9 +355,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
             stops: network.stops.len(),
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
-            bike_stations: network.bike_share_stations.len(),
             transfer_edges: network.transfer_edges.len(),
-            bike_share_connectors: network.bike_share_connectors.len(),
         });
     println!("network revision: {}", network.static_network_revision);
     println!("schedule revision: {}", network.schedule_revision);
@@ -400,12 +378,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
                 .count()
         );
     }
-    println!("BikeShare station count: {}", counts.bike_stations);
     println!("transfer edge count: {}", counts.transfer_edges);
-    println!(
-        "Transit↔BikeShare connector count: {}",
-        counts.bike_share_connectors
-    );
     println!("service-day boundary: {}", network.service_day_boundary);
     Ok(())
 }
@@ -422,13 +395,8 @@ fn print_counts(
     );
     println!("  schedule revision: {}", revisions.schedule_revision);
     println!(
-        "  stops={} services={} scheduled_trips={} bike_stations={} transfer_edges={} bike_share_connectors={}",
-        counts.stops,
-        counts.services,
-        counts.scheduled_trips,
-        counts.bike_stations,
-        counts.transfer_edges,
-        counts.bike_share_connectors
+        "  stops={} services={} scheduled_trips={} transfer_edges={}",
+        counts.stops, counts.services, counts.scheduled_trips, counts.transfer_edges
     );
 }
 
@@ -467,16 +435,6 @@ fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
             transfer.total_transfer_edges,
             transfer.build_wall_clock_milliseconds,
         );
-        if let Some(bike) = &transfer.bike_share_connectors {
-            println!(
-                "static BikeShare connector discovery: boarding_points={} geometric_candidate_pairs={} matrix_requests={} reachable_directions={} connectors_kept={}",
-                bike.boarding_points,
-                bike.geometric_candidate_pairs,
-                bike.matrix_requests,
-                bike.reachable_directions,
-                bike.connectors_kept,
-            );
-        }
     }
 }
 

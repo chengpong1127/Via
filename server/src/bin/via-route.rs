@@ -13,19 +13,15 @@ use via_server::{
     config::{TdxClient, TdxCredentials, load_dotenv},
     data::load_network_artifact,
     domain::{
-        ids::{BikeShareStationId, TransitServiceId},
+        ids::TransitServiceId,
         journey::{JourneyMode, PlanningOutcome},
-        realtime::{
-            ActionState, BikeAvailability, Freshness, FreshnessState, NormalizedRealtimeValue,
-            RealtimeValue,
-        },
+        realtime::{FreshnessState, NormalizedRealtimeValue},
     },
     health::DependencyHealth,
     providers::realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     providers::{
-        CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
-        RealtimeDepartureResolver, TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig,
-        ValhallaProvider,
+        CompositeDepartureResolver, MetroDepartureResolver, RealtimeDepartureResolver,
+        TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
@@ -53,7 +49,7 @@ struct Cli {
     depart_at: Option<String>,
     #[arg(long, conflicts_with = "depart_at")]
     arrive_by: Option<String>,
-    #[arg(long, default_value = "transit,bike_share")]
+    #[arg(long, default_value = "transit")]
     modes: String,
     #[arg(long, value_enum, default_value_t = RealtimeMode::Fixture)]
     realtime: RealtimeMode,
@@ -105,9 +101,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let routing = RoutingService::new(street, departure, cached.clone())
         .with_transit_network_arc(network.clone())
-        .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
-            cached.clone(),
-        )))
         .with_limits(RoutingLimits::default());
     let request = request_from_cli(&cli)?;
     if cli.trace {
@@ -227,8 +220,7 @@ fn parse_modes(value: &str) -> Result<Vec<JourneyMode>, Box<dyn Error>> {
         .map(str::trim)
         .map(|mode| match mode {
             "transit" => Ok(JourneyMode::Transit),
-            "bike_share" => Ok(JourneyMode::BikeShare),
-            _ => Err(format!("unsupported mode {mode:?}; use transit,bike_share")),
+            _ => Err(format!("unsupported mode {mode:?}; use transit")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     modes.sort();
@@ -291,9 +283,6 @@ fn leg_summary(leg: &via_server::domain::journey::Leg) -> String {
         via_server::domain::journey::LegDetails::Walking { .. } => {
             format!("Walk {} min", leg.duration_seconds.div_ceil(60))
         }
-        via_server::domain::journey::LegDetails::BikeShare { .. } => {
-            format!("YouBike {} min", leg.duration_seconds.div_ceil(60))
-        }
         via_server::domain::journey::LegDetails::Transit {
             service_label,
             transit_mode,
@@ -347,20 +336,6 @@ fn print_trace(result: &PlanningOutcome, events: &Arc<Mutex<Vec<String>>>) {
                             via_alighting_point_id,
                             leg.duration_seconds
                         ),
-                        via_server::domain::journey::LegDetails::BikeShare {
-                            via_pickup_station_id,
-                            via_return_station_id,
-                            available_bikes,
-                            available_return_slots,
-                            ..
-                        } => eprintln!(
-                            "  TRANSFER bike {} -> {} bikes={:?} return_slots={:?} ({}s)",
-                            via_pickup_station_id,
-                            via_return_station_id,
-                            available_bikes,
-                            available_return_slots,
-                            leg.duration_seconds
-                        ),
                     }
                 }
             }
@@ -406,19 +381,6 @@ impl RealtimeProvider for TraceRealtimeProvider {
         result
     }
 
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        self.record(format!(
-            "AVAILABILITY stations={}",
-            join_ids(station_ids.iter().map(BikeShareStationId::as_str))
-        ));
-        let result = self.inner.bike_availability(station_ids).await;
-        self.record(format_result(&result));
-        result
-    }
-
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
@@ -452,39 +414,6 @@ impl RealtimeProvider for FixtureRealtimeProvider {
         _query: ArrivalQuery,
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         Ok(Vec::new())
-    }
-
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        let now = OffsetDateTime::now_utc();
-        Ok(station_ids
-            .iter()
-            .map(|station_id| NormalizedRealtimeValue {
-                id: format!("fixture-bike:{}", station_id.as_str()),
-                received_at: now,
-                normalized_at: now,
-                provider_published_at: Some(now),
-                source_change_at: Some(now),
-                freshness: Freshness {
-                    state: FreshnessState::Fresh,
-                    reason: None,
-                    policy_version: "fixture".into(),
-                    evaluated_at: now,
-                },
-                value: RealtimeValue::BikeAvailability(BikeAvailability {
-                    station_id: station_id.clone(),
-                    rental_state: ActionState::Enabled,
-                    return_state: ActionState::Enabled,
-                    available_bikes: Some(4),
-                    available_return_slots: Some(4),
-                    source_change_at: Some(now),
-                    provider_published_at: Some(now),
-                    received_at: now,
-                }),
-            })
-            .collect())
     }
 
     async fn service_conditions(

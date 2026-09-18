@@ -6,11 +6,10 @@ use url::Url;
 use crate::{
     config::{TdxClient, TdxClientError},
     domain::{
-        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        ids::{BoardingPointId, TransitServiceId},
         realtime::{
-            ActionState, ArrivalEstimate, ArrivalState, BikeAvailability, FreshnessPolicy,
-            LiveStatusTimes, LocalizedSourceText, NormalizedRealtimeValue, RealtimeValue,
-            ServiceCondition, ServiceConditionState,
+            ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes, LocalizedSourceText,
+            NormalizedRealtimeValue, RealtimeValue, ServiceCondition, ServiceConditionState,
         },
     },
     providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider},
@@ -19,7 +18,6 @@ use crate::{
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
-const DEFAULT_BIKE_PATH: &str = "v2/Bike/Availability/Station";
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 
@@ -51,15 +49,9 @@ pub fn transit_service_id_for_direction(
     ))
 }
 
-/// Construct the domain ID for a TDX YouBike station.
-pub fn bike_share_station_id(station_uid: impl Into<String>) -> BikeShareStationId {
-    BikeShareStationId::new(station_uid)
-}
-
 pub struct TdxRealtimeProvider {
     base_url: Url,
     arrival_path: String,
-    bike_path: String,
     condition_path: Option<String>,
     tdx_client: TdxClient,
     policy: FreshnessPolicy,
@@ -81,20 +73,14 @@ impl TdxRealtimeProvider {
         Ok(Self {
             base_url: config.base_url,
             arrival_path: DEFAULT_ARRIVAL_PATH.into(),
-            bike_path: DEFAULT_BIKE_PATH.into(),
             condition_path: None,
             tdx_client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
         })
     }
 
-    pub fn with_endpoint_paths(
-        mut self,
-        arrival_path: impl Into<String>,
-        bike_path: impl Into<String>,
-    ) -> Self {
+    pub fn with_endpoint_paths(mut self, arrival_path: impl Into<String>) -> Self {
         self.arrival_path = arrival_path.into();
-        self.bike_path = bike_path.into();
         self
     }
 
@@ -182,22 +168,17 @@ impl TdxRealtimeProvider {
                 TdxFamily::BusArrival => {
                     self.normalize_bus_arrival(record, published_at, requested_services)
                 }
-                TdxFamily::BikeAvailability => self.normalize_bike_station(record, published_at),
                 TdxFamily::ServiceCondition => {
                     self.normalize_service_condition(record, published_at, requested_services)
                 }
             };
             let Some((id, value)) = value else { continue };
-            let source_change_at = match &value {
-                RealtimeValue::BikeAvailability(availability) => availability.source_change_at,
-                _ => None,
-            };
             normalized.push(NormalizedRealtimeValue {
                 id,
                 received_at,
                 normalized_at,
                 provider_published_at: Some(published_at),
-                source_change_at,
+                source_change_at: None,
                 freshness: freshness.clone(),
                 value,
             });
@@ -239,34 +220,6 @@ impl TdxRealtimeProvider {
         Some((
             observation_id(stop_uid, service_uid, published_at),
             RealtimeValue::ArrivalEstimate(value),
-        ))
-    }
-
-    fn normalize_bike_station(
-        &self,
-        record: &serde_json::Value,
-        published_at: OffsetDateTime,
-    ) -> Option<(String, RealtimeValue)> {
-        let station_uid = string_field(record, "StationUID")?;
-        let service_status = record
-            .get("ServiceStatus")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(u8::MAX);
-        let source_change_at = time_field(record, "SrcUpdateTime");
-        let received_at = OffsetDateTime::now_utc();
-        let value = normalize_bike_availability(
-            bike_share_station_id(station_uid),
-            service_status,
-            u32_field(record, "AvailableRentBikes"),
-            u32_field(record, "AvailableReturnBikes"),
-            source_change_at,
-            Some(published_at),
-            received_at,
-        );
-        Some((
-            observation_id(station_uid, "bike", published_at),
-            RealtimeValue::BikeAvailability(value),
         ))
     }
 
@@ -318,7 +271,6 @@ impl TdxRealtimeProvider {
 #[derive(Clone, Copy)]
 enum TdxFamily {
     BusArrival,
-    BikeAvailability,
     ServiceCondition,
 }
 
@@ -373,25 +325,6 @@ impl RealtimeProvider for TdxRealtimeProvider {
                 )
             })
             .collect())
-    }
-
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        if station_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let station_ids = station_ids
-            .iter()
-            .map(|id| id.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let query_params: Vec<(String, String)> = vec![(
-            "$filter".into(),
-            odata_in_filter("StationUID", &station_ids),
-        )];
-        let payload = self.get_json(&self.bike_path, &query_params).await?;
-        self.normalize_payload(&payload, TdxFamily::BikeAvailability, &[])
     }
 
     async fn service_conditions(
@@ -537,13 +470,6 @@ fn time_field(record: &serde_json::Value, field: &str) -> Option<OffsetDateTime>
     string_field(record, field).and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
 }
 
-fn u32_field(record: &serde_json::Value, field: &str) -> Option<u32> {
-    record
-        .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
 fn observation_id(primary_key: &str, secondary_key: &str, published_at: OffsetDateTime) -> String {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
@@ -583,32 +509,5 @@ pub fn normalize_n1(
         predicted_arrival_at,
         state,
         transmitted_at,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn normalize_bike_availability(
-    station_id: BikeShareStationId,
-    service_status: u8,
-    available_bikes: Option<u32>,
-    available_return_slots: Option<u32>,
-    source_change_at: Option<OffsetDateTime>,
-    provider_published_at: Option<OffsetDateTime>,
-    received_at: OffsetDateTime,
-) -> BikeAvailability {
-    let state = match service_status {
-        1 => ActionState::Enabled,
-        0 | 2 => ActionState::Disabled,
-        _ => ActionState::Unknown,
-    };
-    BikeAvailability {
-        station_id,
-        rental_state: state,
-        return_state: state,
-        available_bikes,
-        available_return_slots,
-        source_change_at,
-        provider_published_at,
-        received_at,
     }
 }

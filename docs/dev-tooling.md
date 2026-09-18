@@ -4,7 +4,7 @@ The development data flow is deliberately offline-first:
 
 ```text
 TDX → via-data fetch → immutable raw snapshot → via-data build
-  → validated TransitNetwork.transfer_edges + bike_share_connectors
+  → validated TransitNetwork.transfer_edges
   → server / via-route
 ```
 
@@ -47,7 +47,6 @@ via-data
     ├── stop
     ├── service
     ├── nearby-stops
-    ├── bike-near
     └── stats
 
 via-route
@@ -79,16 +78,12 @@ Before the build, start the repository Valhalla service and configure
 `VIA_VALHALLA_TILESET_LAST_MODIFIED`. In the current development environment,
 the URL is `http://valhalla:8002/`. The normal build discovers bounded,
 provider-validated walking transfers between public-transit BoardingPoints and
-merges them into `TransitNetwork.transfer_edges`. It also discovers directional
-BoardingPoint↔BikeShare walking connectors and stores them in the same
-`TransitNetwork` artifact; no second transfer or connector artifact is created.
+merges them into `TransitNetwork.transfer_edges`. No second transfer artifact
+is created.
 The default transit-transfer policy uses a 500 m geometric radius, an 8-minute
 / 800 m walking bound, at most 16 matrix candidates, and at most 12 inferred
-outgoing transfers per source. The default BikeShare-connector policy uses a
-500 m geometric radius, an 8-minute / 800 m walking bound, at most 8 geometric
-candidates, and at most 8 retained connectors per BoardingPoint. Both
-discoveries use bounded matrix batches. The build prints candidate, matrix,
-reachability, fan-out, and elapsed time diagnostics.
+outgoing transfers per source. Discovery uses bounded matrix batches. The build
+prints candidate, matrix, reachability, fan-out, and elapsed time diagnostics.
 
 The build output is:
 
@@ -99,9 +94,8 @@ manifest.json
 
 The network is canonicalized and validated before it is published. Revisions
 are SHA-256 hashes of canonical normalized content, not wall-clock identities.
-The manifest records source hashes, entity counts including `transfer_edges` and
-`bike_share_connectors`, and revisions. `built_at` is diagnostic metadata and
-may vary.
+The manifest records source hashes, entity counts including `transfer_edges`,
+and revisions. `built_at` is diagnostic metadata and may vary.
 
 The current static sources are the following TDX Basic API datasets. Every
 source is requested with the required `$format=JSON` query parameter; optional
@@ -113,12 +107,10 @@ v2/Bus/Route/City/Taipei
 v2/Bus/Stop/City/Taipei
 v2/Bus/StopOfRoute/City/Taipei
 v2/Bus/Schedule/City/Taipei
-v2/Bike/Station/City/Taipei
 v2/Bus/Route/City/NewTaipei
 v2/Bus/Stop/City/NewTaipei
 v2/Bus/StopOfRoute/City/NewTaipei
 v2/Bus/Schedule/City/NewTaipei
-v2/Bike/Station/City/NewTaipei
 v2/Rail/Metro/Station/TRTC
 v2/Rail/Metro/StationOfLine/TRTC
 v2/Rail/Metro/LineTransfer/TRTC
@@ -155,16 +147,12 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect nearby-sto
   --artifact ./data/dev/taipei/transit-network.json \
   --lat 25.0339 --lon 121.5645 --limit 20
 
-cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect bike-near \
-  --artifact ./data/dev/taipei/transit-network.json \
-  --lat 25.0339 --lon 121.5645 --limit 20
-
 cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stats \
   --artifact ./data/dev/taipei/transit-network.json
 ```
 
 Nearby queries use the same `TransitNetwork` spatial index as production
-routing. Bike inspection is static only and never requests availability.
+routing.
 
 ## Route debugging
 
@@ -178,7 +166,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
-  --modes transit,bike_share \
+  --modes transit \
   --realtime fixture \
   --trace
 ```
@@ -192,31 +180,30 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-now \
-  --modes transit,bike_share \
+  --modes transit \
   --realtime live \
   --trace
 ```
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
-`--json`. It accepts only the product-level `transit` and `bike_share` modes.
+`--json`. It accepts only the product-level `transit` mode.
 It never accepts credential flags.
 
 Recommended smoke routes are Taipei Main Station → Taipei 101, Banqiao →
 Taipei 101 for transfer structure, and an origin/destination away from MRT
-for a Bus + Metro or YouBike + Metro check. Live arrival times are not brittle
+for a Bus + Metro check. Live arrival times are not brittle
 test assertions; verify route existence, leg structure, transfers, and
 positive realistic durations.
 
 `TransferShortcutIndex` is an in-memory index projected directly from the
-validated `TransitNetwork.transfer_edges` at server or CLI startup. It stores no
-live BikeShare inventory, and public-transit transfer reconstruction does not
-call Valhalla. There is no separate transfer preprocessing flag or persisted
+validated `TransitNetwork.transfer_edges` at server or CLI startup. Public-
+transit transfer reconstruction does not call Valhalla. There is no separate
+transfer preprocessing flag or persisted
 transfer artifact. The shared TDX fixture set is under
 `server/fixtures/tdx/raw` and uses simplified current-contract payloads for
-both Taipei and New Taipei, plus TRA, THSR, TRTC, and YouBike.
+both Taipei and New Taipei, plus TRA, THSR, and TRTC.
 
 The TRTC LineTransfer feed also includes inter-operator records. The normalizer
 keeps those records only when both canonical boarding points are present in the
-selected static station scope. The build-stage walking enrichment considers only
-the public-transit BoardingPoints present in that normalized network and never
-adds BikeShare stations to `transfer_edges`.
+selected static station scope. The build-stage walking enrichment considers
+only the public-transit BoardingPoints present in that normalized network.

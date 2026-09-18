@@ -51,13 +51,6 @@ impl RealtimeProvider for BatchProvider {
             .map_or_else(|| Ok(self.values.as_ref().clone()), Err)
     }
 
-    async fn bike_availability(
-        &self,
-        _station_ids: &[via_server::domain::ids::BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        Ok(Vec::new())
-    }
-
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],
@@ -113,7 +106,6 @@ fn network_for_with_scopes(
         Vec::new(),
         services,
         trips,
-        Vec::new(),
     )
     .with_revisions("static", "schedule")
 }

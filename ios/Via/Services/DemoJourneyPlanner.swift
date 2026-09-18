@@ -72,25 +72,6 @@ actor DemoJourneyPlanner: JourneyPlanning {
                     JourneyLeg(id: "walk-arrive", mode: .walking, title: "Walk to the destination", subtitle: "About 3 minutes", durationSeconds: 180, guidance: [GuidanceInstruction(title: "Continue to the destination", detail: nil)])
                 ]
             ),
-            JourneyOption(
-                id: "option_bike",
-                matchingKey: "bike-main-xinyi",
-                journeyClass: .feasible,
-                label: .lessWalking,
-                departureTime: now.addingTimeInterval(120),
-                arrivalTime: now.addingTimeInterval(1_620),
-                durationSeconds: 1_500,
-                walkingSeconds: 120,
-                transferCount: 0,
-                travelModes: [.walking, .bikeShare],
-                liveStatusSummary: LiveStatusSummary(state: .fresh, observedAt: now.addingTimeInterval(-45)),
-                overview: interpolate([taipeiMain, Coordinate(latitude: 25.0418, longitude: 121.5350), Coordinate(latitude: 25.0372, longitude: 121.5520), destination]),
-                legs: [
-                    JourneyLeg(id: "walk-bike", mode: .walking, title: "Walk to a bike-share station", subtitle: "6 bikes available", durationSeconds: 60, guidance: [GuidanceInstruction(title: "Pick up a bike", detail: "Availability is live but not reserved.")]),
-                    JourneyLeg(id: "bike-xinyi", mode: .bikeShare, title: "Ride toward Xinyi District", subtitle: "5.4 km", durationSeconds: 1_380, guidance: [GuidanceInstruction(title: "Follow the cycle route east", detail: "Return the bike near the destination.")]),
-                    JourneyLeg(id: "walk-bike-arrive", mode: .walking, title: "Walk to the destination", subtitle: "About 1 minute", durationSeconds: 60, guidance: [GuidanceInstruction(title: "Continue to the destination", detail: nil)])
-                ]
-            )
         ]
     }
 

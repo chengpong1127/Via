@@ -9,8 +9,7 @@ Status: Current
 Via keeps static transit and schedule data in one immutable, versioned
 `TransitNetwork`. `TripBasedRouter` asks a provider-neutral departure resolver
 only for the departures required by its access/egress frontier. Service
-conditions and bike-share stations remain on the realtime status interface. An
-in-process async cache
+conditions remain on the realtime status interface. An in-process async cache
 coalesces identical misses for a short configurable TTL, while normalized
 timestamps and freshness remain authoritative for eligibility. Realtime values
 are request-local after collection and are not persisted as a global snapshot.

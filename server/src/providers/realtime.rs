@@ -12,7 +12,7 @@ use futures_util::future::try_join_all;
 use moka::future::Cache;
 
 use crate::domain::{
-    ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+    ids::{BoardingPointId, TransitServiceId},
     realtime::{FreshnessReason, FreshnessState},
 };
 
@@ -256,11 +256,6 @@ pub trait RealtimeProvider: Send + Sync {
         query: ArrivalQuery,
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError>;
 
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError>;
-
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
@@ -272,7 +267,6 @@ pub struct CachedRealtimeProvider {
     inner: Arc<dyn RealtimeProvider>,
     arrival_batch_cache: Cache<ArrivalQuery, Arc<Vec<NormalizedRealtimeValue>>>,
     arrival_pair_cache: Cache<ArrivalPair, Arc<Vec<NormalizedRealtimeValue>>>,
-    bike_cache: Cache<BikeShareStationId, Arc<Vec<NormalizedRealtimeValue>>>,
     condition_cache: Cache<TransitServiceId, Arc<Vec<NormalizedRealtimeValue>>>,
     ttl: Duration,
     metrics: RealtimeMetrics,
@@ -289,7 +283,6 @@ impl CachedRealtimeProvider {
             inner,
             arrival_batch_cache: Cache::builder().time_to_live(ttl).build(),
             arrival_pair_cache: Cache::builder().time_to_live(ttl).build(),
-            bike_cache: Cache::builder().time_to_live(ttl).build(),
             condition_cache: Cache::builder().time_to_live(ttl).build(),
             ttl,
             metrics: RealtimeMetrics::default(),
@@ -307,37 +300,7 @@ impl CachedRealtimeProvider {
     pub async fn clear(&self) {
         self.arrival_batch_cache.invalidate_all();
         self.arrival_pair_cache.invalidate_all();
-        self.bike_cache.invalidate_all();
         self.condition_cache.invalidate_all();
-    }
-
-    async fn bike_station(
-        &self,
-        station_id: BikeShareStationId,
-    ) -> Result<Arc<Vec<NormalizedRealtimeValue>>, RealtimeError> {
-        let inner = self.inner.clone();
-        let key = station_id.clone();
-        if self.bike_cache.get(&key).await.is_some() {
-            self.metrics.cache_hit();
-        } else {
-            self.metrics.cache_miss();
-        }
-        let metrics = self.metrics.clone();
-        self.bike_cache
-            .try_get_with(key, async move {
-                metrics.upstream_request();
-                let result = inner
-                    .bike_availability(std::slice::from_ref(&station_id))
-                    .await
-                    .map(Arc::new);
-                if let Ok(values) = &result {
-                    metrics.observe_values(values);
-                }
-                metrics.upstream_result(result.as_ref().err());
-                result
-            })
-            .await
-            .map_err(|error| (*error).clone())
     }
 
     async fn service_condition(
@@ -462,25 +425,6 @@ impl RealtimeProvider for CachedRealtimeProvider {
             .map_err(|error| (*error).clone())
     }
 
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        let mut unique = HashSet::new();
-        let results = try_join_all(
-            station_ids
-                .iter()
-                .filter(|station_id| unique.insert((*station_id).clone()))
-                .cloned()
-                .map(|station_id| self.bike_station(station_id)),
-        )
-        .await?;
-        Ok(results
-            .into_iter()
-            .flat_map(|values| values.as_ref().clone())
-            .collect())
-    }
-
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
@@ -518,13 +462,6 @@ impl RealtimeProvider for NullRealtimeProvider {
     async fn arrival_estimates(
         &self,
         _query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        Ok(Vec::new())
-    }
-
-    async fn bike_availability(
-        &self,
-        _station_ids: &[BikeShareStationId],
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         Ok(Vec::new())
     }

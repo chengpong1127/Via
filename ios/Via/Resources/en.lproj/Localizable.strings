@@ -2,7 +2,6 @@
 "Bus" = "Bus";
 "Metro" = "Metro";
 "Transit" = "Transit";
-"Bike share" = "Bike share";
 "Rail" = "Rail";
 "High-speed rail" = "High-speed rail";
 "Walk" = "Walk";
@@ -19,7 +18,7 @@
 "Leave in 15 minutes" = "Leave in 15 minutes";
 "Arrive in 45 minutes" = "Arrive in 45 minutes";
 "No matching Journey Options" = "No matching Journey Options";
-"Try another combination of Transit or Bike share." = "Try another combination of Transit or Bike share.";
+"Try another transit combination." = "Try another transit combination.";
 "Refresh unavailable. Showing the previous result." = "Refresh unavailable. Showing the previous result.";
 "Search for a place" = "Search for a place";
 "Search for a station, landmark, or address anywhere in Taiwan." = "Search for a station, landmark, or address anywhere in Taiwan.";

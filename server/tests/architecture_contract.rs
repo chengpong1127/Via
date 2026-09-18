@@ -134,15 +134,13 @@ fn reconstruction_modules_have_explicit_responsibilities() {
         );
     }
     assert!(source("src/routing/reconstruct/mod.rs").contains("legs::assemble"));
-    assert!(source("src/routing/reconstruct/legs.rs").contains("append_transit_transfer"));
-    assert!(source("src/routing/reconstruct/legs.rs").contains("append_mobility_path"));
+    assert!(source("src/routing/reconstruct/legs.rs").contains("add_transfer"));
     let legs = source("src/routing/reconstruct/legs.rs");
     let transfer = legs
-        .split_once("fn append_transit_transfer")
-        .and_then(|(_, rest)| rest.split_once("async fn append_mobility_path"))
-        .map(|(transfer, _)| transfer)
+        .split_once("fn add_transfer")
+        .map(|(_, rest)| rest)
         .expect("transfer reconstruction function should be present");
-    assert!(transfer.contains("synthetic_street_path"));
+    assert!(transfer.contains("transfer_evidence"));
     assert!(!transfer.contains("hydrate_path"));
     assert!(!transfer.contains("service.street_path("));
     assert!(source("src/routing/reconstruct/evidence.rs").contains("summary_from_evidence"));
@@ -167,12 +165,10 @@ fn routing_has_no_legacy_transit_pipeline() {
     for legacy in [
         "DiscoveryResult",
         "RouteGraph",
-        "BikeShareOpportunityDiscovery",
         "TransitTimingProvider",
         "collect_request_realtime",
         "search::search",
         "add_timed_transit",
-        "add_bike_alternatives",
     ] {
         assert!(
             !routing.contains(legacy),

@@ -28,7 +28,7 @@ struct HTTPJourneyPlannerTests {
                 name: "Destination",
                 coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
             ),
-            selectedModes: [.bikeShare, .transit],
+            selectedModes: [.transit],
             departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000)),
             locale: "en_US"
         )
@@ -38,7 +38,7 @@ struct HTTPJourneyPlannerTests {
         let body = try #require(StubURLProtocol.lastRequest?.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["locale"] as? String == "en-US")
-        #expect(json["selected_modes"] as? [String] == ["bike_share", "transit"])
+        #expect(json["selected_modes"] as? [String] == ["transit"])
         #expect(json["departure_setting"] as? [String: Any] != nil)
         let origin = try #require(json["origin"] as? [String: Any])
         let originCoordinate = try #require(origin["coordinate"] as? [String: Any])

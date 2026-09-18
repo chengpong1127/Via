@@ -75,17 +75,14 @@ fn planning_request_accepts_the_provider_neutral_contract() {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["bike_share", "transit"],
+        "selected_modes": ["transit"],
         "locale": "zh-Hant-TW",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
 
     request.validate().unwrap();
-    assert_eq!(
-        request.selected_modes,
-        vec![JourneyMode::BikeShare, JourneyMode::Transit]
-    );
+    assert_eq!(request.selected_modes, vec![JourneyMode::Transit]);
 }
 
 #[test]
@@ -99,7 +96,7 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["transit", "bike_share"],
+        "selected_modes": ["walking", "transit"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))

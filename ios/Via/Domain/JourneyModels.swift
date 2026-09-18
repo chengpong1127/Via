@@ -31,17 +31,15 @@ enum JourneyEndpoint: Hashable, Sendable {
 
 enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case walking
-    case bikeShare = "bike_share"
     case transit
 
     var id: Self { self }
 
-    static let selectable: [JourneyMode] = [.bikeShare, .transit]
+    static let selectable: [JourneyMode] = [.transit]
 
     var titleKey: String {
         switch self {
         case .transit: "Transit"
-        case .bikeShare: "Bike share"
         case .walking: "Walk"
         }
     }
@@ -49,7 +47,6 @@ enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     var symbolName: String {
         switch self {
         case .transit: "tram.fill"
-        case .bikeShare: "bicycle"
         case .walking: "figure.walk"
         }
     }

@@ -1,4 +1,4 @@
-//! Provider adapters for demand-driven departure and BikeShare resolution.
+//! Provider adapters for demand-driven departure resolution.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -7,19 +7,14 @@ use std::{
 
 use async_trait::async_trait;
 
-use crate::{
-    domain::{
-        ids::{BikeShareStationId, EffectiveTripId},
-        realtime::{
-            ArrivalState, BikeAvailability, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
-        },
-        transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
-        transit_timing::{
-            DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-            RealtimeFirstDepartureResolver, ScheduleDepartureResolver,
-        },
+use crate::domain::{
+    ids::EffectiveTripId,
+    realtime::{ArrivalState, FreshnessState, NormalizedRealtimeValue, RealtimeValue},
+    transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
+    transit_timing::{
+        DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
+        RealtimeFirstDepartureResolver, ScheduleDepartureResolver,
     },
-    routing::bike::{BikeAvailabilityError, BikeAvailabilityResolver},
 };
 
 use super::realtime::{ArrivalQuery, RealtimeError, RealtimeMetrics, RealtimeProvider};
@@ -638,43 +633,6 @@ impl DepartureResolver for CompositeDepartureResolver {
     }
 }
 
-/// Normalized realtime BikeShare availability for query-time station checks.
-pub struct RealtimeBikeAvailabilityResolver {
-    realtime: Arc<dyn RealtimeProvider>,
-}
-
-impl RealtimeBikeAvailabilityResolver {
-    pub fn new(realtime: Arc<dyn RealtimeProvider>) -> Self {
-        Self { realtime }
-    }
-}
-
-#[async_trait]
-impl BikeAvailabilityResolver for RealtimeBikeAvailabilityResolver {
-    async fn availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<HashMap<BikeShareStationId, BikeAvailability>, BikeAvailabilityError> {
-        let values = self
-            .realtime
-            .bike_availability(station_ids)
-            .await
-            .map_err(map_bike_realtime_error)?;
-        Ok(values
-            .into_iter()
-            .filter_map(|status| {
-                if status.freshness.state != FreshnessState::Fresh {
-                    return None;
-                }
-                let RealtimeValue::BikeAvailability(availability) = status.value else {
-                    return None;
-                };
-                Some((availability.station_id.clone(), availability))
-            })
-            .collect())
-    }
-}
-
 fn map_departure_realtime_error(error: RealtimeError) -> DepartureError {
     match error {
         RealtimeError::TimedOut => DepartureError::TimedOut,
@@ -684,13 +642,5 @@ fn map_departure_realtime_error(error: RealtimeError) -> DepartureError {
             DepartureError::InvalidResponse
         }
         RealtimeError::InvalidConfiguration => DepartureError::InvalidConfiguration,
-    }
-}
-
-fn map_bike_realtime_error(error: RealtimeError) -> BikeAvailabilityError {
-    if error.is_transient() {
-        BikeAvailabilityError::TemporarilyUnavailable
-    } else {
-        BikeAvailabilityError::InvalidResponse
     }
 }

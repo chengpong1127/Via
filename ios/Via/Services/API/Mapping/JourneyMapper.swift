@@ -94,12 +94,6 @@ private extension ServerLegDTO {
             }
             title = "Walk"
             transit = nil
-        case .bikeShare:
-            guard details.type == "bike_share" else {
-                throw JourneyPlanningError.unsupportedResponse
-            }
-            title = "Bike share"
-            transit = nil
         case .transit:
             guard details.type == "transit",
                   let transitMode = details.transitMode.flatMap(TransitMode.init(rawValue)),

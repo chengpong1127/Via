@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time};
 
-use super::ids::{BikeShareStationId, BoardingPointId, TransitServiceId};
+use super::ids::{BoardingPointId, TransitServiceId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -137,7 +137,6 @@ pub struct ArrivalEstimate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RealtimeValue {
     ArrivalEstimate(ArrivalEstimate),
-    BikeAvailability(BikeAvailability),
     ServiceCondition(ServiceCondition),
 }
 
@@ -156,7 +155,6 @@ impl NormalizedRealtimeValue {
     pub fn kind(&self) -> RealtimeValueKind {
         match &self.value {
             RealtimeValue::ArrivalEstimate(_) => RealtimeValueKind::ArrivalEstimate,
-            RealtimeValue::BikeAvailability(_) => RealtimeValueKind::BikeAvailability,
             RealtimeValue::ServiceCondition(_) => RealtimeValueKind::ServiceCondition,
         }
     }
@@ -165,28 +163,7 @@ impl NormalizedRealtimeValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RealtimeValueKind {
     ArrivalEstimate,
-    BikeAvailability,
     ServiceCondition,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionState {
-    Enabled,
-    Disabled,
-    Unknown,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BikeAvailability {
-    pub station_id: BikeShareStationId,
-    pub rental_state: ActionState,
-    pub return_state: ActionState,
-    pub available_bikes: Option<u32>,
-    pub available_return_slots: Option<u32>,
-    pub source_change_at: Option<OffsetDateTime>,
-    pub provider_published_at: Option<OffsetDateTime>,
-    pub received_at: OffsetDateTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,6 @@
 "Bus" = "公車";
 "Metro" = "捷運";
 "Transit" = "大眾運輸";
-"Bike share" = "共享單車";
 "Rail" = "鐵路";
 "High-speed rail" = "高速鐵路";
 "Walk" = "步行";
@@ -19,7 +18,7 @@
 "Leave in 15 minutes" = "15 分鐘後出發";
 "Arrive in 45 minutes" = "45 分鐘後抵達";
 "No matching Journey Options" = "找不到符合的行程選項";
-"Try another combination of Transit or Bike share." = "請嘗試其他大眾運輸或共享單車組合。";
+"Try another transit combination." = "請嘗試其他大眾運輸組合。";
 "Refresh unavailable. Showing the previous result." = "目前無法重新整理，繼續顯示先前的結果。";
 "Search for a place" = "搜尋地點";
 "Search for a station, landmark, or address anywhere in Taiwan." = "搜尋台灣各地的車站、地標或地址。";

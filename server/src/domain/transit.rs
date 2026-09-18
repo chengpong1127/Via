@@ -11,7 +11,7 @@ use std::{
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
-use super::ids::{BikeShareStationId, BoardingPointId, ScheduledTripId, TransitServiceId};
+use super::ids::{BoardingPointId, ScheduledTripId, TransitServiceId};
 use super::{
     location::{METRES_PER_DEGREE, RequestCoordinate},
     normalize_to_taipei, taipei_offset,
@@ -174,13 +174,6 @@ impl ScheduledTrip {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BikeShareStation {
-    pub id: BikeShareStationId,
-    pub name: String,
-    pub coordinate: RequestCoordinate,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferEdge {
     pub from: BoardingPointId,
@@ -250,66 +243,6 @@ impl MetroTiming {
     }
 }
 
-impl BikeShareStation {
-    pub fn new(
-        id: BikeShareStationId,
-        name: impl Into<String>,
-        coordinate: RequestCoordinate,
-    ) -> Self {
-        Self {
-            id,
-            name: name.into(),
-            coordinate,
-        }
-    }
-}
-
-/// A static walking connection between a public-transit Boarding Point and a
-/// BikeShare station. The two directions are intentionally independent: the
-/// street graph may make one direction unreachable or materially different.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BikeShareConnector {
-    pub stop_id: BoardingPointId,
-    pub station_id: BikeShareStationId,
-    #[serde(default)]
-    pub stop_to_station_seconds: Option<u32>,
-    #[serde(default)]
-    pub station_to_stop_seconds: Option<u32>,
-    #[serde(default)]
-    pub stop_to_station_metres: Option<u32>,
-    #[serde(default)]
-    pub station_to_stop_metres: Option<u32>,
-}
-
-impl BikeShareConnector {
-    pub fn new(stop_id: BoardingPointId, station_id: BikeShareStationId) -> Self {
-        Self {
-            stop_id,
-            station_id,
-            stop_to_station_seconds: None,
-            station_to_stop_seconds: None,
-            stop_to_station_metres: None,
-            station_to_stop_metres: None,
-        }
-    }
-
-    pub fn with_stop_to_station(mut self, seconds: u32, metres: u32) -> Self {
-        self.stop_to_station_seconds = Some(seconds);
-        self.stop_to_station_metres = Some(metres);
-        self
-    }
-
-    pub fn with_station_to_stop(mut self, seconds: u32, metres: u32) -> Self {
-        self.station_to_stop_seconds = Some(seconds);
-        self.station_to_stop_metres = Some(metres);
-        self
-    }
-
-    pub fn has_direction(&self) -> bool {
-        self.stop_to_station_seconds.is_some() || self.station_to_stop_seconds.is_some()
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransitNetwork {
     pub service_day_boundary: Time,
@@ -318,15 +251,10 @@ pub struct TransitNetwork {
     pub trips: Vec<ScheduledTrip>,
     #[serde(default)]
     pub metro_timings: Vec<MetroTiming>,
-    pub bike_share_stations: Vec<BikeShareStation>,
     /// Explicit movement time between distinct Boarding Points. Same-point
     /// transfers use `default_transfer_seconds`; distinct points must be listed.
     #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
-    /// Static walking connectors between transit Boarding Points and distinct
-    /// BikeShare stations. Realtime availability is never persisted here.
-    #[serde(default)]
-    pub bike_share_connectors: Vec<BikeShareConnector>,
     pub default_transfer_seconds: u32,
     /// Revisions are part of the artifact, not inferred from deployment time.
     #[serde(default)]
@@ -350,9 +278,7 @@ impl PartialEq for TransitNetwork {
             && self.services == other.services
             && self.trips == other.trips
             && self.metro_timings == other.metro_timings
-            && self.bike_share_stations == other.bike_share_stations
             && self.transfer_edges == other.transfer_edges
-            && self.bike_share_connectors == other.bike_share_connectors
             && self.default_transfer_seconds == other.default_transfer_seconds
             && self.static_network_revision == other.static_network_revision
             && self.schedule_revision == other.schedule_revision
@@ -366,7 +292,6 @@ impl Default for TransitNetwork {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
         )
     }
 }
@@ -377,7 +302,6 @@ impl TransitNetwork {
         stops: Vec<TransitStop>,
         services: Vec<TransitService>,
         trips: Vec<ScheduledTrip>,
-        bike_share_stations: Vec<BikeShareStation>,
     ) -> Self {
         Self {
             service_day_boundary,
@@ -385,9 +309,7 @@ impl TransitNetwork {
             services,
             trips,
             metro_timings: Vec::new(),
-            bike_share_stations,
             transfer_edges: Vec::new(),
-            bike_share_connectors: Vec::new(),
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
             schedule_revision: String::new(),
@@ -402,14 +324,6 @@ impl TransitNetwork {
 
     pub fn with_transfer_edges(mut self, transfer_edges: Vec<TransferEdge>) -> Self {
         self.transfer_edges = transfer_edges;
-        self
-    }
-
-    pub fn with_bike_share_connectors(
-        mut self,
-        bike_share_connectors: Vec<BikeShareConnector>,
-    ) -> Self {
-        self.bike_share_connectors = bike_share_connectors;
         self
     }
 
@@ -545,23 +459,6 @@ impl TransitNetwork {
                 ));
             }
         }
-        let mut station_ids = HashSet::new();
-        for station in &self.bike_share_stations {
-            if !station_ids.insert(station.id.clone()) {
-                return Err(TransitNetworkValidationError::DuplicateStation(
-                    station.id.clone(),
-                ));
-            }
-            if !station.coordinate.latitude.is_finite()
-                || !(-90.0..=90.0).contains(&station.coordinate.latitude)
-                || !station.coordinate.longitude.is_finite()
-                || !(-180.0..=180.0).contains(&station.coordinate.longitude)
-            {
-                return Err(TransitNetworkValidationError::InvalidStationCoordinate(
-                    station.id.clone(),
-                ));
-            }
-        }
         for edge in &self.transfer_edges {
             if !stop_ids.contains(&edge.from) || !stop_ids.contains(&edge.to) {
                 return Err(TransitNetworkValidationError::UnknownTransferEndpoint {
@@ -578,49 +475,6 @@ impl TransitNetwork {
                 return Err(TransitNetworkValidationError::ZeroTransferDuration {
                     from: edge.from.clone(),
                     to: edge.to.clone(),
-                });
-            }
-        }
-        let mut connector_pairs = HashSet::new();
-        for connector in &self.bike_share_connectors {
-            if !stop_ids.contains(&connector.stop_id) {
-                return Err(TransitNetworkValidationError::UnknownBikeConnectorStop(
-                    connector.stop_id.clone(),
-                ));
-            }
-            if !station_ids.contains(&connector.station_id) {
-                return Err(TransitNetworkValidationError::UnknownBikeConnectorStation(
-                    connector.station_id.clone(),
-                ));
-            }
-            if !connector_pairs.insert((connector.stop_id.clone(), connector.station_id.clone())) {
-                return Err(TransitNetworkValidationError::DuplicateBikeConnector {
-                    stop_id: connector.stop_id.clone(),
-                    station_id: connector.station_id.clone(),
-                });
-            }
-            if !connector.has_direction() {
-                return Err(TransitNetworkValidationError::EmptyBikeConnector {
-                    stop_id: connector.stop_id.clone(),
-                    station_id: connector.station_id.clone(),
-                });
-            }
-            if connector.stop_to_station_seconds == Some(0)
-                || connector.station_to_stop_seconds == Some(0)
-            {
-                return Err(TransitNetworkValidationError::ZeroBikeConnectorDuration {
-                    stop_id: connector.stop_id.clone(),
-                    station_id: connector.station_id.clone(),
-                });
-            }
-            if connector.stop_to_station_seconds.is_some()
-                != connector.stop_to_station_metres.is_some()
-                || connector.station_to_stop_seconds.is_some()
-                    != connector.station_to_stop_metres.is_some()
-            {
-                return Err(TransitNetworkValidationError::InvalidBikeConnectorMetrics {
-                    stop_id: connector.stop_id.clone(),
-                    station_id: connector.station_id.clone(),
                 });
             }
         }
@@ -652,8 +506,6 @@ impl TransitNetwork {
                 });
             }
         }
-        self.bike_share_stations
-            .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
                 .as_str()
@@ -663,15 +515,6 @@ impl TransitNetwork {
         });
         self.transfer_edges
             .dedup_by(|left, right| left.from == right.from && left.to == right.to);
-        self.bike_share_connectors.sort_by(|left, right| {
-            left.stop_id
-                .as_str()
-                .cmp(right.stop_id.as_str())
-                .then(left.station_id.as_str().cmp(right.station_id.as_str()))
-        });
-        self.bike_share_connectors.dedup_by(|left, right| {
-            left.stop_id == right.stop_id && left.station_id == right.station_id
-        });
         self.indexes = Arc::new(OnceLock::new());
         self
     }
@@ -708,19 +551,6 @@ impl TransitNetwork {
         nearest_from_grid(&self.indexes().stop_grid, &self.stops, coordinate, limit)
     }
 
-    pub fn nearest_bike_share_stations(
-        &self,
-        coordinate: RequestCoordinate,
-        limit: usize,
-    ) -> Vec<&BikeShareStation> {
-        nearest_from_grid(
-            &self.indexes().station_grid,
-            &self.bike_share_stations,
-            coordinate,
-            limit,
-        )
-    }
-
     /// Return all stops inside a bounded radius in deterministic distance/id order.
     /// The query uses the same immutable grid as nearest-stop lookup, so callers
     /// do not need to maintain a second spatial index over the network.
@@ -732,21 +562,6 @@ impl TransitNetwork {
         points_within_radius_from_grid(
             &self.indexes().stop_grid,
             &self.stops,
-            coordinate,
-            radius_metres,
-        )
-    }
-
-    /// Return all bike-share stations inside a bounded radius in deterministic
-    /// distance/id order.
-    pub fn bike_share_stations_within_radius(
-        &self,
-        coordinate: RequestCoordinate,
-        radius_metres: u32,
-    ) -> Vec<&BikeShareStation> {
-        points_within_radius_from_grid(
-            &self.indexes().station_grid,
-            &self.bike_share_stations,
             coordinate,
             radius_metres,
         )
@@ -768,12 +583,6 @@ impl TransitNetwork {
 
     pub fn service(&self, id: &TransitServiceId) -> Option<&TransitService> {
         self.services.iter().find(|service| &service.id == id)
-    }
-
-    pub fn bike_share_station(&self, id: &BikeShareStationId) -> Option<&BikeShareStation> {
-        self.bike_share_stations
-            .iter()
-            .find(|station| &station.id == id)
     }
 
     pub fn service_day(&self, instant: OffsetDateTime) -> Date {
@@ -862,7 +671,6 @@ impl TransitNetwork {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TransitIndexes {
     stop_grid: SpatialGrid,
-    station_grid: SpatialGrid,
 }
 
 impl TransitIndexes {
@@ -870,9 +678,6 @@ impl TransitIndexes {
         let mut indexes = Self::default();
         for (index, stop) in network.stops.iter().enumerate() {
             indexes.stop_grid.insert(stop.coordinate, index);
-        }
-        for (index, station) in network.bike_share_stations.iter().enumerate() {
-            indexes.station_grid.insert(station.coordinate, index);
         }
         indexes
     }
@@ -913,16 +718,6 @@ trait SpatialPoint {
 }
 
 impl SpatialPoint for TransitStop {
-    fn coordinate(&self) -> RequestCoordinate {
-        self.coordinate
-    }
-
-    fn stable_id(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-impl SpatialPoint for BikeShareStation {
     fn coordinate(&self) -> RequestCoordinate {
         self.coordinate
     }
@@ -1096,10 +891,6 @@ pub enum TransitNetworkValidationError {
     DuplicateService(TransitServiceId),
     #[error("duplicate Scheduled Trip {0:?}")]
     DuplicateTrip(ScheduledTripId),
-    #[error("duplicate bike-share station {0:?}")]
-    DuplicateStation(BikeShareStationId),
-    #[error("invalid coordinate for bike-share station {0:?}")]
-    InvalidStationCoordinate(BikeShareStationId),
     #[error("Transit Service {0:?} has fewer than two Boarding Points")]
     PatternTooShort(TransitServiceId),
     #[error("Transit Service {0:?} references an unknown Boarding Point")]
@@ -1127,30 +918,6 @@ pub enum TransitNetworkValidationError {
     ZeroTransferDuration {
         from: BoardingPointId,
         to: BoardingPointId,
-    },
-    #[error("BikeShare connector references unknown Boarding Point {0:?}")]
-    UnknownBikeConnectorStop(BoardingPointId),
-    #[error("BikeShare connector references unknown station {0:?}")]
-    UnknownBikeConnectorStation(BikeShareStationId),
-    #[error("duplicate BikeShare connector {stop_id:?} -> {station_id:?}")]
-    DuplicateBikeConnector {
-        stop_id: BoardingPointId,
-        station_id: BikeShareStationId,
-    },
-    #[error("BikeShare connector has no reachable direction {stop_id:?} <-> {station_id:?}")]
-    EmptyBikeConnector {
-        stop_id: BoardingPointId,
-        station_id: BikeShareStationId,
-    },
-    #[error("BikeShare connector has incomplete metrics {stop_id:?} <-> {station_id:?}")]
-    InvalidBikeConnectorMetrics {
-        stop_id: BoardingPointId,
-        station_id: BikeShareStationId,
-    },
-    #[error("BikeShare connector has zero duration {stop_id:?} <-> {station_id:?}")]
-    ZeroBikeConnectorDuration {
-        stop_id: BoardingPointId,
-        station_id: BikeShareStationId,
     },
 }
 

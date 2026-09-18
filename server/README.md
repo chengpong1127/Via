@@ -44,14 +44,11 @@ PlanningRequest → RoutingService → street access / egress
 
 `RoutingAlgorithm`, `StreetRouter`, and `DepartureResolver` are the intentional
 provider-neutral seams. `TripBasedRouter` consumes realtime-first `EffectiveTrip`
-values, static walking `TransferShortcutIndex` alternatives, and the current
-query-time `BikeShareOperator`.
+values and static walking `TransferShortcutIndex` alternatives.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
-transfers. Static `bike_share_connectors` contain directional transit↔BikeShare
-walking facts. BikeShare station availability and bicycle matrices are fetched
-at query time. The operator supports direct BikeShare, BikeShare access to
-transit, transit→BikeShare→transit, and transit→BikeShare→destination.
+transfers. Walking access, transit, and egress are the only journey modes in the
+current product contract.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and

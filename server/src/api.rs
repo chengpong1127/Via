@@ -24,7 +24,7 @@ pub fn new_request_id() -> String {
 pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
-    #[schema(min_items = 1, max_items = 2)]
+    #[schema(min_items = 1, max_items = 1)]
     pub selected_modes: Vec<JourneyMode>,
     #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
     pub locale: String,

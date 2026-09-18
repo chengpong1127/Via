@@ -2,7 +2,7 @@
 
 Via plans multimodal journeys in Taipei and New Taipei using TDX transit data,
 Valhalla street routing, and TDX realtime status. The server returns provider-
-neutral `JourneyOption` values for walking, transit, and BikeShare journeys.
+neutral `JourneyOption` values for walking and transit journeys.
 
 ## Request flow
 
@@ -25,14 +25,14 @@ service does not depend on a graph or a second planner abstraction.
 ## Static data
 
 `via-data` fetches TDX payloads, normalizes them into the provider-neutral
-`TransitNetwork`, enriches directional walking transfers and transit↔BikeShare
-walking connectors through the `StreetRouter`, validates the network, and writes
+`TransitNetwork`, enriches directional walking transfers through the
+`StreetRouter`, validates the network, and writes
 `transit-network.json` plus `manifest.json`. The runtime loads one immutable
 artifact revision; it has no database or provider identity-reconciliation layer.
 
 TDX-derived ID constructors are shared by static normalization and realtime
-normalization. Keep `BoardingPointId`, `BikeShareStationId`, `TransitServiceId`,
-`ScheduledTripId`, and `EffectiveTripId` distinct.
+normalization. Keep `BoardingPointId`, `TransitServiceId`, `ScheduledTripId`,
+and `EffectiveTripId` distinct.
 
 ## Routing and transfers
 
@@ -46,30 +46,12 @@ Static transit transfers are directional walking facts preprocessed during the
 data build. Runtime reconstruction uses their duration and synthetic walking
 geometry; it does not call Valhalla for those transfer legs.
 
-## BikeShare
-
-Static `TransitNetwork.bike_share_connectors` contain directional walking facts
-between transit boarding points and BikeShare stations. `StreetBikeShareOperator`
-handles query-time station candidate selection, realtime availability, bounded
-bicycle matrices, and destination walking.
-
-The operator can provide:
-
-- direct origin→BikeShare→destination journeys;
-- origin→BikeShare→transit access;
-- transit→BikeShare→transit transfers; and
-- transit→BikeShare→destination egress.
-
-Availability is checked for the pickup and return stations at query time. A
-`MobilityPath` contains walking and BikeShare legs; `TransferShortcut` is only
-for static transit-to-transit walking.
-
 ## Invariants
 
 - Keep `StreetRouter`, `RoutingAlgorithm`, and `DepartureResolver` as the
   provider/algorithm-neutral seams.
-- Keep Trip-Based search, static transfer preprocessing, and the current
-  BikeShare operator as separate current responsibilities.
+- Keep Trip-Based search and static transfer preprocessing as separate current
+  responsibilities.
 - Keep provider adapters out of the domain and routing modules.
 - Do not reintroduce `planner`, `normalization`, `routing/engine`, `RouteGraph`,
   or a `JourneyPlanningService` wrapper.

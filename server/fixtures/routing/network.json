@@ -47,10 +47,6 @@
     {"service_id": "fixture-mrt-blue", "station_timings": [{"stop_id": "F-M2-BLUE", "departures_seconds": [36540, 36900, 37260], "frequencies": []}, {"stop_id": "F-M3-BLUE", "departures_seconds": [36900, 37260, 37620], "frequencies": []}], "inter_station_travel_seconds": [360], "pattern": ["F-M2-BLUE", "F-M3-BLUE"]},
     {"service_id": "fixture-mrt-green", "station_timings": [{"stop_id": "F-M3-GREEN", "departures_seconds": [37020, 37380, 37740], "frequencies": []}, {"stop_id": "F-M4", "departures_seconds": [37320, 37680, 38040], "frequencies": []}], "inter_station_travel_seconds": [300], "pattern": ["F-M3-GREEN", "F-M4"]}
   ],
-  "bike_share_stations": [
-    {"id": "fixture-bike-a", "name": "Fixture YouBike A", "coordinate": {"latitude": 25.099500, "longitude": 121.499500}},
-    {"id": "fixture-bike-b", "name": "Fixture YouBike B", "coordinate": {"latitude": 25.101000, "longitude": 121.501000}}
-  ],
   "transfer_edges": [
     {"from": "F-M1", "to": "F-TRA-B", "duration_seconds": 120},
     {"from": "F-M2-BLUE", "to": "F-M2-BUS", "duration_seconds": 120},
@@ -64,16 +60,6 @@
     {"from": "F-TRA-B", "to": "F-M1", "duration_seconds": 120},
     {"from": "F-MISS-M-IN", "to": "F-MISS-M-OUT", "duration_seconds": 120},
     {"from": "F-MISS-M-OUT", "to": "F-MISS-M-IN", "duration_seconds": 120}
-  ],
-  "bike_share_connectors": [
-    {
-      "stop_id": "F-M2-BLUE",
-      "station_id": "fixture-bike-b",
-      "stop_to_station_seconds": null,
-      "station_to_stop_seconds": 60,
-      "stop_to_station_metres": null,
-      "station_to_stop_metres": 300
-    }
   ],
   "default_transfer_seconds": 120,
   "static_network_revision": "routing-fixture-static",

@@ -11,10 +11,7 @@ use futures_util::{StreamExt, stream};
 use crate::{
     domain::{
         ids::BoardingPointId,
-        transit::{
-            BikeShareConnector, BikeShareStation, TransferEdge, TransitMode, TransitNetwork,
-            TransitStop,
-        },
+        transit::{TransferEdge, TransitMode, TransitNetwork, TransitStop},
     },
     street::{
         Coordinate, MatrixCell, MatrixLimits, MatrixOrientation, MatrixQuery, Metres,
@@ -35,31 +32,6 @@ pub struct StaticTransferPolicy {
     pub max_geometric_candidates_per_source: usize,
     pub max_inferred_transfers_per_source: usize,
     pub max_matrix_concurrency: usize,
-}
-
-/// Conservative build-time policy for static transit/BikeShare walking
-/// connectors. This is deliberately separate from request-time routing limits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StaticBikeSharePolicy {
-    pub max_geometric_radius_metres: u32,
-    pub max_walking_duration_seconds: u32,
-    pub max_walking_distance_metres: u32,
-    pub max_geometric_candidates_per_stop: usize,
-    pub max_connectors_per_stop: usize,
-    pub max_matrix_concurrency: usize,
-}
-
-impl Default for StaticBikeSharePolicy {
-    fn default() -> Self {
-        Self {
-            max_geometric_radius_metres: 500,
-            max_walking_duration_seconds: 8 * 60,
-            max_walking_distance_metres: 800,
-            max_geometric_candidates_per_stop: 8,
-            max_connectors_per_stop: 8,
-            max_matrix_concurrency: 4,
-        }
-    }
 }
 
 impl Default for StaticTransferPolicy {
@@ -86,16 +58,6 @@ pub struct TransferDiscoveryDiagnostics {
     pub explicit_edges_kept: usize,
     pub total_transfer_edges: usize,
     pub build_wall_clock_milliseconds: u64,
-    pub bike_share_connectors: Option<BikeShareConnectorDiscoveryDiagnostics>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BikeShareConnectorDiscoveryDiagnostics {
-    pub boarding_points: usize,
-    pub geometric_candidate_pairs: usize,
-    pub matrix_requests: usize,
-    pub reachable_directions: usize,
-    pub connectors_kept: usize,
 }
 
 #[derive(Clone)]
@@ -199,294 +161,8 @@ pub async fn enrich_network_with_static_transfers(
         explicit_edges_kept,
         total_transfer_edges: network.transfer_edges.len(),
         build_wall_clock_milliseconds: 0,
-        bike_share_connectors: None,
     };
     Ok((network, diagnostics))
-}
-
-/// Add static walking connectors between transit Boarding Points and nearby
-/// BikeShare stations. Forward and reverse walking matrices are evaluated
-/// independently and are persisted as one connector record per pair.
-pub async fn enrich_network_with_static_bike_share_connectors(
-    mut network: TransitNetwork,
-    street: &dyn StreetRouter,
-    policy: StaticBikeSharePolicy,
-) -> Result<(TransitNetwork, BikeShareConnectorDiscoveryDiagnostics), StreetRoutingError> {
-    validate_bike_policy(policy, street.matrix_limits())?;
-    let limits = street.matrix_limits();
-    let sources = network
-        .stops
-        .iter()
-        .map(|stop| {
-            Ok(BikeSourceCandidates {
-                stop_id: stop.id.clone(),
-                coordinate: coordinate(stop)?,
-                stations: network
-                    .bike_share_stations_within_radius(
-                        stop.coordinate,
-                        policy.max_geometric_radius_metres,
-                    )
-                    .into_iter()
-                    .take(policy.max_geometric_candidates_per_stop)
-                    .map(|station| {
-                        Ok(BikeCandidate {
-                            id: station.id.clone(),
-                            coordinate: station_coordinate(station)?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, StreetRoutingError>>()?,
-            })
-        })
-        .collect::<Result<Vec<_>, StreetRoutingError>>()?;
-    let results = stream::iter(sources)
-        .map(|source| discover_bike_source(street, source, policy, limits))
-        .buffer_unordered(policy.max_matrix_concurrency)
-        .collect::<Vec<_>>()
-        .await;
-
-    let mut discoveries = Vec::with_capacity(results.len());
-    for result in results {
-        discoveries.push(result?);
-    }
-    discoveries.sort_by(|left, right| left.stop_id.as_str().cmp(right.stop_id.as_str()));
-
-    let mut by_pair = BTreeMap::<(String, String), BikeShareConnector>::new();
-    for connector in network.bike_share_connectors.drain(..) {
-        by_pair.insert(
-            (
-                connector.stop_id.as_str().to_owned(),
-                connector.station_id.as_str().to_owned(),
-            ),
-            connector,
-        );
-    }
-    for discovery in &discoveries {
-        for discovered in &discovery.connectors {
-            let key = (
-                discovered.stop_id.as_str().to_owned(),
-                discovered.station_id.as_str().to_owned(),
-            );
-            match by_pair.get_mut(&key) {
-                Some(existing) => merge_bike_connector(existing, discovered),
-                None => {
-                    by_pair.insert(key, discovered.clone());
-                }
-            }
-        }
-    }
-    network.bike_share_connectors = by_pair.into_values().collect();
-    network = network.canonicalize();
-    let diagnostics = BikeShareConnectorDiscoveryDiagnostics {
-        boarding_points: network.stops.len(),
-        geometric_candidate_pairs: discoveries
-            .iter()
-            .map(|discovery| discovery.candidate_pairs)
-            .sum(),
-        matrix_requests: discoveries
-            .iter()
-            .map(|discovery| discovery.matrix_requests)
-            .sum(),
-        reachable_directions: discoveries
-            .iter()
-            .map(|discovery| discovery.reachable_directions)
-            .sum(),
-        connectors_kept: network.bike_share_connectors.len(),
-    };
-    Ok((network, diagnostics))
-}
-
-#[derive(Clone)]
-struct BikeCandidate {
-    id: crate::domain::ids::BikeShareStationId,
-    coordinate: Coordinate,
-}
-
-struct BikeSourceCandidates {
-    stop_id: BoardingPointId,
-    coordinate: Coordinate,
-    stations: Vec<BikeCandidate>,
-}
-
-struct BikeSourceDiscovery {
-    stop_id: BoardingPointId,
-    candidate_pairs: usize,
-    matrix_requests: usize,
-    reachable_directions: usize,
-    connectors: Vec<BikeShareConnector>,
-}
-
-async fn discover_bike_source(
-    street: &dyn StreetRouter,
-    source: BikeSourceCandidates,
-    policy: StaticBikeSharePolicy,
-    limits: MatrixLimits,
-) -> Result<BikeSourceDiscovery, StreetRoutingError> {
-    let candidate_pairs = source.stations.len();
-    if source.stations.is_empty() {
-        return Ok(BikeSourceDiscovery {
-            stop_id: source.stop_id,
-            candidate_pairs,
-            matrix_requests: 0,
-            reachable_directions: 0,
-            connectors: Vec::new(),
-        });
-    }
-
-    let mut matrix_requests = 0;
-    let mut reachable_directions = 0;
-    let mut connectors = source
-        .stations
-        .iter()
-        .map(|station| BikeShareConnector::new(source.stop_id.clone(), station.id.clone()))
-        .collect::<Vec<_>>();
-
-    for candidates in source.stations.chunks(limits.max_targets) {
-        matrix_requests += 1;
-        let matrix = street
-            .matrix(MatrixQuery {
-                orientation: MatrixOrientation::OneToMany,
-                travel_mode: StreetTravelMode::Walking,
-                sources: vec![source.coordinate],
-                targets: candidates
-                    .iter()
-                    .map(|candidate| candidate.coordinate)
-                    .collect(),
-                constraints: RoutingConstraints {
-                    max_distance: Some(Metres(policy.max_walking_distance_metres)),
-                    ..RoutingConstraints::default()
-                },
-            })
-            .await?;
-        let Some(cells) = matrix.cells.first() else {
-            return Err(StreetRoutingError::MalformedResponse);
-        };
-        if matrix.cells.len() != 1 || cells.len() != candidates.len() {
-            return Err(StreetRoutingError::MalformedResponse);
-        }
-        for (candidate, cell) in candidates.iter().zip(cells) {
-            let Some((seconds, metres)) = bike_walking_metric(cell, policy) else {
-                continue;
-            };
-            reachable_directions += 1;
-            if let Some(connector) = connectors
-                .iter_mut()
-                .find(|connector| connector.station_id == candidate.id)
-            {
-                connector.stop_to_station_seconds = Some(seconds);
-                connector.stop_to_station_metres = Some(metres);
-            }
-        }
-    }
-
-    for candidates in source.stations.chunks(limits.max_sources) {
-        matrix_requests += 1;
-        let matrix = street
-            .matrix(MatrixQuery {
-                orientation: MatrixOrientation::ManyToOne,
-                travel_mode: StreetTravelMode::Walking,
-                sources: candidates
-                    .iter()
-                    .map(|candidate| candidate.coordinate)
-                    .collect(),
-                targets: vec![source.coordinate],
-                constraints: RoutingConstraints {
-                    max_distance: Some(Metres(policy.max_walking_distance_metres)),
-                    ..RoutingConstraints::default()
-                },
-            })
-            .await?;
-        if matrix.cells.len() != candidates.len()
-            || matrix.cells.iter().any(|cells| cells.len() != 1)
-        {
-            return Err(StreetRoutingError::MalformedResponse);
-        }
-        for (candidate, cells) in candidates.iter().zip(&matrix.cells) {
-            let Some((seconds, metres)) = bike_walking_metric(&cells[0], policy) else {
-                continue;
-            };
-            reachable_directions += 1;
-            if let Some(connector) = connectors
-                .iter_mut()
-                .find(|connector| connector.station_id == candidate.id)
-            {
-                connector.station_to_stop_seconds = Some(seconds);
-                connector.station_to_stop_metres = Some(metres);
-            }
-        }
-    }
-
-    connectors.retain(BikeShareConnector::has_direction);
-    connectors.sort_by(|left, right| {
-        connector_sort_key(left)
-            .cmp(&connector_sort_key(right))
-            .then(left.station_id.as_str().cmp(right.station_id.as_str()))
-    });
-    connectors.truncate(policy.max_connectors_per_stop);
-    Ok(BikeSourceDiscovery {
-        stop_id: source.stop_id,
-        candidate_pairs,
-        matrix_requests,
-        reachable_directions,
-        connectors,
-    })
-}
-
-fn bike_walking_metric(cell: &MatrixCell, policy: StaticBikeSharePolicy) -> Option<(u32, u32)> {
-    let MatrixCell::Reachable { duration, distance } = cell else {
-        return None;
-    };
-    if duration.0 == 0
-        || duration.0 > policy.max_walking_duration_seconds
-        || distance.0 == 0
-        || distance.0 > policy.max_walking_distance_metres
-    {
-        return None;
-    }
-    Some((duration.0, distance.0))
-}
-
-fn connector_sort_key(connector: &BikeShareConnector) -> (u32, u32) {
-    (
-        connector
-            .stop_to_station_seconds
-            .or(connector.station_to_stop_seconds)
-            .unwrap_or(u32::MAX),
-        connector
-            .stop_to_station_metres
-            .or(connector.station_to_stop_metres)
-            .unwrap_or(u32::MAX),
-    )
-}
-
-fn merge_bike_connector(existing: &mut BikeShareConnector, discovered: &BikeShareConnector) {
-    if existing.stop_to_station_seconds.is_none() {
-        existing.stop_to_station_seconds = discovered.stop_to_station_seconds;
-        existing.stop_to_station_metres = discovered.stop_to_station_metres;
-    }
-    if existing.station_to_stop_seconds.is_none() {
-        existing.station_to_stop_seconds = discovered.station_to_stop_seconds;
-        existing.station_to_stop_metres = discovered.station_to_stop_metres;
-    }
-}
-
-fn validate_bike_policy(
-    policy: StaticBikeSharePolicy,
-    limits: MatrixLimits,
-) -> Result<(), StreetRoutingError> {
-    if policy.max_geometric_radius_metres == 0
-        || policy.max_walking_duration_seconds == 0
-        || policy.max_walking_distance_metres == 0
-        || policy.max_geometric_candidates_per_stop == 0
-        || policy.max_connectors_per_stop == 0
-        || policy.max_matrix_concurrency == 0
-        || limits.max_sources == 0
-        || limits.max_targets == 0
-    {
-        return Err(StreetRoutingError::InvalidRequest {
-            reason: "static BikeShare policy and matrix bounds must be greater than zero".into(),
-        });
-    }
-    Ok(())
 }
 
 fn validate_policy(
@@ -671,70 +347,18 @@ fn coordinate(stop: &TransitStop) -> Result<Coordinate, StreetRoutingError> {
     Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
 }
 
-fn station_coordinate(station: &BikeShareStation) -> Result<Coordinate, StreetRoutingError> {
-    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
         domain::{
-            ids::{BikeShareStationId, BoardingPointId},
+            ids::BoardingPointId,
             location::RequestCoordinate,
-            transit::{
-                BikeShareStation, TransferEdge, TransitMode, TransitNetwork, TransitService,
-                TransitStop,
-            },
+            transit::{TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop},
         },
         street::{FakeStreetRouter, Metres, Seconds, StreetTravelMode},
     };
 
     use super::{StaticTransferPolicy, enrich_network_with_static_transfers};
-
-    #[tokio::test]
-    async fn discovers_directional_transit_to_bike_connectors_in_both_matrix_directions() {
-        let transit = network(vec![("A", 25.0, 121.0)], Vec::new());
-        let station_coordinate = coordinate(25.0005, 121.0);
-        let mut transit = transit;
-        transit.bike_share_stations.push(BikeShareStation::new(
-            BikeShareStationId::new("station"),
-            "station",
-            station_coordinate,
-        ));
-        let stop = street_coordinate(coordinate(25.0, 121.0));
-        let station = street_coordinate(station_coordinate);
-        let street = FakeStreetRouter::builder()
-            .matrix_leg(
-                StreetTravelMode::Walking,
-                stop,
-                station,
-                Seconds(90),
-                Metres(120),
-            )
-            .matrix_leg(
-                StreetTravelMode::Walking,
-                station,
-                stop,
-                Seconds(110),
-                Metres(140),
-            )
-            .build();
-
-        let (result, diagnostics) = super::enrich_network_with_static_bike_share_connectors(
-            transit,
-            &street,
-            super::StaticBikeSharePolicy::default(),
-        )
-        .await
-        .unwrap();
-
-        let connector = &result.bike_share_connectors[0];
-        assert_eq!(connector.stop_to_station_seconds, Some(90));
-        assert_eq!(connector.station_to_stop_seconds, Some(110));
-        assert_eq!(connector.stop_to_station_metres, Some(120));
-        assert_eq!(connector.station_to_stop_metres, Some(140));
-        assert_eq!(diagnostics.matrix_requests, 2);
-    }
 
     fn coordinate(latitude: f64, longitude: f64) -> RequestCoordinate {
         RequestCoordinate {
@@ -757,7 +381,6 @@ mod tests {
         TransitNetwork::new(
             time::Time::from_hms(4, 0, 0).unwrap(),
             stops,
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )
@@ -834,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caps_inferred_edges_without_removing_explicit_edges_or_adding_bikes() {
+    async fn caps_inferred_edges_without_removing_explicit_edges() {
         let ids = [
             "B00", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09", "B10", "B11",
             "B12", "B13",
@@ -847,12 +470,7 @@ mod tests {
         );
         let explicit =
             TransferEdge::new(BoardingPointId::new("A"), BoardingPointId::new("B13"), 999);
-        let mut transit = network(stops, vec![explicit.clone()]).with_default_transfer_seconds(120);
-        transit.bike_share_stations.push(BikeShareStation::new(
-            BikeShareStationId::new("bike-1"),
-            "bike",
-            coordinate(25.0002, 121.0),
-        ));
+        let transit = network(stops, vec![explicit.clone()]).with_default_transfer_seconds(120);
         let a = street_coordinate(coordinate(25.0, 121.0));
         let mut builder = FakeStreetRouter::builder();
         for index in 0_u32..14 {
@@ -884,12 +502,6 @@ mod tests {
                 .any(|edge| edge.to == explicit.to && edge.duration_seconds == 999)
         );
         assert_eq!(diagnostics.inferred_edges_kept, 12);
-        assert!(
-            !result
-                .transfer_edges
-                .iter()
-                .any(|edge| { edge.from.as_str() == "bike-1" || edge.to.as_str() == "bike-1" })
-        );
     }
 
     #[tokio::test]

@@ -51,7 +51,7 @@ final class JourneySession {
         let stored = defaults.array(forKey: "selectedJourneyModes") as? [String] ?? []
         let restored = Set(stored.compactMap(JourneyMode.init(rawValue:)))
             .intersection(Set(JourneyMode.selectable))
-        selectedModes = restored.isEmpty ? [.transit, .bikeShare] : restored
+        selectedModes = restored.isEmpty ? [.transit] : restored
     }
 
     var selectedOption: JourneyOption? {

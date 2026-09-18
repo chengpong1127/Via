@@ -23,7 +23,6 @@ struct ModeBadge: View {
     private var color: Color {
         switch mode {
         case .transit: .purple
-        case .bikeShare: .green
         case .walking: .gray
         }
     }

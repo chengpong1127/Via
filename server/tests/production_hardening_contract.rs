@@ -28,7 +28,6 @@ fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
         ],
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     );
 
     let nearest = network.nearest_stops(
@@ -67,7 +66,6 @@ fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
         vec![stop("point", 25.0, 121.5)],
         vec![service],
         vec![trip],
-        Vec::new(),
     );
     assert!(network.validate().is_err());
     let network = network.with_revisions("static-1", "schedule-1");

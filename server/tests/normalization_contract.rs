@@ -1,11 +1,10 @@
 use time::macros::{date, datetime};
 use via_server::domain::{
-    ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+    ids::{BoardingPointId, TransitServiceId},
     realtime::{ArrivalState, ServiceDayPolicy},
 };
 use via_server::providers::tdx::{
-    bike_share_station_id, boarding_point_id, normalize_n1, transit_service_id,
-    transit_service_id_for_direction,
+    boarding_point_id, normalize_n1, transit_service_id, transit_service_id_for_direction,
 };
 
 #[test]
@@ -17,10 +16,6 @@ fn static_and_realtime_tdx_records_share_typed_ids() {
     let static_service = transit_service_id("TPE-service-1");
     let realtime_service = TransitServiceId::new("TPE-service-1");
     assert_eq!(static_service, realtime_service);
-
-    let static_station = bike_share_station_id("TPE-station-1");
-    let realtime_station = BikeShareStationId::new("TPE-station-1");
-    assert_eq!(static_station, realtime_station);
 }
 
 #[test]

@@ -16,9 +16,7 @@ use crate::{
 
 use super::{
     algorithm::JourneyCandidate,
-    bike::MobilityPath,
     service::{GeneratedCandidate, PlanningContext, RoutingService},
-    status::RealtimeContext,
 };
 
 pub(crate) use geometry::{taipei_now, to_street_coordinate};
@@ -28,11 +26,9 @@ impl RoutingService {
         &self,
         request: &PlanningRequest,
         candidate: &JourneyCandidate,
-        realtime: &RealtimeContext,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let Some(assembled) = legs::assemble(self, request, candidate, realtime, context).await?
-        else {
+        let Some(assembled) = legs::assemble(self, request, candidate, context).await? else {
             return Ok(None);
         };
         if context
@@ -75,12 +71,10 @@ impl RoutingService {
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
                 walking_seconds: assembled.walking_seconds,
                 transfer_count: candidate.transfer_count,
-                bike_share_seconds: candidate.bike_seconds,
                 main_service_sequence: assembled.main_service_sequence,
                 timing_bases: candidate.timing_bases.clone(),
                 required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
-                bike_availability: assembled.bike_availability,
                 blocking_condition: false,
             },
             option,
@@ -134,86 +128,10 @@ impl RoutingService {
                 arrival_epoch_seconds: arrival.unix_timestamp(),
                 walking_seconds: path.duration.0,
                 transfer_count: 0,
-                bike_share_seconds: 0,
                 main_service_sequence: Vec::new(),
                 timing_bases: Vec::new(),
                 required_live_status: Vec::new(),
                 transfers: Vec::new(),
-                bike_availability: None,
-                blocking_condition: false,
-            },
-            option,
-        }))
-    }
-
-    pub(crate) async fn reconstruct_direct_bike_candidate(
-        &self,
-        request: &PlanningRequest,
-        path: &MobilityPath,
-        realtime: &RealtimeContext,
-        context: &PlanningContext,
-    ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let departure = match request.departure_setting {
-            crate::api::DepartureSetting::ArriveBy { .. } => {
-                context.latest_arrival.ok_or(PlanningError::Internal)?
-                    - time::Duration::seconds(i64::from(path.duration_seconds()))
-            }
-            crate::api::DepartureSetting::DepartNow
-            | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
-        };
-        let Some(assembled) =
-            legs::assemble_direct_mobility(self, request, path, departure, realtime, context)
-                .await?
-        else {
-            return Ok(None);
-        };
-        if context
-            .latest_arrival
-            .is_some_and(|latest| assembled.arrival_time > latest)
-        {
-            return Ok(None);
-        }
-        let duration_seconds = legs::seconds_between(departure, assembled.arrival_time)
-            .ok_or(PlanningError::Internal)?;
-        let matching_key = geometry::short_digest(&format!(
-            "direct-bike:v1:{}",
-            path.required_station_ids()
-                .iter()
-                .map(|station| station.as_str())
-                .collect::<Vec<_>>()
-                .join(":")
-        ));
-        let option = JourneyOption {
-            id: "candidate".into(),
-            matching_key: matching_key.clone(),
-            class: JourneyClass::Reliable,
-            label: None,
-            ranking_reasons: Vec::new(),
-            departure_time: departure,
-            arrival_time: assembled.arrival_time,
-            duration_seconds,
-            walking_seconds: assembled.walking_seconds,
-            transfer_count: 0,
-            travel_modes: assembled.travel_modes,
-            live_status_summary: evidence::summary_from_evidence(&assembled.live_evidence),
-            overview_geometry: geometry::overview_geometry(&assembled.legs),
-            legs: assembled.legs,
-            transfers: assembled.transfers,
-            warnings: Vec::new(),
-        };
-        Ok(Some(GeneratedCandidate {
-            ranking: crate::domain::ranking::CandidateJourney {
-                stable_key: format!("{}:{}", matching_key, departure.unix_timestamp()),
-                departure_epoch_seconds: departure.unix_timestamp(),
-                arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
-                walking_seconds: assembled.walking_seconds,
-                transfer_count: 0,
-                bike_share_seconds: path.bike_seconds(),
-                main_service_sequence: assembled.main_service_sequence,
-                timing_bases: Vec::new(),
-                required_live_status: assembled.required_states,
-                transfers: assembled.transfer_evidence,
-                bike_availability: assembled.bike_availability,
                 blocking_condition: false,
             },
             option,
@@ -243,15 +161,6 @@ impl RoutingService {
         stop_id: &crate::domain::ids::BoardingPointId,
     ) -> Option<Place> {
         self.transit_network.stop(stop_id).map(legs::transit_place)
-    }
-
-    pub(crate) fn station_place(
-        &self,
-        station_id: &crate::domain::ids::BikeShareStationId,
-    ) -> Option<Place> {
-        self.transit_network
-            .bike_share_station(station_id)
-            .map(legs::bike_place)
     }
 }
 

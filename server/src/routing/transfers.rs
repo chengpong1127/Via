@@ -1,8 +1,7 @@
 //! Static public-transit interchange shortcuts.
 //!
 //! A transfer connects one public-transit boarding point to another through a
-//! static walking/interchange edge. Query-time BikeShare paths are handled by
-//! [`super::bike`].
+//! static walking/interchange edge.
 
 use std::collections::HashMap;
 
@@ -109,7 +108,6 @@ mod tests {
         let network = TransitNetwork::new(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("a"), stop("b")],
-            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

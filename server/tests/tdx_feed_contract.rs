@@ -10,7 +10,7 @@ use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     config::{TdxClient, TdxCredentials},
-    domain::ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+    domain::ids::{BoardingPointId, TransitServiceId},
     providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider, RealtimeValue},
     providers::tdx::{TdxRealtimeConfig, TdxRealtimeProvider, transit_service_id_for_direction},
 };
@@ -122,9 +122,7 @@ async fn tdx_arrivals_use_a_scoped_query_and_provider_timestamps() {
             },
         ),
     );
-    let source = fixture_provider(app)
-        .await
-        .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app).await.with_endpoint_paths("feed");
 
     let values = source
         .arrival_estimates(
@@ -174,9 +172,7 @@ async fn directional_tdx_service_ids_match_static_directional_ids() {
             },
         ),
     );
-    let source = fixture_provider(app)
-        .await
-        .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app).await.with_endpoint_paths("feed");
     let service_id = transit_service_id_for_direction("provider-service", 1);
     let values = source
         .arrival_estimates(
@@ -225,9 +221,7 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
             }
         }),
     );
-    let source = fixture_provider(app)
-        .await
-        .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app).await.with_endpoint_paths("feed");
 
     let values = source
         .arrival_estimates(
@@ -249,47 +243,6 @@ async fn tdx_evaluates_freshness_per_record_in_a_scoped_response() {
             via_server::domain::realtime::FreshnessState::Fresh,
             via_server::domain::realtime::FreshnessState::Unavailable
         ]
-    );
-}
-
-#[tokio::test]
-async fn tdx_bike_availability_is_normalized_inside_the_adapter() {
-    let update_time = (OffsetDateTime::now_utc() - Duration::seconds(30))
-        .format(&Rfc3339)
-        .unwrap();
-    let app = Router::new().route(
-        "/feed",
-        get(move || {
-            let update_time = update_time.clone();
-            async move {
-                Json(json!([{
-                    "StationUID": "provider-station",
-                    "ServiceStatus": 1,
-                    "AvailableRentBikes": 7,
-                    "AvailableReturnBikes": 9,
-                    "SrcUpdateTime": "2026-08-01T00:00:00+08:00",
-                    "UpdateTime": update_time
-                }]))
-            }
-        }),
-    );
-    let source = fixture_provider(app)
-        .await
-        .with_endpoint_paths("feed", "feed");
-
-    let values = source
-        .bike_availability(&[BikeShareStationId::new("provider-station")])
-        .await
-        .unwrap();
-    let RealtimeValue::BikeAvailability(availability) = &values[0].value else {
-        panic!("expected normalized bike availability");
-    };
-    assert_eq!(availability.station_id.as_str(), "provider-station");
-    assert_eq!(availability.available_bikes, Some(7));
-    assert_eq!(availability.available_return_slots, Some(9));
-    assert_eq!(
-        values[0].freshness.state,
-        via_server::domain::realtime::FreshnessState::Fresh
     );
 }
 
@@ -347,11 +300,15 @@ async fn tdx_rate_limits_are_explicit_realtime_errors() {
         "/feed",
         get(|| async { StatusCode::TOO_MANY_REQUESTS.into_response() }),
     );
-    let source = fixture_provider(app)
-        .await
-        .with_endpoint_paths("feed", "feed");
+    let source = fixture_provider(app).await.with_endpoint_paths("feed");
     let error = source
-        .bike_availability(&[BikeShareStationId::new("provider-station")])
+        .arrival_estimates(
+            ArrivalQuery::for_ride(
+                TransitServiceId::new("provider-service"),
+                BoardingPointId::new("provider-stop"),
+            )
+            .with_scope("Taipei"),
+        )
         .await
         .unwrap_err();
     assert_eq!(error, RealtimeError::RateLimited);

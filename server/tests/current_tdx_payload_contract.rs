@@ -59,7 +59,6 @@ fn current_tdx_payloads_normalize_all_static_operator_families() {
             .iter()
             .any(|service| service.transit_mode == TransitMode::HighSpeedRail)
     );
-    assert_eq!(result.network.bike_share_stations.len(), 2);
     assert!(
         result
             .network

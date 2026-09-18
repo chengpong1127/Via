@@ -29,7 +29,6 @@ pub use super::ranking::{JourneyClass, JourneyLabel, RankingReason};
 #[serde(rename_all = "snake_case")]
 pub enum JourneyMode {
     Walking,
-    BikeShare,
     Transit,
     #[serde(other)]
     Unknown,
@@ -219,14 +218,6 @@ pub enum LegDetails {
         headsign: String,
         stop_count: Option<u32>,
     },
-    BikeShare {
-        via_pickup_station_id: String,
-        via_return_station_id: String,
-        pickup_state: super::realtime::ActionState,
-        return_state: super::realtime::ActionState,
-        available_bikes: Option<u32>,
-        available_return_slots: Option<u32>,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -249,7 +240,6 @@ pub struct LiveStatusEvidence {
 pub enum LiveStatusKind {
     ArrivalEstimate,
     ServiceCondition,
-    BikeAvailability,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]

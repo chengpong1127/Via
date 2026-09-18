@@ -1,8 +1,7 @@
-use via_server::domain::realtime::ActionState;
 use via_server::domain::{
     ranking::{
-        BikeActionEvidence, CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy,
-        RankingReason, TransferEvidence, TransferKind,
+        CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy, RankingReason,
+        TransferEvidence, TransferKind,
     },
     realtime::FreshnessState,
     transit_timing::TimingBasis,
@@ -14,13 +13,11 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         departure_epoch_seconds: 1_000,
         arrival_epoch_seconds: arrival,
         walking_seconds: 300,
-        bike_share_seconds: 0,
         transfer_count: 1,
         main_service_sequence: vec![key.into()],
         timing_bases: Vec::new(),
         required_live_status: vec![FreshnessState::Fresh],
         transfers: Vec::new(),
-        bike_availability: None,
         blocking_condition: false,
     }
 }
@@ -100,67 +97,6 @@ fn transfer_safety_boundaries_classify_exactly() {
     assert_eq!(ranked[0].class, JourneyClass::Reliable);
     assert_eq!(ranked[1].stable_key, "bus-feasible");
     assert_eq!(ranked[1].class, JourneyClass::Feasible);
-}
-
-#[test]
-fn youbike_zero_one_two_and_three_thresholds_are_exact() {
-    let options = [0, 1, 2, 3]
-        .into_iter()
-        .map(|count| {
-            let arrival = if count == 3 {
-                2_900
-            } else {
-                2_000 + i64::from(count)
-            };
-            let mut option = candidate(&format!("bike-{count}"), arrival);
-            option.walking_seconds = match count {
-                1 => 500,
-                2 => 300,
-                3 => 200,
-                _ => 600,
-            };
-            option.main_service_sequence = vec![format!("bike-{count}")];
-            option.bike_availability = Some(BikeActionEvidence {
-                pickup_state: ActionState::Enabled,
-                return_state: ActionState::Enabled,
-                available_bikes: Some(count),
-                available_return_slots: Some(count),
-            });
-            option
-        })
-        .collect();
-
-    let ranked = RankingPolicy::default().rank(options);
-
-    assert_eq!(ranked.len(), 3);
-    assert_eq!(ranked[0].stable_key, "bike-1");
-    assert_eq!(ranked[0].class, JourneyClass::Feasible);
-    assert_eq!(ranked[1].class, JourneyClass::Feasible);
-    assert_eq!(ranked[2].class, JourneyClass::Reliable);
-}
-
-#[test]
-fn unknown_youbike_availability_is_feasible_but_explicit_impossibility_blocks() {
-    let mut unknown = candidate("unknown-bike", 2_000);
-    unknown.bike_availability = Some(BikeActionEvidence {
-        pickup_state: ActionState::Unknown,
-        return_state: ActionState::Unknown,
-        available_bikes: None,
-        available_return_slots: None,
-    });
-    let mut disabled = candidate("disabled-bike", 2_001);
-    disabled.bike_availability = Some(BikeActionEvidence {
-        pickup_state: ActionState::Disabled,
-        return_state: ActionState::Enabled,
-        available_bikes: None,
-        available_return_slots: Some(5),
-    });
-
-    let ranked = RankingPolicy::default().rank(vec![unknown, disabled]);
-
-    assert_eq!(ranked.len(), 1);
-    assert_eq!(ranked[0].stable_key, "unknown-bike");
-    assert_eq!(ranked[0].class, JourneyClass::Feasible);
 }
 
 #[test]

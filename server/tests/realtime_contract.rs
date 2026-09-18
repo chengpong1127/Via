@@ -8,7 +8,7 @@ use futures_util::future::join_all;
 use time::OffsetDateTime;
 use via_server::{
     domain::{
-        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        ids::{BoardingPointId, TransitServiceId},
         realtime::{ArrivalEstimate, ArrivalState, Freshness, FreshnessState},
     },
     providers::realtime::{
@@ -32,14 +32,6 @@ impl RealtimeProvider for CountingProvider {
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
-        self.result.clone()
-    }
-
-    async fn bike_availability(
-        &self,
-        _station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
         self.result.clone()
     }
 

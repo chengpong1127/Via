@@ -1,4 +1,4 @@
-//! Expand candidate segments into rider-visible legs.
+//! Expand transit candidates into rider-visible walking and transit legs.
 
 use time::{Duration, OffsetDateTime};
 
@@ -9,10 +9,8 @@ use crate::{
             Geometry, Guidance, JourneyClass, JourneyMode, Leg, LegDetails, LiveStatusEvidence,
             Place, PlanningError, RankingReason, Transfer,
         },
-        ranking::{BikeActionEvidence, TransferEvidence},
-        realtime::{
-            ActionState, BikeAvailability, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
-        },
+        ranking::TransferEvidence,
+        realtime::FreshnessState,
         transit::TransitMode,
         transit_timing::TimingBasis,
     },
@@ -22,11 +20,9 @@ use crate::{
 use super::{
     super::{
         algorithm::{JourneyCandidate, JourneySegment},
-        bike::{BikeShareTransfer, MobilityLeg, MobilityPath},
         service::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
         },
-        status::RealtimeContext,
     },
     evidence, geometry,
 };
@@ -49,7 +45,6 @@ pub(crate) struct ReconstructedLegs {
     pub(crate) travel_modes: Vec<JourneyMode>,
     pub(crate) main_service_sequence: Vec<String>,
     pub(crate) transfer_evidence: Vec<TransferEvidence>,
-    pub(crate) bike_availability: Option<BikeActionEvidence>,
     pub(crate) walking_seconds: u32,
 }
 
@@ -65,7 +60,6 @@ pub(crate) async fn assemble(
     service: &RoutingService,
     request: &PlanningRequest,
     candidate: &JourneyCandidate,
-    realtime: &RealtimeContext,
     context: &PlanningContext,
 ) -> Result<Option<ReconstructedLegs>, PlanningError> {
     let mut result = ReconstructedLegs {
@@ -77,7 +71,6 @@ pub(crate) async fn assemble(
         travel_modes: Vec::new(),
         main_service_sequence: Vec::new(),
         transfer_evidence: Vec::new(),
-        bike_availability: None,
         walking_seconds: 0,
     };
     let origin = service.origin_place(request);
@@ -85,25 +78,16 @@ pub(crate) async fn assemble(
     let first_stop = service
         .stop_place(&candidate.access.stop_id)
         .ok_or(PlanningError::Internal)?;
-    let access_path = candidate.access.path.clone().unwrap_or_else(|| {
-        MobilityPath::walking(
-            candidate.access.walking_seconds,
-            candidate.access.distance_metres,
-        )
-    });
-    if !append_mobility_path(
+    append_hydrated_walking(
         service,
         context,
         &origin,
         &first_stop,
-        &access_path,
+        candidate.access.walking_seconds,
+        candidate.access.distance_metres,
         &mut result,
-        realtime,
     )
-    .await?
-    {
-        return Ok(None);
-    }
+    .await?;
 
     let mut pending_transfer = None;
     let mut current_stop = candidate.access.stop_id.clone();
@@ -120,9 +104,7 @@ pub(crate) async fn assemble(
                     .stop_place(&shortcut.to)
                     .ok_or(PlanningError::Internal)?;
                 let connector_start = result.legs.len();
-                if !append_transit_transfer(&from, &to, shortcut.duration_seconds, &mut result) {
-                    return Ok(None);
-                }
+                append_static_walking(&from, &to, shortcut.duration_seconds, &mut result);
                 if let Some(from_leg) = result
                     .legs
                     .iter()
@@ -145,53 +127,6 @@ pub(crate) async fn assemble(
                     });
                 }
                 current_stop = shortcut.to.clone();
-            }
-            JourneySegment::BikeShareTransfer { transfer } => {
-                if transfer.from_stop_id != current_stop {
-                    return Ok(None);
-                }
-                let from = service
-                    .stop_place(&transfer.from_stop_id)
-                    .ok_or(PlanningError::Internal)?;
-                let to = service
-                    .stop_place(&transfer.to_stop_id)
-                    .ok_or(PlanningError::Internal)?;
-                let connector_start = result.legs.len();
-                if !append_bike_transfer(
-                    service,
-                    context,
-                    &from,
-                    &to,
-                    transfer,
-                    &mut result,
-                    realtime,
-                )
-                .await?
-                {
-                    return Ok(None);
-                }
-                if let Some(from_leg) = result
-                    .legs
-                    .iter()
-                    .rev()
-                    .find(|leg| leg.mode == JourneyMode::Transit)
-                {
-                    let from_mode = match &from_leg.details {
-                        LegDetails::Transit { transit_mode, .. } => Some(*transit_mode),
-                        _ => None,
-                    };
-                    pending_transfer = Some(PendingTransfer {
-                        from_leg_id: from_leg.id.clone(),
-                        from_arrival: from_leg.arrival_time,
-                        duration_seconds: transfer.duration_seconds(),
-                        connector_leg_ids: result.legs[connector_start..]
-                            .iter()
-                            .map(|leg| leg.id.clone())
-                            .collect(),
-                        from_mode,
-                    });
-                }
-                current_stop = transfer.to_stop_id.clone();
             }
             JourneySegment::Transit {
                 trip,
@@ -231,26 +166,25 @@ pub(crate) async fn assemble(
                     .extend(trip.evidence.iter().map(|status| status.freshness.state));
                 result.live_evidence.extend(live.clone());
                 let leg_id = format!("candidate_leg_{}", result.legs.len());
-                let effective = EffectiveRide {
-                    scheduled_departure: board.departure_at,
-                    scheduled_arrival: alight.arrival_at,
-                    departure: board.departure_at,
-                    arrival: alight.arrival_at,
-                    evidence: live,
-                };
                 result.legs.push(transit_leg(
                     leg_id.clone(),
                     service_data,
                     boarding,
                     alighting,
-                    &effective,
+                    &EffectiveRide {
+                        scheduled_departure: board.departure_at,
+                        scheduled_arrival: alight.arrival_at,
+                        departure: board.departure_at,
+                        arrival: alight.arrival_at,
+                        evidence: live,
+                    },
                     trip.timing_basis,
                 ));
                 if let Some(pending) = pending_transfer.take() {
                     add_transfer(
                         &mut result,
                         pending,
-                        leg_id.clone(),
+                        leg_id,
                         service_data.transit_mode,
                         board.departure_at,
                     );
@@ -271,334 +205,66 @@ pub(crate) async fn assemble(
     let final_stop = service
         .stop_place(&candidate.egress.stop_id)
         .ok_or(PlanningError::Internal)?;
-    let egress_path = candidate.egress.path.clone().unwrap_or_else(|| {
-        MobilityPath::walking(
-            candidate.egress.walking_seconds,
-            candidate.egress.distance_metres,
-        )
-    });
-    if !append_mobility_path(
+    append_hydrated_walking(
         service,
         context,
         &final_stop,
         &destination,
-        &egress_path,
+        candidate.egress.walking_seconds,
+        candidate.egress.distance_metres,
         &mut result,
-        realtime,
     )
-    .await?
-    {
-        return Ok(None);
-    }
-    if result.legs.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(result))
+    .await?;
+    Ok((!result.legs.is_empty()).then_some(result))
 }
 
-pub(crate) async fn assemble_direct_mobility(
+async fn append_hydrated_walking(
     service: &RoutingService,
-    request: &PlanningRequest,
-    path: &MobilityPath,
-    departure: OffsetDateTime,
-    realtime: &RealtimeContext,
     context: &PlanningContext,
-) -> Result<Option<ReconstructedLegs>, PlanningError> {
-    let mut result = ReconstructedLegs {
-        legs: Vec::new(),
-        transfers: Vec::new(),
-        arrival_time: departure,
-        live_evidence: Vec::new(),
-        required_states: Vec::new(),
-        travel_modes: Vec::new(),
-        main_service_sequence: Vec::new(),
-        transfer_evidence: Vec::new(),
-        bike_availability: None,
-        walking_seconds: 0,
-    };
-    let origin = service.origin_place(request);
-    let destination = service.destination_place(request);
-    if !append_mobility_path(
+    from: &Place,
+    to: &Place,
+    fallback_seconds: u32,
+    fallback_metres: u32,
+    result: &mut ReconstructedLegs,
+) -> Result<(), PlanningError> {
+    let path = hydrated_or_synthetic(
         service,
         context,
-        &origin,
-        &destination,
-        path,
-        &mut result,
-        realtime,
+        from,
+        to,
+        StreetTravelMode::Walking,
+        result.arrival_time,
+        (fallback_seconds, fallback_metres),
     )
-    .await?
-    {
-        return Ok(None);
-    }
-    if result.legs.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(result))
+    .await?;
+    let departure = result.arrival_time;
+    let arrival = departure + Duration::seconds(i64::from(path.duration.0));
+    let leg_id = format!("candidate_leg_{}", result.legs.len());
+    result
+        .legs
+        .push(walking_leg(leg_id, from, to, departure, arrival, &path));
+    result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
+    result.arrival_time = arrival;
+    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+    Ok(())
 }
 
-fn append_transit_transfer(
+fn append_static_walking(
     from: &Place,
     to: &Place,
     duration_seconds: u32,
     result: &mut ReconstructedLegs,
-) -> bool {
-    let walking_path = synthetic_street_path(from, to, duration_seconds, 0);
+) {
+    let path = synthetic_street_path(from, to, duration_seconds, 0);
     let departure = result.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(duration_seconds));
     let leg_id = format!("candidate_leg_{}", result.legs.len());
-    result.legs.push(walking_leg(
-        leg_id,
-        from,
-        to,
-        departure,
-        arrival,
-        &walking_path,
-    ));
+    result
+        .legs
+        .push(walking_leg(leg_id, from, to, departure, arrival, &path));
     result.walking_seconds = result.walking_seconds.saturating_add(duration_seconds);
     result.arrival_time = arrival;
     evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
-    true
-}
-
-async fn append_bike_transfer(
-    service: &RoutingService,
-    context: &PlanningContext,
-    from: &Place,
-    to: &Place,
-    transfer: &BikeShareTransfer,
-    result: &mut ReconstructedLegs,
-    realtime: &RealtimeContext,
-) -> Result<bool, PlanningError> {
-    let pickup = service
-        .station_place(&transfer.pickup_station_id)
-        .ok_or(PlanningError::Internal)?;
-    let return_station = service
-        .station_place(&transfer.return_station_id)
-        .ok_or(PlanningError::Internal)?;
-    let legs = [
-        (
-            from,
-            &pickup,
-            StreetTravelMode::Walking,
-            transfer.access_walk_seconds,
-            transfer.access_walk_metres,
-        ),
-        (
-            &pickup,
-            &return_station,
-            StreetTravelMode::Bicycle,
-            transfer.bike_seconds,
-            transfer.bike_metres,
-        ),
-        (
-            &return_station,
-            to,
-            StreetTravelMode::Walking,
-            transfer.egress_walk_seconds,
-            transfer.egress_walk_metres,
-        ),
-    ];
-    for (from, to, mode, fallback_seconds, fallback_metres) in legs {
-        let path = hydrated_or_synthetic(
-            service,
-            context,
-            from,
-            to,
-            mode,
-            result.arrival_time,
-            (fallback_seconds, fallback_metres),
-        )
-        .await?;
-        let departure = result.arrival_time;
-        let arrival = departure + Duration::seconds(i64::from(path.duration.0));
-        let leg_id = format!("candidate_leg_{}", result.legs.len());
-        if mode == StreetTravelMode::Bicycle {
-            let (pickup_status, pickup_live) = effective_bike_availability(
-                realtime.bike(&transfer.pickup_station_id),
-                &transfer.pickup_station_id,
-                departure,
-            );
-            let (return_status, return_live) = effective_bike_availability(
-                realtime.bike(&transfer.return_station_id),
-                &transfer.return_station_id,
-                departure,
-            );
-            let live = pickup_live
-                .into_iter()
-                .chain(return_live)
-                .collect::<Vec<_>>();
-            result.live_evidence.extend(live.clone());
-            result
-                .required_states
-                .extend(live.iter().map(|evidence| evidence.freshness.state));
-            if result.bike_availability.is_none() {
-                result.bike_availability = Some(BikeActionEvidence {
-                    pickup_state: pickup_status.rental_state,
-                    return_state: return_status.return_state,
-                    available_bikes: pickup_status.available_bikes,
-                    available_return_slots: return_status.available_return_slots,
-                });
-            }
-            let mut bike = bike_leg(
-                &pickup,
-                &return_station,
-                departure,
-                &path,
-                &pickup_status,
-                &return_status,
-                live,
-            );
-            bike.id = leg_id;
-            result.legs.push(bike);
-            evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::BikeShare);
-            result.main_service_sequence.push(format!(
-                "bike_share:{}:{}",
-                transfer.pickup_station_id.as_str(),
-                transfer.return_station_id.as_str()
-            ));
-        } else {
-            result
-                .legs
-                .push(walking_leg(leg_id, from, to, departure, arrival, &path));
-            result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
-            evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
-        }
-        result.arrival_time = arrival;
-    }
-    Ok(true)
-}
-
-async fn append_mobility_path(
-    service: &RoutingService,
-    context: &PlanningContext,
-    from: &Place,
-    to: &Place,
-    path: &MobilityPath,
-    result: &mut ReconstructedLegs,
-    realtime: &RealtimeContext,
-) -> Result<bool, PlanningError> {
-    let bike_index = path
-        .legs
-        .iter()
-        .position(|leg| matches!(leg, MobilityLeg::BikeShare { .. }));
-    let mut current = from.clone();
-    for (index, leg) in path.legs.iter().enumerate() {
-        let next = match leg {
-            MobilityLeg::BikeShare {
-                pickup_station_id,
-                return_station_id,
-                ..
-            } => (
-                service
-                    .station_place(pickup_station_id)
-                    .ok_or(PlanningError::Internal)?,
-                service
-                    .station_place(return_station_id)
-                    .ok_or(PlanningError::Internal)?,
-            ),
-            MobilityLeg::Walk { .. } if bike_index.is_some_and(|bike| index < bike) => (
-                current.clone(),
-                service
-                    .station_place(match path.legs.get(bike_index.unwrap()) {
-                        Some(MobilityLeg::BikeShare {
-                            pickup_station_id, ..
-                        }) => pickup_station_id,
-                        _ => unreachable!(),
-                    })
-                    .ok_or(PlanningError::Internal)?,
-            ),
-            MobilityLeg::Walk { .. } => (current.clone(), to.clone()),
-        };
-        let mode = match leg {
-            MobilityLeg::Walk { .. } => StreetTravelMode::Walking,
-            MobilityLeg::BikeShare { .. } => StreetTravelMode::Bicycle,
-        };
-        let path = match hydrate_path(
-            service,
-            context,
-            &next.0,
-            &next.1,
-            mode,
-            result.arrival_time,
-        )
-        .await?
-        {
-            Some(path) => path,
-            None if path.legs.len() == 1 && mode == StreetTravelMode::Walking => {
-                let MobilityLeg::Walk {
-                    duration_seconds,
-                    distance_metres,
-                } = &path.legs[0]
-                else {
-                    unreachable!();
-                };
-                synthetic_street_path(&next.0, &next.1, *duration_seconds, *distance_metres)
-            }
-            None => return Ok(false),
-        };
-        let departure = result.arrival_time;
-        let arrival = departure + Duration::seconds(i64::from(path.duration.0));
-        let leg_id = format!("candidate_leg_{}", result.legs.len());
-        match leg {
-            MobilityLeg::Walk { .. } => {
-                result.legs.push(walking_leg(
-                    leg_id, &next.0, &next.1, departure, arrival, &path,
-                ));
-                result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
-                evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
-            }
-            MobilityLeg::BikeShare {
-                pickup_station_id,
-                return_station_id,
-                ..
-            } => {
-                let (pickup, pickup_live) = effective_bike_availability(
-                    realtime.bike(pickup_station_id),
-                    pickup_station_id,
-                    result.arrival_time,
-                );
-                let (return_station, return_live) = effective_bike_availability(
-                    realtime.bike(return_station_id),
-                    return_station_id,
-                    result.arrival_time,
-                );
-                let live = pickup_live
-                    .into_iter()
-                    .chain(return_live)
-                    .collect::<Vec<_>>();
-                result.live_evidence.extend(live.clone());
-                if result.bike_availability.is_none() {
-                    result.bike_availability = Some(BikeActionEvidence {
-                        pickup_state: pickup.rental_state,
-                        return_state: return_station.return_state,
-                        available_bikes: pickup.available_bikes,
-                        available_return_slots: return_station.available_return_slots,
-                    });
-                }
-                let mut leg = bike_leg(
-                    &next.0,
-                    &next.1,
-                    departure,
-                    &path,
-                    &pickup,
-                    &return_station,
-                    live,
-                );
-                leg.id = leg_id;
-                result.legs.push(leg);
-                evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::BikeShare);
-                result.main_service_sequence.push(format!(
-                    "bike_share:{}:{}",
-                    pickup_station_id.as_str(),
-                    return_station_id.as_str()
-                ));
-            }
-        }
-        result.arrival_time = arrival;
-        current = next.1;
-    }
-    Ok(true)
 }
 
 async fn hydrated_or_synthetic(
@@ -636,44 +302,6 @@ fn synthetic_street_path(
             crate::street::Maneuver::arrive(1),
         ],
         attribution: Vec::new(),
-    }
-}
-
-fn effective_bike_availability(
-    status: Option<&NormalizedRealtimeValue>,
-    station_id: &crate::domain::ids::BikeShareStationId,
-    evaluated_at: OffsetDateTime,
-) -> (BikeAvailability, Option<LiveStatusEvidence>) {
-    let Some(status) = status else {
-        return (unknown_bike_availability(station_id, evaluated_at), None);
-    };
-    let RealtimeValue::BikeAvailability(availability) = &status.value else {
-        return (unknown_bike_availability(station_id, evaluated_at), None);
-    };
-    let evidence = Some(evidence::from_realtime_value(status));
-    if status.freshness.state == FreshnessState::Fresh {
-        (availability.clone(), evidence)
-    } else {
-        (
-            unknown_bike_availability(station_id, evaluated_at),
-            evidence,
-        )
-    }
-}
-
-fn unknown_bike_availability(
-    station_id: &crate::domain::ids::BikeShareStationId,
-    received_at: OffsetDateTime,
-) -> BikeAvailability {
-    BikeAvailability {
-        station_id: station_id.clone(),
-        rental_state: ActionState::Unknown,
-        return_state: ActionState::Unknown,
-        available_bikes: None,
-        available_return_slots: None,
-        source_change_at: None,
-        provider_published_at: None,
-        received_at,
     }
 }
 
@@ -846,64 +474,12 @@ fn transit_leg(
     }
 }
 
-fn bike_leg(
-    from: &Place,
-    to: &Place,
-    departure_time: OffsetDateTime,
-    path: &StreetPath,
-    pickup: &crate::domain::realtime::BikeAvailability,
-    return_station: &crate::domain::realtime::BikeAvailability,
-    evidence: Vec<LiveStatusEvidence>,
-) -> Leg {
-    Leg {
-        id: String::new(),
-        mode: JourneyMode::BikeShare,
-        from: from.clone(),
-        to: to.clone(),
-        departure_time,
-        arrival_time: departure_time + Duration::seconds(i64::from(path.duration.0)),
-        scheduled_departure_time: None,
-        scheduled_arrival_time: None,
-        duration_seconds: path.duration.0,
-        distance_metres: path.distance.0,
-        geometry: Geometry {
-            encoding: "polyline6",
-            points: geometry::encode_polyline6(&path.geometry),
-        },
-        guidance: vec![Guidance {
-            code: "rent_bike_share",
-            required: true,
-            parameters: std::collections::BTreeMap::new(),
-        }],
-        details: LegDetails::BikeShare {
-            via_pickup_station_id: pickup.station_id.as_str().into(),
-            via_return_station_id: return_station.station_id.as_str().into(),
-            pickup_state: pickup.rental_state,
-            return_state: return_station.return_state,
-            available_bikes: pickup.available_bikes,
-            available_return_slots: return_station.available_return_slots,
-        },
-        live_status: evidence,
-        warnings: Vec::new(),
-        attribution: path.attribution.clone(),
-    }
-}
-
 pub(crate) fn transit_place(stop: &crate::domain::transit::TransitStop) -> Place {
     Place {
         display_name: stop.name.clone(),
         coordinate: stop.coordinate,
         kind: "boarding_point",
         via_id: Some(stop.id.as_str().into()),
-    }
-}
-
-pub(crate) fn bike_place(station: &crate::domain::transit::BikeShareStation) -> Place {
-    Place {
-        display_name: station.name.clone(),
-        coordinate: station.coordinate,
-        kind: "bike_share_station",
-        via_id: Some(station.id.as_str().into()),
     }
 }
 

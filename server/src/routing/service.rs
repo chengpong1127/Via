@@ -24,11 +24,7 @@ use crate::{
 
 use super::{
     access,
-    algorithm::{AccessPoint, AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
-    bike::{
-        BikeAvailabilityResolver, BikeShareDirectQuery, BikeShareError, BikeShareOperator,
-        BikeShareOperatorLimits, BikeShareOriginQuery, MobilityPath, StreetBikeShareOperator,
-    },
+    algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -43,8 +39,6 @@ pub struct RoutingService {
     pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
     pub(crate) transfer_index: Arc<dyn TransferIndex>,
-    pub(crate) bike_availability: Option<Arc<dyn BikeAvailabilityResolver>>,
-    pub(crate) bike_operator: Arc<dyn BikeShareOperator>,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -62,12 +56,6 @@ pub struct RoutingLimits {
     pub max_candidates: usize,
     pub max_walking_radius_metres: u32,
     pub max_walking_seconds: u32,
-    pub max_bike_search_radius_metres: u32,
-    pub max_bike_pickup_stations: usize,
-    pub max_bike_return_stations: usize,
-    pub max_bike_connectors: usize,
-    pub max_bike_distance_metres: u32,
-    pub max_bike_duration_seconds: u32,
     pub max_transfer_count: u32,
     pub max_search_expansions: usize,
     pub max_departures_per_query: usize,
@@ -84,12 +72,6 @@ impl Default for RoutingLimits {
             max_candidates: 16,
             max_walking_radius_metres: 2_000,
             max_walking_seconds: 30 * 60,
-            max_bike_search_radius_metres: 2_000,
-            max_bike_pickup_stations: 6,
-            max_bike_return_stations: 6,
-            max_bike_connectors: 24,
-            max_bike_distance_metres: 20_000,
-            max_bike_duration_seconds: 2 * 60 * 60,
             max_transfer_count: 4,
             max_search_expansions: 2_000,
             max_departures_per_query: 3,
@@ -107,25 +89,16 @@ impl RoutingService {
         let transit_network = Arc::new(TransitNetwork::default());
         let transfer_index: Arc<dyn TransferIndex> =
             Arc::new(TransferShortcutIndex::from_network(&transit_network));
-        let bike_operator: Arc<dyn BikeShareOperator> = Arc::new(
-            StreetBikeShareOperator::new(transit_network.clone(), street_routing.clone(), None)
-                .with_limits(BikeShareOperatorLimits::default()),
-        );
-        let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(
-            TripBasedRouter::new(
-                transit_network.clone(),
-                departure_resolver.clone(),
-                transfer_index.clone(),
-            )
-            .with_bike_operator(bike_operator.clone()),
-        );
+        let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(TripBasedRouter::new(
+            transit_network.clone(),
+            departure_resolver.clone(),
+            transfer_index.clone(),
+        ));
         Self {
             street_routing,
             departure_resolver,
             routing_algorithm,
             transfer_index,
-            bike_availability: None,
-            bike_operator,
             realtime,
             transit_network,
             ranking: RankingPolicy::default(),
@@ -144,45 +117,12 @@ impl RoutingService {
         self
     }
 
-    pub fn with_bike_availability(mut self, resolver: Arc<dyn BikeAvailabilityResolver>) -> Self {
-        self.bike_availability = Some(resolver);
-        self.rebuild_default_algorithm();
-        self
-    }
-
     fn rebuild_default_algorithm(&mut self) {
-        self.bike_operator = Arc::new(
-            StreetBikeShareOperator::new(
-                self.transit_network.clone(),
-                self.street_routing.clone(),
-                self.bike_availability.clone(),
-            )
-            .with_limits(self.bike_operator_limits()),
-        );
-        let router = TripBasedRouter::new(
+        self.routing_algorithm = Arc::new(TripBasedRouter::new(
             self.transit_network.clone(),
             self.departure_resolver.clone(),
             self.transfer_index.clone(),
-        );
-        let router = if let Some(resolver) = &self.bike_availability {
-            router.with_bike_availability(resolver.clone())
-        } else {
-            router
-        };
-        self.routing_algorithm = Arc::new(router.with_bike_operator(self.bike_operator.clone()));
-    }
-
-    fn bike_operator_limits(&self) -> BikeShareOperatorLimits {
-        BikeShareOperatorLimits {
-            max_pickup_stations_per_source: self.limits.max_bike_pickup_stations,
-            max_return_stations_per_source: self.limits.max_bike_return_stations,
-            max_final_transfers_per_source: self.limits.max_bike_connectors,
-            max_station_search_radius_metres: self.limits.max_bike_search_radius_metres,
-            max_walking_seconds: self.limits.max_walking_seconds,
-            max_walking_distance_metres: self.limits.max_walking_radius_metres,
-            max_bike_duration_seconds: self.limits.max_bike_duration_seconds,
-            max_bike_distance_metres: self.limits.max_bike_distance_metres,
-        }
+        ));
     }
 
     pub fn with_metrics(mut self, metrics: OperationalMetrics) -> Self {
@@ -200,12 +140,6 @@ impl RoutingService {
             max_candidates,
             max_walking_radius_metres: limits.max_walking_radius_metres.max(1),
             max_walking_seconds: limits.max_walking_seconds.max(1),
-            max_bike_search_radius_metres: limits.max_bike_search_radius_metres.max(1),
-            max_bike_pickup_stations: limits.max_bike_pickup_stations.max(1),
-            max_bike_return_stations: limits.max_bike_return_stations.max(1),
-            max_bike_connectors: limits.max_bike_connectors.min(max_candidates).max(1),
-            max_bike_distance_metres: limits.max_bike_distance_metres.max(1),
-            max_bike_duration_seconds: limits.max_bike_duration_seconds.max(1),
             max_transfer_count: limits.max_transfer_count.max(1),
             max_search_expansions: limits.max_search_expansions.max(1),
             max_departures_per_query: limits.max_departures_per_query.max(1),
@@ -275,51 +209,6 @@ impl RoutingService {
             }
         }
 
-        if request.selected_modes.contains(&JourneyMode::BikeShare) {
-            match self
-                .bike_operator
-                .expand_direct_batch(vec![BikeShareDirectQuery {
-                    origin: request.origin.coordinate,
-                    destination: request.destination.coordinate,
-                    departure_at: context.search_start,
-                    max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
-                }])
-                .await
-            {
-                Ok(results) => {
-                    let paths = results
-                        .into_iter()
-                        .next()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|path| path.path)
-                        .collect::<Vec<MobilityPath>>();
-                    let station_ids = paths.iter().flat_map(MobilityPath::required_station_ids);
-                    let (realtime, bike_failed) =
-                        status::collect_bike_values(self.realtime.as_ref(), station_ids).await;
-                    had_transient_failure |= bike_failed;
-                    for path in paths {
-                        match self
-                            .reconstruct_direct_bike_candidate(&request, &path, &realtime, &context)
-                            .await
-                        {
-                            Ok(Some(candidate)) => generated.push(candidate),
-                            Ok(None) => {}
-                            Err(error) => {
-                                had_transient_failure |=
-                                    error == PlanningError::TemporarilyUnavailable;
-                                had_global_failure |= error == PlanningError::Internal;
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    had_transient_failure |= error == BikeShareError::TemporarilyUnavailable;
-                    tracing::warn!(error = %error, "direct BikeShare expansion failed");
-                }
-            }
-        }
-
         if request.selected_modes.contains(&JourneyMode::Transit) {
             let access_started = Instant::now();
             let access = access::discover_access_points(
@@ -341,7 +230,7 @@ impl RoutingService {
             .await;
             stage_metrics.candidate_discovery_duration_ms =
                 access_started.elapsed().as_millis() as u64;
-            let (mut access, egress) = match (access, egress) {
+            let (access, egress) = match (access, egress) {
                 (Ok(access), Ok(egress)) => (access, egress),
                 (Err(error), _) | (_, Err(error)) => {
                     had_transient_failure |= is_transient_provider_error(&error);
@@ -349,35 +238,6 @@ impl RoutingService {
                     (Vec::new(), Vec::new())
                 }
             };
-            if request.selected_modes.contains(&JourneyMode::BikeShare)
-                && !self.transit_network.bike_share_connectors.is_empty()
-            {
-                match self
-                    .bike_operator
-                    .expand_origins_batch(vec![BikeShareOriginQuery {
-                        origin: request.origin.coordinate,
-                        departure_at: context.search_start,
-                        max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
-                    }])
-                    .await
-                {
-                    Ok(results) => {
-                        if let Some(bike_access) = results.into_iter().next() {
-                            access.extend(bike_access.into_iter().map(|point| {
-                                AccessPoint::with_path(
-                                    point.stop_id,
-                                    point.departure_at,
-                                    point.path.clone(),
-                                    point.path.distance_metres(),
-                                )
-                            }));
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(error = %error, "BikeShare origin expansion failed");
-                    }
-                }
-            }
             stage_metrics.transit_candidate_stops = access.len() + egress.len();
             stage_metrics.transit_candidate_services = self.transit_network.services.len();
 
@@ -391,7 +251,6 @@ impl RoutingService {
                     max_candidates: self.limits.max_candidates,
                     max_expansions: self.limits.max_search_expansions,
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
-                    destination: Some(request.destination.coordinate),
                 };
                 let search_started = Instant::now();
                 match self.routing_algorithm.route(query).await {
@@ -409,15 +268,9 @@ impl RoutingService {
                             status::collect_service_conditions(self.realtime.as_ref(), service_ids)
                                 .await;
                         had_transient_failure |= condition_failed;
-                        let station_ids = status::required_station_ids(&candidates);
-                        let (realtime, bike_failed) =
-                            status::collect_bike_values(self.realtime.as_ref(), station_ids).await;
-                        had_transient_failure |= bike_failed;
                         for candidate in &candidates {
                             match self
-                                .reconstruct_multimodal_candidate(
-                                    &request, candidate, &realtime, &context,
-                                )
+                                .reconstruct_multimodal_candidate(&request, candidate, &context)
                                 .await
                             {
                                 Ok(Some(candidate)) => generated.push(candidate),

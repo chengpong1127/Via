@@ -2,7 +2,6 @@
 
 pub(crate) mod access;
 pub mod algorithm;
-pub mod bike;
 pub mod reconstruct;
 pub mod transfers;
 pub mod trip_based;
@@ -20,12 +19,6 @@ pub use crate::street::StreetRouter;
 pub use algorithm::{
     AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm,
     RoutingError,
-};
-pub use bike::{
-    BikeAvailabilityError, BikeAvailabilityResolver, BikeShareDirectPath, BikeShareDirectQuery,
-    BikeShareError, BikeShareExpansion, BikeShareExpansionQuery, BikeShareOperator,
-    BikeShareOperatorLimits, BikeShareOriginAccess, BikeShareOriginQuery, BikeShareTransfer,
-    MobilityLeg, MobilityPath, StreetBikeShareOperator, bike_availability_is_usable,
 };
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};

@@ -23,8 +23,7 @@ use crate::{
     observability::OperationalMetrics,
     providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
     providers::timing::{
-        CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
-        RealtimeDepartureResolver,
+        CompositeDepartureResolver, MetroDepartureResolver, RealtimeDepartureResolver,
     },
     routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{StreetRouter, StreetRoutingError},
@@ -144,9 +143,6 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
     let metrics = OperationalMetrics::default();
     let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())
         .with_transit_network_arc(transit_network.clone())
-        .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(
-            realtime.clone(),
-        )))
         .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
@@ -202,7 +198,7 @@ fn apply_schema_constraints(document: &mut OpenApi) {
     set_schema_enum(
         document,
         "JourneyMode",
-        ["walking", "bike_share", "transit"].map(serde_json::Value::from),
+        ["walking", "transit"].map(serde_json::Value::from),
     );
     set_schema_property_enum(
         document,
@@ -275,7 +271,7 @@ fn apply_schema_constraints(document: &mut OpenApi) {
         document,
         "PlanningRequest",
         "selected_modes",
-        ["bike_share", "transit"].map(serde_json::Value::from),
+        ["transit"].map(serde_json::Value::from),
     );
 }
 

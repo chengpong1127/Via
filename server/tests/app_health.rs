@@ -77,7 +77,6 @@ async fn readiness_uses_the_immutable_static_network_without_a_snapshot() {
         )],
         Vec::new(),
         Vec::new(),
-        Vec::new(),
     )
     .with_revisions("static-1", "schedule-1");
     let app = build_router_with_network(provider, network).await.unwrap();

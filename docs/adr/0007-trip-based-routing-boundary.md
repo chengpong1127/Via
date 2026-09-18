@@ -25,12 +25,8 @@ not persistent aliases.
 `TransferShortcutIndex` is a direct index of static public-transit interchange
 edges from `TransitNetwork.transfer_edges`. A `TransferShortcut` contains only
 boarding-point endpoints and a static walking/interchange duration. Static
-transit↔BikeShare walking connectors are persisted in the same
-`TransitNetwork` artifact and indexed separately by the BikeShare operator.
-The query-time operator owns realtime station eligibility and batched bicycle
-movement. TripBased collects BikeShare expansion needs while scanning alights,
-expands them once per round, and represents successful interchanges as explicit
-`JourneySegment::BikeShareTransfer` values.
+transit transfers are persisted in the same `TransitNetwork` artifact and
+indexed as `TransferShortcut` values.
 
 ## Consequences
 
@@ -38,10 +34,8 @@ Trip-Based departure resolution is lazy and request-local, while cached provider
 calls can still be coalesced per frontier. Schedule, realtime, delay-adjusted,
 and frequency policies remain provider composition details. There is no
 separate static transfer artifact: the canonical network persists transit
-transfer edges and transit↔BikeShare connectors, and runtime derives their
-separate in-memory indexes from that network. Transfer reconstruction has no
-street-router or matrix dependency; surviving BikeShare legs are hydrated only
-during final reconstruction.
+transfer edges and runtime derives their in-memory index from that network.
+Transfer reconstruction has no street-router or matrix dependency.
 
 Reconstruction consumes `JourneyCandidate` directly; `RouteGraph` is not part
 of the production architecture.

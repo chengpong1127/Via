@@ -6,13 +6,12 @@ use via_server::{
     api::PlanningRequest,
     data::load_network_artifact,
     domain::{
-        ids::{BikeShareStationId, BoardingPointId, TransitServiceId},
+        ids::{BoardingPointId, TransitServiceId},
         realtime::{NormalizedRealtimeValue, RealtimeValue},
         transit::{TransferEdge, TransitNetwork, TransitStop},
     },
     providers::{
-        CompositeDepartureResolver, MetroDepartureResolver, RealtimeBikeAvailabilityResolver,
-        RealtimeDepartureResolver,
+        CompositeDepartureResolver, MetroDepartureResolver, RealtimeDepartureResolver,
         realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     },
     routing::TransferIndex,
@@ -28,13 +27,11 @@ fn network() -> TransitNetwork {
 }
 
 const BUS_REALTIME_JSON: &str = include_str!("../fixtures/routing/realtime/bus.json");
-const BIKE_REALTIME_JSON: &str = include_str!("../fixtures/routing/realtime/bike.json");
 
 #[derive(Clone, Default)]
 struct FixtureRealtime {
     values: Arc<Vec<NormalizedRealtimeValue>>,
     arrivals_available: bool,
-    bikes_available: bool,
 }
 
 impl FixtureRealtime {
@@ -46,15 +43,6 @@ impl FixtureRealtime {
         Self {
             values: Arc::new(serde_json::from_str(BUS_REALTIME_JSON).unwrap()),
             arrivals_available: true,
-            bikes_available: false,
-        }
-    }
-
-    fn bike() -> Self {
-        Self {
-            values: Arc::new(serde_json::from_str(BIKE_REALTIME_JSON).unwrap()),
-            arrivals_available: false,
-            bikes_available: true,
         }
     }
 }
@@ -86,26 +74,6 @@ impl RealtimeProvider for FixtureRealtime {
             .collect())
     }
 
-    async fn bike_availability(
-        &self,
-        station_ids: &[BikeShareStationId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        if !self.bikes_available {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .values
-            .iter()
-            .filter(|value| {
-                let RealtimeValue::BikeAvailability(availability) = &value.value else {
-                    return false;
-                };
-                station_ids.contains(&availability.station_id)
-            })
-            .cloned()
-            .collect())
-    }
-
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],
@@ -121,13 +89,6 @@ fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
 fn stop_coordinate(network: &TransitNetwork, id: &str) -> Coordinate {
     let stop: &TransitStop = network.stop(&BoardingPointId::new(id)).unwrap();
     coordinate(stop.coordinate.latitude, stop.coordinate.longitude)
-}
-
-fn station_coordinate(network: &TransitNetwork, id: &str) -> Coordinate {
-    let station = network
-        .bike_share_station(&BikeShareStationId::new(id))
-        .unwrap();
-    coordinate(station.coordinate.latitude, station.coordinate.longitude)
 }
 
 fn near_stop(network: &TransitNetwork, id: &str) -> Coordinate {
@@ -170,80 +131,6 @@ fn transit_street(
         .build()
 }
 
-fn direct_bike_street(
-    network: &TransitNetwork,
-    origin: Coordinate,
-    destination: Coordinate,
-) -> FakeStreetRouter {
-    let pickup = station_coordinate(network, "fixture-bike-a");
-    let return_station = station_coordinate(network, "fixture-bike-b");
-    FakeStreetRouter::builder()
-        .path(
-            StreetTravelMode::Walking,
-            origin,
-            pickup,
-            path(origin, pickup, 60),
-        )
-        .path(
-            StreetTravelMode::Bicycle,
-            pickup,
-            return_station,
-            path(pickup, return_station, 120),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            return_station,
-            destination,
-            path(return_station, destination, 60),
-        )
-        .build()
-}
-
-fn bike_access_street(
-    network: &TransitNetwork,
-    origin: Coordinate,
-    access_stop: &str,
-    destination: Coordinate,
-    egress_stop: &str,
-) -> FakeStreetRouter {
-    let pickup = station_coordinate(network, "fixture-bike-a");
-    let return_station = station_coordinate(network, "fixture-bike-b");
-    let access = stop_coordinate(network, access_stop);
-    let egress = stop_coordinate(network, egress_stop);
-    FakeStreetRouter::builder()
-        .path(
-            StreetTravelMode::Walking,
-            origin,
-            access,
-            path(origin, access, 600),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            origin,
-            pickup,
-            path(origin, pickup, 60),
-        )
-        .path(
-            StreetTravelMode::Bicycle,
-            pickup,
-            return_station,
-            path(pickup, return_station, 120),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            return_station,
-            access,
-            path(return_station, access, 60),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            egress,
-            destination,
-            path(egress, destination, 60),
-        )
-        .build()
-}
-
 fn request(origin: Coordinate, destination: Coordinate, modes: &[&str]) -> Value {
     json!({
         "origin": {"coordinate": {"latitude": origin.latitude(), "longitude": origin.longitude()}, "display_text": "Fixture origin"},
@@ -274,9 +161,8 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
         .with_adapter("metro_schedule", metro.clone())
         .with_adapter("metro_frequency", metro),
     );
-    let service = RoutingService::new(Arc::new(street), departure, cached.clone())
-        .with_transit_network_arc(network)
-        .with_bike_availability(Arc::new(RealtimeBikeAvailabilityResolver::new(cached)));
+    let service =
+        RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()
 }
 
@@ -549,90 +435,6 @@ async fn mrt_to_bus_transfer_keeps_the_metro_then_bus_order() {
 }
 
 #[tokio::test]
-async fn direct_youbike_journey_reconstructs_pickup_ride_and_return() {
-    let network = network();
-    let origin = coordinate(25.099000, 121.499000);
-    let destination = coordinate(25.101500, 121.501500);
-    let body = route_body(
-        direct_bike_street(&network, origin, destination),
-        FixtureRealtime::bike(),
-        request(origin, destination, &["bike_share"]),
-    )
-    .await;
-    let option = option_for_services(&body, &[]);
-
-    assert_eq!(leg_modes(option), vec!["walking", "bike_share", "walking"]);
-    assert_eq!(option["travel_modes"], json!(["walking", "bike_share"]));
-    assert_eq!(option["transfer_count"], 0);
-    assert_eq!(option["legs"][1]["details"]["type"], "bike_share");
-    assert_eq!(
-        option["legs"][1]["details"]["via_pickup_station_id"],
-        "fixture-bike-a"
-    );
-    assert_eq!(
-        option["legs"][1]["details"]["via_return_station_id"],
-        "fixture-bike-b"
-    );
-    assert_eq!(option["legs"][1]["details"]["available_bikes"], 4);
-    assert_eq!(option["legs"][1]["details"]["available_return_slots"], 4);
-    assert_eq!(option["class"], "reliable");
-}
-
-#[tokio::test]
-async fn direct_youbike_journey_survives_missing_realtime_as_feasible() {
-    let network = network();
-    let origin = coordinate(25.099000, 121.499000);
-    let destination = coordinate(25.101500, 121.501500);
-    let body = route_body(
-        direct_bike_street(&network, origin, destination),
-        FixtureRealtime::empty(),
-        request(origin, destination, &["bike_share"]),
-    )
-    .await;
-    let option = option_for_services(&body, &[]);
-
-    assert_eq!(option["class"], "feasible");
-    assert_eq!(option["legs"][1]["details"]["pickup_state"], "unknown");
-    assert_eq!(option["legs"][1]["details"]["return_state"], "unknown");
-}
-
-#[tokio::test]
-async fn youbike_access_can_feed_an_mrt_journey() {
-    let network = network();
-    let origin = coordinate(25.099000, 121.499000);
-    let destination = near_stop(&network, "F-M3-BLUE");
-    let body = route_body(
-        bike_access_street(&network, origin, "F-M2-BLUE", destination, "F-M3-BLUE"),
-        FixtureRealtime::bike(),
-        request(origin, destination, &["bike_share", "transit"]),
-    )
-    .await;
-    let option = option_for_services(&body, &["fixture-mrt-blue"]);
-
-    assert_eq!(
-        leg_modes(option),
-        vec!["walking", "bike_share", "walking", "transit", "walking"]
-    );
-    assert_eq!(
-        option["travel_modes"],
-        json!(["walking", "bike_share", "transit"])
-    );
-    assert_eq!(
-        option["legs"][1]["details"]["via_pickup_station_id"],
-        "fixture-bike-a"
-    );
-    assert_eq!(
-        option["legs"][1]["details"]["via_return_station_id"],
-        "fixture-bike-b"
-    );
-    assert_eq!(
-        option["legs"][3]["details"]["via_service_id"],
-        "fixture-mrt-blue"
-    );
-    assert_eq!(option["transfer_count"], 0);
-}
-
-#[tokio::test]
 async fn train_route_uses_the_rail_service_and_stops() {
     let network = network();
     let origin = near_stop(&network, "F-TRA-A");
@@ -724,56 +526,6 @@ async fn train_can_transfer_to_local_mrt() {
 }
 
 #[tokio::test]
-async fn multi_modal_chain_preserves_bike_transit_transfer_and_egress_order() {
-    let network = network();
-    let origin = coordinate(25.099000, 121.499000);
-    let destination = near_stop(&network, "F-BUS-B");
-    let body = route_body(
-        bike_access_street(&network, origin, "F-M2-BLUE", destination, "F-BUS-B"),
-        FixtureRealtime::bike(),
-        request(origin, destination, &["bike_share", "transit"]),
-    )
-    .await;
-    let option = option_for_services(&body, &["fixture-mrt-blue", "fixture-bus-out"]);
-
-    assert_eq!(
-        leg_modes(option),
-        vec![
-            "walking",
-            "bike_share",
-            "walking",
-            "transit",
-            "walking",
-            "transit",
-            "walking"
-        ]
-    );
-    assert_eq!(option["transfer_count"], 1);
-    assert_eq!(
-        option["legs"][1]["details"]["via_pickup_station_id"],
-        "fixture-bike-a"
-    );
-    assert_eq!(
-        option["legs"][3]["details"]["via_service_id"],
-        "fixture-mrt-blue"
-    );
-    assert_eq!(
-        option["legs"][5]["details"]["via_service_id"],
-        "fixture-bus-out"
-    );
-    assert_eq!(
-        option["legs"][3]["details"]["via_alighting_point_id"],
-        "F-M3-BLUE"
-    );
-    assert_eq!(
-        option["legs"][5]["details"]["via_boarding_point_id"],
-        "F-M3-BUS"
-    );
-    assert_eq!(option["transfers"].as_array().unwrap().len(), 1);
-    assert_eq!(option["transfers"][0]["duration_seconds"], 120);
-}
-
-#[tokio::test]
 async fn direct_walking_is_returned_when_no_transit_access_is_reachable() {
     let origin = coordinate(25.300000, 121.600000);
     let destination = coordinate(25.301000, 121.601000);
@@ -862,7 +614,6 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     assert_eq!(network.services.len(), 10);
     assert_eq!(network.trips.len(), 8);
     assert_eq!(network.metro_timings.len(), 3);
-    assert_eq!(network.bike_share_stations.len(), 2);
     assert_eq!(transfers.len(), 12);
     assert!(network.validate().is_ok());
     assert!(

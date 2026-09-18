@@ -1,7 +1,5 @@
 //! Convert and aggregate realtime evidence used by reconstructed journeys.
 
-use time::OffsetDateTime;
-
 use crate::domain::{
     journey::{EvidenceType, JourneyMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
     ranking::TransferKind,
@@ -19,10 +17,6 @@ pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatu
             LiveStatusKind::ServiceCondition,
             status.provider_published_at,
         ),
-        RealtimeValue::BikeAvailability(availability) => (
-            LiveStatusKind::BikeAvailability,
-            bike_observed_at(availability),
-        ),
     };
     LiveStatusEvidence {
         kind,
@@ -30,7 +24,6 @@ pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatu
         observed_at,
         published_at: match &status.value {
             RealtimeValue::ArrivalEstimate(arrival) => Some(arrival.transmitted_at),
-            RealtimeValue::BikeAvailability(availability) => availability.provider_published_at,
             RealtimeValue::ServiceCondition(_) => status.provider_published_at,
         }
         .or(status.provider_published_at),
@@ -52,15 +45,6 @@ pub(crate) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) 
     } else {
         TransferKind::BusInvolved
     }
-}
-
-fn bike_observed_at(
-    availability: &crate::domain::realtime::BikeAvailability,
-) -> Option<OffsetDateTime> {
-    availability
-        .provider_published_at
-        .or(availability.source_change_at)
-        .or(Some(availability.received_at))
 }
 
 pub(crate) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStatusSummary {

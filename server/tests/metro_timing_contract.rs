@@ -60,7 +60,6 @@ async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
                 .with_timing_source("metro_schedule"),
             ],
             Vec::new(),
-            Vec::new(),
         )
         .with_metro_timings(vec![MetroTiming::new(
             service_id.clone(),
@@ -241,7 +240,6 @@ fn metro_timing_rejects_a_pattern_from_the_opposite_direction() {
             "Taipei Main Station",
             vec![first.clone(), second.clone()],
         )],
-        Vec::new(),
         Vec::new(),
     )
     .with_metro_timings(vec![

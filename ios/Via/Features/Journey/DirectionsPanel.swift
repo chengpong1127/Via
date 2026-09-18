@@ -198,7 +198,7 @@ struct DirectionsPanel: View {
             MessageStateView(
                 symbol: "signpost.right.and.left",
                 title: "No matching Journey Options",
-                message: "Try another combination of Transit or Bike share.",
+                message: "Try another transit combination.",
                 actionTitle: "Edit request",
                 action: session.returnToEditing
             )
