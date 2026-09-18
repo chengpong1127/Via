@@ -19,9 +19,12 @@ TripBasedRouter → reconstruct → rank`. `RoutingAlgorithm` is the public
 algorithm-neutral boundary; Trip-Based owns its private index. `DepartureResolver`
 resolves runtime `EffectiveTrip` values and `TransferShortcutIndex` represents
 static public-transit interchange edges only. `RouteGraph` is removed from this
-flow. Direct walking and direct BikeShare are independent candidates; BikeShare
-around transit is represented by endpoint connectors before or after the transit
-search, never by a transfer shortcut.
+ flow. Direct walking and direct BikeShare are independent candidates. Static
+ transit↔BikeShare walking connectors live in `TransitNetwork`, while the
+ query-time `BikeShareOperator` batches dynamic station availability and bicycle
+ movement. TripBased sees the resulting movement as explicit
+ `JourneySegment::BikeShareTransfer` values rather than as walking transfer
+ shortcuts.
  Realtime is demand-driven and request-local; there is no global realtime refresh
  planner. iOS networking is
 `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI → APIClient`, while

@@ -24,8 +24,11 @@ use crate::{
 
 use super::{
     access,
-    algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
-    bike::{BikeAvailabilityResolver, EndpointPath},
+    algorithm::{AccessPoint, AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
+    bike::{
+        BikeAvailabilityResolver, BikeShareDirectQuery, BikeShareError, BikeShareOperator,
+        BikeShareOperatorLimits, BikeShareOriginQuery, MobilityPath, StreetBikeShareOperator,
+    },
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -41,6 +44,8 @@ pub struct RoutingService {
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
     pub(crate) transfer_index: Arc<dyn TransferIndex>,
     pub(crate) bike_availability: Option<Arc<dyn BikeAvailabilityResolver>>,
+    pub(crate) bike_operator: Arc<dyn BikeShareOperator>,
+    uses_default_routing_algorithm: bool,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -105,17 +110,26 @@ impl RoutingService {
         let transit_network = Arc::new(TransitNetwork::default());
         let transfer_index: Arc<dyn TransferIndex> =
             Arc::new(TransferShortcutIndex::from_network(&transit_network));
-        let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(TripBasedRouter::new(
-            transit_network.clone(),
-            departure_resolver.clone(),
-            transfer_index.clone(),
-        ));
+        let bike_operator: Arc<dyn BikeShareOperator> = Arc::new(
+            StreetBikeShareOperator::new(transit_network.clone(), street_routing.clone(), None)
+                .with_limits(BikeShareOperatorLimits::default()),
+        );
+        let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(
+            TripBasedRouter::new(
+                transit_network.clone(),
+                departure_resolver.clone(),
+                transfer_index.clone(),
+            )
+            .with_bike_operator(bike_operator.clone()),
+        );
         Self {
             street_routing,
             departure_resolver,
             routing_algorithm,
             transfer_index,
             bike_availability: None,
+            bike_operator,
+            uses_default_routing_algorithm: true,
             realtime,
             transit_network,
             ranking: RankingPolicy::default(),
@@ -149,6 +163,7 @@ impl RoutingService {
 
     pub fn with_routing_algorithm(mut self, algorithm: Arc<dyn RoutingAlgorithm>) -> Self {
         self.routing_algorithm = algorithm;
+        self.uses_default_routing_algorithm = false;
         self
     }
 
@@ -159,16 +174,39 @@ impl RoutingService {
     }
 
     fn rebuild_default_algorithm(&mut self) {
+        self.bike_operator = Arc::new(
+            StreetBikeShareOperator::new(
+                self.transit_network.clone(),
+                self.street_routing.clone(),
+                self.bike_availability.clone(),
+            )
+            .with_limits(self.bike_operator_limits()),
+        );
         let router = TripBasedRouter::new(
             self.transit_network.clone(),
             self.departure_resolver.clone(),
             self.transfer_index.clone(),
         );
-        self.routing_algorithm = if let Some(resolver) = &self.bike_availability {
-            Arc::new(router.with_bike_availability(resolver.clone()))
+        let router = if let Some(resolver) = &self.bike_availability {
+            router.with_bike_availability(resolver.clone())
         } else {
-            Arc::new(router)
+            router
         };
+        self.routing_algorithm = Arc::new(router.with_bike_operator(self.bike_operator.clone()));
+        self.uses_default_routing_algorithm = true;
+    }
+
+    fn bike_operator_limits(&self) -> BikeShareOperatorLimits {
+        BikeShareOperatorLimits {
+            max_pickup_stations_per_source: self.limits.max_bike_pickup_stations,
+            max_return_stations_per_source: self.limits.max_bike_return_stations,
+            max_final_transfers_per_source: self.limits.max_bike_connectors,
+            max_station_search_radius_metres: self.limits.max_bike_search_radius_metres,
+            max_walking_seconds: self.limits.max_walking_seconds,
+            max_walking_distance_metres: self.limits.max_walking_radius_metres,
+            max_bike_duration_seconds: self.limits.max_bike_duration_seconds,
+            max_bike_distance_metres: self.limits.max_bike_distance_metres,
+        }
     }
 
     pub fn with_ranking_policy(mut self, ranking: RankingPolicy) -> Self {
@@ -205,6 +243,18 @@ impl RoutingService {
         };
         self.request_slots = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests));
         self.limits = limits;
+        if self.uses_default_routing_algorithm {
+            self.rebuild_default_algorithm();
+        } else {
+            self.bike_operator = Arc::new(
+                StreetBikeShareOperator::new(
+                    self.transit_network.clone(),
+                    self.street_routing.clone(),
+                    self.bike_availability.clone(),
+                )
+                .with_limits(self.bike_operator_limits()),
+            );
+        }
         self
     }
 
@@ -267,24 +317,27 @@ impl RoutingService {
         }
 
         if request.selected_modes.contains(&JourneyMode::BikeShare) {
-            match access::discover_direct_bike_paths(
-                self.street_routing.as_ref(),
-                &self.transit_network,
-                request.origin.coordinate,
-                request.destination.coordinate,
-                context.access_constraints(),
-                context.direct_constraints(),
-                &self.limits,
-            )
-            .await
+            match self
+                .bike_operator
+                .expand_direct_batch(vec![BikeShareDirectQuery {
+                    origin: request.origin.coordinate,
+                    destination: request.destination.coordinate,
+                    departure_at: context.search_start,
+                    max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
+                }])
+                .await
             {
-                Ok(paths) => {
-                    let station_ids = paths.iter().flat_map(EndpointPath::required_station_ids);
-                    let (realtime, bike_failed) = status::collect_bike_values_individually(
-                        self.realtime.as_ref(),
-                        station_ids,
-                    )
-                    .await;
+                Ok(results) => {
+                    let paths = results
+                        .into_iter()
+                        .next()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|path| path.path)
+                        .collect::<Vec<MobilityPath>>();
+                    let station_ids = paths.iter().flat_map(MobilityPath::required_station_ids);
+                    let (realtime, bike_failed) =
+                        status::collect_bike_values(self.realtime.as_ref(), station_ids).await;
                     had_transient_failure |= bike_failed;
                     for path in paths {
                         match self
@@ -302,8 +355,8 @@ impl RoutingService {
                     }
                 }
                 Err(error) => {
-                    had_transient_failure |= is_transient_provider_error(&error);
-                    had_global_failure |= is_global_provider_error(&error);
+                    had_transient_failure |= error == BikeShareError::TemporarilyUnavailable;
+                    tracing::warn!(error = %error, "direct BikeShare expansion failed");
                 }
             }
         }
@@ -337,33 +390,61 @@ impl RoutingService {
                     (Vec::new(), Vec::new())
                 }
             };
-            if request.selected_modes.contains(&JourneyMode::BikeShare)
-                && !access.is_empty()
-                && !egress.is_empty()
-            {
-                match access::discover_bike_endpoint_points(
-                    self.street_routing.as_ref(),
-                    &self.transit_network,
-                    access::BikeEndpointRequest {
-                        origin: request.origin.coordinate,
-                        destination: request.destination.coordinate,
-                        departure_time: context.search_start,
-                        access_constraints: context.access_constraints(),
-                        egress_constraints: context.direct_constraints(),
-                        access: access.clone(),
-                        egress: egress.clone(),
-                    },
-                    &self.limits,
-                )
-                .await
-                {
-                    Ok((bike_access, bike_egress)) => {
-                        access = bike_access;
-                        egress = bike_egress;
+            if request.selected_modes.contains(&JourneyMode::BikeShare) {
+                if !self.transit_network.bike_share_connectors.is_empty() {
+                    match self
+                        .bike_operator
+                        .expand_origins_batch(vec![BikeShareOriginQuery {
+                            origin: request.origin.coordinate,
+                            departure_at: context.search_start,
+                            max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
+                        }])
+                        .await
+                    {
+                        Ok(results) => {
+                            if let Some(bike_access) = results.into_iter().next() {
+                                access.extend(bike_access.into_iter().map(|point| {
+                                    AccessPoint::with_path(
+                                        point.stop_id,
+                                        point.departure_at,
+                                        point.path.clone(),
+                                        point.path.distance_metres(),
+                                    )
+                                }));
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "BikeShare origin expansion failed");
+                        }
                     }
-                    Err(error) => {
-                        had_transient_failure |= is_transient_provider_error(&error);
-                        had_global_failure |= is_global_provider_error(&error);
+                } else if !access.is_empty() && !egress.is_empty() {
+                    // Older fixture artifacts do not contain static connectors.
+                    // Keep their endpoint path behavior until those artifacts
+                    // are rebuilt; production artifacts take the operator path.
+                    match access::discover_bike_endpoint_points(
+                        self.street_routing.as_ref(),
+                        &self.transit_network,
+                        access::BikeEndpointRequest {
+                            origin: request.origin.coordinate,
+                            destination: request.destination.coordinate,
+                            departure_time: context.search_start,
+                            access_constraints: context.access_constraints(),
+                            egress_constraints: context.direct_constraints(),
+                            access: access.clone(),
+                            egress: egress.clone(),
+                        },
+                        &self.limits,
+                    )
+                    .await
+                    {
+                        Ok((bike_access, bike_egress)) => {
+                            access = bike_access;
+                            egress = bike_egress;
+                        }
+                        Err(error) => {
+                            had_transient_failure |= is_transient_provider_error(&error);
+                            had_global_failure |= is_global_provider_error(&error);
+                        }
                     }
                 }
             }
@@ -380,6 +461,7 @@ impl RoutingService {
                     max_candidates: self.limits.max_candidates,
                     max_expansions: self.limits.max_search_expansions,
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
+                    destination: Some(request.destination.coordinate),
                 };
                 let search_started = Instant::now();
                 match self.routing_algorithm.route(query).await {

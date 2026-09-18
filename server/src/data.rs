@@ -36,10 +36,12 @@ use crate::{
 
 pub mod static_transfers;
 pub use static_transfers::{
-    StaticTransferPolicy, TransferDiscoveryDiagnostics, enrich_network_with_static_transfers,
+    BikeShareConnectorDiscoveryDiagnostics, StaticBikeSharePolicy, StaticTransferPolicy,
+    TransferDiscoveryDiagnostics, enrich_network_with_static_bike_share_connectors,
+    enrich_network_with_static_transfers,
 };
 
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 2;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 3;
 const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
 const TDX_RETRY_BACKOFFS: [Duration; 4] = [
     Duration::from_secs(15),
@@ -95,6 +97,8 @@ pub struct ArtifactCounts {
     pub scheduled_trips: usize,
     pub bike_stations: usize,
     pub transfer_edges: usize,
+    #[serde(default)]
+    pub bike_share_connectors: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1680,7 +1684,15 @@ pub async fn build_from_raw_with_street(
     let mut snapshot = normalize_raw_snapshot(input, scope, raw_snapshot_date)?;
     let (network, transfer_diagnostics) =
         enrich_network_with_static_transfers(snapshot.network, street, policy).await?;
+    let (network, bike_diagnostics) = enrich_network_with_static_bike_share_connectors(
+        network,
+        street,
+        StaticBikeSharePolicy::default(),
+    )
+    .await?;
     snapshot.network = network;
+    let mut transfer_diagnostics = transfer_diagnostics;
+    transfer_diagnostics.bike_share_connectors = Some(bike_diagnostics);
     snapshot.diagnostics.transfer_discovery = Some(transfer_diagnostics);
     let mut result = finish_build(snapshot, output)?;
     if let Some(transfer) = &mut result.diagnostics.transfer_discovery {
@@ -1790,6 +1802,7 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
             scheduled_trips: network.trips.len(),
             bike_stations: network.bike_share_stations.len(),
             transfer_edges: transfer_index.len(),
+            bike_share_connectors: network.bike_share_connectors.len(),
         },
         revisions: ArtifactRevisions {
             static_network_revision: static_revision,

@@ -16,8 +16,12 @@ is fetched only for stations referenced by explored candidate shortcuts and is
 evaluated for the request before a shortcut is used.
 
 This remains the representation decision, but the old walking-edge graph
-expansion implementation is retired. Direct BikeShare requests are reconstructed
-from the same decomposed path shape without introducing a transit service.
+expansion implementation is retired. Direct BikeShare requests and
+transit-interchange BikeShare movements are reconstructed from the same
+decomposed path shape without introducing a transit service. Static
+BoardingPoint↔station walking facts are persisted in `TransitNetwork`, while
+dynamic station eligibility and bicycle movement are expanded by the separate
+batched `BikeShareOperator`.
 
 ## Consequences
 

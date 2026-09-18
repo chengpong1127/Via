@@ -21,6 +21,8 @@ Implemented capabilities:
 - generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
   plus shared request, result, empty, and error fixtures;
 - one-to-many and many-to-one Walking/bike-share matrices;
+- static directional transit↔BikeShare walking connectors plus a batched,
+  query-time BikeShare operator for transit interchanges;
 - provider-neutral route geometry and best-effort maneuver facts;
 - Valhalla-owned graph labeling and tileset validation;
 - normalized provider errors, strict timeout/concurrency/provider/body bounds;
@@ -113,7 +115,11 @@ Via Server → immutable TransitNetwork artifact
 
 Walking is always available for direct journeys and transit/BikeShare access and
 egress; direct BikeShare is also a separate candidate, and clients select only
-the high-level `transit` and `bike_share` categories. The request path is:
+the high-level `transit` and `bike_share` categories. Static
+`TransitNetwork.bike_share_connectors` provide bounded BoardingPoint↔station
+walking facts. At query time, `BikeShareOperator` batches availability and
+bicycle matrix work, then TripBased can insert an explicit BikeShare transfer
+between transit legs or continue to the destination. The request path is:
 
 ```text
 PlanningRequest → RoutingService → street access/egress
@@ -136,12 +142,14 @@ and ready time, then returns normalized `EffectiveTrip` instances with complete
 stop timing, timing basis, and optional evidence. Routing and Pareto search do
 not choose timing sources by `TransitMode`.
 
-Walking and YouBike are endpoint connector semantics, not transit departures.
-An `EndpointPath` may contain Walk/BikeShare/Walk legs before or after transit;
-`TransferShortcut` contains only a static public-transit interchange. Runtime
-BikeShare availability is fetched only for stations referenced by endpoint
-paths. Transfer materialization is a direct projection of
-`TransitNetwork.transfer_edges` and never invokes Valhalla or a street router.
+Walking and YouBike are mobility legs, not transit departures. A
+`MobilityPath` may contain Walk/BikeShare/Walk legs before, between, or after
+transit; `TransferShortcut` contains only a static public-transit interchange.
+Static Transit↔BikeShare connectors are part of the immutable network, while
+runtime BikeShare availability and bicycle matrices are fetched in bounded
+batches by `BikeShareOperator`. Transfer materialization is a direct projection
+of `TransitNetwork.transfer_edges`; BikeShare materialization hydrates only
+surviving explicit BikeShare segments.
 
 The wired timing path is realtime-first for every transit mode. A normalized
 realtime departure resolver is attempted for Bus, Metro, TRA, and THSR, then

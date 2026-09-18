@@ -58,7 +58,7 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         load_manifest(&first.join("manifest.json"))
             .unwrap()
             .schema_version,
-        2
+        3
     );
     assert_eq!(
         load_network_artifact(&first.join("transit-network.json")).unwrap(),

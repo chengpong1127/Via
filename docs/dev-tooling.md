@@ -4,7 +4,8 @@ The development data flow is deliberately offline-first:
 
 ```text
 TDX → via-data fetch → immutable raw snapshot → via-data build
-  → validated TransitNetwork.transfer_edges → server / via-route
+  → validated TransitNetwork.transfer_edges + bike_share_connectors
+  → server / via-route
 ```
 
 The first supported scope is `taipei-new-taipei`. Static artifacts are not
@@ -78,10 +79,15 @@ Before the build, start the repository Valhalla service and configure
 `VIA_VALHALLA_TILESET_LAST_MODIFIED`. In the current development environment,
 the URL is `http://valhalla:8002/`. The normal build discovers bounded,
 provider-validated walking transfers between public-transit BoardingPoints and
-merges them into `TransitNetwork.transfer_edges`; no second transfer artifact is
-created. The default build policy uses a 500 m geometric radius, an 8-minute /
-800 m walking bound, at most 16 matrix candidates, and at most 12 inferred
-outgoing transfers per source. The build prints candidate, matrix,
+merges them into `TransitNetwork.transfer_edges`. It also discovers directional
+BoardingPoint↔BikeShare walking connectors and stores them in the same
+`TransitNetwork` artifact; no second transfer or connector artifact is created.
+The default transit-transfer policy uses a 500 m geometric radius, an 8-minute
+/ 800 m walking bound, at most 16 matrix candidates, and at most 12 inferred
+outgoing transfers per source. The default BikeShare-connector policy uses a
+500 m geometric radius, an 8-minute / 800 m walking bound, at most 8 geometric
+candidates, and at most 8 retained connectors per BoardingPoint. Both
+discoveries use bounded matrix batches. The build prints candidate, matrix,
 reachability, fan-out, and elapsed time diagnostics.
 
 The build output is:
@@ -93,8 +99,9 @@ manifest.json
 
 The network is canonicalized and validated before it is published. Revisions
 are SHA-256 hashes of canonical normalized content, not wall-clock identities.
-The manifest records source hashes, entity counts including `transfer_edges`,
-and revisions. `built_at` is diagnostic metadata and may vary.
+The manifest records source hashes, entity counts including `transfer_edges` and
+`bike_share_connectors`, and revisions. `built_at` is diagnostic metadata and
+may vary.
 
 The current static sources are the following TDX Basic API datasets. Every
 source is requested with the required `$format=JSON` query parameter; optional

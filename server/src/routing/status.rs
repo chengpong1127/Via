@@ -69,34 +69,6 @@ pub(crate) async fn collect_bike_values(
     }
 }
 
-pub(crate) async fn collect_bike_values_individually(
-    realtime: &dyn RealtimeProvider,
-    station_ids: impl IntoIterator<Item = BikeShareStationId>,
-) -> (RealtimeContext, bool) {
-    let mut station_ids = station_ids.into_iter().collect::<Vec<_>>();
-    station_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-    station_ids.dedup();
-    let mut values = Vec::new();
-    let mut transient_failure = false;
-    for station_id in station_ids {
-        match realtime
-            .bike_availability(std::slice::from_ref(&station_id))
-            .await
-        {
-            Ok(mut station_values) => values.append(&mut station_values),
-            Err(error) => {
-                tracing::warn!(
-                    station_id = station_id.as_str(),
-                    error = %error,
-                    "realtime BikeShare lookup failed"
-                );
-                transient_failure |= error.is_transient();
-            }
-        }
-    }
-    (RealtimeContext::from_values(values), transient_failure)
-}
-
 pub(crate) fn required_station_ids(
     candidates: &[crate::routing::algorithm::JourneyCandidate],
 ) -> HashSet<BikeShareStationId> {
@@ -108,6 +80,12 @@ pub(crate) fn required_station_ids(
                 .required_station_ids()
                 .into_iter()
                 .chain(candidate.egress.required_station_ids())
+                .chain(candidate.segments.iter().flat_map(|segment| match segment {
+                    crate::routing::algorithm::JourneySegment::BikeShareTransfer { transfer } => {
+                        transfer.required_station_ids()
+                    }
+                    _ => Vec::new(),
+                }))
         })
         .collect()
 }

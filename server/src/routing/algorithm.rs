@@ -8,13 +8,17 @@
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
+use crate::api::RequestCoordinate;
 use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
     transit_timing::TimingBasis,
 };
 
-use super::{EffectiveTrip, EndpointPath, TransferShortcut, bike::EndpointLeg};
+use super::{
+    EffectiveTrip, MobilityPath, TransferShortcut,
+    bike::{BikeShareTransfer, MobilityLeg},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {
@@ -24,7 +28,7 @@ pub struct AccessPoint {
     pub walking_seconds: u32,
     pub bike_seconds: u32,
     pub distance_metres: u32,
-    pub path: Option<EndpointPath>,
+    pub path: Option<MobilityPath>,
 }
 
 impl AccessPoint {
@@ -49,7 +53,7 @@ impl AccessPoint {
     pub fn with_path(
         stop_id: BoardingPointId,
         departure_at: OffsetDateTime,
-        path: EndpointPath,
+        path: MobilityPath,
         distance_metres: u32,
     ) -> Self {
         Self {
@@ -67,7 +71,7 @@ impl AccessPoint {
     pub fn required_station_ids(&self) -> Vec<crate::domain::ids::BikeShareStationId> {
         self.path
             .as_ref()
-            .map(EndpointPath::required_station_ids)
+            .map(MobilityPath::required_station_ids)
             .unwrap_or_default()
     }
 }
@@ -78,7 +82,7 @@ pub struct EgressPoint {
     pub walking_seconds: u32,
     pub bike_seconds: u32,
     pub distance_metres: u32,
-    pub path: Option<EndpointPath>,
+    pub path: Option<MobilityPath>,
 }
 
 impl EgressPoint {
@@ -92,7 +96,7 @@ impl EgressPoint {
         }
     }
 
-    pub fn with_path(stop_id: BoardingPointId, path: EndpointPath, distance_metres: u32) -> Self {
+    pub fn with_path(stop_id: BoardingPointId, path: MobilityPath, distance_metres: u32) -> Self {
         Self {
             stop_id,
             walking_seconds: path.walking_seconds(),
@@ -105,12 +109,12 @@ impl EgressPoint {
     pub fn required_station_ids(&self) -> Vec<crate::domain::ids::BikeShareStationId> {
         self.path
             .as_ref()
-            .map(EndpointPath::required_station_ids)
+            .map(MobilityPath::required_station_ids)
             .unwrap_or_default()
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AlgorithmQuery {
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
@@ -120,6 +124,7 @@ pub struct AlgorithmQuery {
     pub max_candidates: usize,
     pub max_expansions: usize,
     pub max_journey_duration_seconds: u32,
+    pub destination: Option<RequestCoordinate>,
 }
 
 impl AlgorithmQuery {
@@ -137,6 +142,7 @@ impl AlgorithmQuery {
             max_candidates: 16,
             max_expansions: 2_000,
             max_journey_duration_seconds: 4 * 60 * 60,
+            destination: None,
         }
     }
 
@@ -158,6 +164,11 @@ impl AlgorithmQuery {
         self.latest_arrival = Some(latest_arrival);
         self
     }
+
+    pub fn with_destination(mut self, destination: RequestCoordinate) -> Self {
+        self.destination = Some(destination);
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,8 +178,11 @@ pub enum JourneySegment {
         board_index: usize,
         alight_index: usize,
     },
-    Transfer {
+    WalkingTransfer {
         shortcut: TransferShortcut,
+    },
+    BikeShareTransfer {
+        transfer: BikeShareTransfer,
     },
 }
 
@@ -176,7 +190,7 @@ impl JourneySegment {
     pub fn service_id(&self) -> Option<&TransitServiceId> {
         match self {
             Self::Transit { trip, .. } => Some(&trip.service_id),
-            Self::Transfer { .. } => None,
+            Self::WalkingTransfer { .. } | Self::BikeShareTransfer { .. } => None,
         }
     }
 }
@@ -247,11 +261,20 @@ impl JourneyCandidate {
                         .departure_at
                         .unix_timestamp_nanos()
                 ),
-            JourneySegment::Transfer { shortcut } => format!(
+            JourneySegment::WalkingTransfer { shortcut } => format!(
                 "transfer:{}:{}:{}",
                 shortcut.from.as_str(),
                 shortcut.to.as_str(),
                 shortcut.duration_seconds
+            ),
+            JourneySegment::BikeShareTransfer { transfer } => format!(
+                "bike-transfer:{}:{}:{}:{}:{}:{}",
+                transfer.from_stop_id.as_str(),
+                transfer.to_stop_id.as_str(),
+                transfer.pickup_station_id.as_str(),
+                transfer.return_station_id.as_str(),
+                transfer.bike_seconds,
+                transfer.duration_seconds(),
             ),
         }));
         parts.push(egress);
@@ -259,18 +282,18 @@ impl JourneyCandidate {
     }
 }
 
-fn endpoint_path_signature(path: Option<&EndpointPath>) -> String {
+fn endpoint_path_signature(path: Option<&MobilityPath>) -> String {
     let Some(path) = path else {
         return "walking".into();
     };
     path.legs
         .iter()
         .map(|leg| match leg {
-            EndpointLeg::Walk {
+            MobilityLeg::Walk {
                 duration_seconds,
                 distance_metres,
             } => format!("walk:{duration_seconds}:{distance_metres}"),
-            EndpointLeg::BikeShare {
+            MobilityLeg::BikeShare {
                 pickup_station_id,
                 return_station_id,
                 duration_seconds,

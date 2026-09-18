@@ -231,6 +231,7 @@ fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
         scheduled_trips: network.trips.len(),
         bike_stations: network.bike_share_stations.len(),
         transfer_edges: network.transfer_edges.len(),
+        bike_share_connectors: network.bike_share_connectors.len(),
     };
     print_counts(
         "validated",
@@ -376,6 +377,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
             scheduled_trips: network.trips.len(),
             bike_stations: network.bike_share_stations.len(),
             transfer_edges: network.transfer_edges.len(),
+            bike_share_connectors: network.bike_share_connectors.len(),
         });
     println!("network revision: {}", network.static_network_revision);
     println!("schedule revision: {}", network.schedule_revision);
@@ -400,6 +402,10 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     }
     println!("BikeShare station count: {}", counts.bike_stations);
     println!("transfer edge count: {}", counts.transfer_edges);
+    println!(
+        "Transit↔BikeShare connector count: {}",
+        counts.bike_share_connectors
+    );
     println!("service-day boundary: {}", network.service_day_boundary);
     Ok(())
 }
@@ -416,12 +422,13 @@ fn print_counts(
     );
     println!("  schedule revision: {}", revisions.schedule_revision);
     println!(
-        "  stops={} services={} scheduled_trips={} bike_stations={} transfer_edges={}",
+        "  stops={} services={} scheduled_trips={} bike_stations={} transfer_edges={} bike_share_connectors={}",
         counts.stops,
         counts.services,
         counts.scheduled_trips,
         counts.bike_stations,
-        counts.transfer_edges
+        counts.transfer_edges,
+        counts.bike_share_connectors
     );
 }
 
@@ -460,6 +467,16 @@ fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
             transfer.total_transfer_edges,
             transfer.build_wall_clock_milliseconds,
         );
+        if let Some(bike) = &transfer.bike_share_connectors {
+            println!(
+                "static BikeShare connector discovery: boarding_points={} geometric_candidate_pairs={} matrix_requests={} reachable_directions={} connectors_kept={}",
+                bike.boarding_points,
+                bike.geometric_candidate_pairs,
+                bike.matrix_requests,
+                bike.reachable_directions,
+                bike.connectors_kept,
+            );
+        }
     }
 }
 
