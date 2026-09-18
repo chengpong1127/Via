@@ -24,7 +24,7 @@ impl TransferShortcut {
     }
 }
 
-/// Transfer seam consumed by the Trip-Based router.
+/// Lookup seam used by the static walking resolver.
 pub trait TransferIndex: Send + Sync {
     fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut];
 }

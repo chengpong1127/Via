@@ -154,8 +154,28 @@ fn canonical_domain_types_and_algorithm_boundary_have_single_definitions() {
     assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
     assert!(source("src/routing/algorithm.rs").contains("pub trait RoutingAlgorithm"));
     assert!(
-        source("src/routing/trip_based.rs").contains("impl RoutingAlgorithm for TripBasedRouter")
+        source("src/routing/trip_based/search.rs")
+            .contains("impl RoutingAlgorithm for TripBasedRouter")
     );
+}
+
+#[test]
+fn trip_based_search_uses_the_generic_transfer_boundary() {
+    let search = source("src/routing/trip_based/search.rs");
+    assert!(search.contains("transfer_resolver.expand_batch"));
+    for forbidden in [
+        "TransferShortcutIndex",
+        "transfers_from",
+        "WalkingTransfer",
+        "BikeShare",
+        "YouBike",
+        "Valhalla",
+    ] {
+        assert!(
+            !search.contains(forbidden),
+            "Trip-Based search contains {forbidden}"
+        );
+    }
 }
 
 #[test]

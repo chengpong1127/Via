@@ -36,8 +36,12 @@ and `EffectiveTripId` distinct.
 
 ## Routing and transfers
 
-`TripBasedRouter` consumes `DepartureResolver`, `EffectiveTrip`, and an in-memory
-`TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`.
+`TripBasedRouter` owns transit search, including same-stop interchange, and
+consumes `DepartureResolver` plus a batch `TransferResolver` for movement between
+distinct `BoardingPoint`s. The only current resolver uses an in-memory
+`TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Future
+dynamic mobility can be implemented behind `TransferResolver` without changing
+Trip-Based search.
 `DepartureResolver` is realtime-first with static fallback. A resolved
 `EffectiveTrip` carries its timing basis and optional evidence; scheduled and
 effective trip identity must not be conflated.

@@ -118,6 +118,19 @@ pub enum JourneySegment {
 }
 
 impl JourneySegment {
+    /// Physical transfer facts used to keep routing and reconstruction aligned.
+    pub(crate) fn transfer_facts(&self) -> Option<(&BoardingPointId, &BoardingPointId, u32, u32)> {
+        match self {
+            Self::WalkingTransfer { shortcut } => Some((
+                &shortcut.from,
+                &shortcut.to,
+                shortcut.duration_seconds,
+                shortcut.duration_seconds,
+            )),
+            Self::Transit { .. } => None,
+        }
+    }
+
     pub fn service_id(&self) -> Option<&TransitServiceId> {
         match self {
             Self::Transit { trip, .. } => Some(&trip.service_id),

@@ -17,16 +17,18 @@ TDX-derived transit identities and demand-driven realtime remain authoritative.
 state.
 
 The router consumes the shared static `TransitNetwork`, a `DepartureResolver`,
-and a `TransferIndex`. A resolver receives `(service, boarding point, ready
+and a batch `TransferResolver`. A departure resolver receives `(service, boarding point, ready
 time)` and returns complete request-scoped `EffectiveTrip` instances. Runtime
 trip IDs are synthetic unless a scheduled trip identity is available; they are
 not persistent aliases.
 
-`TransferShortcutIndex` is a direct index of static public-transit interchange
-edges from `TransitNetwork.transfer_edges`. A `TransferShortcut` contains only
-boarding-point endpoints and a static walking/interchange duration. Static
-transit transfers are persisted in the same `TransitNetwork` artifact and
-indexed as `TransferShortcut` values.
+TripBased handles same-stop interchange itself. For movement between distinct
+BoardingPoints, it collects transfer needs during a round and resolves them in
+one batch. The current `TransferResolver` implementation reads a
+`TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Each
+resolved transfer carries its arrival time, walking cost, and reconstruction
+segment. Future dynamic movement can sit behind this boundary without changing
+TripBased search. Static transfer edges remain in the `TransitNetwork` artifact.
 
 ## Consequences
 

@@ -21,7 +21,10 @@ pub use algorithm::{
     RoutingError,
 };
 pub use service::{RoutingLimits, RoutingService};
-pub use transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};
+pub use transfers::{
+    ResolvedTransfer, TransferIndex, TransferNeed, TransferResolver, TransferShortcut,
+    TransferShortcutIndex, TransferTarget,
+};
 pub use trip_based::{TripBasedIndex, TripBasedLimits, TripBasedRouter};
 
 pub type RouteQuery = crate::api::PlanningRequest;

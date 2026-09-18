@@ -29,7 +29,7 @@ use super::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
     status,
-    transfers::{TransferIndex, TransferShortcutIndex},
+    transfers::{TransferResolver, TransferShortcutIndex},
     trip_based::TripBasedRouter,
 };
 
@@ -38,7 +38,7 @@ pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
     pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
-    pub(crate) transfer_index: Arc<dyn TransferIndex>,
+    pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
     pub(crate) realtime: Arc<dyn RealtimeProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -87,18 +87,18 @@ impl RoutingService {
         realtime: Arc<dyn RealtimeProvider>,
     ) -> Self {
         let transit_network = Arc::new(TransitNetwork::default());
-        let transfer_index: Arc<dyn TransferIndex> =
+        let transfer_resolver: Arc<dyn TransferResolver> =
             Arc::new(TransferShortcutIndex::from_network(&transit_network));
         let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(TripBasedRouter::new(
             transit_network.clone(),
             departure_resolver.clone(),
-            transfer_index.clone(),
+            transfer_resolver.clone(),
         ));
         Self {
             street_routing,
             departure_resolver,
             routing_algorithm,
-            transfer_index,
+            transfer_resolver,
             realtime,
             transit_network,
             ranking: RankingPolicy::default(),
@@ -112,7 +112,8 @@ impl RoutingService {
 
     pub fn with_transit_network_arc(mut self, transit_network: Arc<TransitNetwork>) -> Self {
         self.transit_network = transit_network;
-        self.transfer_index = Arc::new(TransferShortcutIndex::from_network(&self.transit_network));
+        self.transfer_resolver =
+            Arc::new(TransferShortcutIndex::from_network(&self.transit_network));
         self.rebuild_default_algorithm();
         self
     }
@@ -121,7 +122,7 @@ impl RoutingService {
         self.routing_algorithm = Arc::new(TripBasedRouter::new(
             self.transit_network.clone(),
             self.departure_resolver.clone(),
-            self.transfer_index.clone(),
+            self.transfer_resolver.clone(),
         ));
     }
 
