@@ -1,8 +1,8 @@
-//! Algorithm-neutral public-transit interchange shortcuts.
+//! Static public-transit interchange shortcuts.
 //!
 //! A transfer connects one public-transit boarding point to another through a
-//! static walking/interchange edge. Query-time BikeShare paths are endpoint
-//! connectors and live in [`super::bike`].
+//! static walking/interchange edge. Query-time BikeShare paths are handled by
+//! [`super::bike`].
 
 use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ impl TransferShortcut {
     }
 }
 
-/// Shared transfer seam for Trip-Based, RAPTOR, CSA, and future algorithms.
+/// Transfer seam consumed by the Trip-Based router.
 pub trait TransferIndex: Send + Sync {
     fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut];
 }
@@ -52,23 +52,11 @@ impl TransferShortcutIndex {
         }))
     }
 
-    pub fn insert(&mut self, shortcut: TransferShortcut) {
-        self.insert_unsorted(shortcut);
-        self.sort();
-    }
-
     fn insert_unsorted(&mut self, shortcut: TransferShortcut) {
         let alternatives = self.by_from.entry(shortcut.from.clone()).or_default();
         if !alternatives.contains(&shortcut) {
             alternatives.push(shortcut);
         }
-    }
-
-    pub fn extend(&mut self, shortcuts: impl IntoIterator<Item = TransferShortcut>) {
-        for shortcut in shortcuts {
-            self.insert_unsorted(shortcut);
-        }
-        self.sort();
     }
 
     pub fn len(&self) -> usize {
@@ -77,22 +65,6 @@ impl TransferShortcutIndex {
 
     pub fn is_empty(&self) -> bool {
         self.by_from.values().all(Vec::is_empty)
-    }
-
-    pub fn shortcuts(&self) -> Vec<TransferShortcut> {
-        let mut shortcuts = self
-            .by_from
-            .values()
-            .flat_map(|alternatives| alternatives.iter().cloned())
-            .collect::<Vec<_>>();
-        shortcuts.sort_by(|left, right| {
-            left.from
-                .as_str()
-                .cmp(right.from.as_str())
-                .then(left.to.as_str().cmp(right.to.as_str()))
-                .then(left.duration_seconds.cmp(&right.duration_seconds))
-        });
-        shortcuts
     }
 
     fn sort(&mut self) {

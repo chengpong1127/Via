@@ -1,9 +1,7 @@
-//! Immutable timetable data and the small transit portion of Via's routing model.
+//! Immutable, provider-neutral transit data consumed by the routing layer.
 //!
-//! This is intentionally independent of TDX (or any other provider). Static-data
-//! adapters build these records offline, and a planning request only reads the
-//! immutable revision. The search is a bounded RAPTOR-style round scan: each round
-//! adds at most one transit boarding and retains the parent ride chain.
+//! Static adapters build validated `TransitNetwork` artifacts. Requests read one
+//! immutable revision and resolve departures through the timing boundary.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -15,12 +13,10 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
 use super::ids::{BikeShareStationId, BoardingPointId, ScheduledTripId, TransitServiceId};
 use super::{
-    journey::JourneyMode,
     location::{METRES_PER_DEGREE, RequestCoordinate},
     normalize_to_taipei, taipei_offset,
 };
 
-pub const DEFAULT_MAX_TRANSFERS: usize = 2;
 const SPATIAL_CELL_DEGREES: f64 = 0.005;
 const MAX_SPATIAL_SEARCH_RING: i32 = 32;
 
@@ -324,8 +320,7 @@ pub struct TransitNetwork {
     pub metro_timings: Vec<MetroTiming>,
     pub bike_share_stations: Vec<BikeShareStation>,
     /// Explicit movement time between distinct Boarding Points. Same-point
-    /// transfers use `default_transfer_seconds` for backwards-compatible
-    /// interchange dwell time; distinct points must be listed here.
+    /// transfers use `default_transfer_seconds`; distinct points must be listed.
     #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
     /// Static walking connectors between transit Boarding Points and distinct
@@ -795,261 +790,25 @@ impl TransitNetwork {
         PrimitiveDateTime::new(service_day, Time::MIDNIGHT).assume_offset(taipei_offset())
     }
 
-    /// Generate timetable parent chains for every service in the active transit
-    /// network when the request enables the top-level Transit mode.
+    /// Return a representative duration for one adjacent service segment.
     ///
-    /// `access` contains the time at which a rider can reach each Boarding Point.
-    /// The caller supplies that access through the street-routing boundary, keeping
-    /// Walking and bicycle paths out of the timetable kernel.
-    pub fn itineraries(
+    /// Realtime bus departures may not have a scheduled trip for the current
+    /// service day, so the timing adapter needs a static shape without
+    /// fabricating a departure identity.
+    pub fn estimated_segment_seconds(
         &self,
-        access: &[TransitAccess],
-        query: TransitQuery,
-        selected_modes: &[JourneyMode],
-    ) -> Vec<TransitItinerary> {
-        self.itineraries_for_services(
-            access,
-            query,
-            selected_modes,
-            None,
-            DEFAULT_MAX_TRANSFERS,
-            64,
-        )
-    }
-
-    /// Generate a bounded static transit topology for a selected set of
-    /// provider-neutral services. Timing is resolved by routing later.
-    pub fn itineraries_for_services(
-        &self,
-        access: &[TransitAccess],
-        query: TransitQuery,
-        selected_modes: &[JourneyMode],
-        service_ids: Option<&HashSet<TransitServiceId>>,
-        max_transfers: usize,
-        max_itineraries: usize,
-    ) -> Vec<TransitItinerary> {
-        if access.is_empty() {
-            return Vec::new();
-        }
-        let service_day = match query {
-            TransitQuery::DepartAfter { earliest_departure } => {
-                self.service_day(earliest_departure)
-            }
-            TransitQuery::ArriveBy { latest_arrival } => self.service_day(latest_arrival),
-        };
-        let indexes = self.indexes();
-        let selected_service_indexes = self
-            .services
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                selected_modes.contains(&JourneyMode::Transit)
-                    && service_ids.is_none_or(|ids| ids.contains(&self.services[*index].id))
-            })
-            .map(|(index, _)| index)
-            .collect::<HashSet<_>>();
-
-        let mut frontier = access
-            .iter()
-            .map(|access| TransitLabel {
-                stop_id: access.stop_id.clone(),
-                available_at: access.available_at,
-                arrival_at: access.available_at,
-                access_departure_at: access.departure_at,
-                rides: Vec::new(),
-            })
-            .collect::<Vec<_>>();
-        let mut results = Vec::new();
-
-        for _round in 0..=max_transfers {
-            let mut next = Vec::new();
-            for label in &frontier {
-                let earliest_seconds = seconds_since_service_day(
-                    self.service_day_start(service_day),
-                    label.available_at,
-                );
-                let mut services_seen = HashSet::new();
-                for departure in indexes
-                    .departures_by_stop
-                    .get(&label.stop_id)
-                    .into_iter()
-                    .flatten()
-                    .skip_while(|departure| departure.departure_seconds < earliest_seconds)
-                    .filter(|departure| selected_service_indexes.contains(&departure.service_index))
-                    .take(32)
-                {
-                    let trip = &self.trips[departure.trip_index];
-                    if !trip.runs_on(service_day) {
-                        continue;
-                    }
-                    if !services_seen.insert(departure.service_index) {
-                        continue;
-                    }
-                    let service = &self.services[departure.service_index];
-                    self.append_service_candidates(
-                        ServiceCandidateInput {
-                            service_day,
-                            query,
-                            label,
-                            service,
-                            trip,
-                            board_index: departure.stop_index,
-                            max_transfers,
-                        },
-                        &mut results,
-                        &mut next,
-                    );
-                }
-
-                // Bus static data is topology plus a representative ride shape. A
-                // bus must still reach the timing resolver when no static trip is
-                // active on this service day; its boarding time comes from the
-                // scoped realtime query later.
-                for (service_index, service) in self.services.iter().enumerate() {
-                    if service.transit_mode != TransitMode::Bus
-                        || !selected_service_indexes.contains(&service_index)
-                        || services_seen.contains(&service_index)
-                    {
-                        continue;
-                    }
-                    let Some(board_index) = service
-                        .pattern
-                        .iter()
-                        .position(|stop_id| stop_id == &label.stop_id)
-                    else {
-                        continue;
-                    };
-                    let Some(trip) = indexes
-                        .trips_by_service
-                        .get(&service_index)
-                        .into_iter()
-                        .flatten()
-                        .map(|trip_index| &self.trips[*trip_index])
-                        .find(|trip| trip.stop_times.len() == service.pattern.len())
-                    else {
-                        continue;
-                    };
-                    services_seen.insert(service_index);
-                    self.append_service_candidates(
-                        ServiceCandidateInput {
-                            service_day,
-                            query,
-                            label,
-                            service,
-                            trip,
-                            board_index,
-                            max_transfers,
-                        },
-                        &mut results,
-                        &mut next,
-                    );
-                }
-            }
-            let mut transferred = Vec::new();
-            for label in next {
-                transferred.push(label.clone());
-                for edge in indexes
-                    .transfers_by_from
-                    .get(&label.stop_id)
-                    .into_iter()
-                    .flatten()
-                {
-                    let Some(transfer_arrival) = label
-                        .available_at
-                        .checked_add(time::Duration::seconds(i64::from(edge.duration_seconds)))
-                    else {
-                        continue;
-                    };
-                    let mut transferred_label = label.clone();
-                    transferred_label.stop_id = edge.to.clone();
-                    transferred_label.available_at = transfer_arrival;
-                    transferred.push(transferred_label);
-                }
-            }
-            next = dominance_prune(transferred);
-            next.truncate(128);
-            frontier = next;
-            if frontier.is_empty() {
-                break;
-            }
-        }
-
-        results.sort_by(|left, right| {
-            left.arrival_at
-                .cmp(&right.arrival_at)
-                .then(left.transfers().cmp(&right.transfers()))
-                .then(ride_signature(&left.rides).cmp(&ride_signature(&right.rides)))
-        });
-        results.dedup_by(|left, right| {
-            left.rides == right.rides && left.access_departure_at == right.access_departure_at
-        });
-        results.truncate(max_itineraries.max(1));
-        results
-    }
-
-    /// Resolve a scheduled ride from its canonical service and trip identity.
-    pub fn scheduled_ride(
-        &self,
-        service_day: Date,
         service_id: &TransitServiceId,
-        trip_id: &ScheduledTripId,
-        board_stop_id: &BoardingPointId,
-        alight_stop_id: &BoardingPointId,
-    ) -> Option<TransitRide> {
+        from_stop_id: &BoardingPointId,
+        to_stop_id: &BoardingPointId,
+    ) -> Option<u32> {
         let service = self.service(service_id)?;
-        let trip = self
-            .trips
-            .iter()
-            .find(|trip| &trip.id == trip_id && &trip.service_id == service_id)?;
-        if !trip.runs_on(service_day) {
-            return None;
-        }
-        let board_index = service
-            .pattern
-            .iter()
-            .position(|stop_id| stop_id == board_stop_id)?;
+        let board_index = service.pattern.iter().position(|id| id == from_stop_id)?;
         let alight_index = service
             .pattern
             .iter()
             .enumerate()
             .skip(board_index + 1)
-            .find_map(|(index, stop_id)| (stop_id == alight_stop_id).then_some(index))?;
-        let service_day_start = self.service_day_start(service_day);
-        Some(TransitRide {
-            transit_mode: service.transit_mode,
-            service_id: service.id.clone(),
-            trip_id: trip.id.clone(),
-            board_stop_id: board_stop_id.clone(),
-            alight_stop_id: alight_stop_id.clone(),
-            scheduled_departure: service_day_start
-                + time::Duration::seconds(i64::from(
-                    trip.stop_times[board_index].departure_seconds,
-                )),
-            scheduled_arrival: service_day_start
-                + time::Duration::seconds(i64::from(trip.stop_times[alight_index].arrival_seconds)),
-        })
-    }
-
-    /// Build a ride-shaped topology edge without claiming that its times are a
-    /// current departure. Bus timing replaces these placeholder times with a
-    /// realtime Arrival Estimate later in the routing pipeline. Rail-like
-    /// services use the edge only to resolve an actual schedule departure.
-    pub fn topology_ride(
-        &self,
-        service_day: Date,
-        service_id: &TransitServiceId,
-        board_stop_id: &BoardingPointId,
-        alight_stop_id: &BoardingPointId,
-    ) -> Option<TransitRide> {
-        let service = self.service(service_id)?;
-        let board_index = service.pattern.iter().position(|id| id == board_stop_id)?;
-        let alight_index = service
-            .pattern
-            .iter()
-            .enumerate()
-            .skip(board_index + 1)
-            .find_map(|(index, id)| (id == alight_stop_id).then_some(index))?;
-        let service_day_start = self.service_day_start(service_day);
+            .find_map(|(index, id)| (id == to_stop_id).then_some(index))?;
 
         let shape = self
             .trips
@@ -1064,22 +823,9 @@ impl TransitNetwork {
             let duration = self.estimated_travel_seconds(service, board_index, alight_index);
             (0, duration)
         });
-        Some(TransitRide {
-            transit_mode: service.transit_mode,
-            service_id: service.id.clone(),
-            trip_id: ScheduledTripId::new(format!(
-                "topology:{}:{}:{}",
-                service.id.as_str(),
-                board_stop_id.as_str(),
-                alight_stop_id.as_str()
-            )),
-            board_stop_id: board_stop_id.clone(),
-            alight_stop_id: alight_stop_id.clone(),
-            scheduled_departure: service_day_start
-                + time::Duration::seconds(i64::from(departure_seconds)),
-            scheduled_arrival: service_day_start
-                + time::Duration::seconds(i64::from(arrival_seconds)),
-        })
+        arrival_seconds
+            .checked_sub(departure_seconds)
+            .filter(|duration| *duration > 0)
     }
 
     fn estimated_travel_seconds(
@@ -1108,101 +854,13 @@ impl TransitNetwork {
             })
     }
 
-    fn append_service_candidates(
-        &self,
-        input: ServiceCandidateInput<'_>,
-        results: &mut Vec<TransitItinerary>,
-        next: &mut Vec<TransitLabel>,
-    ) {
-        for alight_index in (input.board_index + 1)..input.service.pattern.len() {
-            let departure_at = self.service_day_start(input.service_day)
-                + time::Duration::seconds(i64::from(
-                    input.trip.stop_times[input.board_index].departure_seconds,
-                ));
-            let arrival_at = self.service_day_start(input.service_day)
-                + time::Duration::seconds(i64::from(
-                    input.trip.stop_times[alight_index].arrival_seconds,
-                ));
-            let ride = TransitRide {
-                transit_mode: input.service.transit_mode,
-                service_id: input.service.id.clone(),
-                trip_id: input.trip.id.clone(),
-                board_stop_id: input.service.pattern[input.board_index].clone(),
-                alight_stop_id: input.service.pattern[alight_index].clone(),
-                scheduled_departure: departure_at,
-                scheduled_arrival: arrival_at,
-            };
-            let mut rides = input.label.rides.clone();
-            rides.push(ride);
-            let candidate = TransitLabel {
-                stop_id: input.service.pattern[alight_index].clone(),
-                available_at: arrival_at,
-                arrival_at,
-                access_departure_at: input.label.access_departure_at,
-                rides,
-            };
-            if candidate.rides.len() <= input.max_transfers + 1 {
-                let result_query = match (input.service.transit_mode, input.query) {
-                    // Static bus times provide a ride shape only. A realtime
-                    // arrival may be usable even when that representative
-                    // timetable would fall outside an ArriveBy window.
-                    (TransitMode::Bus, TransitQuery::ArriveBy { .. }) => {
-                        TransitQuery::DepartAfter {
-                            earliest_departure: self.service_day_start(input.service_day),
-                        }
-                    }
-                    _ => input.query,
-                };
-                results_or_next(
-                    result_query,
-                    input.service_day,
-                    candidate,
-                    input.max_transfers,
-                    results,
-                    next,
-                );
-            }
-        }
-    }
-
     fn indexes(&self) -> &TransitIndexes {
         self.indexes.get_or_init(|| TransitIndexes::build(self))
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TransitLabel {
-    stop_id: BoardingPointId,
-    available_at: OffsetDateTime,
-    arrival_at: OffsetDateTime,
-    access_departure_at: OffsetDateTime,
-    rides: Vec<TransitRide>,
-}
-
-struct ServiceCandidateInput<'a> {
-    service_day: Date,
-    query: TransitQuery,
-    label: &'a TransitLabel,
-    service: &'a TransitService,
-    trip: &'a ScheduledTrip,
-    board_index: usize,
-    max_transfers: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DepartureIndexEntry {
-    trip_index: usize,
-    service_index: usize,
-    stop_index: usize,
-    departure_seconds: u32,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TransitIndexes {
-    service_index_by_id: HashMap<TransitServiceId, usize>,
-    trips_by_service: HashMap<usize, Vec<usize>>,
-    departures_by_stop: HashMap<BoardingPointId, Vec<DepartureIndexEntry>>,
-    transfers_by_from: HashMap<BoardingPointId, Vec<TransferEdge>>,
     stop_grid: SpatialGrid,
     station_grid: SpatialGrid,
 }
@@ -1215,61 +873,6 @@ impl TransitIndexes {
         }
         for (index, station) in network.bike_share_stations.iter().enumerate() {
             indexes.station_grid.insert(station.coordinate, index);
-        }
-        for (service_index, service) in network.services.iter().enumerate() {
-            indexes
-                .service_index_by_id
-                .insert(service.id.clone(), service_index);
-        }
-        for (trip_index, trip) in network.trips.iter().enumerate() {
-            let Some(&service_index) = indexes.service_index_by_id.get(&trip.service_id) else {
-                continue;
-            };
-            indexes
-                .trips_by_service
-                .entry(service_index)
-                .or_default()
-                .push(trip_index);
-            let service = &network.services[service_index];
-            if service.pattern.len() != trip.stop_times.len() {
-                continue;
-            }
-            for (stop_index, stop_id) in service.pattern.iter().enumerate() {
-                indexes
-                    .departures_by_stop
-                    .entry(stop_id.clone())
-                    .or_default()
-                    .push(DepartureIndexEntry {
-                        trip_index,
-                        service_index,
-                        stop_index,
-                        departure_seconds: trip.stop_times[stop_index].departure_seconds,
-                    });
-            }
-        }
-        for edge in &network.transfer_edges {
-            indexes
-                .transfers_by_from
-                .entry(edge.from.clone())
-                .or_default()
-                .push(edge.clone());
-        }
-        for edges in indexes.transfers_by_from.values_mut() {
-            edges.sort_by(|left, right| {
-                left.to
-                    .as_str()
-                    .cmp(right.to.as_str())
-                    .then(left.duration_seconds.cmp(&right.duration_seconds))
-            });
-        }
-        for entries in indexes.departures_by_stop.values_mut() {
-            entries.sort_by(|left, right| {
-                left.departure_seconds
-                    .cmp(&right.departure_seconds)
-                    .then(left.service_index.cmp(&right.service_index))
-                    .then(left.trip_index.cmp(&right.trip_index))
-                    .then(left.stop_index.cmp(&right.stop_index))
-            });
         }
         indexes
     }
@@ -1479,59 +1082,6 @@ fn cell_lower_bound_metres(coordinate: RequestCoordinate, cell: SpatialCell) -> 
     })
 }
 
-fn results_or_next(
-    query: TransitQuery,
-    service_day: Date,
-    candidate: TransitLabel,
-    max_transfers: usize,
-    results: &mut Vec<TransitItinerary>,
-    next: &mut Vec<TransitLabel>,
-) {
-    let arrival_allowed = match query {
-        TransitQuery::DepartAfter { .. } => true,
-        TransitQuery::ArriveBy { latest_arrival } => candidate.arrival_at <= latest_arrival,
-    };
-    if arrival_allowed {
-        results.push(TransitItinerary {
-            service_day,
-            access_departure_at: candidate.access_departure_at,
-            arrival_at: candidate.arrival_at,
-            rides: candidate.rides.clone(),
-        });
-    }
-    if candidate.rides.len() <= max_transfers {
-        next.push(candidate);
-    }
-}
-
-fn dominance_prune(mut labels: Vec<TransitLabel>) -> Vec<TransitLabel> {
-    labels.sort_by(|left, right| {
-        left.stop_id
-            .as_str()
-            .cmp(right.stop_id.as_str())
-            .then(left.available_at.cmp(&right.available_at))
-            .then(left.rides.len().cmp(&right.rides.len()))
-            .then(ride_signature(&left.rides).cmp(&ride_signature(&right.rides)))
-    });
-    let mut retained = Vec::new();
-    for label in labels {
-        if retained.iter().any(|existing: &TransitLabel| {
-            existing.stop_id == label.stop_id
-                && existing.available_at <= label.available_at
-                && existing.rides.len() <= label.rides.len()
-        }) {
-            continue;
-        }
-        retained.retain(|existing: &TransitLabel| {
-            !(existing.stop_id == label.stop_id
-                && label.available_at <= existing.available_at
-                && label.rides.len() <= existing.rides.len())
-        });
-        retained.push(label);
-    }
-    retained
-}
-
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TransitNetworkValidationError {
     #[error("transit artifact revisions are required")]
@@ -1610,76 +1160,4 @@ pub enum TransitArtifactError {
     InvalidJson(String),
     #[error("transit artifact failed validation: {0}")]
     Invalid(TransitNetworkValidationError),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransitAccess {
-    pub stop_id: BoardingPointId,
-    pub departure_at: OffsetDateTime,
-    pub available_at: OffsetDateTime,
-}
-
-impl TransitAccess {
-    pub fn new(
-        stop_id: BoardingPointId,
-        departure_at: OffsetDateTime,
-        available_at: OffsetDateTime,
-    ) -> Self {
-        Self {
-            stop_id,
-            departure_at,
-            available_at,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransitQuery {
-    DepartAfter { earliest_departure: OffsetDateTime },
-    ArriveBy { latest_arrival: OffsetDateTime },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransitRide {
-    pub transit_mode: TransitMode,
-    pub service_id: TransitServiceId,
-    pub trip_id: ScheduledTripId,
-    pub board_stop_id: BoardingPointId,
-    pub alight_stop_id: BoardingPointId,
-    pub scheduled_departure: OffsetDateTime,
-    pub scheduled_arrival: OffsetDateTime,
-}
-
-/// A static, untimed transit path discovered from service-pattern topology.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransitTopologyItinerary {
-    pub service_day: Date,
-    pub rides: Vec<TransitRide>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransitItinerary {
-    pub service_day: Date,
-    pub access_departure_at: OffsetDateTime,
-    pub arrival_at: OffsetDateTime,
-    pub rides: Vec<TransitRide>,
-}
-
-impl TransitItinerary {
-    pub fn transfers(&self) -> usize {
-        self.rides.len().saturating_sub(1)
-    }
-}
-
-fn seconds_since_service_day(start: OffsetDateTime, instant: OffsetDateTime) -> u32 {
-    let seconds = (normalize_to_taipei(instant) - start).whole_seconds();
-    u32::try_from(seconds.max(0)).unwrap_or(u32::MAX)
-}
-
-fn ride_signature(rides: &[TransitRide]) -> String {
-    rides
-        .iter()
-        .map(|ride| format!("{}:{}", ride.service_id.as_str(), ride.trip_id.as_str()))
-        .collect::<Vec<_>>()
-        .join(",")
 }

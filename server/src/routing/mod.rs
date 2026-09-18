@@ -22,11 +22,10 @@ pub use algorithm::{
     RoutingError,
 };
 pub use bike::{
-    BikeAvailabilityError, BikeAvailabilityResolver, BikeShareConnectorIndex, BikeShareDirectPath,
-    BikeShareDirectQuery, BikeShareError, BikeShareExpansion, BikeShareExpansionQuery,
-    BikeShareOperator, BikeShareOperatorLimits, BikeShareOperatorMetrics, BikeShareOriginAccess,
-    BikeShareOriginQuery, BikeShareTransfer, EndpointLeg, EndpointPath, MobilityLeg, MobilityPath,
-    StreetBikeShareOperator, bike_availability_is_usable,
+    BikeAvailabilityError, BikeAvailabilityResolver, BikeShareDirectPath, BikeShareDirectQuery,
+    BikeShareError, BikeShareExpansion, BikeShareExpansionQuery, BikeShareOperator,
+    BikeShareOperatorLimits, BikeShareOriginAccess, BikeShareOriginQuery, BikeShareTransfer,
+    MobilityLeg, MobilityPath, StreetBikeShareOperator, bike_availability_is_usable,
 };
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};

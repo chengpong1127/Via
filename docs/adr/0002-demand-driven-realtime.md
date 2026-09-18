@@ -28,6 +28,5 @@ Planning avoids a global feed refresh architecture and does not require a
 global Live Status store. Upstream failures can degrade or temporarily fail
 the request according to the existing eligibility and failure rules.
 
-This supersedes the realtime acquisition, refresh, and snapshot-storage parts
-of ADR-0001. Typed domain IDs are now derived directly from TDX identifiers as
-described in ADR-0006.
+Typed domain IDs are derived directly from TDX identifiers as described in
+ADR-0006.

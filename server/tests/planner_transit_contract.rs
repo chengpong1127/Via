@@ -16,8 +16,8 @@ use via_server::{
             FreshnessReason, FreshnessState,
         },
         transit::{
-            BikeShareStation, ScheduledStopTime, ScheduledTrip, TransferEdge, TransitMode,
-            TransitNetwork, TransitService, TransitStop,
+            BikeShareConnector, BikeShareStation, ScheduledStopTime, ScheduledTrip, TransferEdge,
+            TransitMode, TransitNetwork, TransitService, TransitStop,
         },
     },
     providers::realtime::{
@@ -600,7 +600,9 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
     let c = BoardingPointId::new("c");
     let d = BoardingPointId::new("d");
     let transit_return = coordinate(25.011, 121.511);
-    let transit_pickup = coordinate(25.031, 121.531);
+    let transit_return_c = coordinate(25.030, 121.530);
+    let transit_pickup_b = coordinate(25.020, 121.520);
+    let transit_pickup_d = coordinate(25.031, 121.531);
     let origin_pickup = coordinate(25.003, 121.503);
     let destination_return = coordinate(25.037, 121.537);
     let network = TransitNetwork::new(
@@ -670,8 +672,8 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
                 TransitServiceId::new("metro"),
                 vec![time::Weekday::Monday],
                 vec![
-                    ScheduledStopTime::new(37_500, 37_500),
                     ScheduledStopTime::new(38_100, 38_100),
+                    ScheduledStopTime::new(38_700, 38_700),
                 ],
             ),
         ],
@@ -693,11 +695,27 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
                 },
             ),
             BikeShareStation::new(
-                BikeShareStationId::new("transit-pickup"),
-                "Transit Pickup",
+                BikeShareStationId::new("transit-pickup-b"),
+                "Transit Pickup B",
                 RequestCoordinate {
-                    latitude: transit_pickup.latitude(),
-                    longitude: transit_pickup.longitude(),
+                    latitude: transit_pickup_b.latitude(),
+                    longitude: transit_pickup_b.longitude(),
+                },
+            ),
+            BikeShareStation::new(
+                BikeShareStationId::new("transit-pickup-d"),
+                "Transit Pickup D",
+                RequestCoordinate {
+                    latitude: transit_pickup_d.latitude(),
+                    longitude: transit_pickup_d.longitude(),
+                },
+            ),
+            BikeShareStation::new(
+                BikeShareStationId::new("transit-return-c"),
+                "Transit Return C",
+                RequestCoordinate {
+                    latitude: transit_return_c.latitude(),
+                    longitude: transit_return_c.longitude(),
                 },
             ),
             BikeShareStation::new(
@@ -710,7 +728,19 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
             ),
         ],
     )
-    .with_transfer_edges(vec![TransferEdge::new(b.clone(), c.clone(), 60)])
+    .with_transfer_edges(vec![TransferEdge::new(b.clone(), c.clone(), 900)])
+    .with_bike_share_connectors(vec![
+        BikeShareConnector::new(a.clone(), BikeShareStationId::new("transit-return"))
+            .with_station_to_stop(60, 300),
+        BikeShareConnector::new(b.clone(), BikeShareStationId::new("transit-pickup-b"))
+            .with_stop_to_station(60, 300),
+        BikeShareConnector::new(c.clone(), BikeShareStationId::new("transit-return-c"))
+            .with_station_to_stop(60, 300),
+        BikeShareConnector::new(d.clone(), BikeShareStationId::new("transit-pickup-d"))
+            .with_stop_to_station(60, 300),
+        BikeShareConnector::new(d, BikeShareStationId::new("destination-return"))
+            .with_station_to_stop(60, 300),
+    ])
     .with_revisions("static-1", "schedule-1");
     let path_for = |from: Coordinate, to: Coordinate, seconds| path(from, to, seconds);
     let provider = FakeStreetRouter::builder()
@@ -739,6 +769,12 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
             path_for(origin_pickup, transit_return, 300),
         )
         .path(
+            StreetTravelMode::Bicycle,
+            transit_pickup_b,
+            transit_return_c,
+            path_for(transit_pickup_b, transit_return_c, 300),
+        )
+        .path(
             StreetTravelMode::Walking,
             transit_return,
             coordinate(25.010, 121.510),
@@ -747,14 +783,14 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
         .path(
             StreetTravelMode::Walking,
             coordinate(25.035, 121.535),
-            transit_pickup,
-            path_for(coordinate(25.035, 121.535), transit_pickup, 60),
+            transit_pickup_d,
+            path_for(coordinate(25.035, 121.535), transit_pickup_d, 60),
         )
         .path(
             StreetTravelMode::Bicycle,
-            transit_pickup,
+            transit_pickup_d,
             destination_return,
-            path_for(transit_pickup, destination_return, 300),
+            path_for(transit_pickup_d, destination_return, 300),
         )
         .path(
             StreetTravelMode::Walking,
@@ -793,7 +829,9 @@ async fn unified_search_can_use_bike_share_before_and_after_transit() {
             ),
             bike_value("origin-pickup"),
             bike_value("transit-return"),
-            bike_value("transit-pickup"),
+            bike_value("transit-pickup-b"),
+            bike_value("transit-pickup-d"),
+            bike_value("transit-return-c"),
             bike_value("destination-return"),
         ],
         ..Default::default()

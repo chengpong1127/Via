@@ -136,9 +136,7 @@ THSR remains a Rail v2 dataset: its date-specific DailyTimetable endpoint is
 still documented, but route planning ingests GeneralTimetable because it
 contains regular train stop times and ServiceDay data without binding the
 static source URL to one operating date. The requested snapshot date remains
-manifest metadata and does not alter the TRA or THSR source URLs. The full
-contract review is recorded in
-[`docs/research/tdx-static-data-contracts-2026.md`](research/tdx-static-data-contracts-2026.md).
+manifest metadata and does not alter the TRA or THSR source URLs.
 Provider payload parsing remains inside `via_server::data`; routing consumes
 only the provider-neutral artifact.
 

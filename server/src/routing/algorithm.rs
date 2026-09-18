@@ -1,9 +1,7 @@
-//! The small algorithm boundary shared by all future routing algorithms.
+//! The algorithm-neutral boundary used by Via's routing service.
 //!
-//! Nothing in this module describes a Trip-Based queue, RAPTOR round, CSA
-//! connection, or generic graph node. Algorithms receive access/egress facts
-//! and return feasible candidate journeys made from domain transit trips and
-//! transfer shortcuts.
+//! The boundary carries access/egress facts in and feasible candidate journeys
+//! out, without exposing Trip-Based search internals to the service layer.
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
@@ -237,14 +235,14 @@ impl JourneyCandidate {
             self.access.stop_id.as_str(),
             self.access.walking_seconds,
             self.access.bike_seconds,
-            endpoint_path_signature(self.access.path.as_ref()),
+            mobility_path_signature(self.access.path.as_ref()),
         );
         let egress = format!(
             "egress:{}:{}:{}:{}",
             self.egress.stop_id.as_str(),
             self.egress.walking_seconds,
             self.egress.bike_seconds,
-            endpoint_path_signature(self.egress.path.as_ref()),
+            mobility_path_signature(self.egress.path.as_ref()),
         );
         let mut parts = vec![access];
         parts.extend(self.segments.iter().map(|segment| match segment {
@@ -282,7 +280,7 @@ impl JourneyCandidate {
     }
 }
 
-fn endpoint_path_signature(path: Option<&MobilityPath>) -> String {
+fn mobility_path_signature(path: Option<&MobilityPath>) -> String {
     let Some(path) = path else {
         return "walking".into();
     };

@@ -31,5 +31,4 @@ use the same key semantics.
 Routing retains type safety without maintaining a second Via identity universe.
 Static-network revisions remain stateless: an upstream ID change creates the
 new typed ID in the new artifact, provided that artifact and its realtime feed
-use the same TDX identity. Provider-neutral reconciliation can be introduced
-later if a real multi-provider requirement appears.
+use the same TDX identity.

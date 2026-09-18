@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     algorithm::JourneyCandidate,
-    bike::EndpointPath,
+    bike::MobilityPath,
     service::{GeneratedCandidate, PlanningContext, RoutingService},
     status::RealtimeContext,
 };
@@ -149,7 +149,7 @@ impl RoutingService {
     pub(crate) async fn reconstruct_direct_bike_candidate(
         &self,
         request: &PlanningRequest,
-        path: &EndpointPath,
+        path: &MobilityPath,
         realtime: &RealtimeContext,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
@@ -162,7 +162,7 @@ impl RoutingService {
             | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
         };
         let Some(assembled) =
-            legs::assemble_direct_endpoint(self, request, path, departure, realtime, context)
+            legs::assemble_direct_mobility(self, request, path, departure, realtime, context)
                 .await?
         else {
             return Ok(None);

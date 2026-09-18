@@ -31,7 +31,6 @@ use crate::{
         bike_share_station_id, boarding_point_id, transit_service_id,
         transit_service_id_for_direction,
     },
-    routing::transfers::TransferShortcutIndex,
 };
 
 pub mod static_transfers;
@@ -163,7 +162,6 @@ pub enum FetchProgress {
 pub struct BuildOutput {
     pub network: TransitNetwork,
     pub manifest: ArtifactManifest,
-    pub transfer_index: TransferShortcutIndex,
     pub diagnostics: BuildDiagnostics,
 }
 
@@ -1777,8 +1775,6 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
     let schedule_revision = revision_for_network(&network, true)?;
     network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
     network.validate()?;
-    let transfer_index = TransferShortcutIndex::from_network(&network);
-
     let sources = documents
         .iter()
         .map(|document| {
@@ -1801,7 +1797,7 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
             bike_stations: network.bike_share_stations.len(),
-            transfer_edges: transfer_index.len(),
+            transfer_edges: network.transfer_edges.len(),
             bike_share_connectors: network.bike_share_connectors.len(),
         },
         revisions: ArtifactRevisions {
@@ -1814,7 +1810,6 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
     Ok(BuildOutput {
         network,
         manifest,
-        transfer_index,
         diagnostics,
     })
 }
@@ -1836,19 +1831,6 @@ pub fn write_network_artifact(output: &Path, network: &TransitNetwork) -> Result
     write_text_atomic(&output.join("transit-network.json"), &body)
 }
 
-pub async fn fetch_raw_snapshot(
-    scope: DataScope,
-    date: Date,
-    output: &Path,
-    credentials: TdxCredentials,
-) -> Result<RawSnapshotManifest, DataError> {
-    Ok(
-        fetch_raw_snapshot_with_progress(scope, date, output, credentials, |_| {})
-            .await?
-            .manifest,
-    )
-}
-
 pub async fn fetch_raw_snapshot_with_progress<F>(
     scope: DataScope,
     date: Date,
@@ -1859,18 +1841,13 @@ pub async fn fetch_raw_snapshot_with_progress<F>(
 where
     F: FnMut(FetchProgress),
 {
-    let api_base = std::env::var("TDX_API_BASE_URL")
-        .or_else(|_| std::env::var("VIA_TDX_BASE_URL"))
+    let api_base = std::env::var("VIA_TDX_BASE_URL")
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
-    let token_url = std::env::var("TDX_TOKEN_URL").unwrap_or_else(|_| {
-        "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token".into()
-    });
-    let client = TdxClient::with_urls(credentials, &api_base, &token_url).map_err(|error| {
-        DataError::Fetch {
+    let client =
+        TdxClient::with_api_base_url(credentials, &api_base).map_err(|error| DataError::Fetch {
             source_name: "TDX client".into(),
             error,
-        }
-    })?;
+        })?;
     let mut sleeper = TokioFetchSleeper;
     let mut progress = progress;
     fetch_raw_snapshot_with_client(

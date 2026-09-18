@@ -337,16 +337,9 @@ impl RealtimeDepartureResolver {
                 }
             } else {
                 let from = &service.pattern[index - 1];
-                let ride =
+                let duration =
                     self.network
-                        .topology_ride(service_day, &query.service_id, from, stop_id)?;
-                let duration: u32 = (ride.scheduled_arrival - ride.scheduled_departure)
-                    .whole_seconds()
-                    .try_into()
-                    .ok()?;
-                if duration == 0 {
-                    return None;
-                }
+                        .estimated_segment_seconds(&query.service_id, from, stop_id)?;
                 let previous = previous_departure
                     .or_else(|| stop_times.last().map(|time| time.departure_at))?;
                 let arrival_at = previous + time::Duration::seconds(i64::from(duration));
@@ -645,7 +638,7 @@ impl DepartureResolver for CompositeDepartureResolver {
     }
 }
 
-/// Normalized realtime BikeShare availability for endpoint connector checks.
+/// Normalized realtime BikeShare availability for query-time station checks.
 pub struct RealtimeBikeAvailabilityResolver {
     realtime: Arc<dyn RealtimeProvider>,
 }

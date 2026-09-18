@@ -1,159 +1,96 @@
-# Journey Planning
+# Via current architecture
 
-The language used to describe real-time multimodal journey planning for riders using public transportation and YouBike.
+Via plans multimodal journeys in Taipei and New Taipei using TDX transit data,
+Valhalla street routing, and TDX realtime status. The server returns provider-
+neutral `JourneyOption` values for walking, transit, and BikeShare journeys.
 
-## Language
+## Request flow
 
-**Journey**:
-The rider's complete movement from an origin to a destination.
-_Avoid_: Route, trip
+```text
+PlanningRequest
+  → RoutingService
+  → street access / egress
+  → RoutingAlgorithm
+  → TripBasedRouter
+  → JourneyCandidate
+  → reconstruction
+  → ranking
+  → JourneyOption
+```
 
-**Journey Option**:
-One feasible multimodal alternative offered for a Journey.
-_Avoid_: Way, route option
+`RoutingAlgorithm` is the algorithm-neutral boundary. The current implementation
+is `TripBasedRouter`, which owns its Trip-Based index and search state. The
+service does not depend on a graph or a second planner abstraction.
 
-**Leg**:
-One continuous segment of a Journey using a single mode of travel.
-_Avoid_: Step, segment
+## Static data
 
-**Travel Mode**:
-The means used for a Leg: Walking, Bus, Metro, or YouBike. Bus, Metro, and YouBike are rider-selectable filters; Walking is always available as a connector and is not shown as a filter.
-_Avoid_: Tool, transportation type
+`via-data` fetches TDX payloads, normalizes them into the provider-neutral
+`TransitNetwork`, enriches directional walking transfers and transit↔BikeShare
+walking connectors through the `StreetRouter`, validates the network, and writes
+`transit-network.json` plus `manifest.json`. The runtime loads one immutable
+artifact revision; it has no database or provider identity-reconciliation layer.
 
-**Transfer**:
-The static public-transit interchange between two Boarding Points, including the
-time and failure risk involved. A YouBike path is an endpoint connector, not a
-Transfer.
-_Avoid_: Change
+TDX-derived ID constructors are shared by static normalization and realtime
+normalization. Keep `BoardingPointId`, `BikeShareStationId`, `TransitServiceId`,
+`ScheduledTripId`, and `EffectiveTripId` distinct.
 
-**Guidance**:
-Static, human-readable instructions for a selected Journey Option. Guidance does not track or advance through Legs.
-_Avoid_: Navigation, live guidance
+## Routing and transfers
 
-**Live Status**:
-Time-stamped operational information such as a bus arrival estimate, available-bike count, or return-slot count.
-_Avoid_: Live Observation, real-time data
+`TripBasedRouter` consumes `DepartureResolver`, `EffectiveTrip`, and an in-memory
+`TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`.
+`DepartureResolver` is realtime-first with static fallback. A resolved
+`EffectiveTrip` carries its timing basis and optional evidence; scheduled and
+effective trip identity must not be conflated.
 
-**Planning Inputs**:
-The immutable static `TransitNetwork` revision plus the request-local realtime facts collected for one Planning Request. Every Journey Option from the request uses the same static revision and frozen evidence context.
-_Avoid_: Current data, latest data
+Static transit transfers are directional walking facts preprocessed during the
+data build. Runtime reconstruction uses their duration and synthetic walking
+geometry; it does not call Valhalla for those transfer legs.
 
-**Stop Place**:
-A named Bus or Metro area that groups one or more Boarding Points without hiding where boarding or leaving actually occurs.
-_Avoid_: Station group, stop group
+## BikeShare
 
-**Boarding Point**:
-The exact or best-known place where a rider boards or leaves a Bus or Metro service.
-_Avoid_: Platform node, stop node
+Static `TransitNetwork.bike_share_connectors` contain directional walking facts
+between transit boarding points and BikeShare stations. `StreetBikeShareOperator`
+handles query-time station candidate selection, realtime availability, bounded
+bicycle matrices, and destination walking.
 
-**Service Day**:
-The local operating date to which scheduled Bus or Metro service belongs, including service that continues after midnight.
-_Avoid_: Calendar day, operating day
+The operator can provide:
 
-**Arrival Estimate**:
-Live Status that describes whether and when a Bus is expected at one Boarding Point. It may be unavailable or have a non-time state such as not departed, skipped, or no longer operating.
-_Avoid_: Countdown, ETA record
+- direct origin→BikeShare→destination journeys;
+- origin→BikeShare→transit access;
+- transit→BikeShare→transit transfers; and
+- transit→BikeShare→destination egress.
 
-**Service Condition**:
-Live Status that describes a disruption, suspension, closure, or other operational change affecting Bus or Metro service.
-_Avoid_: Alert record, incident feed
+Availability is checked for the pickup and return stations at query time. A
+`MobilityPath` contains walking and BikeShare legs; `TransferShortcut` is only
+for static transit-to-transit walking.
 
-**Bike Availability**:
-Live Status that separately reports whether a YouBike Station can rent and accept bikes, together with the known bike and return-slot counts.
-_Avoid_: Inventory, bike stock
+## Invariants
 
-**Freshness**:
-Whether Live Status is recent enough for its configured use. Freshness is separate from whether the reported value last changed.
-_Avoid_: Recency, updated state
+- Keep `StreetRouter`, `RoutingAlgorithm`, and `DepartureResolver` as the
+  provider/algorithm-neutral seams.
+- Keep Trip-Based search, static transfer preprocessing, and the current
+  BikeShare operator as separate current responsibilities.
+- Keep provider adapters out of the domain and routing modules.
+- Do not reintroduce `planner`, `normalization`, `routing/engine`, `RouteGraph`,
+  or a `JourneyPlanningService` wrapper.
+- Navigation is not part of the current implementation.
 
-**Reliable Arrival**:
-An estimated arrival whose critical Legs and Transfers remain feasible under current operational data and safety buffers.
-_Avoid_: Fastest route, guaranteed arrival
+## Essential commands
 
-## Transfer architecture
+```bash
+cargo fmt --manifest-path server/Cargo.toml --check
+cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features
+cargo test --manifest-path server/Cargo.toml --all
 
-Static public-transit transfers are normalized into `TransitNetwork.transfer_edges`,
-which is the only persistent source of truth. `TransferShortcutIndex` is an
-in-memory index derived from the validated network at runtime. There is no
-separate transfer preprocessing phase or `transfer-shortcuts.json` artifact.
-Public-transit transfer reconstruction uses the static duration and synthetic
-walking geometry; it never calls Valhalla or a street router. YouBike remains
-only query-time origin/destination connectivity and never appears in static
-transit transfer edges.
+cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch \
+  --scope taipei-new-taipei --date YYYY-MM-DD --output ./data/dev/taipei
+cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
+  --input ./data/dev/taipei/raw/YYYY-MM-DD --output ./data/dev/taipei
+cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
+  --artifact ./data/dev/taipei/transit-network.json
+cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stats \
+  --artifact ./data/dev/taipei/transit-network.json
+```
 
-## Timing and reliability
-
-Every transit mode is resolved realtime-first with static fallback. Realtime
-departures are used only when fresh and usable; empty, stale, missing, future,
-or failed realtime resolution falls back to static timing without removing an
-otherwise valid journey.
-
-`EffectiveTrip.timing_basis` is the source of truth for journey reliability.
-`RealtimePrediction` and `DelayAdjustedSchedule` are realtime-backed;
-`Schedule` and `FrequencyEstimate` are static-backed. A journey is
-`Reliable` only when every transit timing fact and required YouBike
-availability fact is fresh realtime. Otherwise, a valid journey is
-`Feasible`.
-
-## Transit identity decision
-
-Via currently uses TDX as the authoritative source for Taiwan transit static
-and realtime data, including expected nationwide expansion. The normalized
-`TransitNetwork` and realtime adapter construct the same strongly typed domain
-IDs directly from TDX identifiers. Via does not maintain a provider-neutral
-canonical identity registry or persist aliases while TDX is the sole current
-transit provider. Revisit reconciliation only if Via combines multiple
-providers that describe the same logical entities.
-
-## Transit identity vocabulary
-
-Via's normalized transit domain uses these identities:
-
-- `BoardingPointId`: routing-level transit boarding/alighting node. Via does
-  not currently model `StopPlace` separately.
-- `BikeShareStationId`: YouBike/BikeShare station identity.
-- `TransitServiceId`: a transit service and its ordered stop pattern identity.
-- `ScheduledTripId`: stable identity of a timetable-defined trip.
-- `EffectiveTripId`: runtime identity of a concrete trip used by routing. It
-  may reference a `ScheduledTripId`, or exist without one for a dynamically
-  generated trip.
-
-Via intentionally uses “Trip” rather than “Run” in its domain vocabulary.
-
-## Privacy and Telemetry
-
-**Planning Request**:
-A one-time request that contains only the selected origin, destination, Travel Mode filters, locale, and departure setting needed to calculate Journey Options.
-_Avoid_: Search record, trip record
-
-**Operational Event**:
-An anonymous measurement of service behavior, such as latency, an error, stale Live Status, or the number of returned Journey Options. It contains no location, Journey details, or stable rider identifier.
-_Avoid_: Usage event, analytics event
-
-**Product Event**:
-A consented measurement of how a rider uses Journey Planning, such as selecting a Journey Option or expanding Guidance. It uses coarse categories and does not identify the rider across app sessions.
-_Avoid_: Tracking event, behavioral profile
-
-**Feedback Report**:
-An explicit report that a rider sends about a Journey Planning problem. It excludes the origin, destination, and Journey details unless the rider separately chooses to include them after a preview.
-_Avoid_: Support ticket, automatic report
-
-## Infrastructure decisions
-
-TDX static snapshot fetching keeps its small internal timing policy. The
-request limiter, deterministic retry schedule, `Retry-After` handling, progress
-events, and snapshot reuse/resume are one coupled workflow; introducing a
-generic retry middleware would add adapters without removing that behavior.
-
-`TdxCredentials` remains a redacted internal `String` container. Via has no
-constant-time secret comparison, and a `SecretString` wrapper would add access
-noise without changing the existing formatting boundary. The single Axum
-request-timeout middleware also remains internal because it returns Via's
-structured `request_timeout` response directly.
-
-Geographic calculations use the shared `RequestCoordinate` helpers. Spatial
-candidate selection and routing thresholds intentionally use the existing
-rounded local planar approximation; offline straight-line estimates and CLI
-distance display intentionally use Haversine distance. These named semantics
-avoid a new geographic dependency while preserving the different accuracy
-requirements.
+See [`docs/dev-tooling.md`](docs/dev-tooling.md) for the current local data and
+route-debug workflow.

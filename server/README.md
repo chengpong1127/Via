@@ -1,197 +1,71 @@
 # Via server
 
-The Rust/Axum server owns Via's provider-neutral Journey Planning contract and
-street-routing boundary. TDX is currently the authoritative source for Taiwan
-transit static and realtime data. A Planning Request reads one immutable
-`Arc<TransitNetwork>` for static schedules, then demand-fetches only the
-realtime facts needed by its scheduled candidates through an in-process async
-cache. Results use `Cache-Control: no-store`.
-
-Implemented capabilities:
-
-- `POST /v1/journey-plans` with strict provider-neutral request validation,
-  redacted errors, complete result replacement, and polyline6 Walking results;
-- deterministic Live Status eligibility, Reliable/Feasible classification,
-  Transfer and bike-share boundaries, dominance, ranking, diversity, labels, and
-  replay behavior;
-- strongly typed TDX-derived network IDs, explicit TDX N1 status normalization,
-  Service Day handling, and separate bike-share timestamps;
-- Moka-backed demand-driven realtime caching with async request coalescing;
-- scoped TDX arrival and BikeShare queries with provider-neutral normalization;
-- generated OpenAPI at `GET /openapi.json`, coupled to Axum route registration,
-  plus shared request, result, empty, and error fixtures;
-- one-to-many and many-to-one Walking/bike-share matrices;
-- static directional transit↔BikeShare walking connectors plus a batched,
-  query-time BikeShare operator for transit interchanges;
-- provider-neutral route geometry and best-effort maneuver facts;
-- Valhalla-owned graph labeling and tileset validation;
-- normalized provider errors, strict timeout/concurrency/provider/body bounds;
-- structured OSM attribution; and
-- Operational Events containing only provider name, Valhalla revision label, latency,
-  outcome, and anonymous counts.
+The Rust/Axum server exposes Via's provider-neutral journey-planning API. TDX
+is the current transit source, Valhalla is the street-routing provider, and
+the runtime loads one validated immutable `TransitNetwork` artifact.
 
 ## Run locally
 
-Development data and route debugging commands are documented in
-[`docs/dev-tooling.md`](../docs/dev-tooling.md). In brief, copy the repository
-example environment file with `cp .env.example .env`; `via-data fetch` and
-`via-route --realtime live` use the shared `TDX_CLIENT_ID`/
-`TDX_CLIENT_SECRET` OAuth configuration. Static builds also require the healthy
-configured Valhalla graph because they validate inferred walking transfers;
-validation, inspection, and fixture routing remain offline after an artifact
-exists.
-
-Start the pinned Valhalla 3.8.3 image before running a real static-data build
-or the live route debugger:
+The static-data and route-debug workflow is in [`docs/dev-tooling.md`](../docs/dev-tooling.md).
+Copy the repository environment template, fill in TDX credentials, publish a
+network artifact, and start Valhalla before starting Axum:
 
 ```sh
+cp .env.example .env
 docker compose up -d valhalla
 ./scripts/wait-for-valhalla.sh
-```
-
-Record the `tileset_last_modified` integer from that status response. The server
-requires it so a configured graph revision cannot silently name different tiles.
-
-Then start Axum:
-
-```sh
 cargo run
 ```
 
-At startup, the server loads configuration with dotenvy. Variables already set
-in the process environment take precedence.
-
-The server fails startup until Valhalla is healthy. Its operator endpoint is
-`GET /health/street-routing`; responses use `Cache-Control: no-store` and report
-only the provider-neutral health state and provider name.
+The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
+`GET /health/street-routing`. Planning responses are not cached.
 
 Configuration:
 
-| Variable | Meaning |
+| Variable | Purpose |
 | --- | --- |
-| `VIA_ENV` | Required deployment environment: `development`, `staging`, or `production`; production rejects non-HTTPS routing and TDX URLs. |
-| `VIA_VALHALLA_URL` | Valhalla base URL; the development environment uses `http://valhalla:8002/` (fallback: `http://127.0.0.1:8002/`). |
-| `VIA_VALHALLA_GRAPH_REVISION` | Valhalla-owned logical revision label for the loaded graph artifact; required. |
-| `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Valhalla `/status` tileset timestamp expected at startup and during health checks; required. |
-| `VIA_TDX_BASE_URL` | TDX API base URL used for scoped realtime requests; required. |
-| `TDX_CLIENT_ID` | Shared TDX OAuth client ID used by the realtime and static-data clients. |
-| `TDX_CLIENT_SECRET` | Shared TDX OAuth client secret used with `TDX_CLIENT_ID`; never passed as a CLI flag or written to artifacts. |
-| `VIA_TDX_SERVICE_CONDITION_PATH` | Optional scoped TDX service-condition endpoint path. |
-| `VIA_REALTIME_CACHE_TTL_SECONDS` | In-process realtime cache TTL; defaults to 45 seconds. |
-| `VIA_TRANSIT_NETWORK` | Path to the immutable normalized transit and bike-share network and timetable JSON artifact; required. |
-| `PORT` | Axum port; defaults to `3000`. |
-
-Static network and schedule revisions come from the validated immutable
-`VIA_TRANSIT_NETWORK` artifact. The server has no database runtime dependency.
-
-The TDX adapter enforces an eight-second deadline and 8 MiB response bound,
-translates rate limits and malformed payloads into explicit realtime failures, and
-evaluates Freshness from the provider publication timestamp rather than a station's
-last-change timestamp. Planning Requests never receive feed credentials.
-
-## Current identity model
-
-Via owns the domain ID types, while TDX currently owns the underlying transit
-identity values. TDX `StopUID`, `SubRouteUID`, and `StationUID` become the
-corresponding `BoardingPointId`, `TransitServiceId`, and `BikeShareStationId`
-through pure constructors. Static artifact generation and realtime normalization
-must use the same constructors, so matching entities have equal typed IDs.
-
-TDX UIDs include the authority code required by the current feeds, so no extra
-authority namespacing or identity registry is required. The current service
-artifact may use `SubRouteUID` directly; when a static artifact models each
-direction separately, it uses the deterministic directional constructor in the
-TDX adapter and realtime queries project that ID back to its `SubRouteUID`.
-
-The runtime dependency graph is:
-
-```text
-Via Server → immutable TransitNetwork artifact
-           → TDX realtime API
-           → Valhalla
-```
+| `VIA_ENV` | `development`, `staging`, or `production`. |
+| `VIA_VALHALLA_URL` | Valhalla base URL. |
+| `VIA_VALHALLA_GRAPH_REVISION` | Revision label for the loaded graph. |
+| `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Expected Valhalla tileset timestamp. |
+| `VIA_TDX_BASE_URL` | TDX API base URL. |
+| `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
+| `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
+| `VIA_REALTIME_CACHE_TTL_SECONDS` | Realtime cache TTL; default 45 seconds. |
+| `VIA_TRANSIT_NETWORK` | Validated `transit-network.json` path. |
+| `PORT` | Axum port; default 3000. |
 
 ## Current routing boundary
 
-Walking is always available for direct journeys and transit/BikeShare access and
-egress; direct BikeShare is also a separate candidate, and clients select only
-the high-level `transit` and `bike_share` categories. Static
-`TransitNetwork.bike_share_connectors` provide bounded BoardingPoint↔station
-walking facts. At query time, `BikeShareOperator` batches availability and
-bicycle matrix work, then TripBased can insert an explicit BikeShare transfer
-between transit legs or continue to the destination. The request path is:
-
 ```text
-PlanningRequest → RoutingService → street access/egress
+PlanningRequest → RoutingService → street access / egress
 → RoutingAlgorithm → TripBasedRouter → reconstruct → rank → JourneyOption[]
 ```
 
-`RoutingAlgorithm` exposes only algorithm-neutral access/egress facts and
-`JourneyCandidate` results. `TripBasedRouter` uses a private `TripBasedIndex`,
-resolves complete `EffectiveTrip` instances lazily through `DepartureResolver`,
-and expands static public-transit `TransferShortcutIndex` alternatives derived
-from `TransitNetwork.transfer_edges`. Street access, egress, bicycle, matrix,
-and path calculations stay behind the Valhalla provider boundary; timetable
-lookup uses the immutable `TransitNetwork` artifact. The checked-in tests use
-injected fixtures, while a production deployment must publish a reviewed
-artifact at `VIA_TRANSIT_NETWORK`.
+`RoutingAlgorithm`, `StreetRouter`, and `DepartureResolver` are the intentional
+provider-neutral seams. `TripBasedRouter` consumes realtime-first `EffectiveTrip`
+values, static walking `TransferShortcutIndex` alternatives, and the current
+query-time `BikeShareOperator`.
 
-Transit timing is provider-neutral across Bus, Metro, conventional rail, and
-high-speed rail. A `DepartureResolver` receives only a service, boarding point,
-and ready time, then returns normalized `EffectiveTrip` instances with complete
-stop timing, timing basis, and optional evidence. Routing and Pareto search do
-not choose timing sources by `TransitMode`.
+Static `TransitNetwork.transfer_edges` contain directional transit walking
+transfers. Static `bike_share_connectors` contain directional transit↔BikeShare
+walking facts. BikeShare station availability and bicycle matrices are fetched
+at query time. The operator supports direct BikeShare, BikeShare access to
+transit, transit→BikeShare→transit, and transit→BikeShare→destination.
 
-Walking and YouBike are mobility legs, not transit departures. A
-`MobilityPath` may contain Walk/BikeShare/Walk legs before, between, or after
-transit; `TransferShortcut` contains only a static public-transit interchange.
-Static Transit↔BikeShare connectors are part of the immutable network, while
-runtime BikeShare availability and bicycle matrices are fetched in bounded
-batches by `BikeShareOperator`. Transfer materialization is a direct projection
-of `TransitNetwork.transfer_edges`; BikeShare materialization hydrates only
-surviving explicit BikeShare segments.
+The server has no database, persistence layer, identity registry, or alternate
+planner. TDX adapters construct the same Via-owned typed IDs for static and
+realtime data.
 
-The wired timing path is realtime-first for every transit mode. A normalized
-realtime departure resolver is attempted for Bus, Metro, TRA, and THSR, then
-the service's static schedule or frequency resolver is used when realtime is
-empty, stale, unavailable, or not yet represented. TDX Bus
-`EstimatedTimeOfArrival` is currently the live-board payload used in the
-checked-in provider fixtures; the provider-neutral boundary keeps the same
-fallback semantics for the other modes as their live payload contracts are
-added.
-
-## Tests
+## Verification
 
 ```sh
-cargo test --test provider_contract
-cargo test --test valhalla_contract
-cargo test --test planning_contract
-cargo test --test ranking_contract
-cargo test --test realtime_contract
-cargo test --test journey_endpoint
-cargo test --test transit_contract
-cargo test
-```
-
-For external tooling, the generated document can also be exported without
-adding a checked-in artifact:
-
-```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features
+cargo test --all
 cargo run --bin export-openapi > /tmp/via-openapi.json
 ```
 
-The Valhalla contract tests use an isolated local HTTP fixture and do not need
-Docker. The deterministic fake is the default seam for Journey Planning tests.
-
-## Graph publication
-
-Graph builds are offline publication work. The fixture checksum, Valhalla image,
-and Valhalla graph revision are pinned. A mounted volume with a different
-tileset timestamp is rejected rather than rebuilt in place. Publish a new graph
-to a new volume, validate `/status`, then direct new Planning Requests to the
-new provider instance. Rollback selects the prior healthy volume.
-
-The checked-in fixture is intentionally tiny. Taipei–New Taipei production use
-still requires a separately pinned OSM extract, the accepted route-quality
-corpus, attribution/legal review, and the p50/p95/p99 adoption benchmark from
-issue #13.
+The checked-in Valhalla and street-router fixtures allow the contract and route
+tests to run without a production graph. Real static builds still require a
+reviewed TDX snapshot and a healthy Valhalla graph.

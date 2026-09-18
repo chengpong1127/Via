@@ -20,24 +20,13 @@ interfaces. Do not reintroduce the removed `planner`, `normalization`, or
 iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `Resources`, `Services`). Production planning flows through
 `JourneyPlanner → HTTPJourneyPlanner → JourneyAPI → APIClient`; keep
-`DemoJourneyPlanner` for previews and offline tests. Navigation is future work
-under `Features/Navigation` and is not part of the current implementation.
+`DemoJourneyPlanner` for previews and offline tests. Navigation under
+`Features/Navigation` is not part of the current implementation.
 
 TDX is the current authoritative source for Taiwan transit static and realtime
 data. Static artifacts and realtime normalization use the same pure TDX-derived
 ID constructors; the server has no database or provider identity-reconciliation layer.
 
-Architecture decisions are authoritative in `docs/adr/`. Specs describe current
-contracts; research documents are historical unless their status says otherwise.
-
-### Issue tracker
-
-Issues and specs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Triage uses the five default canonical labels. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Domain documentation uses the single-context layout. See `docs/agents/domain.md`.
+The retained ADRs in `docs/adr/` record only non-obvious current constraints.
+`CONTEXT.md` is the quick current-state reference; completed issue research and
+spec archives are not part of the active repository documentation.

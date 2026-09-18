@@ -24,7 +24,7 @@ use super::{
     AccessPoint, AlgorithmQuery, JourneyCandidate, JourneySegment, RoutingAlgorithm, RoutingError,
     bike::{
         BikeAvailabilityResolver, BikeShareExpansionQuery, BikeShareOperator, BikeShareTransfer,
-        EndpointPath, bike_availability_is_usable,
+        MobilityLeg, MobilityPath, bike_availability_is_usable,
     },
     transfers::{TransferIndex, TransferShortcut},
 };
@@ -871,15 +871,15 @@ impl TripBasedRouter {
 }
 
 fn path_is_usable(
-    path: &EndpointPath,
+    path: &MobilityPath,
     availability: &HashMap<crate::domain::ids::BikeShareStationId, BikeAvailability>,
 ) -> bool {
     if !path.uses_bike_share() {
         return true;
     }
     path.legs.iter().all(|leg| match leg {
-        super::bike::EndpointLeg::Walk { .. } => true,
-        super::bike::EndpointLeg::BikeShare {
+        MobilityLeg::Walk { .. } => true,
+        MobilityLeg::BikeShare {
             pickup_station_id,
             return_station_id,
             ..

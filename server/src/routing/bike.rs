@@ -1,9 +1,6 @@
 //! Query-time BikeShare mobility paths, static connectors, and availability.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use time::OffsetDateTime;
@@ -48,32 +45,27 @@ impl MobilityPath {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn walking_and_bike(
-        access_seconds: u32,
-        access_metres: u32,
-        pickup_station_id: BikeShareStationId,
-        return_station_id: BikeShareStationId,
-        bike_seconds: u32,
-        bike_metres: u32,
-        egress_seconds: u32,
-        egress_metres: u32,
+        access: (u32, u32),
+        stations: (BikeShareStationId, BikeShareStationId),
+        bike: (u32, u32),
+        egress: (u32, u32),
     ) -> Self {
         Self {
             legs: vec![
                 MobilityLeg::Walk {
-                    duration_seconds: access_seconds,
-                    distance_metres: access_metres,
+                    duration_seconds: access.0,
+                    distance_metres: access.1,
                 },
                 MobilityLeg::BikeShare {
-                    pickup_station_id,
-                    return_station_id,
-                    duration_seconds: bike_seconds,
-                    distance_metres: bike_metres,
+                    pickup_station_id: stations.0,
+                    return_station_id: stations.1,
+                    duration_seconds: bike.0,
+                    distance_metres: bike.1,
                 },
                 MobilityLeg::Walk {
-                    duration_seconds: egress_seconds,
-                    distance_metres: egress_metres,
+                    duration_seconds: egress.0,
+                    distance_metres: egress.1,
                 },
             ],
         }
@@ -152,21 +144,16 @@ impl MobilityPath {
     }
 }
 
-/// Legacy names retained for the existing fixture surface. New code should
-/// use [`MobilityLeg`] and [`MobilityPath`].
-pub type EndpointLeg = MobilityLeg;
-pub type EndpointPath = MobilityPath;
-
 /// Immutable, direction-aware index over artifact-backed transit/BikeShare
 /// walking connectors.
 #[derive(Clone, Debug, Default)]
-pub struct BikeShareConnectorIndex {
+struct BikeShareConnectorIndex {
     by_stop: HashMap<BoardingPointId, Vec<BikeShareConnector>>,
     by_station: HashMap<BikeShareStationId, Vec<BikeShareConnector>>,
 }
 
 impl BikeShareConnectorIndex {
-    pub fn from_network(network: &TransitNetwork) -> Self {
+    fn from_network(network: &TransitNetwork) -> Self {
         let mut index = Self::default();
         for connector in &network.bike_share_connectors {
             if connector.stop_to_station_seconds.is_some() {
@@ -209,26 +196,15 @@ impl BikeShareConnectorIndex {
         index
     }
 
-    pub fn connectors_from_stop(&self, stop_id: &BoardingPointId) -> &[BikeShareConnector] {
+    fn connectors_from_stop(&self, stop_id: &BoardingPointId) -> &[BikeShareConnector] {
         self.by_stop.get(stop_id).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn connectors_from_station(
-        &self,
-        station_id: &BikeShareStationId,
-    ) -> &[BikeShareConnector] {
+    fn connectors_from_station(&self, station_id: &BikeShareStationId) -> &[BikeShareConnector] {
         self.by_station
             .get(station_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
-    }
-
-    pub fn len(&self) -> usize {
-        self.by_stop.values().map(Vec::len).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_stop.values().all(Vec::is_empty)
     }
 }
 
@@ -310,16 +286,6 @@ pub struct BikeShareDirectPath {
     pub path: MobilityPath,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BikeShareOperatorMetrics {
-    pub queries: usize,
-    pub unique_source_stops: usize,
-    pub pickup_stations_considered: usize,
-    pub return_stations_considered: usize,
-    pub bicycle_matrix_requests: usize,
-    pub transfers_returned: usize,
-}
-
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BikeShareError {
     #[error("BikeShare operator has no usable static connector candidates")]
@@ -350,10 +316,6 @@ pub trait BikeShareOperator: Send + Sync {
         &self,
         queries: Vec<BikeShareDirectQuery>,
     ) -> Result<Vec<Vec<BikeShareDirectPath>>, BikeShareError>;
-
-    fn metrics(&self) -> BikeShareOperatorMetrics {
-        BikeShareOperatorMetrics::default()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -393,7 +355,6 @@ pub struct StreetBikeShareOperator {
     connector_index: BikeShareConnectorIndex,
     availability: Option<Arc<dyn BikeAvailabilityResolver>>,
     limits: BikeShareOperatorLimits,
-    metrics: Arc<Mutex<BikeShareOperatorMetrics>>,
 }
 
 impl StreetBikeShareOperator {
@@ -409,17 +370,12 @@ impl StreetBikeShareOperator {
             connector_index,
             availability,
             limits: BikeShareOperatorLimits::default(),
-            metrics: Arc::new(Mutex::new(BikeShareOperatorMetrics::default())),
         }
     }
 
     pub fn with_limits(mut self, limits: BikeShareOperatorLimits) -> Self {
         self.limits = limits;
         self
-    }
-
-    pub fn connector_index(&self) -> &BikeShareConnectorIndex {
-        &self.connector_index
     }
 
     fn pickup_connectors(&self, stop_id: &BoardingPointId) -> Vec<BikeShareConnector> {
@@ -618,25 +574,6 @@ impl StreetBikeShareOperator {
         }
         Ok(metrics)
     }
-
-    fn record_expansion_metrics(
-        &self,
-        queries: usize,
-        source_stops: usize,
-        pickups: usize,
-        returns: usize,
-        bicycle_matrix_requests: usize,
-        transfers: usize,
-    ) {
-        if let Ok(mut metrics) = self.metrics.lock() {
-            metrics.queries += queries;
-            metrics.unique_source_stops += source_stops;
-            metrics.pickup_stations_considered += pickups;
-            metrics.return_stations_considered += returns;
-            metrics.bicycle_matrix_requests += bicycle_matrix_requests;
-            metrics.transfers_returned += transfers;
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -707,7 +644,7 @@ impl BikeShareOperator for StreetBikeShareOperator {
             .cloned()
             .collect::<Vec<_>>();
         let availability = self.availability_for(station_ids).await?;
-        let (bicycle, matrix_requests) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
+        let (bicycle, _) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
         let mut destination_walks = HashMap::new();
         for work in &unique_work {
             if let Some(destination) = work
@@ -723,7 +660,6 @@ impl BikeShareOperator for StreetBikeShareOperator {
         }
 
         let mut unique_results = Vec::with_capacity(unique_work.len());
-        let mut total_transfers = 0;
         for work in &unique_work {
             let mut result = BikeShareExpansion::default();
             for pickup in &work.pickups {
@@ -777,14 +713,13 @@ impl BikeShareOperator for StreetBikeShareOperator {
                             continue;
                         }
                         let path = MobilityPath::walking_and_bike(
-                            access_seconds,
-                            access_metres,
-                            pickup.station_id.clone(),
-                            return_id.clone(),
-                            bike.duration_seconds,
-                            bike.distance_metres,
-                            destination_walk.duration_seconds,
-                            destination_walk.distance_metres,
+                            (access_seconds, access_metres),
+                            (pickup.station_id.clone(), return_id.clone()),
+                            (bike.duration_seconds, bike.distance_metres),
+                            (
+                                destination_walk.duration_seconds,
+                                destination_walk.distance_metres,
+                            ),
                         );
                         if path.duration_seconds() <= work.query.max_journey_duration_seconds {
                             result.destination_paths.push(path);
@@ -793,21 +728,8 @@ impl BikeShareOperator for StreetBikeShareOperator {
                 }
             }
             sort_and_prune_expansion(&mut result, self.limits.max_final_transfers_per_source);
-            total_transfers += result.transfers.len();
             unique_results.push(result);
         }
-        self.record_expansion_metrics(
-            queries.len(),
-            unique_work
-                .iter()
-                .map(|work| work.query.from_stop_id.clone())
-                .collect::<HashSet<_>>()
-                .len(),
-            pickup_ids.iter().collect::<HashSet<_>>().len(),
-            return_ids.iter().collect::<HashSet<_>>().len(),
-            matrix_requests,
-            total_transfers,
-        );
         Ok(query_work
             .into_iter()
             .map(|index| {
@@ -852,10 +774,8 @@ impl BikeShareOperator for StreetBikeShareOperator {
         let availability = self
             .availability_for(pickup_ids.iter().chain(&return_ids).cloned())
             .await?;
-        let (bicycle, matrix_requests) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
+        let (bicycle, _) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
         let mut all_results = Vec::with_capacity(queries.len());
-        let mut walking_requests = 0;
-        let mut total_transfers = 0;
         for (index, query) in queries.iter().enumerate() {
             let pickups = per_query_pickups.get(index).cloned().unwrap_or_default();
             let returns = per_query_returns.get(index).cloned().unwrap_or_default();
@@ -865,7 +785,6 @@ impl BikeShareOperator for StreetBikeShareOperator {
             }
             let mut access_metrics = HashMap::new();
             for pickup_chunk in pickups.chunks(self.street.matrix_limits().max_targets.max(1)) {
-                walking_requests += 1;
                 let matrix = self
                     .street
                     .matrix(MatrixQuery {
@@ -916,14 +835,10 @@ impl BikeShareOperator for StreetBikeShareOperator {
                             continue;
                         };
                         let path = MobilityPath::walking_and_bike(
-                            access.duration_seconds,
-                            access.distance_metres,
-                            pickup_id.clone(),
-                            return_id.clone(),
-                            bike.duration_seconds,
-                            bike.distance_metres,
-                            egress_seconds,
-                            egress_metres,
+                            (access.duration_seconds, access.distance_metres),
+                            (pickup_id.clone(), return_id.clone()),
+                            (bike.duration_seconds, bike.distance_metres),
+                            (egress_seconds, egress_metres),
                         );
                         if path.duration_seconds() <= query.max_journey_duration_seconds {
                             result.push(BikeShareOriginAccess {
@@ -947,17 +862,8 @@ impl BikeShareOperator for StreetBikeShareOperator {
             });
             result.dedup();
             result.truncate(self.limits.max_final_transfers_per_source);
-            total_transfers += result.len();
             all_results.push(result);
         }
-        self.record_expansion_metrics(
-            queries.len(),
-            0,
-            pickup_ids.iter().collect::<HashSet<_>>().len(),
-            return_ids.iter().collect::<HashSet<_>>().len(),
-            matrix_requests + walking_requests,
-            total_transfers,
-        );
         Ok(all_results)
     }
 
@@ -1007,9 +913,8 @@ impl BikeShareOperator for StreetBikeShareOperator {
         let availability = self
             .availability_for(pickup_ids.iter().chain(&return_ids).cloned())
             .await?;
-        let (bicycle, matrix_requests) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
+        let (bicycle, _) = self.bicycle_matrix(&pickup_ids, &return_ids).await?;
         let mut results = Vec::with_capacity(queries.len());
-        let mut walking_requests = 0;
         for (index, query) in queries.iter().enumerate() {
             let pickups = per_query_pickups.get(index).cloned().unwrap_or_default();
             let returns = per_query_returns.get(index).cloned().unwrap_or_default();
@@ -1018,7 +923,6 @@ impl BikeShareOperator for StreetBikeShareOperator {
                 if chunk.is_empty() {
                     continue;
                 }
-                walking_requests += 1;
                 let matrix = self
                     .street
                     .matrix(MatrixQuery {
@@ -1071,14 +975,10 @@ impl BikeShareOperator for StreetBikeShareOperator {
                         continue;
                     };
                     let path = MobilityPath::walking_and_bike(
-                        access.duration_seconds,
-                        access.distance_metres,
-                        pickup_id.clone(),
-                        return_id.clone(),
-                        bike.duration_seconds,
-                        bike.distance_metres,
-                        egress.duration_seconds,
-                        egress.distance_metres,
+                        (access.duration_seconds, access.distance_metres),
+                        (pickup_id.clone(), return_id.clone()),
+                        (bike.duration_seconds, bike.distance_metres),
+                        (egress.duration_seconds, egress.distance_metres),
                     );
                     if path.duration_seconds() <= query.max_journey_duration_seconds {
                         paths.push(BikeShareDirectPath { path });
@@ -1098,22 +998,7 @@ impl BikeShareOperator for StreetBikeShareOperator {
             paths.truncate(self.limits.max_final_transfers_per_source);
             results.push(paths);
         }
-        self.record_expansion_metrics(
-            queries.len(),
-            0,
-            pickup_ids.iter().collect::<HashSet<_>>().len(),
-            return_ids.iter().collect::<HashSet<_>>().len(),
-            matrix_requests + walking_requests,
-            0,
-        );
         Ok(results)
-    }
-
-    fn metrics(&self) -> BikeShareOperatorMetrics {
-        self.metrics
-            .lock()
-            .map(|metrics| metrics.clone())
-            .unwrap_or_default()
     }
 }
 
@@ -1411,6 +1296,5 @@ mod tests {
         assert_eq!(results[0].transfers.len(), 1);
         assert_eq!(results[0].transfers[0].to_stop_id, stop_b);
         assert_eq!(results[0].destination_paths.len(), 1);
-        assert_eq!(operator.metrics().bicycle_matrix_requests, 1);
     }
 }

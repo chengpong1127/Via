@@ -65,6 +65,16 @@
     {"from": "F-MISS-M-IN", "to": "F-MISS-M-OUT", "duration_seconds": 120},
     {"from": "F-MISS-M-OUT", "to": "F-MISS-M-IN", "duration_seconds": 120}
   ],
+  "bike_share_connectors": [
+    {
+      "stop_id": "F-M2-BLUE",
+      "station_id": "fixture-bike-b",
+      "stop_to_station_seconds": null,
+      "station_to_stop_seconds": 60,
+      "stop_to_station_metres": null,
+      "station_to_stop_metres": 300
+    }
+  ],
   "default_transfer_seconds": 120,
   "static_network_revision": "routing-fixture-static",
   "schedule_revision": "routing-fixture-schedule"
