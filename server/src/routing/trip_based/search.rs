@@ -283,6 +283,7 @@ impl TripBasedRouter {
                     uncertainty_seconds: path.uncertainty_seconds,
                     evidence: path.evidence.clone(),
                     timing_bases: path.timing_bases.clone(),
+                    timing_reliability: path.timing_reliability,
                 });
             }
 

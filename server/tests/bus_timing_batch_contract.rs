@@ -17,12 +17,13 @@ use via_server::{
             RealtimeValue,
         },
         transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
-        transit_timing::{DepartureQuery, DepartureResolver},
+        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
     },
     providers::{
-        CompositeDepartureResolver,
         realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
-        timing::RealtimeDepartureResolver,
+        timing::{
+            BusDepartureSource, BusRealtimeResolver, DepartureDispatcher, TransitDepartureSource,
+        },
     },
 };
 
@@ -153,6 +154,20 @@ fn provider(values: Vec<NormalizedRealtimeValue>) -> BatchProvider {
     }
 }
 
+fn bus_dispatcher(
+    network: Arc<TransitNetwork>,
+    realtime: Arc<dyn RealtimeProvider>,
+) -> DepartureDispatcher {
+    let bus = Arc::new(BusDepartureSource::new(
+        network.clone(),
+        Some(Arc::new(BusRealtimeResolver::new(
+            realtime,
+            network.clone(),
+        ))),
+    ));
+    DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
+}
+
 #[tokio::test]
 async fn twenty_logical_bus_needs_use_one_provider_batch() {
     let service_ids = (0..20)
@@ -165,13 +180,8 @@ async fn twenty_logical_bus_needs_use_one_provider_batch() {
     let upstream = provider(values);
     let calls = upstream.calls.clone();
     let queries = upstream.queries.clone();
-    let resolver = CompositeDepartureResolver::with_schedule_fallback(
-        Arc::new(network_for(&service_ids)),
-        Arc::new(RealtimeDepartureResolver::new(
-            Arc::new(upstream),
-            Arc::new(network_for(&service_ids)),
-        )),
-    );
+    let network = Arc::new(network_for(&service_ids));
+    let resolver = bus_dispatcher(network, Arc::new(upstream));
     let needs = service_ids
         .iter()
         .map(|service_id| {
@@ -194,13 +204,61 @@ async fn twenty_logical_bus_needs_use_one_provider_batch() {
         batches[0].boarding_point_ids,
         vec![BoardingPointId::new("stop-x")]
     );
+    assert_eq!(
+        results[0].as_ref().unwrap()[0].timing_reliability,
+        TimingReliability::Reliable
+    );
+}
+
+#[tokio::test]
+async fn empty_bus_realtime_falls_back_to_lower_confidence_static_schedule() {
+    let service_id = TransitServiceId::new("service-a");
+    let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
+    let resolver = bus_dispatcher(network, Arc::new(provider(Vec::new())));
+
+    let result = resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await
+        .unwrap();
+
+    assert_eq!(result[0].timing_basis, TimingBasis::Schedule);
+    assert_eq!(result[0].timing_reliability, TimingReliability::Fallback);
+}
+
+#[tokio::test]
+async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
+    let service_ids = [
+        TransitServiceId::new("service-a"),
+        TransitServiceId::new("service-b"),
+    ];
+    let network = Arc::new(network_for(&service_ids));
+    let resolver = bus_dispatcher(
+        network,
+        Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
+    );
+
+    let results = resolver
+        .next_departures_batch(vec![
+            query("service-a", "stop-x", NOW),
+            query("service-b", "stop-x", NOW),
+        ])
+        .await;
+
+    assert_eq!(
+        results[0].as_ref().unwrap()[0].timing_reliability,
+        TimingReliability::Reliable
+    );
+    assert_eq!(
+        results[1].as_ref().unwrap()[0].timing_reliability,
+        TimingReliability::Fallback
+    );
 }
 
 #[tokio::test]
 async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
     let service_id = TransitServiceId::new("service-a");
     let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
-    let resolver = RealtimeDepartureResolver::new(
+    let resolver = BusRealtimeResolver::new(
         Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
         network,
     );
@@ -225,7 +283,7 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
     let service_id = TransitServiceId::new("service-a");
     let mut network = network_for(std::slice::from_ref(&service_id));
     network.trips.clear();
-    let resolver = RealtimeDepartureResolver::new(
+    let resolver = BusRealtimeResolver::new(
         Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
         Arc::new(network),
     );
@@ -252,7 +310,7 @@ async fn malformed_static_timing_shape_is_rejected_for_realtime_expansion() {
         ScheduledStopTime::new(10_000, 10_100),
         ScheduledStopTime::new(10_050, 10_050),
     ];
-    let resolver = RealtimeDepartureResolver::new(
+    let resolver = BusRealtimeResolver::new(
         Arc::new(provider(vec![value("service-a", "stop-x", 60)])),
         Arc::new(network),
     );
@@ -287,7 +345,7 @@ async fn bus_needs_are_batched_per_realtime_scope() {
     let calls = upstream.calls.clone();
     let queries = upstream.queries.clone();
     let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
-    let resolver = RealtimeDepartureResolver::new(Arc::new(upstream), network);
+    let resolver = BusRealtimeResolver::new(Arc::new(upstream), network);
     let needs = service_ids
         .iter()
         .map(|service_id| {
@@ -332,7 +390,7 @@ async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() 
     ]);
     let calls = upstream.calls.clone();
     let resolver =
-        RealtimeDepartureResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
+        BusRealtimeResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
     let needs = vec![
         query("service-a", "stop-x", NOW),
         query("service-a", "stop-x", NOW + Duration::seconds(90)),
@@ -376,7 +434,7 @@ async fn directional_service_ids_do_not_cross_satisfy_each_other() {
         value(direction_one, "stop-x", 120),
     ]);
     let resolver =
-        RealtimeDepartureResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
+        BusRealtimeResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
 
     let results = resolver
         .next_departures_batch(vec![
@@ -460,7 +518,7 @@ async fn rate_limit_returns_without_waiting_for_quota() {
         ..provider(Vec::new())
     };
     let resolver =
-        RealtimeDepartureResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
+        BusRealtimeResolver::new(Arc::new(upstream), Arc::new(network_for(&service_ids)));
     let started = std::time::Instant::now();
 
     let result = resolver
@@ -482,13 +540,7 @@ async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
         error: Some(RealtimeError::RateLimited),
         ..provider(Vec::new())
     };
-    let resolver = CompositeDepartureResolver::with_schedule_fallback(
-        network.clone(),
-        Arc::new(RealtimeDepartureResolver::new(
-            Arc::new(upstream),
-            network.clone(),
-        )),
-    );
+    let resolver = bus_dispatcher(network.clone(), Arc::new(upstream));
 
     let result = resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -500,4 +552,5 @@ async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
         result[0].timing_basis,
         via_server::domain::transit_timing::TimingBasis::Schedule
     );
+    assert_eq!(result[0].timing_reliability, TimingReliability::Fallback);
 }

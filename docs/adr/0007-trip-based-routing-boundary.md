@@ -22,6 +22,15 @@ time)` and returns complete request-scoped `EffectiveTrip` instances. Runtime
 trip IDs are synthetic unless a scheduled trip identity is available; they are
 not persistent aliases.
 
+`DepartureResolver` is implemented by a `DepartureDispatcher`. It groups
+queries by `TransitMode` and delegates to `BusDepartureSource`,
+`MetroDepartureSource`, `TraDepartureSource`, or `ThsrDepartureSource`. The
+dispatcher contains no mode-specific timing policy. Each source owns its static
+and optional realtime timing, batching strategy, realtime/static fallback, and
+`TimingReliability` policy. `TimingBasis` remains provenance only, so a static
+THSR timetable can be `Reliable` while bus static fallback or Metro frequency
+timing can be `Fallback`.
+
 TripBased handles same-stop interchange itself. For movement between distinct
 BoardingPoints, it collects transfer needs during a round and resolves them in
 one batch. The current `TransferResolver` implementation reads a

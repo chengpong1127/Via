@@ -4,7 +4,7 @@ use via_server::domain::{
         TransferEvidence, TransferKind,
     },
     realtime::FreshnessState,
-    transit_timing::TimingBasis,
+    transit_timing::{TimingBasis, TimingReliability},
 };
 
 fn candidate(key: &str, arrival: i64) -> CandidateJourney {
@@ -16,6 +16,7 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         transfer_count: 1,
         main_service_sequence: vec![key.into()],
         timing_bases: Vec::new(),
+        timing_reliability: TimingReliability::Reliable,
         required_live_status: vec![FreshnessState::Fresh],
         transfers: Vec::new(),
         blocking_condition: false,
@@ -35,7 +36,7 @@ fn required_live_status_is_an_eligibility_gate() {
 }
 
 #[test]
-fn timing_basis_is_the_reliability_source_of_truth() {
+fn timing_reliability_is_separate_from_timing_basis() {
     let mut realtime = candidate("realtime", 2_000);
     realtime.timing_bases = vec![TimingBasis::RealtimePrediction];
     realtime.walking_seconds = 500;
@@ -47,9 +48,11 @@ fn timing_basis_is_the_reliability_source_of_truth() {
     schedule.walking_seconds = 300;
     let mut frequency = candidate("frequency", 2_003);
     frequency.timing_bases = vec![TimingBasis::FrequencyEstimate];
+    frequency.timing_reliability = TimingReliability::Fallback;
     frequency.walking_seconds = 200;
     let mut mixed = candidate("mixed", 2_004);
     mixed.timing_bases = vec![TimingBasis::RealtimePrediction, TimingBasis::Schedule];
+    mixed.timing_reliability = TimingReliability::Fallback;
     mixed.walking_seconds = 100;
 
     let ranked = RankingPolicy {
@@ -64,7 +67,7 @@ fn timing_basis_is_the_reliability_source_of_truth() {
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(classes["realtime"], JourneyClass::Reliable);
     assert_eq!(classes["delay-adjusted"], JourneyClass::Reliable);
-    assert_eq!(classes["schedule"], JourneyClass::Feasible);
+    assert_eq!(classes["schedule"], JourneyClass::Reliable);
     assert_eq!(classes["frequency"], JourneyClass::Feasible);
     assert_eq!(classes["mixed"], JourneyClass::Feasible);
 }
@@ -139,6 +142,7 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
     metro.transfer_count = 0;
     metro.main_service_sequence = vec!["metro-blue".into()];
     metro.timing_bases = vec![TimingBasis::Schedule];
+    metro.timing_reliability = TimingReliability::Fallback;
 
     let ranked = RankingPolicy::default().rank(vec![walking, metro]);
 
@@ -153,6 +157,7 @@ fn reliable_journey_wins_when_arrivals_are_within_reliability_window() {
     let reliable = candidate("reliable", 13 * 60);
     let mut feasible = candidate("schedule-only", 12 * 60);
     feasible.timing_bases = vec![TimingBasis::Schedule];
+    feasible.timing_reliability = TimingReliability::Fallback;
 
     let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
 
@@ -170,6 +175,7 @@ fn reliability_preference_window_is_configurable() {
     feasible.transfer_count = 1;
     feasible.walking_seconds = 600;
     feasible.timing_bases = vec![TimingBasis::Schedule];
+    feasible.timing_reliability = TimingReliability::Fallback;
     let policy = RankingPolicy {
         reliability_preference_window_seconds: 30,
         ..RankingPolicy::default()
@@ -187,6 +193,7 @@ fn feasible_journey_wins_when_arrival_difference_is_material() {
     feasible.transfer_count = 1;
     feasible.walking_seconds = 600;
     feasible.timing_bases = vec![TimingBasis::Schedule];
+    feasible.timing_reliability = TimingReliability::Fallback;
 
     let ranked = RankingPolicy::default().rank(vec![reliable, feasible]);
 
@@ -227,6 +234,7 @@ fn near_duplicates_keep_the_option_preferred_by_the_ranking_policy() {
     let mut feasible = candidate("schedule-only", 12 * 60);
     feasible.main_service_sequence = vec!["shared-service".into()];
     feasible.timing_bases = vec![TimingBasis::Schedule];
+    feasible.timing_reliability = TimingReliability::Fallback;
 
     let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
 

@@ -8,7 +8,7 @@ use via_server::{
         transit::TransitMode,
         transit_timing::{DepartureQuery, DepartureResolver},
     },
-    providers::MetroDepartureResolver,
+    providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };
 
 fn temporary_path(label: &str) -> PathBuf {
@@ -187,7 +187,11 @@ async fn real_tdx_red_line_has_boardable_directional_services() {
         );
     }
 
-    let resolver = MetroDepartureResolver::new(network.clone());
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let resolver = DepartureDispatcher::new(
+        network.clone(),
+        vec![metro as Arc<dyn TransitDepartureSource>],
+    );
     let after = time::macros::datetime!(2026-09-15 08:00 +08:00);
     let forward_trips = resolver
         .next_departures(DepartureQuery::new(

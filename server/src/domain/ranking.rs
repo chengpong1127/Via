@@ -2,7 +2,10 @@ use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{realtime::FreshnessState, transit_timing::TimingBasis};
+use crate::domain::{
+    realtime::FreshnessState,
+    transit_timing::{TimingBasis, TimingReliability},
+};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
@@ -53,6 +56,7 @@ pub struct CandidateJourney {
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
     pub timing_bases: Vec<TimingBasis>,
+    pub timing_reliability: TimingReliability,
     pub required_live_status: Vec<FreshnessState>,
     pub transfers: Vec<TransferEvidence>,
     pub blocking_condition: bool,
@@ -136,11 +140,7 @@ impl RankingPolicy {
             return None;
         }
 
-        let mut class = if candidate
-            .timing_bases
-            .iter()
-            .any(|basis| basis.is_static_backed())
-        {
+        let mut class = if candidate.timing_reliability == TimingReliability::Fallback {
             JourneyClass::Feasible
         } else {
             JourneyClass::Reliable

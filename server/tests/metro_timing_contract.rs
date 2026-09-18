@@ -9,11 +9,9 @@ use via_server::{
             MetroStationTiming, MetroTiming, TransitMode, TransitNetwork,
             TransitNetworkValidationError, TransitService, TransitStop,
         },
-        transit_timing::{
-            DepartureQuery, DepartureResolver, ScheduleDepartureResolver, TimingBasis,
-        },
+        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis},
     },
-    providers::{CompositeDepartureResolver, MetroDepartureResolver},
+    providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };
 
 fn temporary_path(label: &str) -> PathBuf {
@@ -74,13 +72,11 @@ async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
     );
     network.validate().unwrap();
 
-    let metro_departure = Arc::new(MetroDepartureResolver::new(network.clone()));
-    let resolver = CompositeDepartureResolver::with_schedule_fallback(
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let resolver = DepartureDispatcher::new(
         network.clone(),
-        Arc::new(ScheduleDepartureResolver::new(network.clone())),
-    )
-    .with_adapter("metro_schedule", metro_departure.clone())
-    .with_adapter("metro_frequency", metro_departure);
+        vec![metro as Arc<dyn TransitDepartureSource>],
+    );
     let departures = resolver
         .next_departures(DepartureQuery::new(
             service_id,

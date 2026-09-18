@@ -11,8 +11,11 @@ use via_server::{
         transit::{TransferEdge, TransitNetwork, TransitStop},
     },
     providers::{
-        CompositeDepartureResolver, MetroDepartureResolver, RealtimeDepartureResolver,
         realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
+        timing::{
+            BusDepartureSource, BusRealtimeResolver, DepartureDispatcher, MetroDepartureSource,
+            ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
+        },
     },
     routing::TransferIndex,
     routing::{RoutingService, transfers::TransferShortcutIndex},
@@ -149,18 +152,25 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
         Arc::new(realtime),
         StdDuration::from_secs(30),
     ));
-    let metro = Arc::new(MetroDepartureResolver::new(network.clone()));
-    let departure = Arc::new(
-        CompositeDepartureResolver::with_schedule_fallback(
+    let bus = Arc::new(BusDepartureSource::new(
+        network.clone(),
+        Some(Arc::new(BusRealtimeResolver::new(
+            cached.clone(),
             network.clone(),
-            Arc::new(RealtimeDepartureResolver::new(
-                cached.clone(),
-                network.clone(),
-            )),
-        )
-        .with_adapter("metro_schedule", metro.clone())
-        .with_adapter("metro_frequency", metro),
-    );
+        ))),
+    ));
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let tra = Arc::new(TraDepartureSource::new(network.clone()));
+    let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
+    let departure = Arc::new(DepartureDispatcher::new(
+        network.clone(),
+        vec![
+            bus as Arc<dyn TransitDepartureSource>,
+            metro as Arc<dyn TransitDepartureSource>,
+            tra as Arc<dyn TransitDepartureSource>,
+            thsr as Arc<dyn TransitDepartureSource>,
+        ],
+    ));
     let service =
         RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()

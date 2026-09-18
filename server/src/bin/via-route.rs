@@ -20,8 +20,9 @@ use via_server::{
     health::DependencyHealth,
     providers::realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     providers::{
-        CompositeDepartureResolver, MetroDepartureResolver, RealtimeDepartureResolver,
-        TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider,
+        BusDepartureSource, BusRealtimeResolver, DepartureDispatcher, MetroDepartureSource,
+        TdxRealtimeConfig, TdxRealtimeProvider, ThsrDepartureSource, TraDepartureSource,
+        TransitDepartureSource, ValhallaConfig, ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
@@ -95,18 +96,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cached = Arc::new(CachedRealtimeProvider::new(realtime));
     let realtime_metrics = cached.metrics();
     let street = build_street_router(cli.realtime).await?;
-    let metro_departure = Arc::new(MetroDepartureResolver::new(network.clone()));
-    let departure = Arc::new(
-        CompositeDepartureResolver::with_schedule_fallback(
-            network.clone(),
-            Arc::new(
-                RealtimeDepartureResolver::new(cached.clone(), network.clone())
-                    .with_metrics(realtime_metrics.clone()),
-            ),
-        )
-        .with_adapter("metro_schedule", metro_departure.clone())
-        .with_adapter("metro_frequency", metro_departure),
-    );
+    let bus = Arc::new(BusDepartureSource::new(
+        network.clone(),
+        Some(Arc::new(
+            BusRealtimeResolver::new(cached.clone(), network.clone())
+                .with_metrics(realtime_metrics.clone()),
+        )),
+    ));
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let tra = Arc::new(TraDepartureSource::new(network.clone()));
+    let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
+    let departure = Arc::new(DepartureDispatcher::new(
+        network.clone(),
+        vec![
+            bus as Arc<dyn TransitDepartureSource>,
+            metro as Arc<dyn TransitDepartureSource>,
+            tra as Arc<dyn TransitDepartureSource>,
+            thsr as Arc<dyn TransitDepartureSource>,
+        ],
+    ));
     let mut limits = RoutingLimits::default();
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;

@@ -13,7 +13,7 @@ use time::{Date, OffsetDateTime};
 
 use super::{
     ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
-    realtime::{FreshnessState, NormalizedRealtimeValue},
+    realtime::NormalizedRealtimeValue,
     transit::TransitNetwork,
 };
 
@@ -29,10 +29,12 @@ impl TimingBasis {
     pub fn is_realtime_backed(self) -> bool {
         matches!(self, Self::RealtimePrediction | Self::DelayAdjustedSchedule)
     }
+}
 
-    pub fn is_static_backed(self) -> bool {
-        !self.is_realtime_backed()
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimingReliability {
+    Reliable,
+    Fallback,
 }
 
 /// The only timing request a routing algorithm needs to make.
@@ -74,6 +76,7 @@ pub struct EffectiveTrip {
     pub scheduled_trip_id: Option<ScheduledTripId>,
     pub stop_times: Vec<EffectiveStopTime>,
     pub timing_basis: TimingBasis,
+    pub timing_reliability: TimingReliability,
     pub observed_at: Option<OffsetDateTime>,
     pub uncertainty_seconds: Option<u32>,
     pub evidence: Vec<NormalizedRealtimeValue>,
@@ -121,6 +124,7 @@ impl EffectiveTrip {
             scheduled_trip_id: Some(trip.id.clone()),
             stop_times,
             timing_basis: TimingBasis::Schedule,
+            timing_reliability: TimingReliability::Reliable,
             observed_at: None,
             uncertainty_seconds: None,
             evidence: Vec::new(),
@@ -174,90 +178,6 @@ pub trait DepartureResolver: Send + Sync {
                 .map(|query| async move { self.next_departures(query).await }),
         )
         .await
-    }
-}
-
-#[derive(Clone)]
-pub struct RealtimeFirstDepartureResolver {
-    realtime: Arc<dyn DepartureResolver>,
-    fallback: Arc<dyn DepartureResolver>,
-}
-
-impl RealtimeFirstDepartureResolver {
-    pub fn new(realtime: Arc<dyn DepartureResolver>, fallback: Arc<dyn DepartureResolver>) -> Self {
-        Self { realtime, fallback }
-    }
-
-    fn usable(departures: Vec<EffectiveTrip>) -> Vec<EffectiveTrip> {
-        departures
-            .into_iter()
-            .filter(|trip| {
-                trip.timing_basis.is_realtime_backed()
-                    && trip
-                        .evidence
-                        .iter()
-                        .all(|status| status.freshness.state == FreshnessState::Fresh)
-            })
-            .collect()
-    }
-}
-
-#[async_trait]
-impl DepartureResolver for RealtimeFirstDepartureResolver {
-    async fn next_departures(
-        &self,
-        query: DepartureQuery,
-    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        if let Ok(departures) = self.realtime.next_departures(query.clone()).await {
-            let departures = Self::usable(departures);
-            if !departures.is_empty() {
-                return Ok(departures);
-            }
-        }
-        self.fallback.next_departures(query).await
-    }
-
-    async fn next_departures_batch(
-        &self,
-        queries: Vec<DepartureQuery>,
-    ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
-        if queries.is_empty() {
-            return Vec::new();
-        }
-        let preferred = self.realtime.next_departures_batch(queries.clone()).await;
-        let mut results = vec![None; queries.len()];
-        let mut fallback_queries = Vec::new();
-        let mut fallback_indices = Vec::new();
-        for (index, query) in queries.into_iter().enumerate() {
-            match preferred.get(index).cloned() {
-                Some(Ok(departures)) => {
-                    let departures = Self::usable(departures);
-                    if departures.is_empty() {
-                        fallback_indices.push(index);
-                        fallback_queries.push(query);
-                    } else {
-                        results[index] = Some(Ok(departures));
-                    }
-                }
-                Some(Err(_)) | None => {
-                    fallback_indices.push(index);
-                    fallback_queries.push(query);
-                }
-            }
-        }
-        let fallback = self.fallback.next_departures_batch(fallback_queries).await;
-        for (position, index) in fallback_indices.into_iter().enumerate() {
-            results[index] = Some(
-                fallback
-                    .get(position)
-                    .cloned()
-                    .unwrap_or(Err(DepartureError::TemporarilyUnavailable)),
-            );
-        }
-        results
-            .into_iter()
-            .map(|result| result.unwrap_or(Err(DepartureError::TemporarilyUnavailable)))
-            .collect()
     }
 }
 

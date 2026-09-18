@@ -42,9 +42,16 @@ distinct `BoardingPoint`s. The only current resolver uses an in-memory
 `TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Future
 dynamic mobility can be implemented behind `TransferResolver` without changing
 Trip-Based search.
-`DepartureResolver` is realtime-first with static fallback. A resolved
-`EffectiveTrip` carries its timing basis and optional evidence; scheduled and
-effective trip identity must not be conflated.
+`DepartureResolver` is the algorithm-facing timing boundary. Its current
+implementation is a `DepartureDispatcher` that groups queries by
+`TransitMode` and delegates to mode-owned sources. Each source owns its static
+timing, optional realtime timing, per-query fallback policy, and timing
+reliability policy. A resolved `EffectiveTrip` carries both timing provenance
+(`TimingBasis`) and an explicit `TimingReliability`; provenance does not imply
+trust. Static timing may be reliable: THSR is the canonical static-only
+example, while bus static fallback and Metro frequency/timetable timing remain
+fallback reliability under their source policies. Scheduled and effective trip
+identity must not be conflated.
 
 Static transit transfers are directional walking facts preprocessed during the
 data build. Runtime reconstruction uses their duration and synthetic walking
@@ -54,6 +61,12 @@ geometry; it does not call Valhalla for those transfer legs.
 
 - Keep `StreetRouter`, `RoutingAlgorithm`, and `DepartureResolver` as the
   provider/algorithm-neutral seams.
+- Keep `TripBasedRouter` unaware of transport-specific timing sources. Bus,
+  Metro, TRA, and THSR timing policies belong under
+  `server/src/providers/timing/`.
+- Keep `TimingBasis` for provenance and diagnostics; use explicit timing
+  reliability for ranking. Do not classify every static timetable as
+  `JourneyClass::Feasible`.
 - Keep Trip-Based search and static transfer preprocessing as separate current
   responsibilities.
 - Keep provider adapters out of the domain and routing modules.

@@ -2,7 +2,7 @@ use super::super::{AccessPoint, JourneySegment};
 use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
-    transit_timing::{DepartureQuery, EffectiveTrip, TimingBasis},
+    transit_timing::{DepartureQuery, EffectiveTrip, TimingBasis, TimingReliability},
 };
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -15,6 +15,7 @@ pub(super) struct SearchPath {
     pub(super) transfer_count: u32,
     pub(super) evidence: Vec<NormalizedRealtimeValue>,
     pub(super) timing_bases: Vec<TimingBasis>,
+    pub(super) timing_reliability: TimingReliability,
     pub(super) uncertainty_seconds: Option<u32>,
 }
 
@@ -27,6 +28,7 @@ impl SearchPath {
             transfer_count: 0,
             evidence: Vec::new(),
             timing_bases: Vec::new(),
+            timing_reliability: TimingReliability::Reliable,
             uncertainty_seconds: None,
         }
     }
@@ -45,6 +47,9 @@ impl SearchPath {
         }
         next.evidence.extend(trip.evidence.clone());
         next.timing_bases.push(trip.timing_basis);
+        if trip.timing_reliability == TimingReliability::Fallback {
+            next.timing_reliability = TimingReliability::Fallback;
+        }
         next.uncertainty_seconds = match (next.uncertainty_seconds, trip.uncertainty_seconds) {
             (Some(left), Some(right)) => Some(left.max(right)),
             (None, value) | (value, None) => value,

@@ -179,6 +179,25 @@ fn trip_based_search_uses_the_generic_transfer_boundary() {
 }
 
 #[test]
+fn trip_based_search_is_transport_timing_neutral() {
+    let trip_based = source_tree("src/routing/trip_based");
+    for forbidden in [
+        "BusDepartureSource",
+        "MetroDepartureSource",
+        "TraDepartureSource",
+        "ThsrDepartureSource",
+        "RealtimeProvider",
+        "TDX",
+        "realtime_scope",
+    ] {
+        assert!(
+            !trip_based.contains(forbidden),
+            "Trip-Based routing contains transport timing detail: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn routing_has_no_legacy_transit_pipeline() {
     let service = source("src/routing/service.rs");
     let routing = source_tree("src/routing");

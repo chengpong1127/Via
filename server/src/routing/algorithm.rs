@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
-    transit_timing::TimingBasis,
+    transit_timing::{TimingBasis, TimingReliability},
 };
 
 use super::{EffectiveTrip, TransferShortcut};
@@ -151,6 +151,7 @@ pub struct JourneyCandidate {
     pub uncertainty_seconds: Option<u32>,
     pub evidence: Vec<NormalizedRealtimeValue>,
     pub timing_bases: Vec<TimingBasis>,
+    pub timing_reliability: TimingReliability,
 }
 
 impl JourneyCandidate {

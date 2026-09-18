@@ -12,7 +12,7 @@ pub(crate) mod status;
 pub use crate::domain::journey::{JourneyOption, PlanningError, PlanningOutcome};
 pub use crate::domain::transit_timing::{
     DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-    RealtimeFirstDepartureResolver, ScheduleDepartureResolver, TimingBasis,
+    ScheduleDepartureResolver, TimingBasis, TimingReliability,
 };
 pub use crate::providers::realtime::RealtimeProvider;
 pub use crate::street::StreetRouter;

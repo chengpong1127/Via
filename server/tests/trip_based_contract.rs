@@ -9,9 +9,11 @@ use via_server::domain::transit::{
 };
 use via_server::domain::transit_timing::{
     DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-    TimingBasis,
+    TimingBasis, TimingReliability,
 };
-use via_server::providers::timing::CompositeDepartureResolver;
+use via_server::providers::timing::{
+    BusDepartureSource, DepartureDispatcher, TransitDepartureSource,
+};
 use via_server::routing::algorithm::RoutingAlgorithm;
 use via_server::routing::transfers::{TransferIndex, TransferShortcut, TransferShortcutIndex};
 use via_server::routing::trip_based::TripBasedRouter;
@@ -80,6 +82,11 @@ fn trip(
             TimingBasis::RealtimePrediction
         } else {
             TimingBasis::Schedule
+        },
+        timing_reliability: if realtime {
+            TimingReliability::Reliable
+        } else {
+            TimingReliability::Fallback
         },
         observed_at: None,
         uncertainty_seconds: None,
@@ -669,8 +676,11 @@ async fn departure_resolver_falls_back_to_schedule() {
             ],
         )],
     ));
-    let resolver =
-        CompositeDepartureResolver::with_schedule_fallback(schedule, Arc::new(FailingResolver));
+    let bus = Arc::new(BusDepartureSource::new(
+        schedule.clone(),
+        Some(Arc::new(FailingResolver)),
+    ));
+    let resolver = DepartureDispatcher::new(schedule, vec![bus as Arc<dyn TransitDepartureSource>]);
     let query = DepartureQuery::new(
         TransitServiceId::new("line"),
         BoardingPointId::new("a"),
