@@ -4,35 +4,57 @@ use std::{
 };
 
 use async_trait::async_trait;
+use time::{Duration as TimeDuration, OffsetDateTime};
 
-use super::source::TransitDepartureSource;
-use crate::domain::{
-    ids::EffectiveTripId,
-    realtime::{ArrivalState, FreshnessState, NormalizedRealtimeValue, RealtimeValue},
-    transit::{TransitMode, TransitNetwork},
-    transit_timing::{
-        DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-        ScheduleDepartureResolver, TimingReliability,
-    },
+use super::bus_realtime::{
+    DEFAULT_ARRIVAL_PATH, map_tdx_error, odata_in_filter, parse_bus_realtime_payload,
+    tdx_sub_route_uid,
 };
-use crate::providers::realtime::{ArrivalQuery, RealtimeError, RealtimeMetrics, RealtimeProvider};
+use super::source::TransitDepartureSource;
+use crate::{
+    config::TdxClient,
+    domain::{
+        ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
+        realtime::{
+            ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
+        },
+        transit::{TransitMode, TransitNetwork},
+        transit_timing::{
+            DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
+            ScheduleDepartureResolver, TimingReliability,
+        },
+    },
+    providers::realtime::RealtimeMetrics,
+};
 
-/// Resolves TDX arrival observations into complete request-local effective trips.
 const MAX_REALTIME_DEPARTURE_BATCH_PAIRS: usize = 64;
 
-pub struct BusRealtimeResolver {
-    realtime: Arc<dyn RealtimeProvider>,
+pub struct BusDepartureSource {
     network: Arc<TransitNetwork>,
+    tdx: Option<Arc<TdxClient>>,
+    schedule: ScheduleDepartureResolver,
+    realtime_path: String,
+    freshness_policy: FreshnessPolicy,
     metrics: RealtimeMetrics,
 }
 
-impl BusRealtimeResolver {
-    pub fn new(realtime: Arc<dyn RealtimeProvider>, network: Arc<TransitNetwork>) -> Self {
+impl BusDepartureSource {
+    pub fn new(network: Arc<TransitNetwork>, tdx: Option<Arc<TdxClient>>) -> Self {
         Self {
-            realtime,
+            schedule: ScheduleDepartureResolver::new(network.clone()),
             network,
+            tdx,
+            realtime_path: DEFAULT_ARRIVAL_PATH.into(),
+            freshness_policy: FreshnessPolicy::tdx_one_minute("1"),
             metrics: RealtimeMetrics::default(),
         }
+    }
+
+    /// Override the bus endpoint for a fixture or a TDX deployment variant.
+    /// The default endpoint still appends the service's validated city scope.
+    pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
+        self.realtime_path = path.into();
+        self
     }
 
     pub fn with_metrics(mut self, metrics: RealtimeMetrics) -> Self {
@@ -40,12 +62,17 @@ impl BusRealtimeResolver {
         self
     }
 
+    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
+        self.freshness_policy = freshness_policy;
+        self
+    }
+
     fn effective_trip(
         &self,
         query: &DepartureQuery,
-        departure_at: time::OffsetDateTime,
-        observed_at: time::OffsetDateTime,
-        evidence: crate::domain::realtime::NormalizedRealtimeValue,
+        departure_at: OffsetDateTime,
+        observed_at: OffsetDateTime,
+        evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
         let service = self.network.service(&query.service_id)?;
         let board_index = service
@@ -67,11 +94,11 @@ impl BusRealtimeResolver {
                     .map(|trip| EffectiveStopTime {
                         stop_id: stop_id.clone(),
                         arrival_at: service_day_start
-                            + time::Duration::seconds(i64::from(
+                            + TimeDuration::seconds(i64::from(
                                 trip.stop_times[index].arrival_seconds,
                             )),
                         departure_at: service_day_start
-                            + time::Duration::seconds(i64::from(
+                            + TimeDuration::seconds(i64::from(
                                 trip.stop_times[index].departure_seconds,
                             )),
                     })
@@ -90,9 +117,8 @@ impl BusRealtimeResolver {
                     .checked_sub(board_departure)?;
                 EffectiveStopTime {
                     stop_id: stop_id.clone(),
-                    arrival_at: departure_at + time::Duration::seconds(i64::from(arrival_offset)),
-                    departure_at: departure_at
-                        + time::Duration::seconds(i64::from(departure_offset)),
+                    arrival_at: departure_at + TimeDuration::seconds(i64::from(arrival_offset)),
+                    departure_at: departure_at + TimeDuration::seconds(i64::from(departure_offset)),
                 }
             } else if index == board_index {
                 EffectiveStopTime {
@@ -107,7 +133,7 @@ impl BusRealtimeResolver {
                         .estimated_segment_seconds(&query.service_id, from, stop_id)?;
                 let previous = previous_departure
                     .or_else(|| stop_times.last().map(|time| time.departure_at))?;
-                let arrival_at = previous + time::Duration::seconds(i64::from(duration));
+                let arrival_at = previous + TimeDuration::seconds(i64::from(duration));
                 EffectiveStopTime {
                     stop_id: stop_id.clone(),
                     arrival_at,
@@ -187,21 +213,8 @@ impl BusRealtimeResolver {
         departures.truncate(query.limit);
         departures
     }
-}
 
-#[async_trait]
-impl DepartureResolver for BusRealtimeResolver {
-    async fn next_departures(
-        &self,
-        query: DepartureQuery,
-    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        self.next_departures_batch(vec![query])
-            .await
-            .pop()
-            .unwrap_or(Err(DepartureError::TemporarilyUnavailable))
-    }
-
-    async fn next_departures_batch(
+    async fn realtime_departures(
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
@@ -217,13 +230,8 @@ impl DepartureResolver for BusRealtimeResolver {
             return queries.into_iter().map(|_| Ok(Vec::new())).collect();
         }
 
-        let mut unique_pairs_by_scope = BTreeMap::<
-            Option<String>,
-            Vec<(
-                crate::domain::ids::TransitServiceId,
-                crate::domain::ids::BoardingPointId,
-            )>,
-        >::new();
+        let mut pairs_by_scope =
+            BTreeMap::<Option<String>, Vec<(TransitServiceId, BoardingPointId)>>::new();
         let mut seen_pairs = HashSet::new();
         for query in &active_queries {
             let pair = (query.service_id.clone(), query.board_stop_id.clone());
@@ -232,10 +240,10 @@ impl DepartureResolver for BusRealtimeResolver {
                     .network
                     .service(&query.service_id)
                     .and_then(|service| service.realtime_scope.clone());
-                unique_pairs_by_scope.entry(scope).or_default().push(pair);
+                pairs_by_scope.entry(scope).or_default().push(pair);
             }
         }
-        for pairs in unique_pairs_by_scope.values_mut() {
+        for pairs in pairs_by_scope.values_mut() {
             pairs.sort_by(|left, right| {
                 left.0
                     .as_str()
@@ -244,42 +252,67 @@ impl DepartureResolver for BusRealtimeResolver {
             });
         }
         let unique_pair_count = seen_pairs.len();
-        let batch_count = unique_pairs_by_scope
+        let batch_count = pairs_by_scope
             .values()
             .map(|pairs| pairs.len().div_ceil(MAX_REALTIME_DEPARTURE_BATCH_PAIRS))
             .sum();
         self.metrics
             .record_departure_batch(active_queries.len(), unique_pair_count, batch_count);
 
-        let mut values_by_pair = HashMap::<
-            (
-                crate::domain::ids::TransitServiceId,
-                crate::domain::ids::BoardingPointId,
-            ),
-            Vec<NormalizedRealtimeValue>,
-        >::new();
-        for (scope, unique_pairs) in unique_pairs_by_scope {
+        let mut values_by_pair =
+            HashMap::<(TransitServiceId, BoardingPointId), Vec<NormalizedRealtimeValue>>::new();
+        let mut errors_by_pair =
+            HashMap::<(TransitServiceId, BoardingPointId), DepartureError>::new();
+        for (scope, unique_pairs) in pairs_by_scope {
             for pairs in unique_pairs.chunks(MAX_REALTIME_DEPARTURE_BATCH_PAIRS) {
                 let requested_pairs = pairs.iter().cloned().collect::<HashSet<_>>();
-                let query = ArrivalQuery::new(
-                    pairs.iter().map(|pair| pair.0.clone()),
-                    pairs.iter().map(|pair| pair.1.clone()),
-                )
-                .with_optional_scope(scope.clone());
-                let values = match self.realtime.arrival_estimates(query).await {
+                let path = match self.realtime_path_for_scope(scope.as_deref()) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        for pair in pairs {
+                            errors_by_pair.insert(pair.clone(), error.clone());
+                        }
+                        continue;
+                    }
+                };
+                let service_uids = pairs
+                    .iter()
+                    .map(|pair| tdx_sub_route_uid(&pair.0).to_owned())
+                    .collect::<Vec<_>>();
+                let boarding_point_ids = pairs
+                    .iter()
+                    .map(|pair| pair.1.as_str().to_owned())
+                    .collect::<Vec<_>>();
+                let filter = format!(
+                    "({}) and ({})",
+                    odata_in_filter("SubRouteUID", &service_uids),
+                    odata_in_filter("StopUID", &boarding_point_ids)
+                );
+                let query = [("$filter", filter.as_str())];
+                self.metrics.record_departure_upstream_request();
+                let payload = self
+                    .tdx
+                    .as_ref()
+                    .expect("realtime_departures requires a TDX client")
+                    .get_json::<serde_json::Value>(&path, &query)
+                    .await;
+                let values = match payload {
+                    Ok(payload) => parse_bus_realtime_payload(
+                        &payload,
+                        &pairs.iter().map(|pair| pair.0.clone()).collect::<Vec<_>>(),
+                        &self.freshness_policy,
+                    ),
+                    Err(error) => Err(map_tdx_error(error)),
+                };
+                self.metrics
+                    .record_departure_upstream_result(values.as_ref().err());
+                let values = match values {
                     Ok(values) => values,
                     Err(error) => {
-                        let error = map_departure_realtime_error(error);
-                        return queries
-                            .into_iter()
-                            .map(|query| {
-                                if query.limit == 0 {
-                                    Ok(Vec::new())
-                                } else {
-                                    Err(error.clone())
-                                }
-                            })
-                            .collect();
+                        for pair in pairs {
+                            errors_by_pair.insert(pair.clone(), error.clone());
+                        }
+                        continue;
                     }
                 };
                 for value in values {
@@ -304,39 +337,36 @@ impl DepartureResolver for BusRealtimeResolver {
                     Ok(Vec::new())
                 } else {
                     let pair = (query.service_id.clone(), query.board_stop_id.clone());
-                    Ok(self.resolve_query(
-                        &query,
-                        values_by_pair.get(&pair).map_or(&[], Vec::as_slice),
-                    ))
+                    errors_by_pair.get(&pair).cloned().map_or_else(
+                        || {
+                            Ok(self.resolve_query(
+                                &query,
+                                values_by_pair.get(&pair).map_or(&[], Vec::as_slice),
+                            ))
+                        },
+                        Err,
+                    )
                 }
             })
             .collect()
     }
-}
 
-fn map_departure_realtime_error(error: RealtimeError) -> DepartureError {
-    match error {
-        RealtimeError::TimedOut => DepartureError::TimedOut,
-        RealtimeError::RateLimited => DepartureError::RateLimited,
-        RealtimeError::TemporarilyUnavailable => DepartureError::TemporarilyUnavailable,
-        RealtimeError::RejectedPayload | RealtimeError::InvalidResponse => {
-            DepartureError::InvalidResponse
+    fn realtime_path_for_scope(&self, scope: Option<&str>) -> Result<String, DepartureError> {
+        if self.realtime_path != DEFAULT_ARRIVAL_PATH {
+            return Ok(self.realtime_path.clone());
         }
-        RealtimeError::InvalidConfiguration => DepartureError::InvalidConfiguration,
-    }
-}
-
-pub struct BusDepartureSource {
-    realtime: Option<Arc<dyn DepartureResolver>>,
-    schedule: ScheduleDepartureResolver,
-}
-
-impl BusDepartureSource {
-    pub fn new(network: Arc<TransitNetwork>, realtime: Option<Arc<dyn DepartureResolver>>) -> Self {
-        Self {
-            realtime,
-            schedule: ScheduleDepartureResolver::new(network),
+        let scope = scope.ok_or(DepartureError::InvalidConfiguration)?;
+        if scope.is_empty()
+            || !scope
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+        {
+            return Err(DepartureError::InvalidConfiguration);
         }
+        Ok(format!(
+            "{}/{scope}",
+            self.realtime_path.trim_end_matches('/')
+        ))
     }
 }
 
@@ -354,9 +384,7 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        // The dispatcher normally guarantees this, but keeping the source
-        // boundary explicit makes direct use safe as well.
-        let Some(service) = self.schedule.network().service(&query.service_id) else {
+        let Some(service) = self.network.service(&query.service_id) else {
             return Err(DepartureError::InvalidQuery);
         };
         if service.transit_mode != TransitMode::Bus
@@ -371,7 +399,7 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Option<Vec<Result<Vec<EffectiveTrip>, DepartureError>>> {
-        let realtime = self.realtime.as_ref()?;
-        Some(realtime.next_departures_batch(queries).await)
+        self.tdx.as_ref()?;
+        Some(self.realtime_departures(queries).await)
     }
 }

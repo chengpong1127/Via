@@ -27,8 +27,12 @@ queries by `TransitMode` and delegates to `BusDepartureSource`,
 `MetroDepartureSource`, `TraDepartureSource`, or `ThsrDepartureSource`. The
 dispatcher contains no mode-specific timing policy. Each source owns its static
 and optional realtime timing, batching strategy, realtime/static fallback, and
-`TimingReliability` policy. `TimingBasis` remains provenance only, so a static
-THSR timetable can be `Reliable` while bus static fallback or Metro frequency
+`TimingReliability` policy. Bus departure timing calls the shared, thin
+`TdxClient` directly; its endpoint paths, TDX DTOs, freshness, and fallback
+remain in the `timing/bus*.rs` source modules. The generic realtime/status
+provider is not in this departure path. `TimingBasis` remains provenance only,
+so a static THSR
+timetable can be `Reliable` while bus static fallback or Metro frequency
 timing can be `Fallback`.
 
 TripBased handles same-stop interchange itself. For movement between distinct

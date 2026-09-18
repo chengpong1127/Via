@@ -53,6 +53,14 @@ example, while bus static fallback and Metro frequency/timetable timing remain
 fallback reliability under their source policies. Scheduled and effective trip
 identity must not be conflated.
 
+Bus realtime timing is owned by `BusDepartureSource`, which calls the shared
+transport-only `TdxClient` directly. The source owns the bus endpoint path,
+scoped OData query, private TDX DTO parsing, freshness checks, batching,
+request-local effective-trip materialization, and static fallback. The generic
+realtime provider/cache remains only for request-scoped service-condition
+status collection; it is not part of departure timing. Metro, TRA, and THSR
+remain static-only until their own sources implement a direct TDX integration.
+
 Static transit transfers are directional walking facts preprocessed during the
 data build. Runtime reconstruction uses their duration and synthetic walking
 geometry; it does not call Valhalla for those transfer legs.
@@ -70,6 +78,11 @@ geometry; it does not call Valhalla for those transfer legs.
 - Keep Trip-Based search and static transfer preprocessing as separate current
   responsibilities.
 - Keep provider adapters out of the domain and routing modules.
+- Keep departure timing mode-owned: `BusDepartureSource` may use `TdxClient`
+  directly, while `RealtimeProvider` is reserved for service-condition/status
+  collection.
+- Keep `TdxClient` transport-agnostic. It owns OAuth, base URL, HTTP limits,
+  and generic JSON decoding, not transport-specific DTOs or timing policy.
 - Do not reintroduce `planner`, `normalization`, `routing/engine`, `RouteGraph`,
   or a `JourneyPlanningService` wrapper.
 - Navigation is not part of the current implementation.

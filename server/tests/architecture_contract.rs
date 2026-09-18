@@ -198,6 +198,51 @@ fn trip_based_search_is_transport_timing_neutral() {
 }
 
 #[test]
+fn departure_realtime_is_owned_by_the_mode_source() {
+    let bus = source("src/providers/timing/bus.rs");
+    assert!(bus.contains("TdxClient"));
+    assert!(bus.contains("get_json"));
+    for forbidden in ["RealtimeProvider", "ArrivalQuery", "BusRealtimeResolver"] {
+        assert!(
+            !bus.contains(forbidden),
+            "bus departure timing still depends on {forbidden}"
+        );
+    }
+
+    let generic_realtime = source("src/providers/realtime.rs");
+    for forbidden in ["ArrivalQuery", "arrival_estimates", "arrival_pair_cache"] {
+        assert!(
+            !generic_realtime.contains(forbidden),
+            "generic realtime layer still owns departure arrivals: {forbidden}"
+        );
+    }
+
+    let tdx = source("src/providers/tdx.rs");
+    for forbidden in ["ArrivalEstimate", "arrival_estimates", "TdxRealtimeConfig"] {
+        assert!(
+            !tdx.contains(forbidden),
+            "status adapter still owns bus departure timing: {forbidden}"
+        );
+    }
+
+    let app = source("src/app.rs");
+    assert!(app.contains("BusDepartureSource::new"));
+    assert!(!app.contains("BusRealtimeResolver"));
+}
+
+#[test]
+fn tdx_client_remains_transport_agnostic() {
+    let client = source("src/config.rs");
+    for forbidden in ["TransitMode", "ArrivalEstimate", "EffectiveTrip", "YouBike"] {
+        assert!(
+            !client.contains(forbidden),
+            "TdxClient knows about {forbidden}"
+        );
+    }
+    assert!(client.contains("pub async fn get_json<T: DeserializeOwned>"));
+}
+
+#[test]
 fn routing_has_no_legacy_transit_pipeline() {
     let service = source("src/routing/service.rs");
     let routing = source_tree("src/routing");

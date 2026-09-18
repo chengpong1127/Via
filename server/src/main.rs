@@ -2,12 +2,12 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use url::Url;
 use via_server::{
-    app::build_router_with_realtime_and_network_and_ttl,
+    app::build_router_with_realtime_and_network_and_ttl_and_tdx,
     config::{TdxClient, TdxCredentials, load_dotenv},
     data::load_network_artifact,
     health::DependencyHealth,
     providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
-    providers::{TdxRealtimeConfig, TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
+    providers::{TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
 };
 
 #[tokio::main]
@@ -57,14 +57,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if environment == "production" && tdx_base_url.scheme() != "https" {
         return Err("VIA_TDX_BASE_URL must use HTTPS in production".into());
     }
-    let tdx_client =
-        TdxClient::with_api_base_url(TdxCredentials::from_env()?, &tdx_base_url_value)?;
-    let mut realtime = TdxRealtimeProvider::new(
-        TdxRealtimeConfig {
-            base_url: tdx_base_url,
-        },
-        tdx_client,
-    )?;
+    let tdx_client = Arc::new(TdxClient::with_api_base_url(
+        TdxCredentials::from_env()?,
+        &tdx_base_url_value,
+    )?);
+    let mut realtime = TdxRealtimeProvider::new(tdx_client.clone());
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         realtime = realtime.with_service_condition_path(path);
     }
@@ -74,9 +71,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_REALTIME_CACHE_TTL);
-    let router = build_router_with_realtime_and_network_and_ttl(
+    let router = build_router_with_realtime_and_network_and_ttl_and_tdx(
         provider,
         Arc::new(realtime),
+        Some(tdx_client),
         transit_network,
         cache_ttl,
     )

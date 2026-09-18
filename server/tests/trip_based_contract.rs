@@ -641,19 +641,6 @@ fn transfer_index_preserves_multiple_nondominated_alternatives() {
 
 #[tokio::test]
 async fn departure_resolver_falls_back_to_schedule() {
-    #[derive(Clone)]
-    struct FailingResolver;
-
-    #[async_trait]
-    impl DepartureResolver for FailingResolver {
-        async fn next_departures(
-            &self,
-            _query: DepartureQuery,
-        ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-            Err(DepartureError::TimedOut)
-        }
-    }
-
     let stops = vec![stop("a"), stop("b")];
     let services = vec![TransitService::new(
         TransitServiceId::new("line"),
@@ -676,10 +663,7 @@ async fn departure_resolver_falls_back_to_schedule() {
             ],
         )],
     ));
-    let bus = Arc::new(BusDepartureSource::new(
-        schedule.clone(),
-        Some(Arc::new(FailingResolver)),
-    ));
+    let bus = Arc::new(BusDepartureSource::new(schedule.clone(), None));
     let resolver = DepartureDispatcher::new(schedule, vec![bus as Arc<dyn TransitDepartureSource>]);
     let query = DepartureQuery::new(
         TransitServiceId::new("line"),

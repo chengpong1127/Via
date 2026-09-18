@@ -7,7 +7,7 @@ use std::{
 };
 
 use reqwest::{Client, StatusCode, header::RETRY_AFTER};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
@@ -112,6 +112,8 @@ pub enum TdxClientError {
     RateLimitedWithRetryAfter(Duration),
     #[error("TDX API response exceeded the development limit")]
     ResponseTooLarge,
+    #[error("TDX API response was not valid JSON")]
+    InvalidJson(#[source] serde_json::Error),
 }
 
 #[derive(Clone)]
@@ -243,6 +245,20 @@ impl TdxClient {
     ) -> Result<TdxRawResponse, TdxClientError> {
         self.get_raw_with_limit(path, query, MAX_RESPONSE_BYTES)
             .await
+    }
+
+    /// Fetch and decode one provider-owned JSON response.
+    ///
+    /// TDX endpoint paths and response types remain the responsibility of the
+    /// caller; this method only combines the shared HTTP and JSON transport
+    /// concerns.
+    pub async fn get_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, TdxClientError> {
+        let response = self.get_raw(path, query).await?;
+        serde_json::from_slice(&response.body).map_err(TdxClientError::InvalidJson)
     }
 
     pub(crate) async fn get_raw_with_limit(

@@ -8,13 +8,13 @@ use futures_util::future::join_all;
 use time::OffsetDateTime;
 use via_server::{
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
-        realtime::{ArrivalEstimate, ArrivalState, Freshness, FreshnessState},
+        ids::TransitServiceId,
+        realtime::{
+            Freshness, FreshnessState, NormalizedRealtimeValue, RealtimeValue, ServiceCondition,
+            ServiceConditionState,
+        },
     },
-    providers::realtime::{
-        ArrivalQuery, CachedRealtimeProvider, NormalizedRealtimeValue, RealtimeError,
-        RealtimeProvider, RealtimeValue,
-    },
+    providers::realtime::{CachedRealtimeProvider, RealtimeError, RealtimeProvider},
 };
 
 #[derive(Clone)]
@@ -26,81 +26,69 @@ struct CountingProvider {
 
 #[async_trait]
 impl RealtimeProvider for CountingProvider {
-    async fn arrival_estimates(
-        &self,
-        _query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
-        self.result.clone()
-    }
-
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         self.result.clone()
     }
 }
 
-fn arrival_value(freshness: Freshness) -> NormalizedRealtimeValue {
+fn condition_value(freshness: Freshness) -> NormalizedRealtimeValue {
     let now = OffsetDateTime::now_utc();
     NormalizedRealtimeValue {
-        id: "arrival-1".into(),
+        id: "condition-1".into(),
         received_at: now,
         normalized_at: now,
         provider_published_at: Some(now),
         source_change_at: None,
         freshness,
-        value: RealtimeValue::ArrivalEstimate(ArrivalEstimate {
-            transit_service_id: TransitServiceId::new("service-1"),
-            boarding_point_id: BoardingPointId::new("stop-1"),
-            predicted_arrival_at: Some(now + time::Duration::seconds(120)),
-            state: ArrivalState::Predicted,
-            transmitted_at: now,
+        value: RealtimeValue::ServiceCondition(ServiceCondition {
+            state: ServiceConditionState::Disrupted,
+            scope_via_ids: vec!["service-1".into()],
+            source_text_variants: Vec::new(),
+            effective_from: None,
+            effective_until: None,
         }),
     }
 }
 
-fn query() -> ArrivalQuery {
-    ArrivalQuery::for_ride(
-        TransitServiceId::new("service-1"),
-        BoardingPointId::new("stop-1"),
-    )
+fn services() -> Vec<TransitServiceId> {
+    vec![TransitServiceId::new("service-1")]
+}
+
+fn fresh_value() -> NormalizedRealtimeValue {
+    condition_value(Freshness {
+        state: FreshnessState::Fresh,
+        reason: None,
+        policy_version: "1".into(),
+        evaluated_at: OffsetDateTime::now_utc(),
+    })
 }
 
 #[tokio::test]
-async fn cache_hit_avoids_another_upstream_call() {
+async fn service_condition_cache_hit_avoids_another_upstream_call() {
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = CountingProvider {
         calls: calls.clone(),
-        result: Ok(vec![arrival_value(Freshness {
-            state: FreshnessState::Fresh,
-            reason: None,
-            policy_version: "1".into(),
-            evaluated_at: OffsetDateTime::now_utc(),
-        })]),
+        result: Ok(vec![fresh_value()]),
         delay_ms: 0,
     };
     let cached =
         CachedRealtimeProvider::with_ttl(Arc::new(provider), std::time::Duration::from_secs(30));
-    cached.arrival_estimates(query()).await.unwrap();
-    cached.arrival_estimates(query()).await.unwrap();
+    cached.service_conditions(&services()).await.unwrap();
+    cached.service_conditions(&services()).await.unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
-async fn concurrent_cache_misses_are_coalesced() {
+async fn concurrent_service_condition_misses_are_coalesced() {
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = CountingProvider {
         calls: calls.clone(),
-        result: Ok(vec![arrival_value(Freshness {
-            state: FreshnessState::Fresh,
-            reason: None,
-            policy_version: "1".into(),
-            evaluated_at: OffsetDateTime::now_utc(),
-        })]),
+        result: Ok(vec![fresh_value()]),
         delay_ms: 25,
     };
     let cached = Arc::new(CachedRealtimeProvider::with_ttl(
@@ -109,7 +97,7 @@ async fn concurrent_cache_misses_are_coalesced() {
     ));
     let results = join_all((0..50).map(|_| {
         let cached = cached.clone();
-        async move { cached.arrival_estimates(query()).await }
+        async move { cached.service_conditions(&services()).await }
     }))
     .await;
     assert!(results.iter().all(Result::is_ok));
@@ -117,23 +105,18 @@ async fn concurrent_cache_misses_are_coalesced() {
 }
 
 #[tokio::test]
-async fn ttl_expiry_fetches_again_but_errors_are_not_cached() {
+async fn service_condition_ttl_expiry_fetches_again_but_errors_are_not_cached() {
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = CountingProvider {
         calls: calls.clone(),
-        result: Ok(vec![arrival_value(Freshness {
-            state: FreshnessState::Fresh,
-            reason: None,
-            policy_version: "1".into(),
-            evaluated_at: OffsetDateTime::now_utc(),
-        })]),
+        result: Ok(vec![fresh_value()]),
         delay_ms: 0,
     };
     let cached =
         CachedRealtimeProvider::with_ttl(Arc::new(provider), std::time::Duration::from_millis(10));
-    cached.arrival_estimates(query()).await.unwrap();
+    cached.service_conditions(&services()).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    cached.arrival_estimates(query()).await.unwrap();
+    cached.service_conditions(&services()).await.unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 2);
 
     let failing = CountingProvider {
@@ -144,11 +127,11 @@ async fn ttl_expiry_fetches_again_but_errors_are_not_cached() {
     let cached =
         CachedRealtimeProvider::with_ttl(Arc::new(failing), std::time::Duration::from_secs(30));
     assert_eq!(
-        cached.arrival_estimates(query()).await.unwrap_err(),
+        cached.service_conditions(&services()).await.unwrap_err(),
         RealtimeError::TimedOut
     );
     assert_eq!(
-        cached.arrival_estimates(query()).await.unwrap_err(),
+        cached.service_conditions(&services()).await.unwrap_err(),
         RealtimeError::TimedOut
     );
     assert_eq!(calls.load(Ordering::Relaxed), 4);
@@ -159,7 +142,7 @@ async fn recently_cached_stale_values_remain_unavailable() {
     let now = OffsetDateTime::now_utc();
     let provider = CountingProvider {
         calls: Arc::new(AtomicUsize::new(0)),
-        result: Ok(vec![arrival_value(Freshness {
+        result: Ok(vec![condition_value(Freshness {
             state: FreshnessState::Unavailable,
             reason: Some(via_server::domain::realtime::FreshnessReason::Stale),
             policy_version: "1".into(),
@@ -168,6 +151,10 @@ async fn recently_cached_stale_values_remain_unavailable() {
         delay_ms: 0,
     };
     let cached = CachedRealtimeProvider::new(Arc::new(provider));
-    let value = cached.arrival_estimates(query()).await.unwrap().remove(0);
+    let value = cached
+        .service_conditions(&services())
+        .await
+        .unwrap()
+        .remove(0);
     assert_eq!(value.freshness.state, FreshnessState::Unavailable);
 }

@@ -18,11 +18,11 @@ use via_server::{
         realtime::{FreshnessState, NormalizedRealtimeValue},
     },
     health::DependencyHealth,
-    providers::realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
+    providers::realtime::{CachedRealtimeProvider, RealtimeError, RealtimeProvider},
     providers::{
-        BusDepartureSource, BusRealtimeResolver, DepartureDispatcher, MetroDepartureSource,
-        TdxRealtimeConfig, TdxRealtimeProvider, ThsrDepartureSource, TraDepartureSource,
-        TransitDepartureSource, ValhallaConfig, ValhallaProvider,
+        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxRealtimeProvider,
+        ThsrDepartureSource, TraDepartureSource, TransitDepartureSource, ValhallaConfig,
+        ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
@@ -80,9 +80,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let network = Arc::new(load_network_artifact(&cli.network)?);
 
-    let realtime: Arc<dyn RealtimeProvider> = match cli.realtime {
-        RealtimeMode::Fixture => Arc::new(FixtureRealtimeProvider),
-        RealtimeMode::Live => build_live_realtime().await?,
+    let (realtime, tdx): (Arc<dyn RealtimeProvider>, Option<Arc<TdxClient>>) = match cli.realtime {
+        RealtimeMode::Fixture => (Arc::new(FixtureRealtimeProvider), None),
+        RealtimeMode::Live => {
+            let (provider, tdx) = build_live_realtime().await?;
+            (provider, Some(tdx))
+        }
     };
     let trace_events = Arc::new(Mutex::new(Vec::new()));
     let realtime: Arc<dyn RealtimeProvider> = if cli.trace {
@@ -96,13 +99,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cached = Arc::new(CachedRealtimeProvider::new(realtime));
     let realtime_metrics = cached.metrics();
     let street = build_street_router(cli.realtime).await?;
-    let bus = Arc::new(BusDepartureSource::new(
-        network.clone(),
-        Some(Arc::new(
-            BusRealtimeResolver::new(cached.clone(), network.clone())
-                .with_metrics(realtime_metrics.clone()),
-        )),
-    ));
+    let bus = Arc::new(
+        BusDepartureSource::new(network.clone(), tdx).with_metrics(realtime_metrics.clone()),
+    );
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
     let tra = Arc::new(TraDepartureSource::new(network.clone()));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
@@ -161,19 +160,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn build_live_realtime() -> Result<Arc<dyn RealtimeProvider>, Box<dyn Error>> {
+async fn build_live_realtime() -> Result<(Arc<dyn RealtimeProvider>, Arc<TdxClient>), Box<dyn Error>>
+{
     let base_url = env::var("VIA_TDX_BASE_URL")
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
     let base_url = url::Url::parse(&base_url)?;
-    let tdx_client = TdxClient::with_api_base_url(TdxCredentials::from_env()?, base_url.as_str())?;
-    let config = TdxRealtimeConfig {
-        base_url: base_url.clone(),
-    };
-    let mut provider = TdxRealtimeProvider::new(config, tdx_client)?;
+    let tdx_client = Arc::new(TdxClient::with_api_base_url(
+        TdxCredentials::from_env()?,
+        base_url.as_str(),
+    )?);
+    let mut provider = TdxRealtimeProvider::new(tdx_client.clone());
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         provider = provider.with_service_condition_path(path);
     }
-    Ok(Arc::new(provider))
+    Ok((Arc::new(provider), tdx_client))
 }
 
 async fn build_street_router(
@@ -382,25 +382,6 @@ impl TraceRealtimeProvider {
 
 #[async_trait]
 impl RealtimeProvider for TraceRealtimeProvider {
-    async fn arrival_estimates(
-        &self,
-        query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        self.record(format!(
-            "DEPARTURE services={} stops={}",
-            join_ids(
-                query
-                    .transit_service_ids
-                    .iter()
-                    .map(TransitServiceId::as_str)
-            ),
-            join_ids(query.boarding_point_ids.iter().map(|id| id.as_str()))
-        ));
-        let result = self.inner.arrival_estimates(query).await;
-        self.record(format_result(&result));
-        result
-    }
-
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
@@ -429,13 +410,6 @@ fn format_result(result: &Result<Vec<NormalizedRealtimeValue>, RealtimeError>) -
 
 #[async_trait]
 impl RealtimeProvider for FixtureRealtimeProvider {
-    async fn arrival_estimates(
-        &self,
-        _query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        Ok(Vec::new())
-    }
-
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],

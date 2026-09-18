@@ -1,20 +1,16 @@
 [
   {
-    "id": "fixture-bus-live-early",
-    "received_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "normalized_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "provider_published_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "source_change_at": null,
-    "freshness": {"state": "fresh", "reason": null, "policy_version": "fixture-1", "evaluated_at": "2026-08-31T10:00:00+08:00"},
-    "value": {"ArrivalEstimate": {"transit_service_id": "fixture-bus-main", "boarding_point_id": "F-BUS-A", "predicted_arrival_at": [2026, 243, 10, 4, 0, 0, 8, 0, 0], "state": "predicted", "transmitted_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0]}}
+    "StopUID": "F-BUS-A",
+    "SubRouteUID": "fixture-bus-main",
+    "StopStatus": 0,
+    "EstimateTime": 240,
+    "UpdateTime": "2026-08-31T10:00:00+08:00"
   },
   {
-    "id": "fixture-bus-live-late",
-    "received_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "normalized_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "provider_published_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0],
-    "source_change_at": null,
-    "freshness": {"state": "fresh", "reason": null, "policy_version": "fixture-1", "evaluated_at": "2026-08-31T10:00:00+08:00"},
-    "value": {"ArrivalEstimate": {"transit_service_id": "fixture-bus-main", "boarding_point_id": "F-BUS-A", "predicted_arrival_at": [2026, 243, 10, 14, 0, 0, 8, 0, 0], "state": "predicted", "transmitted_at": [2026, 243, 10, 0, 0, 0, 8, 0, 0]}}
+    "StopUID": "F-BUS-A",
+    "SubRouteUID": "fixture-bus-main",
+    "StopStatus": 0,
+    "EstimateTime": 840,
+    "UpdateTime": "2026-08-31T10:00:00+08:00"
   }
 ]

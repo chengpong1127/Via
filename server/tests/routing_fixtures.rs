@@ -1,20 +1,21 @@
-use std::{sync::Arc, time::Duration as StdDuration};
+use std::sync::Arc;
 
-use async_trait::async_trait;
+use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
 use via_server::{
     api::PlanningRequest,
+    config::{TdxClient, TdxCredentials},
     data::load_network_artifact,
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
-        realtime::{NormalizedRealtimeValue, RealtimeValue},
+        ids::BoardingPointId,
+        realtime::FreshnessPolicy,
         transit::{TransferEdge, TransitNetwork, TransitStop},
     },
     providers::{
-        realtime::{ArrivalQuery, CachedRealtimeProvider, RealtimeError, RealtimeProvider},
+        realtime::{CachedRealtimeProvider, NullRealtimeProvider},
         timing::{
-            BusDepartureSource, BusRealtimeResolver, DepartureDispatcher, MetroDepartureSource,
-            ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
+            BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
+            TraDepartureSource, TransitDepartureSource,
         },
     },
     routing::TransferIndex,
@@ -29,59 +30,51 @@ fn network() -> TransitNetwork {
     TransitNetwork::from_artifact_json(NETWORK_JSON).unwrap()
 }
 
-const BUS_REALTIME_JSON: &str = include_str!("../fixtures/routing/realtime/bus.json");
+fn bus_tdx_payload() -> Value {
+    serde_json::from_str(include_str!("../fixtures/routing/realtime/bus.json")).unwrap()
+}
 
-#[derive(Clone, Default)]
+async fn fixture_tdx_client(payload: Value) -> Arc<TdxClient> {
+    let app = Router::new().fallback(any(move |method: Method| {
+        let payload = payload.clone();
+        async move {
+            if method == Method::POST {
+                Json(json!({"access_token": "fixture-token", "expires_in": 300})).into_response()
+            } else {
+                Json(payload).into_response()
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base_url = format!("http://{address}/");
+    Arc::new(
+        TdxClient::with_urls(
+            TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
+            &base_url,
+            &base_url,
+        )
+        .unwrap(),
+    )
+}
+
+#[derive(Clone, Copy)]
 struct FixtureRealtime {
-    values: Arc<Vec<NormalizedRealtimeValue>>,
     arrivals_available: bool,
 }
 
 impl FixtureRealtime {
     fn empty() -> Self {
-        Self::default()
+        Self {
+            arrivals_available: false,
+        }
     }
 
     fn bus() -> Self {
         Self {
-            values: Arc::new(serde_json::from_str(BUS_REALTIME_JSON).unwrap()),
             arrivals_available: true,
         }
-    }
-}
-
-#[async_trait]
-impl RealtimeProvider for FixtureRealtime {
-    async fn arrival_estimates(
-        &self,
-        query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        if !self.arrivals_available {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .values
-            .iter()
-            .filter(|value| {
-                let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
-                    return false;
-                };
-                query
-                    .transit_service_ids
-                    .contains(&arrival.transit_service_id)
-                    && query
-                        .boarding_point_ids
-                        .contains(&arrival.boarding_point_id)
-            })
-            .cloned()
-            .collect())
-    }
-
-    async fn service_conditions(
-        &self,
-        _service_ids: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        Ok(Vec::new())
     }
 }
 
@@ -148,17 +141,20 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
     let network = Arc::new(network());
-    let cached = Arc::new(CachedRealtimeProvider::with_ttl(
-        Arc::new(realtime),
-        StdDuration::from_secs(30),
-    ));
-    let bus = Arc::new(BusDepartureSource::new(
-        network.clone(),
-        Some(Arc::new(BusRealtimeResolver::new(
-            cached.clone(),
-            network.clone(),
-        ))),
-    ));
+    let tdx = if realtime.arrivals_available {
+        Some(fixture_tdx_client(bus_tdx_payload()).await)
+    } else {
+        None
+    };
+    let bus = Arc::new(
+        BusDepartureSource::new(network.clone(), tdx)
+            .with_realtime_endpoint("feed")
+            .with_freshness_policy(FreshnessPolicy {
+                version: "fixture-1".into(),
+                fresh_through: time::Duration::days(30),
+                degraded_through: time::Duration::days(31),
+            }),
+    );
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
     let tra = Arc::new(TraDepartureSource::new(network.clone()));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
@@ -171,6 +167,7 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
+    let cached = Arc::new(CachedRealtimeProvider::new(Arc::new(NullRealtimeProvider)));
     let service =
         RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()

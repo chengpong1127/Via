@@ -1,31 +1,23 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
-use url::Url;
 
 use crate::{
     config::{TdxClient, TdxClientError},
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         realtime::{
-            ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes, LocalizedSourceText,
-            NormalizedRealtimeValue, RealtimeValue, ServiceCondition, ServiceConditionState,
+            FreshnessPolicy, LiveStatusTimes, LocalizedSourceText, NormalizedRealtimeValue,
+            RealtimeValue, ServiceCondition, ServiceConditionState,
         },
     },
-    providers::realtime::{ArrivalQuery, RealtimeError, RealtimeProvider},
+    providers::realtime::{RealtimeError, RealtimeProvider},
 };
 
-const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
-const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TdxRealtimeConfig {
-    pub base_url: Url,
-}
 
 /// Construct the domain ID for a TDX bus stop or other boarding point.
 pub fn boarding_point_id(stop_uid: impl Into<String>) -> BoardingPointId {
@@ -49,39 +41,21 @@ pub fn transit_service_id_for_direction(
     ))
 }
 
+/// TDX-backed service-condition collection. Departure timing is owned by the
+/// mode source and does not pass through this provider.
 pub struct TdxRealtimeProvider {
-    base_url: Url,
-    arrival_path: String,
     condition_path: Option<String>,
-    tdx_client: TdxClient,
+    tdx_client: Arc<TdxClient>,
     policy: FreshnessPolicy,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum TdxConfigError {
-    #[error("TDX realtime configuration is invalid: {0}")]
-    InvalidConfiguration(&'static str),
-}
-
 impl TdxRealtimeProvider {
-    pub fn new(config: TdxRealtimeConfig, tdx_client: TdxClient) -> Result<Self, TdxConfigError> {
-        if config.base_url.host_str().is_none() {
-            return Err(TdxConfigError::InvalidConfiguration(
-                "TDX base URL must include a host",
-            ));
-        }
-        Ok(Self {
-            base_url: config.base_url,
-            arrival_path: DEFAULT_ARRIVAL_PATH.into(),
+    pub fn new(tdx_client: Arc<TdxClient>) -> Self {
+        Self {
             condition_path: None,
             tdx_client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
-        })
-    }
-
-    pub fn with_endpoint_paths(mut self, arrival_path: impl Into<String>) -> Self {
-        self.arrival_path = arrival_path.into();
-        self
+        }
     }
 
     pub fn with_service_condition_path(mut self, path: impl Into<String>) -> Self {
@@ -89,53 +63,24 @@ impl TdxRealtimeProvider {
         self
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, RealtimeError> {
-        self.base_url
-            .join(path)
-            .map_err(|_| RealtimeError::InvalidConfiguration)
-    }
-
-    fn arrival_path_for_scope(&self, scope: Option<&str>) -> Result<String, RealtimeError> {
-        let scope = scope.ok_or(RealtimeError::InvalidConfiguration)?;
-        if scope.is_empty()
-            || !scope
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric())
-        {
-            return Err(RealtimeError::InvalidConfiguration);
-        }
-        if self.arrival_path == DEFAULT_ARRIVAL_PATH {
-            Ok(format!(
-                "{}/{scope}",
-                self.arrival_path.trim_end_matches('/')
-            ))
-        } else {
-            Ok(self.arrival_path.clone())
-        }
-    }
-
     async fn get_json(
         &self,
         path: &str,
         query: &[(String, String)],
     ) -> Result<serde_json::Value, RealtimeError> {
-        let url = self.endpoint(path)?;
         let query = query
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        let response = self
-            .tdx_client
-            .get_raw_with_limit(url.as_str(), &query, MAX_RESPONSE_BYTES)
+        self.tdx_client
+            .get_json(path, &query)
             .await
-            .map_err(map_tdx_error)?;
-        serde_json::from_slice(&response.body).map_err(|_| RealtimeError::RejectedPayload)
+            .map_err(map_tdx_error)
     }
 
     fn normalize_payload(
         &self,
         payload: &serde_json::Value,
-        family: TdxFamily,
         requested_services: &[TransitServiceId],
     ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
         let records = records(payload);
@@ -143,7 +88,6 @@ impl TdxRealtimeProvider {
             return Ok(Vec::new());
         }
         let received_at = OffsetDateTime::now_utc();
-        let normalized_at = OffsetDateTime::now_utc();
         let mut normalized = Vec::new();
         for record in records {
             let Some(published_at) =
@@ -151,7 +95,7 @@ impl TdxRealtimeProvider {
             else {
                 continue;
             };
-            if published_at > normalized_at + MAX_PROVIDER_CLOCK_SKEW {
+            if published_at > received_at + MAX_PROVIDER_CLOCK_SKEW {
                 return Err(RealtimeError::RejectedPayload);
             }
             let freshness = self.policy.evaluate(
@@ -159,27 +103,23 @@ impl TdxRealtimeProvider {
                     measured_at: None,
                     published_at: Some(published_at),
                     received_at,
-                    normalized_at,
+                    normalized_at: received_at,
                 },
-                normalized_at,
+                received_at,
                 None,
             );
-            let value = match family {
-                TdxFamily::BusArrival => {
-                    self.normalize_bus_arrival(record, published_at, requested_services)
-                }
-                TdxFamily::ServiceCondition => {
-                    self.normalize_service_condition(record, published_at, requested_services)
-                }
+            let Some((id, value)) =
+                self.normalize_service_condition(record, published_at, requested_services)
+            else {
+                continue;
             };
-            let Some((id, value)) = value else { continue };
             normalized.push(NormalizedRealtimeValue {
                 id,
                 received_at,
-                normalized_at,
+                normalized_at: received_at,
                 provider_published_at: Some(published_at),
                 source_change_at: None,
-                freshness: freshness.clone(),
+                freshness,
                 value,
             });
         }
@@ -187,40 +127,6 @@ impl TdxRealtimeProvider {
             return Err(RealtimeError::RejectedPayload);
         }
         Ok(normalized)
-    }
-
-    fn normalize_bus_arrival(
-        &self,
-        record: &serde_json::Value,
-        published_at: OffsetDateTime,
-        requested_services: &[TransitServiceId],
-    ) -> Option<(String, RealtimeValue)> {
-        let stop_uid = string_field(record, "StopUID")?;
-        let service_uid = string_field(record, "SubRouteUID")?;
-        let transit_service_id = directional_service_id_for_request(
-            service_uid,
-            direction_field(record),
-            requested_services,
-        );
-        let status = record
-            .get("StopStatus")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(u8::MAX);
-        let estimate = record
-            .get("EstimateTime")
-            .and_then(serde_json::Value::as_i64);
-        let value = normalize_n1(
-            transit_service_id,
-            boarding_point_id(stop_uid),
-            status,
-            estimate,
-            published_at,
-        );
-        Some((
-            observation_id(stop_uid, service_uid, published_at),
-            RealtimeValue::ArrivalEstimate(value),
-        ))
     }
 
     fn normalize_service_condition(
@@ -268,65 +174,8 @@ impl TdxRealtimeProvider {
     }
 }
 
-#[derive(Clone, Copy)]
-enum TdxFamily {
-    BusArrival,
-    ServiceCondition,
-}
-
 #[async_trait]
 impl RealtimeProvider for TdxRealtimeProvider {
-    async fn arrival_estimates(
-        &self,
-        query: ArrivalQuery,
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
-        if query.transit_service_ids.is_empty() || query.boarding_point_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let arrival_path = self.arrival_path_for_scope(query.scope.as_deref())?;
-        let service_ids = query
-            .transit_service_ids
-            .iter()
-            .map(tdx_sub_route_uid)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        let boarding_point_ids = query
-            .boarding_point_ids
-            .iter()
-            .map(|id| id.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let query_params = vec![(
-            "$filter".into(),
-            format!(
-                "({}) and ({})",
-                odata_in_filter("SubRouteUID", &service_ids),
-                odata_in_filter("StopUID", &boarding_point_ids)
-            ),
-        )];
-        let payload = self.get_json(&arrival_path, &query_params).await?;
-        let values =
-            self.normalize_payload(&payload, TdxFamily::BusArrival, &query.transit_service_ids)?;
-        let requested_services = query
-            .transit_service_ids
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let requested_boarding_points = query
-            .boarding_point_ids
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        Ok(values
-            .into_iter()
-            .filter(|value| {
-                matches!(
-                    &value.value,
-                    RealtimeValue::ArrivalEstimate(arrival)
-                        if requested_services.contains(&arrival.transit_service_id)
-                            && requested_boarding_points.contains(&arrival.boarding_point_id)
-                )
-            })
-            .collect())
-    }
-
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
@@ -337,20 +186,15 @@ impl RealtimeProvider for TdxRealtimeProvider {
         let Some(path) = &self.condition_path else {
             return Ok(Vec::new());
         };
-        let requested_services = service_ids;
-        let service_uids = requested_services
+        let service_uids = service_ids
             .iter()
             .map(tdx_sub_route_uid)
             .map(str::to_owned)
             .collect::<Vec<_>>();
-
-        let query_params: Vec<(String, String)> = vec![(
-            "$filter".into(),
-            odata_in_filter("SubRouteUID", &service_uids),
-        )];
+        let filter = odata_in_filter("SubRouteUID", &service_uids);
+        let query_params = vec![("$filter".into(), filter)];
         let payload = self.get_json(path, &query_params).await?;
-        let values =
-            self.normalize_payload(&payload, TdxFamily::ServiceCondition, requested_services)?;
+        let values = self.normalize_payload(&payload, service_ids)?;
         Ok(values
             .into_iter()
             .filter(|value| {
@@ -358,7 +202,7 @@ impl RealtimeProvider for TdxRealtimeProvider {
                     &value.value,
                     RealtimeValue::ServiceCondition(condition)
                         if condition.scope_via_ids.iter().any(|service_id| {
-                            requested_services
+                            service_ids
                                 .iter()
                                 .any(|requested| requested.as_str() == service_id)
                         })
@@ -383,7 +227,9 @@ fn map_tdx_error(error: TdxClientError) -> RealtimeError {
         | TdxClientError::InvalidOAuthResponse(_)
         | TdxClientError::ApiRequest(_)
         | TdxClientError::Credentials(_) => RealtimeError::TemporarilyUnavailable,
-        TdxClientError::ResponseTooLarge => RealtimeError::RejectedPayload,
+        TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
+            RealtimeError::RejectedPayload
+        }
     }
 }
 
@@ -420,25 +266,6 @@ fn tdx_sub_route_uid(service_id: &TransitServiceId) -> &str {
         .as_str()
         .split_once(DIRECTIONAL_SERVICE_SEPARATOR)
         .map_or_else(|| service_id.as_str(), |(sub_route_uid, _)| sub_route_uid)
-}
-
-fn directional_service_id_for_request(
-    sub_route_uid: &str,
-    direction: Option<u8>,
-    requested_services: &[TransitServiceId],
-) -> TransitServiceId {
-    let direction_is_modeled = direction.is_some_and(|direction| {
-        requested_services.iter().any(|service_id| {
-            tdx_sub_route_uid(service_id) == sub_route_uid
-                && service_id.as_str() != sub_route_uid
-                && service_id.as_str()
-                    == transit_service_id_for_direction(sub_route_uid, direction).as_str()
-        })
-    });
-    match direction.filter(|_| direction_is_modeled) {
-        Some(direction) => transit_service_id_for_direction(sub_route_uid, direction),
-        None => transit_service_id(sub_route_uid),
-    }
 }
 
 fn condition_service_ids(
@@ -479,35 +306,4 @@ fn observation_id(primary_key: &str, secondary_key: &str, published_at: OffsetDa
     digest.update(secondary_key.as_bytes());
     digest.update(published_at.unix_timestamp_nanos().to_be_bytes());
     format!("live_{:x}", digest.finalize())
-}
-
-pub fn normalize_n1(
-    transit_service_id: TransitServiceId,
-    boarding_point_id: BoardingPointId,
-    stop_status: u8,
-    estimate_seconds: Option<i64>,
-    transmitted_at: OffsetDateTime,
-) -> ArrivalEstimate {
-    let (state, predicted_arrival_at) = match stop_status {
-        0 => match estimate_seconds {
-            Some(0) => (ArrivalState::AtBoardingPoint, Some(transmitted_at)),
-            Some(seconds) if seconds > 0 => (
-                ArrivalState::Predicted,
-                Some(transmitted_at + time::Duration::seconds(seconds)),
-            ),
-            _ => (ArrivalState::Unknown, None),
-        },
-        1 => (ArrivalState::NotDeparted, None),
-        2 => (ArrivalState::Skipped, None),
-        3 => (ArrivalState::LastServicePassed, None),
-        4 => (ArrivalState::NotOperating, None),
-        _ => (ArrivalState::Unknown, None),
-    };
-    ArrivalEstimate {
-        transit_service_id,
-        boarding_point_id,
-        predicted_arrival_at,
-        state,
-        transmitted_at,
-    }
 }
