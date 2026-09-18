@@ -56,10 +56,33 @@ identity must not be conflated.
 Bus realtime timing is owned by `BusDepartureSource`, which calls the shared
 transport-only `TdxClient` directly. The source owns the bus endpoint path,
 scoped OData query, private TDX DTO parsing, freshness checks, batching,
-request-local effective-trip materialization, and static fallback. The generic
-realtime provider/cache remains only for request-scoped service-condition
-status collection; it is not part of departure timing. Metro, TRA, and THSR
-remain static-only until their own sources implement a direct TDX integration.
+request-local effective-trip materialization, and static fallback. The
+`ServiceConditionProvider` and `CachedServiceConditionProvider` remain only
+for request-scoped service-condition/status collection; they are not part of
+departure timing. Metro, TRA, and THSR remain static-only until their own
+sources implement a direct TDX integration.
+
+The production boundaries are:
+
+```text
+TripBasedRouter
+  → DepartureResolver
+  → DepartureDispatcher
+  → BusDepartureSource ─────→ TdxClient
+    MetroDepartureSource
+    TraDepartureSource
+    ThsrDepartureSource
+
+RoutingService
+  → ServiceConditionProvider
+  → TdxServiceConditionProvider
+  → TdxClient
+```
+
+`TdxClient` lives under `server/src/tdx/` and owns only OAuth, HTTP limits,
+generic JSON decoding, and small shared TDX ID constructors. Service-condition
+DTO parsing belongs to `providers/service_conditions/tdx.rs`; Bus DTO parsing
+and timing semantics belong to `providers/timing/bus_realtime.rs`.
 
 Static transit transfers are directional walking facts preprocessed during the
 data build. Runtime reconstruction uses their duration and synthetic walking
@@ -79,8 +102,8 @@ geometry; it does not call Valhalla for those transfer legs.
   responsibilities.
 - Keep provider adapters out of the domain and routing modules.
 - Keep departure timing mode-owned: `BusDepartureSource` may use `TdxClient`
-  directly, while `RealtimeProvider` is reserved for service-condition/status
-  collection.
+  directly, while `ServiceConditionProvider` is reserved for
+  service-condition/status collection.
 - Keep `TdxClient` transport-agnostic. It owns OAuth, base URL, HTTP limits,
   and generic JSON decoding, not transport-specific DTOs or timing policy.
 - Do not reintroduce `planner`, `normalization`, `routing/engine`, `RouteGraph`,

@@ -9,12 +9,12 @@ use axum::{
 use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    config::{TdxClient, TdxCredentials},
     domain::ids::TransitServiceId,
-    providers::{TdxRealtimeProvider, realtime::RealtimeProvider},
+    providers::{ServiceConditionProvider, TdxServiceConditionProvider},
+    tdx::{TdxClient, TdxCredentials},
 };
 
-async fn fixture_provider(app: Router) -> TdxRealtimeProvider {
+async fn fixture_provider(app: Router) -> TdxServiceConditionProvider {
     let app = app.route(
         "/",
         post(|| async {
@@ -36,7 +36,7 @@ async fn fixture_provider(app: Router) -> TdxRealtimeProvider {
         )
         .unwrap(),
     );
-    TdxRealtimeProvider::new(client)
+    TdxServiceConditionProvider::new(client)
 }
 
 #[tokio::test]
@@ -76,8 +76,7 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    let via_server::providers::realtime::RealtimeValue::ServiceCondition(condition) =
-        &values[0].value
+    let via_server::domain::realtime::RealtimeValue::ServiceCondition(condition) = &values[0].value
     else {
         panic!("expected normalized service condition");
     };
@@ -104,6 +103,6 @@ async fn tdx_service_condition_rate_limits_are_explicit_errors() {
         .unwrap_err();
     assert_eq!(
         error,
-        via_server::providers::realtime::RealtimeError::RateLimited
+        via_server::providers::ServiceConditionError::RateLimited
     );
 }

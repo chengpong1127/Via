@@ -31,7 +31,7 @@ Configuration:
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
-| `VIA_REALTIME_CACHE_TTL_SECONDS` | Realtime cache TTL; default 45 seconds. |
+| `VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS` | Service-condition cache TTL; default 45 seconds. |
 | `VIA_TRANSIT_NETWORK` | Validated `transit-network.json` path. |
 | `PORT` | Axum port; default 3000. |
 

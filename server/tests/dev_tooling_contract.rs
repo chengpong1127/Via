@@ -171,7 +171,7 @@ fn fixture_route_uses_the_production_routing_boundary() {
             "2026-09-15T07:55:00+08:00",
             "--modes",
             "transit",
-            "--realtime",
+            "--service-conditions",
             "fixture",
             "--json",
         ])

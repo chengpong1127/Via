@@ -4,52 +4,29 @@ use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
-    config::{TdxClient, TdxClientError},
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
+        ids::TransitServiceId,
         realtime::{
             FreshnessPolicy, LiveStatusTimes, LocalizedSourceText, NormalizedRealtimeValue,
             RealtimeValue, ServiceCondition, ServiceConditionState,
         },
     },
-    providers::realtime::{RealtimeError, RealtimeProvider},
+    providers::service_conditions::{ServiceConditionError, ServiceConditionProvider},
+    tdx::{TdxClient, TdxClientError, tdx_sub_route_uid, transit_service_id_for_direction},
 };
 
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
-const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
-
-/// Construct the domain ID for a TDX bus stop or other boarding point.
-pub fn boarding_point_id(stop_uid: impl Into<String>) -> BoardingPointId {
-    BoardingPointId::new(stop_uid)
-}
-
-/// Construct the domain ID for a TDX bus sub-route service.
-pub fn transit_service_id(sub_route_uid: impl Into<String>) -> TransitServiceId {
-    TransitServiceId::new(sub_route_uid)
-}
-
-/// Construct a direction-sensitive TDX service ID when a static artifact
-/// models each direction as a distinct service pattern.
-pub fn transit_service_id_for_direction(
-    sub_route_uid: impl Into<String>,
-    direction: u8,
-) -> TransitServiceId {
-    TransitServiceId::new(format!(
-        "{}{DIRECTIONAL_SERVICE_SEPARATOR}{direction}",
-        sub_route_uid.into()
-    ))
-}
 
 /// TDX-backed service-condition collection. Departure timing is owned by the
 /// mode source and does not pass through this provider.
-pub struct TdxRealtimeProvider {
+pub struct TdxServiceConditionProvider {
     condition_path: Option<String>,
     tdx_client: Arc<TdxClient>,
     policy: FreshnessPolicy,
 }
 
-impl TdxRealtimeProvider {
+impl TdxServiceConditionProvider {
     pub fn new(tdx_client: Arc<TdxClient>) -> Self {
         Self {
             condition_path: None,
@@ -67,7 +44,7 @@ impl TdxRealtimeProvider {
         &self,
         path: &str,
         query: &[(String, String)],
-    ) -> Result<serde_json::Value, RealtimeError> {
+    ) -> Result<serde_json::Value, ServiceConditionError> {
         let query = query
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
@@ -82,7 +59,7 @@ impl TdxRealtimeProvider {
         &self,
         payload: &serde_json::Value,
         requested_services: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+    ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         let records = records(payload);
         if records.is_empty() {
             return Ok(Vec::new());
@@ -96,7 +73,7 @@ impl TdxRealtimeProvider {
                 continue;
             };
             if published_at > received_at + MAX_PROVIDER_CLOCK_SKEW {
-                return Err(RealtimeError::RejectedPayload);
+                return Err(ServiceConditionError::RejectedPayload);
             }
             let freshness = self.policy.evaluate(
                 LiveStatusTimes {
@@ -124,7 +101,7 @@ impl TdxRealtimeProvider {
             });
         }
         if normalized.is_empty() {
-            return Err(RealtimeError::RejectedPayload);
+            return Err(ServiceConditionError::RejectedPayload);
         }
         Ok(normalized)
     }
@@ -175,11 +152,11 @@ impl TdxRealtimeProvider {
 }
 
 #[async_trait]
-impl RealtimeProvider for TdxRealtimeProvider {
+impl ServiceConditionProvider for TdxServiceConditionProvider {
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+    ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         if service_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -212,23 +189,23 @@ impl RealtimeProvider for TdxRealtimeProvider {
     }
 }
 
-fn map_tdx_error(error: TdxClientError) -> RealtimeError {
+fn map_tdx_error(error: TdxClientError) -> ServiceConditionError {
     match error {
-        TdxClientError::InvalidConfiguration => RealtimeError::InvalidConfiguration,
+        TdxClientError::InvalidConfiguration => ServiceConditionError::InvalidConfiguration,
         TdxClientError::RateLimited | TdxClientError::RateLimitedWithRetryAfter(_) => {
-            RealtimeError::RateLimited
+            ServiceConditionError::RateLimited
         }
         TdxClientError::OAuthRequest(error) | TdxClientError::ApiRequest(error)
             if error.is_timeout() =>
         {
-            RealtimeError::TimedOut
+            ServiceConditionError::TimedOut
         }
         TdxClientError::OAuthRequest(_)
         | TdxClientError::InvalidOAuthResponse(_)
         | TdxClientError::ApiRequest(_)
-        | TdxClientError::Credentials(_) => RealtimeError::TemporarilyUnavailable,
+        | TdxClientError::Credentials(_) => ServiceConditionError::TemporarilyUnavailable,
         TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
-            RealtimeError::RejectedPayload
+            ServiceConditionError::RejectedPayload
         }
     }
 }
@@ -259,13 +236,6 @@ fn direction_field(record: &serde_json::Value) -> Option<u8> {
         .get("Direction")
         .and_then(serde_json::Value::as_u64)
         .and_then(|direction| u8::try_from(direction).ok())
-}
-
-fn tdx_sub_route_uid(service_id: &TransitServiceId) -> &str {
-    service_id
-        .as_str()
-        .split_once(DIRECTIONAL_SERVICE_SEPARATOR)
-        .map_or_else(|| service_id.as_str(), |(sub_route_uid, _)| sub_route_uid)
 }
 
 fn condition_service_ids(

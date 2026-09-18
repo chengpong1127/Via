@@ -10,9 +10,9 @@ use super::bus_realtime::{
     DEFAULT_ARRIVAL_PATH, map_tdx_error, odata_in_filter, parse_bus_realtime_payload,
     tdx_sub_route_uid,
 };
+use super::metrics::BusTimingMetrics;
 use super::source::TransitDepartureSource;
 use crate::{
-    config::TdxClient,
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
         realtime::{
@@ -24,7 +24,7 @@ use crate::{
             ScheduleDepartureResolver, TimingReliability,
         },
     },
-    providers::realtime::RealtimeMetrics,
+    tdx::TdxClient,
 };
 
 const MAX_REALTIME_DEPARTURE_BATCH_PAIRS: usize = 64;
@@ -35,7 +35,7 @@ pub struct BusDepartureSource {
     schedule: ScheduleDepartureResolver,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
-    metrics: RealtimeMetrics,
+    metrics: BusTimingMetrics,
 }
 
 impl BusDepartureSource {
@@ -46,7 +46,7 @@ impl BusDepartureSource {
             tdx,
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_one_minute("1"),
-            metrics: RealtimeMetrics::default(),
+            metrics: BusTimingMetrics::default(),
         }
     }
 
@@ -57,7 +57,7 @@ impl BusDepartureSource {
         self
     }
 
-    pub fn with_metrics(mut self, metrics: RealtimeMetrics) -> Self {
+    pub fn with_metrics(mut self, metrics: BusTimingMetrics) -> Self {
         self.metrics = metrics;
         self
     }

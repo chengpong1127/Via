@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -18,17 +18,20 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
-    config::TdxClient,
     domain::transit::TransitNetwork,
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::realtime::{CachedRealtimeProvider, NullRealtimeProvider, RealtimeProvider},
+    providers::service_conditions::{
+        CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
+        NullServiceConditionProvider, ServiceConditionMetrics, ServiceConditionProvider,
+    },
     providers::timing::{
-        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
-        TraDepartureSource, TransitDepartureSource,
+        BusDepartureSource, BusTimingMetrics, DepartureDispatcher, MetroDepartureSource,
+        ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
     },
     routing::{PlanningError, PlanningOutcome, RoutingService},
     street::{StreetRouter, StreetRoutingError},
+    tdx::TdxClient,
 };
 
 #[derive(Clone)]
@@ -37,30 +40,63 @@ struct AppState {
     routing: RoutingService,
     transit_network: Arc<TransitNetwork>,
     metrics: OperationalMetrics,
-    realtime_metrics: crate::providers::realtime::RealtimeMetrics,
+    service_condition_metrics: ServiceConditionMetrics,
+    bus_timing_metrics: BusTimingMetrics,
     openapi: OpenApi,
+}
+
+#[derive(Clone)]
+pub struct RouterDependencies {
+    pub service_conditions: Arc<dyn ServiceConditionProvider>,
+    pub tdx: Option<Arc<TdxClient>>,
+    pub service_condition_cache_ttl: Duration,
+}
+
+impl RouterDependencies {
+    pub fn new(service_conditions: Arc<dyn ServiceConditionProvider>) -> Self {
+        Self {
+            service_conditions,
+            tdx: None,
+            service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
+        }
+    }
+
+    pub fn with_tdx(mut self, tdx: Arc<TdxClient>) -> Self {
+        self.tdx = Some(tdx);
+        self
+    }
+
+    pub fn with_service_condition_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.service_condition_cache_ttl = ttl;
+        self
+    }
 }
 
 pub async fn build_router<P>(provider: Arc<P>) -> Result<Router, StreetRoutingError>
 where
     P: StreetRouter + DependencyHealth + 'static,
 {
-    build_router_with_realtime_and_network(
+    build_router_with_dependencies(
         provider,
-        Arc::new(NullRealtimeProvider),
+        RouterDependencies::new(Arc::new(NullServiceConditionProvider)),
         TransitNetwork::default().with_revisions("development-static", "development-schedule"),
     )
     .await
 }
 
-pub async fn build_router_with_realtime<P>(
+pub async fn build_router_with_service_conditions<P>(
     provider: Arc<P>,
-    realtime: Arc<dyn RealtimeProvider>,
+    service_conditions: Arc<dyn ServiceConditionProvider>,
 ) -> Result<Router, StreetRoutingError>
 where
     P: StreetRouter + DependencyHealth + 'static,
 {
-    build_router_with_realtime_and_network(provider, realtime, TransitNetwork::default()).await
+    build_router_with_service_conditions_and_network(
+        provider,
+        service_conditions,
+        TransitNetwork::default(),
+    )
+    .await
 }
 
 pub async fn build_router_with_network<P>(
@@ -70,92 +106,67 @@ pub async fn build_router_with_network<P>(
 where
     P: StreetRouter + DependencyHealth + 'static,
 {
-    build_router_with_realtime_and_network(
+    build_router_with_dependencies(
         provider,
-        Arc::new(NullRealtimeProvider),
+        RouterDependencies::new(Arc::new(NullServiceConditionProvider)),
         transit_network,
     )
     .await
 }
 
-pub async fn build_router_with_realtime_and_network<P>(
+pub async fn build_router_with_service_conditions_and_network<P>(
     provider: Arc<P>,
-    realtime: Arc<dyn RealtimeProvider>,
+    service_conditions: Arc<dyn ServiceConditionProvider>,
+    transit_network: TransitNetwork,
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    build_router_with_dependencies(
+        provider,
+        RouterDependencies::new(service_conditions),
+        transit_network,
+    )
+    .await
+}
+
+pub async fn build_router_with_service_conditions_and_network_and_ttl<P>(
+    provider: Arc<P>,
+    service_conditions: Arc<dyn ServiceConditionProvider>,
+    transit_network: TransitNetwork,
+    service_condition_cache_ttl: Duration,
+) -> Result<Router, StreetRoutingError>
+where
+    P: StreetRouter + DependencyHealth + 'static,
+{
+    build_router_with_dependencies(
+        provider,
+        RouterDependencies::new(service_conditions)
+            .with_service_condition_cache_ttl(service_condition_cache_ttl),
+        transit_network,
+    )
+    .await
+}
+
+pub async fn build_router_with_dependencies<P>(
+    provider: Arc<P>,
+    dependencies: RouterDependencies,
     transit_network: TransitNetwork,
 ) -> Result<Router, StreetRoutingError>
 where
     P: StreetRouter + DependencyHealth + 'static,
 {
     let (street_router, street_health) = provider_interfaces(provider);
-    build_router_with_realtime_and_network_and_ttl_interfaces(
-        street_router,
-        street_health,
-        realtime,
-        None,
-        transit_network,
-        crate::providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
-    )
-    .await
-}
-
-pub async fn build_router_with_realtime_and_network_and_ttl<P>(
-    provider: Arc<P>,
-    realtime: Arc<dyn RealtimeProvider>,
-    transit_network: TransitNetwork,
-    realtime_cache_ttl: std::time::Duration,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_realtime_and_network_and_ttl_and_tdx(
-        provider,
-        realtime,
-        None,
-        transit_network,
-        realtime_cache_ttl,
-    )
-    .await
-}
-
-pub async fn build_router_with_realtime_and_network_and_ttl_and_tdx<P>(
-    provider: Arc<P>,
-    realtime: Arc<dyn RealtimeProvider>,
-    tdx: Option<Arc<TdxClient>>,
-    transit_network: TransitNetwork,
-    realtime_cache_ttl: std::time::Duration,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    let (street_router, street_health) = provider_interfaces(provider);
-    build_router_with_realtime_and_network_and_ttl_interfaces(
-        street_router,
-        street_health,
-        realtime,
-        tdx,
-        transit_network,
-        realtime_cache_ttl,
-    )
-    .await
-}
-
-async fn build_router_with_realtime_and_network_and_ttl_interfaces(
-    street_router: Arc<dyn StreetRouter>,
-    street_health: Arc<dyn DependencyHealth>,
-    realtime: Arc<dyn RealtimeProvider>,
-    tdx: Option<Arc<TdxClient>>,
-    transit_network: TransitNetwork,
-    realtime_cache_ttl: std::time::Duration,
-) -> Result<Router, StreetRoutingError> {
-    let realtime = Arc::new(CachedRealtimeProvider::with_ttl(
-        realtime,
-        realtime_cache_ttl,
+    let service_conditions = Arc::new(CachedServiceConditionProvider::with_ttl(
+        dependencies.service_conditions,
+        dependencies.service_condition_cache_ttl,
     ));
-    let realtime_metrics = realtime.metrics();
+    let service_condition_metrics = service_conditions.metrics();
+    let bus_timing_metrics = BusTimingMetrics::default();
     let transit_network = Arc::new(transit_network);
     let bus = Arc::new(
-        BusDepartureSource::new(transit_network.clone(), tdx)
-            .with_metrics(realtime_metrics.clone()),
+        BusDepartureSource::new(transit_network.clone(), dependencies.tdx)
+            .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(MetroDepartureSource::new(transit_network.clone()));
     let tra = Arc::new(TraDepartureSource::new(transit_network.clone()));
@@ -170,7 +181,7 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
         ],
     ));
     let metrics = OperationalMetrics::default();
-    let routing = RoutingService::new(street_router, departure_resolver, realtime.clone())
+    let routing = RoutingService::new(street_router, departure_resolver, service_conditions)
         .with_transit_network_arc(transit_network.clone())
         .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
@@ -182,7 +193,8 @@ async fn build_router_with_realtime_and_network_and_ttl_interfaces(
             routing,
             transit_network,
             metrics,
-            realtime_metrics,
+            service_condition_metrics,
+            bus_timing_metrics,
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -418,9 +430,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
             ("cache-control", "no-store"),
         ],
         format!(
-            "{}{}",
+            "{}{}{}",
             state.metrics.prometheus(),
-            state.realtime_metrics.prometheus()
+            state.service_condition_metrics.prometheus(),
+            state.bus_timing_metrics.prometheus()
         ),
     ))
 }

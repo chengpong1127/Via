@@ -3,9 +3,9 @@ use via_server::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::{ArrivalState, ServiceDayPolicy},
 };
-use via_server::providers::{
+use via_server::{
+    providers::timing::normalize_n1,
     tdx::{boarding_point_id, transit_service_id, transit_service_id_for_direction},
-    timing::normalize_n1,
 };
 
 #[test]

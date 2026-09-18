@@ -15,13 +15,13 @@ use axum::{
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339, macros::datetime};
 use via_server::{
-    config::{TdxClient, TdxCredentials},
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
         transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
     },
     providers::timing::{BusDepartureSource, DepartureDispatcher, TransitDepartureSource},
+    tdx::{TdxClient, TdxCredentials},
 };
 
 const NOW: OffsetDateTime = datetime!(2026-08-31 10:00 +08:00);

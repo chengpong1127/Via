@@ -29,8 +29,8 @@ implementation; THSR is intentionally static-only.
 Keep the status cache as a performance optimization and leave correctness in
 the normalized status interface and freshness evaluation. Bus departure timing
 is implemented directly in `BusDepartureSource`, which calls the shared
-transport-only `TdxClient`; it does not depend on `RealtimeProvider`, an
-arrival query, or a generic realtime cache. `TimingBasis` records
+transport-only `TdxClient`; it does not depend on `ServiceConditionProvider`, an
+arrival query, or a generic status cache. `TimingBasis` records
 provenance (`RealtimePrediction`, `DelayAdjustedSchedule`, `Schedule`, or
 `FrequencyEstimate`). `TimingReliability` is a separate source-owned policy;
 static timing is not inherently unreliable.
@@ -42,8 +42,9 @@ global Live Status store. Realtime failures degrade only the affected mode
 queries to that mode's static policy, preserving mixed batches where some
 queries use realtime and others use fallback. Bus batching remains bounded and
 deduplicated inside the bus source. Upstream failures can still temporarily
-fail a query when its static source also fails. `CachedRealtimeProvider`
-remains only for service-condition status collection.
+fail a query when its static source also fails. `CachedServiceConditionProvider`
+remains only for service-condition status collection, and owns
+`ServiceConditionMetrics`; `BusDepartureSource` owns `BusTimingMetrics`.
 
 Typed domain IDs are derived directly from TDX identifiers as described in
 ADR-0006.

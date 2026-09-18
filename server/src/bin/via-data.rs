@@ -3,7 +3,7 @@ use std::{error::Error, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
 use clap::{Args, Parser, Subcommand};
 use time::Date;
 use via_server::{
-    config::{TdxCredentials, load_dotenv},
+    config::load_dotenv,
     data::{
         ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress,
         StaticTransferPolicy, build_from_raw_with_street, fetch_raw_snapshot_with_progress,
@@ -16,6 +16,7 @@ use via_server::{
     health::DependencyHealth,
     providers::{ValhallaConfig, ValhallaProvider},
     street::StreetRouter,
+    tdx::TdxCredentials,
 };
 
 #[derive(Parser, Debug)]

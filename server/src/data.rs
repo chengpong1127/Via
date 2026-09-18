@@ -18,7 +18,6 @@ use thiserror::Error;
 use time::{Date, Weekday, format_description::well_known::Rfc3339};
 
 use crate::{
-    config::{TdxClient, TdxClientError, TdxCredentials},
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{
@@ -27,7 +26,10 @@ use crate::{
             default_service_day_boundary,
         },
     },
-    providers::tdx::{boarding_point_id, transit_service_id, transit_service_id_for_direction},
+    tdx::{
+        TdxClient, TdxClientError, TdxCredentials, boarding_point_id, transit_service_id,
+        transit_service_id_for_direction,
+    },
 };
 
 pub mod static_transfers;
@@ -1948,7 +1950,7 @@ async fn fetch_static_source<S, F>(
     timing: FetchTimingPolicy,
     sleeper: &mut S,
     progress: &mut F,
-) -> Result<crate::config::TdxRawResponse, TdxClientError>
+) -> Result<crate::tdx::TdxRawResponse, TdxClientError>
 where
     S: FetchSleeper,
     F: FnMut(FetchProgress),
@@ -2657,7 +2659,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::config::{TdxClient, TdxCredentials};
+    use crate::tdx::{TdxClient, TdxCredentials};
 
     #[derive(Clone, Copy)]
     enum MockMode {

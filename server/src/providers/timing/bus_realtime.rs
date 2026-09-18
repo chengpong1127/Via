@@ -2,7 +2,6 @@ use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
-    config::TdxClientError,
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         realtime::{
@@ -11,7 +10,9 @@ use crate::{
         },
         transit_timing::DepartureError,
     },
-    providers::tdx::transit_service_id_for_direction,
+    tdx::{
+        TdxClientError, boarding_point_id, transit_service_id, transit_service_id_for_direction,
+    },
 };
 
 pub(super) const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
@@ -77,11 +78,11 @@ pub(super) fn parse_bus_realtime_payload(
             {
                 transit_service_id_for_direction(&record.sub_route_uid, direction)
             }
-            _ => crate::providers::tdx::transit_service_id(&record.sub_route_uid),
+            _ => transit_service_id(&record.sub_route_uid),
         };
         let arrival = normalize_n1(
             service_id,
-            crate::providers::tdx::boarding_point_id(record.stop_uid.clone()),
+            boarding_point_id(record.stop_uid.clone()),
             record.stop_status.unwrap_or(u8::MAX),
             record.estimate_seconds,
             published_at,

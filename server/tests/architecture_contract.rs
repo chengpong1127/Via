@@ -186,7 +186,7 @@ fn trip_based_search_is_transport_timing_neutral() {
         "MetroDepartureSource",
         "TraDepartureSource",
         "ThsrDepartureSource",
-        "RealtimeProvider",
+        "ServiceConditionProvider",
         "TDX",
         "realtime_scope",
     ] {
@@ -209,15 +209,15 @@ fn departure_realtime_is_owned_by_the_mode_source() {
         );
     }
 
-    let generic_realtime = source("src/providers/realtime.rs");
+    let service_conditions = source("src/providers/service_conditions/mod.rs");
     for forbidden in ["ArrivalQuery", "arrival_estimates", "arrival_pair_cache"] {
         assert!(
-            !generic_realtime.contains(forbidden),
-            "generic realtime layer still owns departure arrivals: {forbidden}"
+            !service_conditions.contains(forbidden),
+            "service-condition layer still owns departure arrivals: {forbidden}"
         );
     }
 
-    let tdx = source("src/providers/tdx.rs");
+    let tdx = source("src/providers/service_conditions/tdx.rs");
     for forbidden in ["ArrivalEstimate", "arrival_estimates", "TdxRealtimeConfig"] {
         assert!(
             !tdx.contains(forbidden),
@@ -232,14 +232,46 @@ fn departure_realtime_is_owned_by_the_mode_source() {
 
 #[test]
 fn tdx_client_remains_transport_agnostic() {
-    let client = source("src/config.rs");
-    for forbidden in ["TransitMode", "ArrivalEstimate", "EffectiveTrip", "YouBike"] {
+    let client = source("src/tdx/client.rs");
+    for forbidden in [
+        "TransitMode",
+        "ArrivalEstimate",
+        "EffectiveTrip",
+        "TdxBusEstimatedArrival",
+        "Metro",
+        "TRA",
+        "THSR",
+        "YouBike",
+    ] {
         assert!(
             !client.contains(forbidden),
             "TdxClient knows about {forbidden}"
         );
     }
     assert!(client.contains("pub async fn get_json<T: DeserializeOwned>"));
+}
+
+#[test]
+fn service_conditions_do_not_own_departure_timing() {
+    let provider = source("src/providers/service_conditions/tdx.rs");
+    for forbidden in ["DepartureQuery", "EffectiveTrip", "ArrivalEstimate"] {
+        assert!(
+            !provider.contains(forbidden),
+            "service-condition provider contains departure timing detail: {forbidden}"
+        );
+    }
+    assert!(provider.contains("Arc<TdxClient>"));
+    assert!(provider.contains("impl ServiceConditionProvider"));
+}
+
+#[test]
+fn metrics_have_separate_service_condition_and_bus_owners() {
+    let service_conditions = source("src/providers/service_conditions/mod.rs");
+    let bus = source("src/providers/timing/bus.rs");
+    assert!(service_conditions.contains("ServiceConditionMetrics"));
+    assert!(!service_conditions.contains("logical_departure_needs"));
+    assert!(bus.contains("BusTimingMetrics"));
+    assert!(!bus.contains("ServiceConditionMetrics"));
 }
 
 #[test]

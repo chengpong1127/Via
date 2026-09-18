@@ -2,12 +2,12 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use url::Url;
 use via_server::{
-    app::build_router_with_realtime_and_network_and_ttl_and_tdx,
-    config::{TdxClient, TdxCredentials, load_dotenv},
+    app::{RouterDependencies, build_router_with_dependencies},
+    config::load_dotenv,
     data::load_network_artifact,
     health::DependencyHealth,
-    providers::realtime::DEFAULT_REALTIME_CACHE_TTL,
-    providers::{TdxRealtimeProvider, ValhallaConfig, ValhallaProvider},
+    providers::{TdxServiceConditionProvider, ValhallaConfig, ValhallaProvider},
+    tdx::{TdxClient, TdxCredentials},
 };
 
 #[tokio::main]
@@ -61,24 +61,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TdxCredentials::from_env()?,
         &tdx_base_url_value,
     )?);
-    let mut realtime = TdxRealtimeProvider::new(tdx_client.clone());
+    let mut service_conditions = TdxServiceConditionProvider::new(tdx_client.clone());
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
-        realtime = realtime.with_service_condition_path(path);
+        service_conditions = service_conditions.with_service_condition_path(path);
     }
-    let cache_ttl = env::var("VIA_REALTIME_CACHE_TTL_SECONDS")
+    let cache_ttl = env::var("VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS")
         .ok()
         .map(|value| value.parse::<u64>())
         .transpose()?
         .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_REALTIME_CACHE_TTL);
-    let router = build_router_with_realtime_and_network_and_ttl_and_tdx(
-        provider,
-        Arc::new(realtime),
-        Some(tdx_client),
-        transit_network,
-        cache_ttl,
-    )
-    .await?;
+        .unwrap_or(via_server::providers::service_conditions::DEFAULT_SERVICE_CONDITION_CACHE_TTL);
+    let dependencies = RouterDependencies::new(Arc::new(service_conditions))
+        .with_tdx(tdx_client)
+        .with_service_condition_cache_ttl(cache_ttl);
+    let router = build_router_with_dependencies(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()?;

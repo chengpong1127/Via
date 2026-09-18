@@ -8,3 +8,4 @@ pub mod observability;
 pub mod providers;
 pub mod routing;
 pub mod street;
+pub mod tdx;

@@ -14,22 +14,24 @@ use via_server::{
             ServiceConditionState,
         },
     },
-    providers::realtime::{CachedRealtimeProvider, RealtimeError, RealtimeProvider},
+    providers::service_conditions::{
+        CachedServiceConditionProvider, ServiceConditionError, ServiceConditionProvider,
+    },
 };
 
 #[derive(Clone)]
 struct CountingProvider {
     calls: Arc<AtomicUsize>,
-    result: Result<Vec<NormalizedRealtimeValue>, RealtimeError>,
+    result: Result<Vec<NormalizedRealtimeValue>, ServiceConditionError>,
     delay_ms: u64,
 }
 
 #[async_trait]
-impl RealtimeProvider for CountingProvider {
+impl ServiceConditionProvider for CountingProvider {
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+    ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         self.result.clone()
@@ -76,8 +78,10 @@ async fn service_condition_cache_hit_avoids_another_upstream_call() {
         result: Ok(vec![fresh_value()]),
         delay_ms: 0,
     };
-    let cached =
-        CachedRealtimeProvider::with_ttl(Arc::new(provider), std::time::Duration::from_secs(30));
+    let cached = CachedServiceConditionProvider::with_ttl(
+        Arc::new(provider),
+        std::time::Duration::from_secs(30),
+    );
     cached.service_conditions(&services()).await.unwrap();
     cached.service_conditions(&services()).await.unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -91,7 +95,7 @@ async fn concurrent_service_condition_misses_are_coalesced() {
         result: Ok(vec![fresh_value()]),
         delay_ms: 25,
     };
-    let cached = Arc::new(CachedRealtimeProvider::with_ttl(
+    let cached = Arc::new(CachedServiceConditionProvider::with_ttl(
         Arc::new(provider),
         std::time::Duration::from_secs(30),
     ));
@@ -112,8 +116,10 @@ async fn service_condition_ttl_expiry_fetches_again_but_errors_are_not_cached() 
         result: Ok(vec![fresh_value()]),
         delay_ms: 0,
     };
-    let cached =
-        CachedRealtimeProvider::with_ttl(Arc::new(provider), std::time::Duration::from_millis(10));
+    let cached = CachedServiceConditionProvider::with_ttl(
+        Arc::new(provider),
+        std::time::Duration::from_millis(10),
+    );
     cached.service_conditions(&services()).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     cached.service_conditions(&services()).await.unwrap();
@@ -121,18 +127,20 @@ async fn service_condition_ttl_expiry_fetches_again_but_errors_are_not_cached() 
 
     let failing = CountingProvider {
         calls: calls.clone(),
-        result: Err(RealtimeError::TimedOut),
+        result: Err(ServiceConditionError::TimedOut),
         delay_ms: 0,
     };
-    let cached =
-        CachedRealtimeProvider::with_ttl(Arc::new(failing), std::time::Duration::from_secs(30));
-    assert_eq!(
-        cached.service_conditions(&services()).await.unwrap_err(),
-        RealtimeError::TimedOut
+    let cached = CachedServiceConditionProvider::with_ttl(
+        Arc::new(failing),
+        std::time::Duration::from_secs(30),
     );
     assert_eq!(
         cached.service_conditions(&services()).await.unwrap_err(),
-        RealtimeError::TimedOut
+        ServiceConditionError::TimedOut
+    );
+    assert_eq!(
+        cached.service_conditions(&services()).await.unwrap_err(),
+        ServiceConditionError::TimedOut
     );
     assert_eq!(calls.load(Ordering::Relaxed), 4);
 }
@@ -150,7 +158,7 @@ async fn recently_cached_stale_values_remain_unavailable() {
         })]),
         delay_ms: 0,
     };
-    let cached = CachedRealtimeProvider::new(Arc::new(provider));
+    let cached = CachedServiceConditionProvider::new(Arc::new(provider));
     let value = cached
         .service_conditions(&services())
         .await

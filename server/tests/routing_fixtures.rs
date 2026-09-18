@@ -4,7 +4,6 @@ use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
 use via_server::{
     api::PlanningRequest,
-    config::{TdxClient, TdxCredentials},
     data::load_network_artifact,
     domain::{
         ids::BoardingPointId,
@@ -12,7 +11,7 @@ use via_server::{
         transit::{TransferEdge, TransitNetwork, TransitStop},
     },
     providers::{
-        realtime::{CachedRealtimeProvider, NullRealtimeProvider},
+        service_conditions::{CachedServiceConditionProvider, NullServiceConditionProvider},
         timing::{
             BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
             TraDepartureSource, TransitDepartureSource,
@@ -23,6 +22,7 @@ use via_server::{
     street::{
         Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
     },
+    tdx::{TdxClient, TdxCredentials},
 };
 
 const NETWORK_JSON: &str = include_str!("../fixtures/routing/network.json");
@@ -167,7 +167,9 @@ async fn route_body(street: FakeStreetRouter, realtime: FixtureRealtime, body: V
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let cached = Arc::new(CachedRealtimeProvider::new(Arc::new(NullRealtimeProvider)));
+    let cached = Arc::new(CachedServiceConditionProvider::new(Arc::new(
+        NullServiceConditionProvider,
+    )));
     let service =
         RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()

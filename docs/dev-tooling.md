@@ -32,9 +32,9 @@ through the shared `TdxCredentials` and `TdxClient` types; OAuth tokens are
 cached only in the current process and never written to snapshots, artifacts,
 manifests, or traces.
 
-`via-data fetch` and `via-route --realtime live` require these credentials.
+`via-data fetch` and `via-route --service-conditions live` require these credentials.
 Build additionally requires a healthy local Valhalla graph; validate, inspect,
-and `via-route --realtime fixture` remain offline after an artifact exists.
+and `via-route --service-conditions fixture` remain offline after an artifact exists.
 
 ## CLI hierarchy
 
@@ -50,7 +50,7 @@ via-data
     └── stats
 
 via-route
-└── --realtime fixture|live
+└── --service-conditions fixture|live
 ```
 
 ## Fetch and build
@@ -158,7 +158,7 @@ routing.
 
 The fixture route uses the actual `RoutingService → RoutingAlgorithm →
 TripBasedRouter → reconstruct → rank` path with deterministic fixture street
-and realtime providers:
+and deterministic service-condition providers:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
@@ -167,12 +167,13 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
   --modes transit \
-  --realtime fixture \
+  --service-conditions fixture \
   --trace
 ```
 
 For an integration smoke test against TDX realtime, keep the same static
-artifact and switch only the realtime provider:
+artifact and switch only the service-condition provider. Live Bus departure
+timing uses the same shared `TdxClient` directly from `BusDepartureSource`:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
@@ -181,7 +182,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-now \
   --modes transit \
-  --realtime live \
+  --service-conditions live \
   --trace
 ```
 

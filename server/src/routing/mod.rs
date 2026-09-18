@@ -14,7 +14,7 @@ pub use crate::domain::transit_timing::{
     DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
     ScheduleDepartureResolver, TimingBasis, TimingReliability,
 };
-pub use crate::providers::realtime::RealtimeProvider;
+pub use crate::providers::service_conditions::ServiceConditionProvider;
 pub use crate::street::StreetRouter;
 pub use algorithm::{
     AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm,

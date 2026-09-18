@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningRequest, SelectedPlace},
-    config::{TdxClient, TdxCredentials, load_dotenv},
+    config::load_dotenv,
     data::load_network_artifact,
     domain::{
         ids::TransitServiceId,
@@ -18,14 +18,18 @@ use via_server::{
         realtime::{FreshnessState, NormalizedRealtimeValue},
     },
     health::DependencyHealth,
-    providers::realtime::{CachedRealtimeProvider, RealtimeError, RealtimeProvider},
+    providers::service_conditions::{
+        CachedServiceConditionProvider, ServiceConditionError, ServiceConditionProvider,
+    },
+    providers::timing::BusTimingMetrics,
     providers::{
-        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxRealtimeProvider,
+        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxServiceConditionProvider,
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource, ValhallaConfig,
         ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
+    tdx::{TdxClient, TdxCredentials},
 };
 
 #[derive(Parser, Debug)]
@@ -54,8 +58,8 @@ struct Cli {
     modes: String,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
-    #[arg(long, value_enum, default_value_t = RealtimeMode::Fixture)]
-    realtime: RealtimeMode,
+    #[arg(long = "service-conditions", value_enum, default_value_t = ServiceConditionMode::Fixture)]
+    service_conditions: ServiceConditionMode,
     #[arg(long)]
     trace: bool,
     #[arg(long)]
@@ -63,7 +67,7 @@ struct Cli {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum RealtimeMode {
+enum ServiceConditionMode {
     Fixture,
     Live,
 }
@@ -80,27 +84,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let network = Arc::new(load_network_artifact(&cli.network)?);
 
-    let (realtime, tdx): (Arc<dyn RealtimeProvider>, Option<Arc<TdxClient>>) = match cli.realtime {
-        RealtimeMode::Fixture => (Arc::new(FixtureRealtimeProvider), None),
-        RealtimeMode::Live => {
-            let (provider, tdx) = build_live_realtime().await?;
-            (provider, Some(tdx))
-        }
-    };
+    let (service_conditions, tdx): (Arc<dyn ServiceConditionProvider>, Option<Arc<TdxClient>>) =
+        match cli.service_conditions {
+            ServiceConditionMode::Fixture => (Arc::new(FixtureServiceConditionProvider), None),
+            ServiceConditionMode::Live => {
+                let (provider, tdx) = build_live_service_conditions().await?;
+                (provider, Some(tdx))
+            }
+        };
     let trace_events = Arc::new(Mutex::new(Vec::new()));
-    let realtime: Arc<dyn RealtimeProvider> = if cli.trace {
-        Arc::new(TraceRealtimeProvider {
-            inner: realtime,
+    let service_conditions: Arc<dyn ServiceConditionProvider> = if cli.trace {
+        Arc::new(TraceServiceConditionProvider {
+            inner: service_conditions,
             events: trace_events.clone(),
         })
     } else {
-        realtime
+        service_conditions
     };
-    let cached = Arc::new(CachedRealtimeProvider::new(realtime));
-    let realtime_metrics = cached.metrics();
-    let street = build_street_router(cli.realtime).await?;
+    let cached = Arc::new(CachedServiceConditionProvider::new(service_conditions));
+    let bus_timing_metrics = BusTimingMetrics::default();
+    let street = build_street_router(cli.service_conditions).await?;
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx).with_metrics(realtime_metrics.clone()),
+        BusDepartureSource::new(network.clone(), tdx).with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
     let tra = Arc::new(TraDepartureSource::new(network.clone()));
@@ -118,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;
     }
-    let routing = RoutingService::new(street, departure, cached.clone())
+    let routing = RoutingService::new(street, departure, cached)
         .with_transit_network_arc(network.clone())
         .with_limits(limits);
     let request = request_from_cli(&cli)?;
@@ -127,7 +132,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("  origin ({:.6}, {:.6})", cli.from_lat, cli.from_lon);
         eprintln!("  destination ({:.6}, {:.6})", cli.to_lat, cli.to_lon);
         eprintln!("  modes={}", cli.modes);
-        eprintln!("  realtime={:?}", cli.realtime);
+        eprintln!("  service conditions={:?}", cli.service_conditions);
         eprintln!("  network={}", network.static_network_revision);
     }
     let result = routing
@@ -135,7 +140,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {
-        eprintln!("{}", realtime_metrics.bus_timing_trace());
+        eprintln!("{}", bus_timing_metrics.trace());
         print_trace(&result, &trace_events);
     }
     if cli.json {
@@ -145,7 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &result,
             &network.static_network_revision,
             &network.schedule_revision,
-            cli.realtime,
+            cli.service_conditions,
         );
     }
     if cli.trace {
@@ -160,8 +165,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn build_live_realtime() -> Result<(Arc<dyn RealtimeProvider>, Arc<TdxClient>), Box<dyn Error>>
-{
+async fn build_live_service_conditions()
+-> Result<(Arc<dyn ServiceConditionProvider>, Arc<TdxClient>), Box<dyn Error>> {
     let base_url = env::var("VIA_TDX_BASE_URL")
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
     let base_url = url::Url::parse(&base_url)?;
@@ -169,7 +174,7 @@ async fn build_live_realtime() -> Result<(Arc<dyn RealtimeProvider>, Arc<TdxClie
         TdxCredentials::from_env()?,
         base_url.as_str(),
     )?);
-    let mut provider = TdxRealtimeProvider::new(tdx_client.clone());
+    let mut provider = TdxServiceConditionProvider::new(tdx_client.clone());
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         provider = provider.with_service_condition_path(path);
     }
@@ -177,9 +182,9 @@ async fn build_live_realtime() -> Result<(Arc<dyn RealtimeProvider>, Arc<TdxClie
 }
 
 async fn build_street_router(
-    realtime: RealtimeMode,
+    service_conditions: ServiceConditionMode,
 ) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    if matches!(realtime, RealtimeMode::Fixture) {
+    if matches!(service_conditions, ServiceConditionMode::Fixture) {
         return Ok(Arc::new(StraightLineStreetRouter::default()));
     }
     let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")?;
@@ -259,15 +264,15 @@ fn print_summary(
     result: &PlanningOutcome,
     network_revision: &str,
     schedule_revision: &str,
-    realtime: RealtimeMode,
+    service_conditions: ServiceConditionMode,
 ) {
     println!("network revision: {network_revision}");
     println!("schedule revision: {schedule_revision}");
     println!(
-        "realtime mode: {}",
-        match realtime {
-            RealtimeMode::Fixture => "fixture",
-            RealtimeMode::Live => "live",
+        "service-condition mode: {}",
+        match service_conditions {
+            ServiceConditionMode::Fixture => "fixture",
+            ServiceConditionMode::Live => "live",
         }
     );
     match result {
@@ -315,7 +320,7 @@ fn leg_summary(leg: &via_server::domain::journey::Leg) -> String {
 }
 
 fn print_trace(result: &PlanningOutcome, events: &Arc<Mutex<Vec<String>>>) {
-    eprintln!("REALTIME");
+    eprintln!("SERVICE CONDITIONS");
     let events = events.lock().expect("trace event lock is not poisoned");
     if events.is_empty() {
         eprintln!("  no provider calls");
@@ -364,14 +369,14 @@ fn print_trace(result: &PlanningOutcome, events: &Arc<Mutex<Vec<String>>>) {
 }
 
 #[derive(Default)]
-struct FixtureRealtimeProvider;
+struct FixtureServiceConditionProvider;
 
-struct TraceRealtimeProvider {
-    inner: Arc<dyn RealtimeProvider>,
+struct TraceServiceConditionProvider {
+    inner: Arc<dyn ServiceConditionProvider>,
     events: Arc<Mutex<Vec<String>>>,
 }
 
-impl TraceRealtimeProvider {
+impl TraceServiceConditionProvider {
     fn record(&self, event: String) {
         self.events
             .lock()
@@ -381,13 +386,13 @@ impl TraceRealtimeProvider {
 }
 
 #[async_trait]
-impl RealtimeProvider for TraceRealtimeProvider {
+impl ServiceConditionProvider for TraceServiceConditionProvider {
     async fn service_conditions(
         &self,
         service_ids: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+    ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         self.record(format!(
-            "CONDITION services={}",
+            "SERVICE CONDITIONS services={}",
             join_ids(service_ids.iter().map(TransitServiceId::as_str))
         ));
         let result = self.inner.service_conditions(service_ids).await;
@@ -401,19 +406,19 @@ fn join_ids<'a>(ids: impl Iterator<Item = &'a str>) -> String {
     if value.is_empty() { "-".into() } else { value }
 }
 
-fn format_result(result: &Result<Vec<NormalizedRealtimeValue>, RealtimeError>) -> String {
+fn format_result(result: &Result<Vec<NormalizedRealtimeValue>, ServiceConditionError>) -> String {
     match result {
-        Ok(values) => format!("provider result values={}", values.len()),
-        Err(error) => format!("provider result error={error}"),
+        Ok(values) => format!("service-condition result values={}", values.len()),
+        Err(error) => format!("service-condition result error={error}"),
     }
 }
 
 #[async_trait]
-impl RealtimeProvider for FixtureRealtimeProvider {
+impl ServiceConditionProvider for FixtureServiceConditionProvider {
     async fn service_conditions(
         &self,
         _service_ids: &[TransitServiceId],
-    ) -> Result<Vec<NormalizedRealtimeValue>, RealtimeError> {
+    ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         Ok(Vec::new())
     }
 }

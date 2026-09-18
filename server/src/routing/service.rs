@@ -15,7 +15,7 @@ use crate::{
         transit_timing::DepartureResolver,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::realtime::RealtimeProvider,
+    providers::service_conditions::ServiceConditionProvider,
     street::{
         Coordinate, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetPath,
         StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -39,7 +39,7 @@ pub struct RoutingService {
     pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
     pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
-    pub(crate) realtime: Arc<dyn RealtimeProvider>,
+    pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) ranking: RankingPolicy,
     pub(crate) limits: RoutingLimits,
@@ -84,7 +84,7 @@ impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
         departure_resolver: Arc<dyn DepartureResolver>,
-        realtime: Arc<dyn RealtimeProvider>,
+        service_conditions: Arc<dyn ServiceConditionProvider>,
     ) -> Self {
         let transit_network = Arc::new(TransitNetwork::default());
         let transfer_resolver: Arc<dyn TransferResolver> =
@@ -99,7 +99,7 @@ impl RoutingService {
             departure_resolver,
             routing_algorithm,
             transfer_resolver,
-            realtime,
+            service_conditions,
             transit_network,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(
@@ -265,9 +265,11 @@ impl RoutingService {
                         let service_ids = candidates
                             .iter()
                             .flat_map(JourneyCandidate::transit_service_sequence);
-                        let (_, condition_failed) =
-                            status::collect_service_conditions(self.realtime.as_ref(), service_ids)
-                                .await;
+                        let (_, condition_failed) = status::collect_service_conditions(
+                            self.service_conditions.as_ref(),
+                            service_ids,
+                        )
+                        .await;
                         had_transient_failure |= condition_failed;
                         for candidate in &candidates {
                             match self
