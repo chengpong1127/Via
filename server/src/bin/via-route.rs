@@ -13,6 +13,7 @@ use via_server::{
     config::load_dotenv,
     data::load_network_artifact,
     domain::{
+        bikeshare::BikeShareNetwork,
         ids::TransitServiceId,
         journey::PlanningOutcome,
         realtime::{FreshnessState, NormalizedRealtimeValue},
@@ -24,8 +25,8 @@ use via_server::{
     providers::timing::BusTimingMetrics,
     providers::{
         BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxServiceConditionProvider,
-        ThsrDepartureSource, TraDepartureSource, TransitDepartureSource, ValhallaConfig,
-        ValhallaProvider,
+        ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
+        UnavailableBikeAvailabilitySource, ValhallaConfig, ValhallaProvider,
     },
     routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
@@ -124,9 +125,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;
     }
-    let routing = RoutingService::new(street, departure, cached)
-        .with_transit_network_arc(network.clone())
-        .with_limits(limits);
+    let routing = RoutingService::new(
+        street,
+        departure,
+        cached,
+        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled")),
+        Arc::new(UnavailableBikeAvailabilitySource),
+    )
+    .with_transit_network_arc(network.clone())
+    .with_limits(limits);
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("ACCESS");

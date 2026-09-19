@@ -30,7 +30,7 @@ use crate::{
 use super::{
     access,
     algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
-    augmentation::{BaselineJourneyAugmenter, JourneyAugmenter, JourneySkeleton, JourneyVariant},
+    augmentation::{BikeJourneyAugmenter, JourneyAugmenter, JourneySkeleton, JourneyVariant},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -48,7 +48,8 @@ pub struct RoutingService {
     pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
-    pub(crate) bike_share_network: Option<Arc<BikeShareNetwork>>,
+    pub(crate) bike_share_network: Arc<BikeShareNetwork>,
+    pub(crate) bike_availability_source: Arc<dyn BikeAvailabilitySource>,
     pub(crate) ranking: RankingPolicy,
     pub(crate) limits: RoutingLimits,
     pub(crate) request_slots: Arc<tokio::sync::Semaphore>,
@@ -93,6 +94,8 @@ impl RoutingService {
         street_routing: Arc<dyn StreetRouter>,
         departure_resolver: Arc<dyn DepartureResolver>,
         service_conditions: Arc<dyn ServiceConditionProvider>,
+        bike_share_network: Arc<BikeShareNetwork>,
+        bike_availability_source: Arc<dyn BikeAvailabilitySource>,
     ) -> Self {
         let transit_network = Arc::new(TransitNetwork::default());
         let transfer_resolver: Arc<dyn TransferResolver> =
@@ -103,14 +106,19 @@ impl RoutingService {
             transfer_resolver.clone(),
         ));
         Self {
-            street_routing,
+            street_routing: street_routing.clone(),
             departure_resolver,
             routing_algorithm,
-            journey_augmenter: Arc::new(BaselineJourneyAugmenter),
+            journey_augmenter: Arc::new(BikeJourneyAugmenter::with_default_policy(
+                bike_share_network.clone(),
+                bike_availability_source.clone(),
+                street_routing.clone(),
+            )),
             transfer_resolver,
             service_conditions,
             transit_network,
-            bike_share_network: None,
+            bike_share_network,
+            bike_availability_source,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(
                 RoutingLimits::default().max_concurrent_requests,
@@ -147,7 +155,12 @@ impl RoutingService {
     }
 
     pub fn with_bike_share_network(mut self, network: Arc<BikeShareNetwork>) -> Self {
-        self.bike_share_network = Some(network);
+        self.bike_share_network = network.clone();
+        self.journey_augmenter = Arc::new(BikeJourneyAugmenter::with_default_policy(
+            network,
+            self.bike_availability_source.clone(),
+            self.street_routing.clone(),
+        ));
         self
     }
 
@@ -156,7 +169,8 @@ impl RoutingService {
         network: Arc<BikeShareNetwork>,
         availability_source: Arc<dyn BikeAvailabilitySource>,
     ) -> Self {
-        self.bike_share_network = Some(network.clone());
+        self.bike_share_network = network.clone();
+        self.bike_availability_source = availability_source.clone();
         self.journey_augmenter = Arc::new(
             crate::routing::augmentation::BikeJourneyAugmenter::with_default_policy(
                 network,
@@ -233,15 +247,38 @@ impl RoutingService {
         had_transient_failure |= walking_transient;
         had_global_failure |= walking_global;
         if let Some(direct_walking) = &direct_walking {
-            match self
-                .reconstruct_direct_walking_candidate(&request, &context, &direct_walking.path)
-                .await
-            {
-                Ok(Some(candidate)) => generated.push(candidate),
-                Ok(None) => {}
+            let departure_at = match request.departure_setting {
+                crate::api::DepartureSetting::ArriveBy { time } => {
+                    normalize_to_taipei(time)
+                        - Duration::seconds(i64::from(direct_walking.path.duration.0))
+                }
+                crate::api::DepartureSetting::DepartNow
+                | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
+            };
+            match JourneySkeleton::from_direct_walking(
+                &request,
+                direct_walking.path.clone(),
+                departure_at,
+            ) {
+                Ok(skeleton) => {
+                    for result in self
+                        .reconstruct_skeleton_variants(&request, &context, skeleton)
+                        .await
+                    {
+                        match result {
+                            Ok(Some(candidate)) => generated.push(candidate),
+                            Ok(None) => {}
+                            Err(error) => {
+                                had_transient_failure |=
+                                    error == PlanningError::TemporarilyUnavailable;
+                                had_global_failure |= error == PlanningError::Internal;
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
-                    had_transient_failure |= error == PlanningError::TemporarilyUnavailable;
-                    had_global_failure |= error == PlanningError::Internal;
+                    tracing::warn!(error = %error, "direct walking path could not be skeletonized");
+                    had_global_failure = true;
                 }
             }
         }
@@ -319,16 +356,11 @@ impl RoutingService {
                                     continue;
                                 }
                             };
-                            let variants = if request.allows_bike_share() {
-                                self.journey_augmenter.augment(skeleton).await
-                            } else {
-                                vec![JourneyVariant::baseline(skeleton)]
-                            };
-                            for variant in variants {
-                                match self
-                                    .reconstruct_multimodal_variant(&request, &variant, &context)
-                                    .await
-                                {
+                            for result in self
+                                .reconstruct_skeleton_variants(&request, &context, skeleton)
+                                .await
+                            {
+                                match result {
                                     Ok(Some(candidate)) => generated.push(candidate),
                                     Ok(None) => {}
                                     Err(error) => {
@@ -358,6 +390,27 @@ impl RoutingService {
             return Err(PlanningError::TemporarilyUnavailable);
         }
         self.rank_generated(metadata, request, generated)
+    }
+
+    async fn reconstruct_skeleton_variants(
+        &self,
+        request: &PlanningRequest,
+        context: &PlanningContext,
+        skeleton: JourneySkeleton,
+    ) -> Vec<Result<Option<GeneratedCandidate>, PlanningError>> {
+        let variants = if request.allows_bike_share() {
+            self.journey_augmenter.augment(skeleton).await
+        } else {
+            vec![JourneyVariant::baseline(skeleton)]
+        };
+        let mut results = Vec::with_capacity(variants.len());
+        for variant in variants {
+            results.push(
+                self.reconstruct_multimodal_variant(request, &variant, context)
+                    .await,
+            );
+        }
+        results
     }
 
     fn rank_generated(
@@ -398,7 +451,8 @@ impl RoutingService {
                     required: true,
                     parameters: std::collections::BTreeMap::from([(
                         "selected_modes",
-                        serde_json::to_value(&request.selected_modes).unwrap_or_default(),
+                        serde_json::to_value(request.canonical_selected_modes())
+                            .unwrap_or_default(),
                     )]),
                 },
             }));

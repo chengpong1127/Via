@@ -7,9 +7,9 @@ mod legs;
 use std::collections::HashMap;
 
 use crate::{
-    api::{PlanningRequest, normalize_to_taipei},
+    api::PlanningRequest,
     domain::{
-        journey::{JourneyClass, JourneyMode, JourneyOption, Place, PlanningError},
+        journey::{JourneyClass, JourneyOption, Place, PlanningError},
         ranking::RankedJourney,
     },
 };
@@ -28,7 +28,6 @@ impl RoutingService {
         variant: &JourneyVariant,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let candidate = variant.skeleton().candidate();
         let Some(assembled) = legs::assemble(self, request, variant, context).await? else {
             return Ok(None);
         };
@@ -39,7 +38,7 @@ impl RoutingService {
             return Ok(None);
         }
         let duration_seconds =
-            legs::seconds_between(candidate.departure_time, assembled.arrival_time)
+            legs::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
         let transfer_count = assembled.transfers.len() as u32;
         let matching_key = if variant.is_baseline() {
@@ -53,7 +52,7 @@ impl RoutingService {
             class: JourneyClass::Reliable,
             label: None,
             ranking_reasons: Vec::new(),
-            departure_time: candidate.departure_time,
+            departure_time: variant.skeleton().departure_at(),
             arrival_time: assembled.arrival_time,
             duration_seconds,
             walking_seconds: assembled.walking_seconds,
@@ -70,12 +69,12 @@ impl RoutingService {
         let stable_key = format!(
             "{}:{}",
             matching_key,
-            candidate.departure_time.unix_timestamp()
+            variant.skeleton().departure_at().unix_timestamp()
         );
         Ok(Some(GeneratedCandidate {
             ranking: crate::domain::ranking::CandidateJourney {
                 stable_key,
-                departure_epoch_seconds: candidate.departure_time.unix_timestamp(),
+                departure_epoch_seconds: variant.skeleton().departure_at().unix_timestamp(),
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
                 walking_seconds: assembled.walking_seconds,
                 bicycle_seconds: assembled.bicycle_seconds,
@@ -86,68 +85,6 @@ impl RoutingService {
                 timing_reliability: assembled.timing_reliability,
                 required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
-                blocking_condition: false,
-            },
-            option,
-        }))
-    }
-
-    pub(crate) async fn reconstruct_direct_walking_candidate(
-        &self,
-        request: &PlanningRequest,
-        context: &PlanningContext,
-        path: &crate::street::StreetPath,
-    ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let arrival = match request.departure_setting {
-            crate::api::DepartureSetting::ArriveBy { time } => normalize_to_taipei(time),
-            crate::api::DepartureSetting::DepartNow
-            | crate::api::DepartureSetting::DepartAt { .. } => {
-                context.search_start + time::Duration::seconds(i64::from(path.duration.0))
-            }
-        };
-        let departure = match request.departure_setting {
-            crate::api::DepartureSetting::ArriveBy { .. } => {
-                arrival - time::Duration::seconds(i64::from(path.duration.0))
-            }
-            crate::api::DepartureSetting::DepartNow
-            | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
-        };
-        let leg = legs::direct_walking_leg(self, request, path, departure, arrival)?;
-        let matching_key = geometry::short_digest("direct-walking:v1");
-        let option = JourneyOption {
-            id: "candidate".into(),
-            matching_key: matching_key.clone(),
-            class: JourneyClass::Reliable,
-            label: None,
-            ranking_reasons: Vec::new(),
-            departure_time: departure,
-            arrival_time: arrival,
-            duration_seconds: path.duration.0,
-            walking_seconds: path.duration.0,
-            bicycle_seconds: 0,
-            bike_share_uses: 0,
-            transfer_count: 0,
-            travel_modes: vec![JourneyMode::Walking],
-            live_status_summary: evidence::summary_from_evidence(&[]),
-            overview_geometry: geometry::overview_geometry(std::slice::from_ref(&leg)),
-            legs: vec![leg],
-            transfers: Vec::new(),
-            warnings: Vec::new(),
-        };
-        Ok(Some(GeneratedCandidate {
-            ranking: crate::domain::ranking::CandidateJourney {
-                stable_key: format!("{}:{}", matching_key, departure.unix_timestamp()),
-                departure_epoch_seconds: departure.unix_timestamp(),
-                arrival_epoch_seconds: arrival.unix_timestamp(),
-                walking_seconds: path.duration.0,
-                bicycle_seconds: 0,
-                bike_share_uses: 0,
-                transfer_count: 0,
-                main_service_sequence: Vec::new(),
-                timing_bases: Vec::new(),
-                timing_reliability: crate::domain::transit_timing::TimingReliability::Reliable,
-                required_live_status: Vec::new(),
-                transfers: Vec::new(),
                 blocking_condition: false,
             },
             option,
@@ -184,7 +121,6 @@ impl RoutingService {
         station_id: &crate::domain::ids::BikeStationId,
     ) -> Option<Place> {
         self.bike_share_network
-            .as_ref()?
             .station(station_id)
             .map(|station| Place {
                 display_name: station.name.clone(),

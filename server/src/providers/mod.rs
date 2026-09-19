@@ -9,7 +9,10 @@ pub mod timing;
 
 pub mod valhalla;
 
-pub use bikeshare::{BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource};
+pub use bikeshare::{
+    BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource,
+    UnavailableBikeAvailabilitySource,
+};
 pub use service_conditions::{
     CachedServiceConditionProvider, NullServiceConditionProvider, ServiceConditionError,
     ServiceConditionMetrics, ServiceConditionProvider, TdxServiceConditionProvider,

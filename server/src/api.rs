@@ -35,14 +35,9 @@ impl PlanningRequest {
     pub fn validate(&self) -> Result<(), RequestValidationError> {
         self.origin.validate("/origin")?;
         self.destination.validate("/destination")?;
-        if self.selected_modes.is_empty()
-            || self
-                .selected_modes
-                .windows(2)
-                .any(|modes| modes[0] >= modes[1])
-            || (self.selected_modes.len() == 1
-                && self.selected_modes[0] == TransportMode::BikeShare)
-        {
+        let mut modes = self.selected_modes.clone();
+        modes.sort();
+        if modes.is_empty() || modes.windows(2).any(|modes| modes[0] == modes[1]) {
             return Err(RequestValidationError::new(
                 "invalid_selected_modes",
                 "/selected_modes",
@@ -55,10 +50,20 @@ impl PlanningRequest {
     }
 
     pub fn allowed_transit_modes(&self) -> Vec<DomainTransitMode> {
-        self.selected_modes
+        let mut modes = self
+            .selected_modes
             .iter()
             .filter_map(|mode| mode.transit_mode())
-            .collect()
+            .collect::<Vec<_>>();
+        modes.sort();
+        modes.dedup();
+        modes
+    }
+
+    pub fn canonical_selected_modes(&self) -> Vec<TransportMode> {
+        let mut modes = self.selected_modes.clone();
+        modes.sort();
+        modes
     }
 
     pub fn allows_bike_share(&self) -> bool {

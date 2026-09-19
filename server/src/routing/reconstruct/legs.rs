@@ -19,7 +19,6 @@ use crate::{
 
 use super::{
     super::{
-        algorithm::JourneySegment,
         augmentation::{
             JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyVariant,
             WalkingMovementKind,
@@ -70,11 +69,10 @@ pub(crate) async fn assemble(
     variant: &JourneyVariant,
     context: &PlanningContext,
 ) -> Result<Option<ReconstructedLegs>, PlanningError> {
-    let candidate = variant.skeleton().candidate();
     let mut result = ReconstructedLegs {
         legs: Vec::new(),
         transfers: Vec::new(),
-        arrival_time: candidate.departure_time,
+        arrival_time: variant.skeleton().departure_at(),
         live_evidence: Vec::new(),
         required_states: Vec::new(),
         travel_modes: Vec::new(),
@@ -89,7 +87,7 @@ pub(crate) async fn assemble(
     let origin = service.origin_place(request);
     let destination = service.destination_place(request);
     let mut pending_transfer = None;
-    let mut current_stop = candidate.access.stop_id.clone();
+    let mut current_stop = None;
     let mut current_anchor = 0;
     let final_anchor = variant.skeleton().anchors().len().saturating_sub(1);
     for step in variant.path() {
@@ -117,7 +115,10 @@ pub(crate) async fn assemble(
                             return Ok(None);
                         }
                         let first_stop = service
-                            .stop_place(&current_stop)
+                            .stop_place(
+                                &anchor_boarding_point(variant, step.to_anchor)
+                                    .ok_or(PlanningError::Internal)?,
+                            )
                             .ok_or(PlanningError::Internal)?;
                         append_hydrated_walking(
                             service,
@@ -129,18 +130,23 @@ pub(crate) async fn assemble(
                             &mut result,
                         )
                         .await?;
+                        current_stop = anchor_boarding_point(variant, step.to_anchor);
                     }
                     JourneyMovementKind::Walking {
                         kind: WalkingMovementKind::Transfer,
                         duration_seconds,
                         ..
                     } => {
+                        let from_stop = current_stop
+                            .clone()
+                            .or_else(|| anchor_boarding_point(variant, step.from_anchor))
+                            .ok_or(PlanningError::Internal)?;
                         let from = service
-                            .stop_place(&current_stop)
+                            .stop_place(&from_stop)
                             .ok_or(PlanningError::Internal)?;
                         let to_stop = anchor_boarding_point(variant, step.to_anchor)
                             .ok_or(PlanningError::Internal)?;
-                        if to_stop == current_stop {
+                        if Some(to_stop.clone()) == current_stop {
                             return Ok(None);
                         }
                         let to = service
@@ -149,7 +155,7 @@ pub(crate) async fn assemble(
                         let connector_start = result.legs.len();
                         append_static_walking(&from, &to, *duration_seconds, &mut result);
                         register_pending_transfer(&result, &mut pending_transfer, connector_start);
-                        current_stop = to_stop;
+                        current_stop = Some(to_stop);
                     }
                     JourneyMovementKind::Walking {
                         kind: WalkingMovementKind::Egress,
@@ -159,8 +165,12 @@ pub(crate) async fn assemble(
                         if step.to_anchor != final_anchor {
                             return Ok(None);
                         }
+                        let final_stop_id = current_stop
+                            .clone()
+                            .or_else(|| anchor_boarding_point(variant, step.from_anchor))
+                            .ok_or(PlanningError::Internal)?;
                         let final_stop = service
-                            .stop_place(&current_stop)
+                            .stop_place(&final_stop_id)
                             .ok_or(PlanningError::Internal)?;
                         append_hydrated_walking(
                             service,
@@ -173,15 +183,23 @@ pub(crate) async fn assemble(
                         )
                         .await?;
                     }
-                    JourneyMovementKind::Transit { segment_index } => {
-                        let Some(JourneySegment::Transit {
-                            trip,
-                            board_index,
-                            alight_index,
-                        }) = candidate.segments.get(*segment_index)
-                        else {
+                    JourneyMovementKind::Walking {
+                        kind: WalkingMovementKind::Direct,
+                        ..
+                    } => {
+                        if current_anchor != 0 || step.to_anchor != final_anchor {
+                            return Ok(None);
+                        }
+                        let Some(path) = movement.street_path.as_deref() else {
                             return Err(PlanningError::Internal);
                         };
+                        append_routed_walking(&origin, &destination, path.clone(), &mut result);
+                    }
+                    JourneyMovementKind::Transit {
+                        trip,
+                        board_index,
+                        alight_index,
+                    } => {
                         let board = trip
                             .stop_times
                             .get(*board_index)
@@ -190,7 +208,8 @@ pub(crate) async fn assemble(
                             .stop_times
                             .get(*alight_index)
                             .ok_or(PlanningError::Internal)?;
-                        if board.stop_id != current_stop || result.arrival_time > board.departure_at
+                        if Some(board.stop_id.clone()) != current_stop
+                            || result.arrival_time > board.departure_at
                         {
                             return Ok(None);
                         }
@@ -248,7 +267,7 @@ pub(crate) async fn assemble(
                         result
                             .main_service_sequence
                             .push(service_data.id.as_str().to_owned());
-                        current_stop = alight.stop_id.clone();
+                        current_stop = Some(alight.stop_id.clone());
                     }
                 }
             }
@@ -269,7 +288,7 @@ pub(crate) async fn assemble(
                 let source_stop = anchor_boarding_point(variant, step.from_anchor);
                 if source_stop
                     .as_ref()
-                    .is_some_and(|source_stop| source_stop != &current_stop)
+                    .is_some_and(|source_stop| current_stop.as_ref() != Some(source_stop))
                 {
                     return Ok(None);
                 }
@@ -283,7 +302,7 @@ pub(crate) async fn assemble(
                 }
                 register_pending_transfer(&result, &mut pending_transfer, connector_start);
                 if let Some(to_stop) = anchor_boarding_point(variant, step.to_anchor) {
-                    current_stop = to_stop;
+                    current_stop = Some(to_stop);
                 }
             }
         }
@@ -649,23 +668,6 @@ fn add_transfer(
         guidance: Vec::new(),
         warnings: Vec::new(),
     });
-}
-
-pub(crate) fn direct_walking_leg(
-    service: &RoutingService,
-    request: &PlanningRequest,
-    path: &StreetPath,
-    departure: OffsetDateTime,
-    arrival: OffsetDateTime,
-) -> Result<Leg, PlanningError> {
-    Ok(walking_leg(
-        "candidate_leg_0".into(),
-        &service.origin_place(request),
-        &service.destination_place(request),
-        departure,
-        arrival,
-        path,
-    ))
 }
 
 fn walking_leg(

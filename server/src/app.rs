@@ -21,7 +21,7 @@ use crate::{
     domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::bikeshare::BikeAvailabilitySource,
+    providers::bikeshare::{BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
     providers::service_conditions::{
         CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
         NullServiceConditionProvider, ServiceConditionMetrics, ServiceConditionProvider,
@@ -43,8 +43,6 @@ struct AppState {
     metrics: OperationalMetrics,
     service_condition_metrics: ServiceConditionMetrics,
     bus_timing_metrics: BusTimingMetrics,
-    bike_share_network: Option<Arc<BikeShareNetwork>>,
-    bike_availability_source: Option<Arc<dyn BikeAvailabilitySource>>,
     openapi: OpenApi,
 }
 
@@ -53,8 +51,8 @@ pub struct RouterDependencies {
     pub service_conditions: Arc<dyn ServiceConditionProvider>,
     pub tdx: Option<Arc<TdxClient>>,
     pub service_condition_cache_ttl: Duration,
-    pub bike_share_network: Option<Arc<BikeShareNetwork>>,
-    pub bike_availability_source: Option<Arc<dyn BikeAvailabilitySource>>,
+    pub bike_share_network: Arc<BikeShareNetwork>,
+    pub bike_availability_source: Arc<dyn BikeAvailabilitySource>,
 }
 
 impl RouterDependencies {
@@ -63,8 +61,10 @@ impl RouterDependencies {
             service_conditions,
             tdx: None,
             service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-            bike_share_network: None,
-            bike_availability_source: None,
+            bike_share_network: Arc::new(
+                BikeShareNetwork::new(Vec::new()).with_revision("disabled"),
+            ),
+            bike_availability_source: Arc::new(UnavailableBikeAvailabilitySource),
         }
     }
 
@@ -83,8 +83,8 @@ impl RouterDependencies {
         network: Arc<BikeShareNetwork>,
         availability_source: Arc<dyn BikeAvailabilitySource>,
     ) -> Self {
-        self.bike_share_network = Some(network);
-        self.bike_availability_source = Some(availability_source);
+        self.bike_share_network = network;
+        self.bike_availability_source = availability_source;
         self
     }
 }
@@ -199,22 +199,18 @@ where
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
+    let bike_share_network = dependencies.bike_share_network.clone();
+    let bike_availability_source = dependencies.bike_availability_source.clone();
     let metrics = OperationalMetrics::default();
-    let mut routing = RoutingService::new(street_router, departure_resolver, service_conditions)
-        .with_transit_network_arc(transit_network.clone())
-        .with_metrics(metrics.clone());
-    match (
-        dependencies.bike_share_network.clone(),
-        dependencies.bike_availability_source.clone(),
-    ) {
-        (Some(network), Some(availability_source)) => {
-            routing = routing.with_bike_augmentation(network, availability_source);
-        }
-        (Some(network), None) => {
-            routing = routing.with_bike_share_network(network);
-        }
-        (None, _) => {}
-    }
+    let routing = RoutingService::new(
+        street_router,
+        departure_resolver,
+        service_conditions,
+        bike_share_network.clone(),
+        bike_availability_source.clone(),
+    )
+    .with_transit_network_arc(transit_network.clone())
+    .with_metrics(metrics.clone());
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
@@ -226,8 +222,6 @@ where
             metrics,
             service_condition_metrics,
             bus_timing_metrics,
-            bike_share_network: dependencies.bike_share_network,
-            bike_availability_source: dependencies.bike_availability_source,
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -493,12 +487,7 @@ struct ReadinessResponse {
     )
 )]
 async fn readiness(State(state): State<AppState>) -> Response {
-    // Bike-share dependencies are loaded and retained for future augmentation,
-    // but readiness remains deliberately independent of realtime availability.
-    let _ = (
-        state.bike_share_network.as_ref(),
-        state.bike_availability_source.as_ref(),
-    );
+    // Readiness remains deliberately independent of realtime availability.
     let street_routing = state.street_health.healthy().await;
     let static_network = !state
         .transit_network

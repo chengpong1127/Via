@@ -23,11 +23,12 @@ use via_server::{
     routing::{
         AccessPoint, BaselineJourneyAugmenter, BikeAugmentationPolicy, BikeJourneyAugmenter,
         EgressPoint, JourneyAnchorKind, JourneyAugmenter, JourneyCandidate, JourneyMovementKind,
-        JourneyPathMovement, JourneySegment, JourneySkeleton, TransferShortcut,
+        JourneyPathMovement, JourneySegment, JourneySkeleton, JourneyVariant, TransferShortcut,
     },
     street::{
-        FakeStreetRouter, MatrixCell, MatrixOrientation, MatrixQuery, MatrixResult, Metres,
-        RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
+        FakeStreetRouter, Maneuver, MatrixCell, MatrixOrientation, MatrixQuery, MatrixResult,
+        Metres, RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError,
+        StreetTravelMode,
     },
 };
 
@@ -123,6 +124,48 @@ fn candidate() -> JourneyCandidate {
         timing_bases: vec![TimingBasis::Schedule, TimingBasis::Schedule],
         timing_reliability: TimingReliability::Reliable,
     }
+}
+
+#[test]
+fn direct_walking_projects_to_a_self_sufficient_skeleton() {
+    let request = request();
+    let origin = via_server::street::Coordinate::try_new(
+        request.origin.coordinate.latitude,
+        request.origin.coordinate.longitude,
+    )
+    .unwrap();
+    let destination = via_server::street::Coordinate::try_new(
+        request.destination.coordinate.latitude,
+        request.destination.coordinate.longitude,
+    )
+    .unwrap();
+    let path = StreetPath {
+        duration: Seconds(300),
+        distance: Metres(1_500),
+        geometry: vec![origin, destination],
+        maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
+        attribution: Vec::new(),
+    };
+
+    let skeleton = JourneySkeleton::from_direct_walking(&request, path.clone(), START).unwrap();
+    assert_eq!(skeleton.anchors().len(), 2);
+    assert_eq!(skeleton.movements().len(), 1);
+    assert!(matches!(
+        skeleton.movements()[0].kind,
+        JourneyMovementKind::Walking {
+            kind: via_server::routing::WalkingMovementKind::Direct,
+            duration_seconds: 300,
+            distance_metres: 1_500,
+        }
+    ));
+    assert_eq!(skeleton.movements()[0].street_path.as_deref(), Some(&path));
+    assert_eq!(
+        JourneyVariant::baseline(skeleton)
+            .timing()
+            .unwrap()
+            .arrival_at,
+        START + Duration::seconds(300)
+    );
 }
 
 #[derive(Clone)]
@@ -388,14 +431,22 @@ fn candidate_projects_to_ordered_anchors_and_baseline_movements() {
     );
     assert!(matches!(
         movements[1].kind,
-        JourneyMovementKind::Transit { segment_index: 0 }
+        JourneyMovementKind::Transit {
+            board_index: 0,
+            alight_index: 1,
+            ..
+        }
     ));
     assert!(
         matches!(movements[2].kind, JourneyMovementKind::Walking { kind, duration_seconds: 120, .. } if kind.is_transfer())
     );
     assert!(matches!(
         movements[3].kind,
-        JourneyMovementKind::Transit { segment_index: 2 }
+        JourneyMovementKind::Transit {
+            board_index: 0,
+            alight_index: 1,
+            ..
+        }
     ));
     assert!(
         matches!(movements[4].kind, JourneyMovementKind::Walking { kind, duration_seconds: 45, distance_metres: 225 } if kind.is_egress())
@@ -1042,6 +1093,117 @@ async fn pure_endpoint_bike_variant_reconstructs_without_transit_metadata() {
         .unwrap_or_else(|| panic!("pure bike option missing: {body}"));
 
     assert_eq!(bike["transfer_count"], 0);
+    assert_eq!(
+        bike["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leg| leg["mode"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["walking", "bicycle", "walking"]
+    );
+    assert!(
+        bike["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|leg| leg["details"]["via_service_id"].is_null())
+    );
+}
+
+#[tokio::test]
+async fn bike_share_only_uses_the_direct_walking_skeleton() {
+    let origin = request().origin.coordinate;
+    let destination = request().destination.coordinate;
+    let (bike_network, pickup_coordinate, dropoff_coordinate) =
+        endpoint_bike_network(origin, destination);
+    let origin =
+        via_server::street::Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
+    let destination =
+        via_server::street::Coordinate::try_new(destination.latitude, destination.longitude)
+            .unwrap();
+    let pickup = via_server::street::Coordinate::try_new(
+        pickup_coordinate.latitude,
+        pickup_coordinate.longitude,
+    )
+    .unwrap();
+    let dropoff = via_server::street::Coordinate::try_new(
+        dropoff_coordinate.latitude,
+        dropoff_coordinate.longitude,
+    )
+    .unwrap();
+    let street = FakeStreetRouter::builder()
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            path(origin, destination, 300),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            pickup,
+            path(origin, pickup, 20),
+        )
+        .path(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            path(pickup, dropoff, 90),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            dropoff,
+            destination,
+            path(dropoff, destination, 25),
+        )
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            origin,
+            pickup,
+            Seconds(20),
+            Metres(100),
+        )
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            dropoff,
+            destination,
+            Seconds(25),
+            Metres(125),
+        )
+        .matrix_leg(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            Seconds(90),
+            Metres(600),
+        )
+        .build();
+    let body = fixtures::route_body_with_bike(
+        street,
+        FixtureRealtime::empty(),
+        fixtures::request(origin, destination, &["bike_share"]),
+        bike_network,
+        Arc::new(FixtureAvailabilitySource {
+            snapshot: Ok(bike_snapshot(START, false)),
+        }),
+        BikeAugmentationPolicy {
+            now: Some(START),
+            ..BikeAugmentationPolicy::default()
+        },
+    )
+    .await;
+
+    let options = body["journey_options"].as_array().unwrap();
+    assert!(options.iter().any(|option| {
+        option["bike_share_uses"] == 0 && fixtures::leg_modes(option) == vec!["walking"]
+    }));
+    let bike = options
+        .iter()
+        .find(|option| option["bike_share_uses"] == 1)
+        .expect("bike-share option");
+    assert_eq!(bike["transfer_count"], 0);
+    assert_eq!(bike["travel_modes"], json!(["walking", "bicycle"]));
     assert_eq!(
         bike["legs"]
             .as_array()

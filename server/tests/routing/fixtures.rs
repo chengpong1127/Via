@@ -12,7 +12,7 @@ use via_server::{
         transit::{TransferEdge, TransitNetwork},
     },
     providers::{
-        BikeAvailabilitySource,
+        BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
         service_conditions::{CachedServiceConditionProvider, NullServiceConditionProvider},
         timing::{
             BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
@@ -162,8 +162,14 @@ async fn route_body_inner(
         NullServiceConditionProvider,
     )));
     let service_street = Arc::new(street.clone());
-    let service =
-        RoutingService::new(service_street, departure, cached).with_transit_network_arc(network);
+    let service = RoutingService::new(
+        service_street,
+        departure,
+        cached,
+        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled")),
+        Arc::new(UnavailableBikeAvailabilitySource),
+    )
+    .with_transit_network_arc(network);
     let service = match augmenter {
         Some(augmenter) => service.with_journey_augmenter(augmenter),
         None => service,

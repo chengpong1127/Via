@@ -102,7 +102,7 @@ fn planning_request_accepts_the_provider_neutral_contract() {
 }
 
 #[test]
-fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it() {
+fn planning_request_accepts_modes_in_any_order() {
     let request: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
@@ -118,14 +118,18 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
     }))
     .unwrap();
 
-    let error = request.validate().unwrap_err();
-    assert_eq!(error.field(), "/selected_modes");
-    assert_eq!(error.code(), "invalid_selected_modes");
-    assert!(!error.to_string().contains("Taipei Main Station"));
+    request.validate().unwrap();
+    assert_eq!(
+        request.allowed_transit_modes(),
+        vec![
+            via_server::domain::transit::TransitMode::Bus,
+            via_server::domain::transit::TransitMode::Metro,
+        ]
+    );
 }
 
 #[test]
-fn bike_share_only_is_rejected_until_standalone_bike_search_exists() {
+fn bike_share_only_is_a_valid_request() {
     let request: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
@@ -141,13 +145,12 @@ fn bike_share_only_is_rejected_until_standalone_bike_search_exists() {
     }))
     .unwrap();
 
-    let error = request.validate().unwrap_err();
-    assert_eq!(error.code(), "invalid_selected_modes");
-    assert_eq!(error.field(), "/selected_modes");
+    request.validate().unwrap();
+    assert!(request.allows_bike_share());
 }
 
 #[test]
-fn planning_request_rejects_duplicate_modes_and_bike_share_only() {
+fn planning_request_rejects_duplicate_modes() {
     let duplicate: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
@@ -164,25 +167,6 @@ fn planning_request_rejects_duplicate_modes_and_bike_share_only() {
     .unwrap();
     assert_eq!(
         duplicate.validate().unwrap_err().code(),
-        "invalid_selected_modes"
-    );
-
-    let bike_only: PlanningRequest = serde_json::from_value(json!({
-        "origin": {
-            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
-            "display_text": "Origin"
-        },
-        "destination": {
-            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
-            "display_text": "Destination"
-        },
-        "selected_modes": ["bike_share"],
-        "locale": "en",
-        "departure_setting": {"type": "depart_now"}
-    }))
-    .unwrap();
-    assert_eq!(
-        bike_only.validate().unwrap_err().code(),
         "invalid_selected_modes"
     );
 }

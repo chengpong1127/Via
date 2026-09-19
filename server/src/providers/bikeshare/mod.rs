@@ -35,3 +35,15 @@ impl BikeAvailabilityError {
 pub trait BikeAvailabilitySource: Send + Sync {
     async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>;
 }
+
+/// Explicitly disabled BikeShare availability for router builders that do not
+/// load production BikeShare artifacts, such as offline test fixtures.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnavailableBikeAvailabilitySource;
+
+#[async_trait]
+impl BikeAvailabilitySource for UnavailableBikeAvailabilitySource {
+    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        Err(BikeAvailabilityError::InvalidConfiguration)
+    }
+}

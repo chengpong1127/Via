@@ -8,7 +8,9 @@ use crate::{
     domain::{
         bikeshare::BikeWalkingAccess,
         ids::{BikeStationId, BoardingPointId},
+        transit_timing::EffectiveTrip,
     },
+    street::StreetPath,
 };
 
 use super::super::{JourneyCandidate, JourneySegment};
@@ -32,6 +34,7 @@ pub enum WalkingMovementKind {
     Access,
     Transfer,
     Egress,
+    Direct,
 }
 
 impl WalkingMovementKind {
@@ -46,6 +49,10 @@ impl WalkingMovementKind {
     pub fn is_egress(self) -> bool {
         matches!(self, Self::Egress)
     }
+
+    pub fn is_direct(self) -> bool {
+        matches!(self, Self::Direct)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,30 +63,29 @@ pub enum JourneyMovementKind {
         distance_metres: u32,
     },
     Transit {
-        /// Index into the baseline candidate's segment sequence.
-        segment_index: usize,
+        trip: Arc<EffectiveTrip>,
+        board_index: usize,
+        alight_index: usize,
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JourneyMovement {
     pub from_anchor: usize,
     pub to_anchor: usize,
     pub departure_at: OffsetDateTime,
     pub arrival_at: OffsetDateTime,
     pub kind: JourneyMovementKind,
+    pub street_path: Option<Arc<StreetPath>>,
 }
 
-/// A compact projection of a candidate into augmentation-relevant anchors.
-///
-/// The candidate remains the single owner of the full transit objects. Baseline
-/// movements point into its segment sequence instead of copying `EffectiveTrip`
-/// values into the skeleton.
+/// A transport-neutral baseline journey projected into augmentation-relevant
+/// anchors and movements.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneySkeleton {
     anchors: Vec<JourneyAnchor>,
     movements: Vec<JourneyMovement>,
-    candidate: Arc<JourneyCandidate>,
+    departure_at: OffsetDateTime,
 }
 
 impl JourneySkeleton {
@@ -117,6 +123,7 @@ impl JourneySkeleton {
                 duration_seconds: candidate.access.walking_seconds,
                 distance_metres: candidate.access.distance_metres,
             },
+            street_path: None,
         });
 
         let mut current_anchor = access;
@@ -160,7 +167,12 @@ impl JourneySkeleton {
                         to_anchor: alighting,
                         departure_at: board.departure_at,
                         arrival_at: alight.arrival_at,
-                        kind: JourneyMovementKind::Transit { segment_index },
+                        kind: JourneyMovementKind::Transit {
+                            trip: Arc::new(trip.clone()),
+                            board_index: *board_index,
+                            alight_index: *alight_index,
+                        },
+                        street_path: None,
                     });
                     current_anchor = alighting;
                     current_stop = alight.stop_id.clone();
@@ -191,6 +203,7 @@ impl JourneySkeleton {
                             duration_seconds: shortcut.duration_seconds,
                             distance_metres: 0,
                         },
+                        street_path: None,
                     });
                     current_anchor = target;
                     current_stop = shortcut.to.clone();
@@ -224,12 +237,52 @@ impl JourneySkeleton {
                 duration_seconds: candidate.egress.walking_seconds,
                 distance_metres: candidate.egress.distance_metres,
             },
+            street_path: None,
         });
 
         Ok(Self {
             anchors,
             movements,
-            candidate: Arc::new(candidate),
+            departure_at: candidate.departure_time,
+        })
+    }
+
+    pub fn from_direct_walking(
+        request: &PlanningRequest,
+        path: StreetPath,
+        departure_at: OffsetDateTime,
+    ) -> Result<Self, JourneySkeletonError> {
+        let arrival_at = departure_at + Duration::seconds(i64::from(path.duration.0));
+        let mut anchors = Vec::with_capacity(2);
+        let origin = push_anchor(
+            &mut anchors,
+            JourneyAnchorKind::Origin {
+                coordinate: request.origin.coordinate,
+            },
+            departure_at,
+        )?;
+        let destination = push_anchor(
+            &mut anchors,
+            JourneyAnchorKind::Destination {
+                coordinate: request.destination.coordinate,
+            },
+            arrival_at,
+        )?;
+        Ok(Self {
+            anchors,
+            movements: vec![JourneyMovement {
+                from_anchor: origin,
+                to_anchor: destination,
+                departure_at,
+                arrival_at,
+                kind: JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Direct,
+                    duration_seconds: path.duration.0,
+                    distance_metres: path.distance.0,
+                },
+                street_path: Some(Arc::new(path)),
+            }],
+            departure_at,
         })
     }
 
@@ -241,8 +294,8 @@ impl JourneySkeleton {
         &self.movements
     }
 
-    pub(crate) fn candidate(&self) -> &JourneyCandidate {
-        &self.candidate
+    pub fn departure_at(&self) -> OffsetDateTime {
+        self.departure_at
     }
 }
 
@@ -331,7 +384,7 @@ impl JourneyVariant {
     }
 
     pub fn baseline_signature(&self) -> String {
-        self.skeleton.candidate().signature()
+        self.skeleton.baseline_signature()
     }
 
     pub(crate) fn signature(&self) -> String {
@@ -473,20 +526,16 @@ impl JourneySkeleton {
                 duration_seconds,
                 distance_metres,
             } => format!("walking:{kind:?}:{from}:{to}:{duration_seconds}:{distance_metres}"),
-            JourneyMovementKind::Transit { segment_index } => {
-                let Some(JourneySegment::Transit {
-                    trip,
-                    board_index,
-                    alight_index,
-                }) = self.candidate.segments.get(*segment_index)
-                else {
-                    return format!("invalid-transit:{segment_index}");
-                };
+            JourneyMovementKind::Transit {
+                trip,
+                board_index,
+                alight_index,
+            } => {
                 let Some(board) = trip.stop_times.get(*board_index) else {
-                    return format!("invalid-transit:{segment_index}");
+                    return format!("invalid-transit:{board_index}");
                 };
                 let Some(alight) = trip.stop_times.get(*alight_index) else {
-                    return format!("invalid-transit:{segment_index}");
+                    return format!("invalid-transit:{alight_index}");
                 };
                 format!(
                     "transit:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -501,6 +550,76 @@ impl JourneySkeleton {
                 )
             }
         }
+    }
+
+    fn baseline_signature(&self) -> String {
+        let mut parts = Vec::with_capacity(self.movements.len());
+        for movement in &self.movements {
+            let from = anchor_signature(&self.anchors[movement.from_anchor].kind);
+            let to = anchor_signature(&self.anchors[movement.to_anchor].kind);
+            match &movement.kind {
+                JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Access,
+                    duration_seconds,
+                    ..
+                } => parts.push(format!(
+                    "access:{}:{}",
+                    match &self.anchors[movement.to_anchor].kind {
+                        JourneyAnchorKind::BoardingPoint { id } => id.as_str(),
+                        _ => "invalid",
+                    },
+                    duration_seconds
+                )),
+                JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Transfer,
+                    duration_seconds,
+                    ..
+                } => parts.push(format!(
+                    "transfer:{}:{}:{}",
+                    from.trim_start_matches("boarding_point:"),
+                    to.trim_start_matches("boarding_point:"),
+                    duration_seconds
+                )),
+                JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Egress,
+                    duration_seconds,
+                    ..
+                } => parts.push(format!(
+                    "egress:{}:{}",
+                    from.trim_start_matches("boarding_point:"),
+                    duration_seconds
+                )),
+                JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Direct,
+                    duration_seconds,
+                    distance_metres,
+                } => parts.push(format!(
+                    "direct-walking:{}:{}:{}:{}",
+                    self.departure_at.unix_timestamp_nanos(),
+                    duration_seconds,
+                    distance_metres,
+                    to
+                )),
+                JourneyMovementKind::Transit {
+                    trip,
+                    board_index,
+                    alight_index,
+                } => {
+                    let Some(board) = trip.stop_times.get(*board_index) else {
+                        parts.push(format!("invalid-transit:{board_index}"));
+                        continue;
+                    };
+                    parts.push(format!(
+                        "transit:{}:{}:{}:{}",
+                        trip.id.as_str(),
+                        board_index,
+                        alight_index,
+                        board.departure_at.unix_timestamp_nanos(),
+                    ));
+                }
+            }
+        }
+        parts.join("|")
     }
 }
 
