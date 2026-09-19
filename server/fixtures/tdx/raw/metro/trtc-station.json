@@ -25,5 +25,32 @@
     "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
     "UpdateTime": "2023-07-14T00:00:00+08:00",
     "VersionID": 3
+  },
+  {
+    "StationUID": "TRTC-R02",
+    "StationID": "R02",
+    "StationName": {"Zh_tw": "象山", "En": "Xiangshan"},
+    "StationPosition": {"PositionLon": 121.570116, "PositionLat": 25.032395},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
+  },
+  {
+    "StationUID": "TRTC-R03",
+    "StationID": "R03",
+    "StationName": {"Zh_tw": "台北101/世貿", "En": "Taipei 101/World Trade Center"},
+    "StationPosition": {"PositionLon": 121.563667, "PositionLat": 25.032865},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
+  },
+  {
+    "StationUID": "TRTC-R28",
+    "StationID": "R28",
+    "StationName": {"Zh_tw": "淡水", "En": "Tamsui"},
+    "StationPosition": {"PositionLon": 121.445805, "PositionLat": 25.167745},
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
   }
 ]

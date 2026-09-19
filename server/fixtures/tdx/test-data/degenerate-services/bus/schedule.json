@@ -1,0 +1,10 @@
+[
+  {
+    "SubRouteUID":"ONE",
+    "Direction":0,
+    "StopTimes":[
+      {"StopUID":"ONE-A","ArrivalTime":"08:00","DepartureTime":"08:00"},
+      {"StopUID":"ONE-B","ArrivalTime":"08:10","DepartureTime":"08:10"}
+    ]
+  }
+]

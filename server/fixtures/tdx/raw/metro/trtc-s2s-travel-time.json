@@ -18,5 +18,19 @@
     "SrcUpdateTime": "2020-01-31T14:00:00+08:00",
     "UpdateTime": "2020-05-20T12:00:00+08:00",
     "VersionID": 2
+  },
+  {
+    "LineNo": "R",
+    "LineID": "R",
+    "RouteID": "R-1",
+    "TrainType": 1,
+    "TravelTimes": [
+      {"Sequence": 1, "FromStationID": "R28", "ToStationID": "R10", "RunTime": 300, "StopTime": 0},
+      {"Sequence": 2, "FromStationID": "R10", "ToStationID": "R03", "RunTime": 300, "StopTime": 0},
+      {"Sequence": 3, "FromStationID": "R03", "ToStationID": "R02", "RunTime": 120, "StopTime": 0}
+    ],
+    "SrcUpdateTime": "2020-01-31T14:00:00+08:00",
+    "UpdateTime": "2020-05-20T12:00:00+08:00",
+    "VersionID": 2
   }
 ]

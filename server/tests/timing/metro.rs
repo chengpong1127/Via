@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use time::macros::datetime;
 use via_server::{
@@ -19,6 +19,10 @@ fn temporary_path(label: &str) -> PathBuf {
         "via-metro-{label}-{}",
         uuid::Uuid::new_v4().simple()
     ))
+}
+
+fn fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/test-data/metro-timing")
 }
 
 #[tokio::test]
@@ -184,46 +188,8 @@ async fn metro_frequency_timing_remains_static_fallback() {
 
 #[test]
 fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
-    let input = temporary_path("raw");
+    let input = fixture_path();
     let output = temporary_path("artifact");
-    fs::create_dir_all(input.join("metro")).unwrap();
-    fs::write(
-        input.join("metro/trtc-station.json"),
-        r#"[
-          {"StationUID":"TRTC-BL12","StationID":"BL12","StationName":{"Zh_tw":"台北車站"},"StationPosition":{"PositionLat":25.0478,"PositionLon":121.5170}},
-          {"StationUID":"TRTC-R03","StationID":"R03","StationName":{"Zh_tw":"台北101/世貿"},"StationPosition":{"PositionLat":25.0339,"PositionLon":121.5645}}
-        ]"#,
-    )
-    .unwrap();
-    fs::write(
-        input.join("metro/trtc-station-of-line.json"),
-        r#"[
-          {"LineID":"BL","LineName":{"Zh_tw":"板南線"},"Direction":0,"Stations":[{"Sequence":1,"StationID":"BL12"},{"Sequence":2,"StationID":"R03"}]}
-        ]"#,
-    )
-    .unwrap();
-    fs::write(
-        input.join("metro/trtc-station-timetable.json"),
-        r#"[
-          {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Sequence":1,"TrainNo":"BL-0800","ArrivalTime":"08:00","DepartureTime":"08:00"},{"Sequence":2,"TrainNo":"BL-0805","ArrivalTime":"08:05","DepartureTime":"08:05"}]},
-          {"LineID":"BL","Direction":1,"StationID":"R03","Timetables":[{"Sequence":1,"TrainNo":"BL-0900","ArrivalTime":"09:00","DepartureTime":"09:00"}]}
-        ]"#,
-    )
-    .unwrap();
-    fs::write(
-        input.join("metro/trtc-s2s-travel-time.json"),
-        r#"[
-          {"LineID":"BL","Direction":0,"TravelTimes":[{"Sequence":1,"FromStationID":"BL12","ToStationID":"R03","RunTime":240,"StopTime":0}]}
-        ]"#,
-    )
-    .unwrap();
-    fs::write(
-        input.join("metro/trtc-frequency.json"),
-        r#"[
-          {"LineID":"BL","Direction":0,"OperationTime":{"StartTime":"06:00","EndTime":"24:00"},"Headways":[{"StartTime":"08:00","EndTime":"08:10","MinHeadwayMins":2,"MaxHeadwayMins":3}]}
-        ]"#,
-    )
-    .unwrap();
 
     let result = build_from_raw(&input, &output, None, None).unwrap();
     assert!(result.network.trips.is_empty());

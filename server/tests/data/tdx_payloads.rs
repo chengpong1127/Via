@@ -119,10 +119,16 @@ fn current_tdx_payloads_normalize_all_static_operator_families() {
 }
 
 #[tokio::test]
-async fn real_tdx_red_line_has_boardable_directional_services() {
-    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data/dev/taipei/raw/2026-09-15");
+async fn fixture_tdx_red_line_has_boardable_directional_services() {
+    let input = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/raw");
     let output = temporary_path("real-red-line-artifact");
-    let result = build_from_raw(&input, &output, None, Some("2026-09-15".into())).unwrap();
+    let result = build_from_raw(
+        &input,
+        &output,
+        Some(DataScope::TaipeiNewTaipei),
+        Some("2026-09-15".into()),
+    )
+    .unwrap();
     let network = Arc::new(result.network);
     let realtime_scopes = network
         .services

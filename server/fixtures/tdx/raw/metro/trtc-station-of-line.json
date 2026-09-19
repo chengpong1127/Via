@@ -9,5 +9,18 @@
     "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
     "UpdateTime": "2023-07-14T00:00:00+08:00",
     "VersionID": 3
+  },
+  {
+    "LineNo": "R",
+    "LineID": "R",
+    "Stations": [
+      {"Sequence": 2, "StationID": "R02", "StationName": {"Zh_tw": "象山", "En": "Xiangshan"}},
+      {"Sequence": 3, "StationID": "R03", "StationName": {"Zh_tw": "台北101/世貿", "En": "Taipei 101/World Trade Center"}},
+      {"Sequence": 10, "StationID": "R10", "StationName": {"Zh_tw": "台北車站", "En": "Taipei Main Station"}},
+      {"Sequence": 28, "StationID": "R28", "StationName": {"Zh_tw": "淡水", "En": "Tamsui"}}
+    ],
+    "SrcUpdateTime": "2023-07-14T00:00:00+08:00",
+    "UpdateTime": "2023-07-14T00:00:00+08:00",
+    "VersionID": 3
   }
 ]

@@ -1,0 +1,3 @@
+[
+  {"LineID":"BL","Direction":0,"OperationTime":{"StartTime":"06:00","EndTime":"24:00"},"Headways":[{"StartTime":"08:00","EndTime":"08:10","MinHeadwayMins":2,"MaxHeadwayMins":3}]}
+]

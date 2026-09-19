@@ -38,8 +38,8 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         first_result.manifest.revisions,
         second_result.manifest.revisions
     );
-    assert_eq!(first_result.manifest.counts.stops, 11);
-    assert_eq!(first_result.manifest.counts.services, 6);
+    assert_eq!(first_result.manifest.counts.stops, 14);
+    assert_eq!(first_result.manifest.counts.services, 8);
     assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
     assert_eq!(first_result.manifest.counts.transfer_edges, 2);
     assert_eq!(first_result.network.transfer_edges.len(), 2);

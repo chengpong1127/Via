@@ -1,6 +1,5 @@
-use std::{fs, path::Path, path::PathBuf};
+use std::path::PathBuf;
 
-use serde_json::json;
 use via_server::data::build_from_raw;
 
 fn temporary_path(label: &str) -> PathBuf {
@@ -10,89 +9,16 @@ fn temporary_path(label: &str) -> PathBuf {
     ))
 }
 
-fn write_json(path: &Path, value: serde_json::Value) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).unwrap();
-    }
-    fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
-}
-
-fn stop(uid: &str, sequence: u64, latitude: f64, longitude: f64) -> serde_json::Value {
-    json!({
-        "StopUID": uid,
-        "StopName": {"Zh_tw": uid},
-        "StopSequence": sequence,
-        "StopPosition": {"PositionLat": latitude, "PositionLon": longitude}
-    })
+fn fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures/tdx/test-data")
+        .join(name)
 }
 
 #[test]
 fn degenerate_bus_services_are_skipped_without_collapsing_valid_or_loop_patterns() {
-    let input = temporary_path("raw");
+    let input = fixture_path("degenerate-services");
     let output = temporary_path("artifact");
-
-    write_json(
-        &input.join("bus/stop.json"),
-        json!([
-            stop("ONE-A", 0, 25.0, 121.0),
-            stop("ONE-B", 0, 25.0, 121.001),
-            stop("VALID-A", 0, 25.02, 121.02),
-            stop("VALID-B", 0, 25.01, 121.01),
-            stop("LOOP-A", 0, 25.03, 121.03),
-            stop("LOOP-B", 0, 25.04, 121.04),
-            stop("DUP-A", 0, 25.05, 121.05),
-            stop("DUP-B", 0, 25.06, 121.06)
-        ]),
-    );
-    write_json(
-        &input.join("bus/schedule.json"),
-        json!([
-            {
-                "SubRouteUID": "ONE",
-                "Direction": 0,
-                "StopTimes": [
-                    {"StopUID": "ONE-A", "ArrivalTime": "08:00", "DepartureTime": "08:00"},
-                    {"StopUID": "ONE-B", "ArrivalTime": "08:10", "DepartureTime": "08:10"}
-                ]
-            }
-        ]),
-    );
-    write_json(
-        &input.join("bus/stop-of-route.json"),
-        json!([
-            {
-                "SubRouteUID": "ONE",
-                "Direction": 0,
-                "Stops": [stop("ONE-A", 1, 25.0, 121.0)]
-            },
-            {
-                "SubRouteUID": "VALID",
-                "Direction": 0,
-                "Stops": [
-                    stop("VALID-B", 2, 25.01, 121.01),
-                    stop("VALID-A", 1, 25.02, 121.02)
-                ]
-            },
-            {
-                "SubRouteUID": "LOOP",
-                "Direction": 0,
-                "Stops": [
-                    stop("LOOP-A", 1, 25.03, 121.03),
-                    stop("LOOP-B", 2, 25.04, 121.04),
-                    stop("LOOP-A", 3, 25.03, 121.03)
-                ]
-            },
-            {
-                "SubRouteUID": "DUP",
-                "Direction": 0,
-                "Stops": [
-                    stop("DUP-A", 1, 25.05, 121.05),
-                    stop("DUP-A", 1, 25.05, 121.05),
-                    stop("DUP-B", 2, 25.06, 121.06)
-                ]
-            }
-        ]),
-    );
 
     let result = build_from_raw(&input, &output, None, None).unwrap();
 
@@ -170,12 +96,8 @@ fn degenerate_bus_services_are_skipped_without_collapsing_valid_or_loop_patterns
 
 #[test]
 fn widespread_bus_stop_of_route_corruption_is_reported_as_a_schema_mismatch() {
-    let input = temporary_path("systemic-raw");
+    let input = fixture_path("systemic-bus-corruption");
     let output = temporary_path("systemic-artifact");
-    write_json(
-        &input.join("bus/stop-of-route.json"),
-        json!([{"Stops": []}, {"Stops": []}]),
-    );
 
     let error = build_from_raw(&input, &output, None, None).unwrap_err();
 

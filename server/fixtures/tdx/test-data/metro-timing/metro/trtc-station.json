@@ -1,0 +1,4 @@
+[
+  {"StationUID":"TRTC-BL12","StationID":"BL12","StationName":{"Zh_tw":"台北車站"},"StationPosition":{"PositionLat":25.0478,"PositionLon":121.5170}},
+  {"StationUID":"TRTC-R03","StationID":"R03","StationName":{"Zh_tw":"台北101/世貿"},"StationPosition":{"PositionLat":25.0339,"PositionLon":121.5645}}
+]
