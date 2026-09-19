@@ -63,7 +63,14 @@ static scheduled trip shape, and falls back to the schedule on missing, stale,
 malformed, or failed realtime. The `ServiceConditionProvider` and
 `CachedServiceConditionProvider` remain only for request-scoped
 service-condition/status collection; they are not part of departure timing.
-Metro and THSR remain static-only.
+Metro departure timing is also owned by `MetroDepartureSource`, which calls
+TDX's [`v2/Rail/Metro/LiveBoard/TRTC`](https://tdx.transportdata.tw/api-service/swagger/basic/268fc230-2e04-471b-a728-a726167c1cfc)
+directly. It matches fresh station-level LiveBoard predictions by line,
+boarding station, and destination terminal (the directional service identity),
+then uses the existing Metro inter-station travel-time shape to materialize the
+rest of the effective trip. Missing, stale, malformed, unmatched, or failed
+Metro realtime falls back to the existing station timetable/frequency source.
+THSR remains static-only.
 
 The production boundaries are:
 
@@ -72,7 +79,7 @@ TripBasedRouter
   → DepartureResolver
   → DepartureDispatcher
   → BusDepartureSource ─────→ TdxClient
-    MetroDepartureSource
+    MetroDepartureSource ────→ TdxClient
     TraDepartureSource ─────→ TdxClient
     ThsrDepartureSource
 

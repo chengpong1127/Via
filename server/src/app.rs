@@ -168,7 +168,9 @@ where
         BusDepartureSource::new(transit_network.clone(), dependencies.tdx.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
-    let metro = Arc::new(MetroDepartureSource::new(transit_network.clone()));
+    let metro = Arc::new(
+        MetroDepartureSource::new(transit_network.clone()).with_tdx(dependencies.tdx.clone()),
+    );
     let tra = Arc::new(TraDepartureSource::new(transit_network.clone()).with_tdx(dependencies.tdx));
     let thsr = Arc::new(ThsrDepartureSource::new(transit_network.clone()));
     let departure_resolver = Arc::new(DepartureDispatcher::new(

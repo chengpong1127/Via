@@ -38,6 +38,13 @@ implemented directly in `TraDepartureSource`: its exact `tra:{TrainNo}`
 identity is matched to TDX TRA `TrainLiveBoard` records, and a fresh provider
 delay adjusts the existing scheduled trip shape. Missing, stale, malformed,
 or failed TRA realtime returns the source's static schedule result.
+Metro departure timing is likewise implemented directly in
+`MetroDepartureSource` against TDX's Metro `LiveBoard/TRTC` endpoint. A fresh
+station-level estimate is usable only when its line, boarding station, and
+destination terminal match a directional Metro service; the source retains the
+existing static inter-station travel times for downstream stops. Missing,
+stale, malformed, unmatched, or failed Metro observations return the existing
+station timetable/frequency result.
 
 ## Consequences
 
@@ -45,8 +52,10 @@ Planning avoids a global feed refresh architecture and does not require a
 global Live Status store. Realtime failures degrade only the affected mode
 queries to that mode's static policy, preserving mixed batches where some
 queries use realtime and others use fallback. Bus batching remains bounded and
-deduplicated inside the bus source. Upstream failures can still temporarily
-fail a query when its static source also fails. `CachedServiceConditionProvider`
+deduplicated inside the bus source; Metro LiveBoard requests are likewise
+deduplicated and bounded by unique line/station pairs. Upstream failures can
+still temporarily fail a query when its static source also fails.
+`CachedServiceConditionProvider`
 remains only for service-condition status collection, and owns
 `ServiceConditionMetrics`; `BusDepartureSource` owns `BusTimingMetrics`.
 

@@ -4,6 +4,7 @@ mod bus;
 mod bus_realtime;
 mod metrics;
 mod metro;
+mod metro_realtime;
 mod thsr;
 mod tra;
 

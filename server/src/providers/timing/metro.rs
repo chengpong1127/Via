@@ -1,42 +1,121 @@
-use async_trait::async_trait;
-use std::sync::Arc;
-
-use crate::domain::{
-    ids::EffectiveTripId,
-    transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
-    transit_timing::{
-        DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingReliability,
-    },
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
 };
 
-use super::source::TransitDepartureSource;
+use async_trait::async_trait;
+use time::{Duration as TimeDuration, OffsetDateTime};
+
+use super::{
+    metro_realtime::{
+        DEFAULT_LIVE_BOARD_PATH, MetroObservation, TdxMetroLiveBoard, map_tdx_error,
+        parse_realtime_payload,
+    },
+    source::TransitDepartureSource,
+};
+use crate::{
+    domain::{
+        ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
+        realtime::FreshnessPolicy,
+        transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
+        transit_timing::{
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
+            TimingReliability,
+        },
+    },
+    tdx::TdxClient,
+};
+
+const MAX_REALTIME_BATCH_PAIRS: usize = 64;
 
 /// Materializes Metro departures from station-level schedules or headways.
 ///
 /// Metro's static TDX data describes a station timetable/frequency and a
-/// separate inter-station travel-time table. It is therefore deliberately not
-/// represented as a collection of `ScheduledTrip` values.
+/// separate inter-station travel-time table. Realtime LiveBoard observations
+/// only replace the boarding-station departure; the same static travel-time
+/// shape is retained for downstream stops.
 #[derive(Clone)]
 pub struct MetroDepartureSource {
     network: Arc<TransitNetwork>,
+    tdx: Option<Arc<TdxClient>>,
+    realtime_path: String,
+    freshness_policy: FreshnessPolicy,
+}
+
+#[derive(Clone)]
+struct MetroRealtimeMatch {
+    line_id: String,
+    station_id: String,
+    destination_station_id: String,
+}
+
+#[derive(Clone, Copy)]
+struct MetroTimingMetadata {
+    basis: TimingBasis,
+    reliability: TimingReliability,
+    observed_at: Option<OffsetDateTime>,
 }
 
 impl MetroDepartureSource {
     pub fn new(network: Arc<TransitNetwork>) -> Self {
-        Self { network }
+        Self {
+            network,
+            tdx: None,
+            realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
+            freshness_policy: FreshnessPolicy::tdx_one_minute("metro_live_board_v1"),
+        }
+    }
+
+    pub fn with_tdx(mut self, tdx: Option<Arc<TdxClient>>) -> Self {
+        self.tdx = tdx;
+        self
+    }
+
+    /// Override the Metro endpoint for a fixture or a TDX deployment variant.
+    pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
+        self.realtime_path = path.into();
+        self
+    }
+
+    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
+        self.freshness_policy = freshness_policy;
+        self
+    }
+
+    fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
+        let Some(service) = self.network.service(&query.service_id) else {
+            return Err(DepartureError::InvalidQuery);
+        };
+        if service.transit_mode != TransitMode::Metro
+            || !service.pattern.contains(&query.board_stop_id)
+        {
+            return Err(DepartureError::InvalidQuery);
+        }
+        Ok(())
+    }
+
+    fn realtime_match(&self, query: &DepartureQuery) -> Option<MetroRealtimeMatch> {
+        let service = self.network.service(&query.service_id)?;
+        let (line_id, direction) = metro_service_parts(&query.service_id)?;
+        if direction > 1 {
+            return None;
+        }
+        let destination_station_id = service.pattern.last()?;
+        Some(MetroRealtimeMatch {
+            line_id: line_id.to_owned(),
+            station_id: local_station_id(&query.board_stop_id)?.to_owned(),
+            destination_station_id: local_station_id(destination_station_id)?.to_owned(),
+        })
     }
 
     fn candidates(
         &self,
         timing: &MetroTiming,
-        board_stop_id: &crate::domain::ids::BoardingPointId,
-        service_day_start: time::OffsetDateTime,
-        after: time::OffsetDateTime,
+        board_stop_id: &BoardingPointId,
+        service_day_start: OffsetDateTime,
+        after: OffsetDateTime,
         limit: usize,
-    ) -> Vec<(
-        time::OffsetDateTime,
-        crate::domain::transit_timing::TimingBasis,
-    )> {
+    ) -> Vec<(OffsetDateTime, TimingBasis)> {
         let Some(station_timing) = timing
             .station_timings
             .iter()
@@ -52,8 +131,8 @@ impl MetroDepartureSource {
             .copied()
             .map(|seconds| {
                 (
-                    service_day_start + time::Duration::seconds(i64::from(seconds)),
-                    crate::domain::transit_timing::TimingBasis::Schedule,
+                    service_day_start + TimeDuration::seconds(i64::from(seconds)),
+                    TimingBasis::Schedule,
                 )
             })
             .chain(
@@ -63,8 +142,8 @@ impl MetroDepartureSource {
                     .flat_map(|frequency| expand_frequency(frequency, after_seconds, limit))
                     .map(|seconds| {
                         (
-                            service_day_start + time::Duration::seconds(i64::from(seconds)),
-                            crate::domain::transit_timing::TimingBasis::FrequencyEstimate,
+                            service_day_start + TimeDuration::seconds(i64::from(seconds)),
+                            TimingBasis::FrequencyEstimate,
                         )
                     }),
             )
@@ -82,11 +161,11 @@ impl MetroDepartureSource {
 
     fn effective_trip(
         &self,
-        service_id: &crate::domain::ids::TransitServiceId,
+        service_id: &TransitServiceId,
         timing: &MetroTiming,
-        departure_at: time::OffsetDateTime,
-        timing_basis: crate::domain::transit_timing::TimingBasis,
-        board_stop_id: &crate::domain::ids::BoardingPointId,
+        departure_at: OffsetDateTime,
+        metadata: MetroTimingMetadata,
+        board_stop_id: &BoardingPointId,
     ) -> Option<EffectiveTrip> {
         let service = self.network.service(service_id)?;
         let board_index = service
@@ -114,7 +193,7 @@ impl MetroDepartureSource {
             .iter()
             .zip(offsets)
             .map(|(stop_id, offset)| {
-                let at = departure_at + time::Duration::seconds(offset);
+                let at = departure_at + TimeDuration::seconds(offset);
                 EffectiveStopTime {
                     stop_id: stop_id.clone(),
                     arrival_at: at,
@@ -129,9 +208,14 @@ impl MetroDepartureSource {
         }) {
             return None;
         }
+        let id_prefix = if metadata.basis == TimingBasis::RealtimePrediction {
+            "metro:realtime"
+        } else {
+            "metro"
+        };
         Some(EffectiveTrip {
             id: EffectiveTripId::new(format!(
-                "metro:{}:{}:{}",
+                "{id_prefix}:{}:{}:{}",
                 service_id.as_str(),
                 board_stop_id.as_str(),
                 departure_at.unix_timestamp_nanos()
@@ -139,40 +223,177 @@ impl MetroDepartureSource {
             service_id: service_id.clone(),
             scheduled_trip_id: None,
             stop_times,
-            timing_basis,
-            timing_reliability: TimingReliability::Fallback,
-            observed_at: None,
+            timing_basis: metadata.basis,
+            timing_reliability: metadata.reliability,
+            observed_at: metadata.observed_at,
             uncertainty_seconds: None,
             evidence: Vec::new(),
         })
     }
-}
 
-#[async_trait]
-impl TransitDepartureSource for MetroDepartureSource {
-    fn mode(&self) -> TransitMode {
-        TransitMode::Metro
+    fn resolve_realtime_query(
+        &self,
+        query: &DepartureQuery,
+        realtime_match: &MetroRealtimeMatch,
+        observations: &[MetroObservation],
+    ) -> Vec<EffectiveTrip> {
+        let Some(timing) = self
+            .network
+            .metro_timings
+            .iter()
+            .find(|timing| timing.service_id == query.service_id)
+        else {
+            return Vec::new();
+        };
+        let mut departures = observations
+            .iter()
+            .filter(|observation| {
+                observation.line_id == realtime_match.line_id
+                    && observation.station_id == realtime_match.station_id
+                    && observation.destination_station_id == realtime_match.destination_station_id
+                    && observation.departure_at >= query.after
+            })
+            .filter_map(|observation| {
+                self.effective_trip(
+                    &query.service_id,
+                    timing,
+                    observation.departure_at,
+                    MetroTimingMetadata {
+                        basis: TimingBasis::RealtimePrediction,
+                        reliability: TimingReliability::Reliable,
+                        observed_at: Some(observation.observed_at),
+                    },
+                    &query.board_stop_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        let board_index = self.network.service(&query.service_id).and_then(|service| {
+            service
+                .pattern
+                .iter()
+                .position(|stop_id| stop_id == &query.board_stop_id)
+        });
+        let Some(board_index) = board_index else {
+            return Vec::new();
+        };
+        departures.sort_by(|left, right| {
+            left.stop_times[board_index]
+                .departure_at
+                .cmp(&right.stop_times[board_index].departure_at)
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        departures.dedup_by(|left, right| {
+            left.stop_times[board_index].departure_at == right.stop_times[board_index].departure_at
+        });
+        departures.truncate(query.limit);
+        departures
     }
 
-    fn static_timing_reliability(&self, _query: &DepartureQuery) -> TimingReliability {
-        TimingReliability::Fallback
+    async fn realtime_departures(
+        &self,
+        queries: Vec<DepartureQuery>,
+    ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
+        let mut requested_pairs = BTreeMap::<(String, String), Vec<usize>>::new();
+        let mut matches = vec![None; queries.len()];
+        let mut invalid_queries = HashSet::new();
+        for (index, query) in queries.iter().enumerate() {
+            if query.limit == 0 {
+                continue;
+            }
+            if self.validate_query(query).is_err() {
+                invalid_queries.insert(index);
+                continue;
+            }
+            let Some(realtime_match) = self.realtime_match(query) else {
+                continue;
+            };
+            requested_pairs
+                .entry((
+                    realtime_match.line_id.clone(),
+                    realtime_match.station_id.clone(),
+                ))
+                .or_default()
+                .push(index);
+            matches[index] = Some(realtime_match);
+        }
+
+        if requested_pairs.is_empty() {
+            return queries
+                .into_iter()
+                .enumerate()
+                .map(|(index, _query)| {
+                    if invalid_queries.contains(&index) {
+                        Err(DepartureError::InvalidQuery)
+                    } else {
+                        Ok(Vec::new())
+                    }
+                })
+                .collect();
+        }
+
+        let request_keys = requested_pairs.keys().cloned().collect::<Vec<_>>();
+        let mut observations = Vec::new();
+        let mut errors_by_query = HashMap::new();
+        for pairs in request_keys.chunks(MAX_REALTIME_BATCH_PAIRS) {
+            let filter = metro_filter(pairs);
+            let request = [
+                ("$filter", filter.as_str()),
+                ("$top", "1000"),
+                ("$format", "JSON"),
+            ];
+            let payload = self
+                .tdx
+                .as_ref()
+                .expect("realtime_departures requires a TDX client")
+                .get_json::<Vec<TdxMetroLiveBoard>>(&self.realtime_path, &request)
+                .await;
+            let parsed = match payload {
+                Ok(payload) => parse_realtime_payload(payload, &self.freshness_policy),
+                Err(error) => Err(map_tdx_error(error)),
+            };
+            match parsed {
+                Ok(values) => observations.extend(values),
+                Err(error) => {
+                    for pair in pairs {
+                        if let Some(indexes) = requested_pairs.get(pair) {
+                            for index in indexes {
+                                errors_by_query.insert(*index, error.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        queries
+            .into_iter()
+            .enumerate()
+            .map(|(index, query)| {
+                if invalid_queries.contains(&index) {
+                    Err(DepartureError::InvalidQuery)
+                } else if let Some(error) = errors_by_query.get(&index).cloned() {
+                    Err(error)
+                } else if query.limit == 0 {
+                    Ok(Vec::new())
+                } else {
+                    Ok(matches[index]
+                        .as_ref()
+                        .map_or_else(Vec::new, |realtime_match| {
+                            self.resolve_realtime_query(&query, realtime_match, &observations)
+                        }))
+                }
+            })
+            .collect()
     }
 
-    async fn static_departures(
+    fn static_departures_for_query(
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(service) = self.network.service(&query.service_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if service.transit_mode != TransitMode::Metro
-            || !service.pattern.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
+        self.validate_query(&query)?;
         let Some(timing) = self
             .network
             .metro_timings
@@ -198,12 +419,78 @@ impl TransitDepartureSource for MetroDepartureSource {
                     &query.service_id,
                     timing,
                     departure_at,
-                    timing_basis,
+                    MetroTimingMetadata {
+                        basis: timing_basis,
+                        reliability: TimingReliability::Fallback,
+                        observed_at: None,
+                    },
                     &query.board_stop_id,
                 )
             })
             .collect())
     }
+}
+
+#[async_trait]
+impl TransitDepartureSource for MetroDepartureSource {
+    fn mode(&self) -> TransitMode {
+        TransitMode::Metro
+    }
+
+    fn static_timing_reliability(&self, _query: &DepartureQuery) -> TimingReliability {
+        TimingReliability::Fallback
+    }
+
+    async fn static_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        self.static_departures_for_query(query)
+    }
+
+    async fn realtime_departures_batch(
+        &self,
+        queries: Vec<DepartureQuery>,
+    ) -> Option<Vec<Result<Vec<EffectiveTrip>, DepartureError>>> {
+        self.tdx.as_ref()?;
+        Some(self.realtime_departures(queries).await)
+    }
+}
+
+fn metro_service_parts(service_id: &TransitServiceId) -> Option<(&str, u8)> {
+    let service = service_id.as_str().strip_prefix("metro:")?;
+    let (line_id, direction) = service.rsplit_once("::direction=")?;
+    if line_id.is_empty() {
+        return None;
+    }
+    Some((line_id, direction.parse().ok()?))
+}
+
+fn local_station_id(stop_id: &BoardingPointId) -> Option<&str> {
+    let station_id = stop_id.as_str();
+    let local = station_id
+        .strip_prefix("TRTC-")
+        .unwrap_or(station_id)
+        .trim();
+    (!local.is_empty()).then_some(local)
+}
+
+fn metro_filter(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(line_id, station_id)| {
+            format!(
+                "(LineID eq '{}' and StationID eq '{}')",
+                escape_odata_literal(line_id),
+                escape_odata_literal(station_id)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+fn escape_odata_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn expand_frequency(frequency: &MetroFrequency, after_seconds: u32, limit: usize) -> Vec<u32> {
@@ -240,11 +527,11 @@ fn expand_frequency(frequency: &MetroFrequency, after_seconds: u32, limit: usize
     result
 }
 
-fn timing_basis_order(basis: crate::domain::transit_timing::TimingBasis) -> u8 {
+fn timing_basis_order(basis: TimingBasis) -> u8 {
     match basis {
-        crate::domain::transit_timing::TimingBasis::Schedule => 0,
-        crate::domain::transit_timing::TimingBasis::FrequencyEstimate => 1,
-        crate::domain::transit_timing::TimingBasis::RealtimePrediction => 2,
-        crate::domain::transit_timing::TimingBasis::DelayAdjustedSchedule => 3,
+        TimingBasis::Schedule => 0,
+        TimingBasis::FrequencyEstimate => 1,
+        TimingBasis::RealtimePrediction => 2,
+        TimingBasis::DelayAdjustedSchedule => 3,
     }
 }
