@@ -165,11 +165,11 @@ where
     let bus_timing_metrics = BusTimingMetrics::default();
     let transit_network = Arc::new(transit_network);
     let bus = Arc::new(
-        BusDepartureSource::new(transit_network.clone(), dependencies.tdx)
+        BusDepartureSource::new(transit_network.clone(), dependencies.tdx.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(MetroDepartureSource::new(transit_network.clone()));
-    let tra = Arc::new(TraDepartureSource::new(transit_network.clone()));
+    let tra = Arc::new(TraDepartureSource::new(transit_network.clone()).with_tdx(dependencies.tdx));
     let thsr = Arc::new(ThsrDepartureSource::new(transit_network.clone()));
     let departure_resolver = Arc::new(DepartureDispatcher::new(
         transit_network.clone(),

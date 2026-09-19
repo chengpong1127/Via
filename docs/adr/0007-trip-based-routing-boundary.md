@@ -30,7 +30,10 @@ and optional realtime timing, batching strategy, realtime/static fallback, and
 `TimingReliability` policy. Bus departure timing calls the shared, thin
 `TdxClient` directly; its endpoint paths, TDX DTOs, freshness, and fallback
 remain in the `timing/bus*.rs` source modules. The service-condition provider
-is not in this departure path. `TimingBasis` remains provenance only,
+is not in this departure path. TRA departure timing calls the same thin
+`TdxClient` directly and keeps its TrainLiveBoard DTOs, exact train-number
+matching, freshness, delay adjustment, batching, and fallback in
+`timing/tra.rs`. `TimingBasis` remains provenance only,
 so a static THSR
 timetable can be `Reliable` while bus static fallback or Metro frequency
 timing can be `Fallback`.

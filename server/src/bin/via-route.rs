@@ -105,10 +105,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bus_timing_metrics = BusTimingMetrics::default();
     let street = build_street_router(cli.service_conditions).await?;
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx).with_metrics(bus_timing_metrics.clone()),
+        BusDepartureSource::new(network.clone(), tdx.clone())
+            .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    let tra = Arc::new(TraDepartureSource::new(network.clone()));
+    let tra = Arc::new(TraDepartureSource::new(network.clone()).with_tdx(tdx));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
     let departure = Arc::new(DepartureDispatcher::new(
         network.clone(),

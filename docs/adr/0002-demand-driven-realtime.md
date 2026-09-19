@@ -33,7 +33,11 @@ transport-only `TdxClient`; it does not depend on `ServiceConditionProvider`, an
 arrival query, or a generic status cache. `TimingBasis` records
 provenance (`RealtimePrediction`, `DelayAdjustedSchedule`, `Schedule`, or
 `FrequencyEstimate`). `TimingReliability` is a separate source-owned policy;
-static timing is not inherently unreliable.
+static timing is not inherently unreliable. TRA departure timing is also
+implemented directly in `TraDepartureSource`: its exact `tra:{TrainNo}`
+identity is matched to TDX TRA `TrainLiveBoard` records, and a fresh provider
+delay adjusts the existing scheduled trip shape. Missing, stale, malformed,
+or failed TRA realtime returns the source's static schedule result.
 
 ## Consequences
 

@@ -56,11 +56,14 @@ identity must not be conflated.
 Bus realtime timing is owned by `BusDepartureSource`, which calls the shared
 transport-only `TdxClient` directly. The source owns the bus endpoint path,
 scoped OData query, private TDX DTO parsing, freshness checks, batching,
-request-local effective-trip materialization, and static fallback. The
-`ServiceConditionProvider` and `CachedServiceConditionProvider` remain only
-for request-scoped service-condition/status collection; they are not part of
-departure timing. Metro, TRA, and THSR remain static-only until their own
-sources implement a direct TDX integration.
+request-local effective-trip materialization, and static fallback. TRA timing
+is likewise owned by `TraDepartureSource`: it batches exact `tra:{TrainNo}`
+queries against TDX's TRA `v3/Rail/TRA/TrainLiveBoard`, applies a fresh delay to the
+static scheduled trip shape, and falls back to the schedule on missing, stale,
+malformed, or failed realtime. The `ServiceConditionProvider` and
+`CachedServiceConditionProvider` remain only for request-scoped
+service-condition/status collection; they are not part of departure timing.
+Metro and THSR remain static-only.
 
 The production boundaries are:
 
@@ -70,7 +73,7 @@ TripBasedRouter
   → DepartureDispatcher
   → BusDepartureSource ─────→ TdxClient
     MetroDepartureSource
-    TraDepartureSource
+    TraDepartureSource ─────→ TdxClient
     ThsrDepartureSource
 
 RoutingService
