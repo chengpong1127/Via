@@ -134,7 +134,7 @@ delay-adjusted `EffectiveTrip`.
 [`ThsrDepartureSource`](../../server/src/providers/timing/thsr.rs#L15-L53) has no
 TDX client and delegates to `ScheduleDepartureResolver`. Its static reliability
 is `Reliable`; the existing contract test asserts `Schedule + Reliable` for
-THSR ([`departure_dispatcher_contract.rs`](../../server/tests/departure_dispatcher_contract.rs#L160-L199)).
+THSR ([`dispatcher.rs`](../../server/tests/timing/dispatcher.rs#L160-L199)).
 
 That behavior is the intended design until TDX publishes a documented THSR
 per-train actual/predicted timing feed with a stable train/date identity and

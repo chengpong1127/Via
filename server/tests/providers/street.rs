@@ -1,8 +1,6 @@
-mod support;
-
 use std::sync::Arc;
 
-use support::{ProviderContractFixture, assert_provider_contract};
+use crate::support::{ProviderContractFixture, assert_provider_contract};
 use via_server::street::{
     Coordinate, FakeStreetRouter, Maneuver, ManeuverKind, MatrixCell, MatrixOrientation,
     MatrixQuery, Metres, RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError,

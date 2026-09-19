@@ -1,10 +1,12 @@
-mod support;
-
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 
+use crate::support::{
+    ProviderContractFixture, assert_cancellation_follow_up_succeeds, assert_malformed_response,
+    assert_provider_contract, assert_rate_limited, assert_timeout, assert_unreachable,
+};
 use axum::{
     Json, Router,
     extract::State,
@@ -14,10 +16,6 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use support::{
-    ProviderContractFixture, assert_cancellation_follow_up_succeeds, assert_malformed_response,
-    assert_provider_contract, assert_rate_limited, assert_timeout, assert_unreachable,
-};
 use time::macros::datetime;
 use via_server::{
     health::DependencyHealth,

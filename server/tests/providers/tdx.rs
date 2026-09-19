@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
+use crate::support::tdx::spawn_tdx_fixture;
 use axum::{
     Json, Router,
     http::StatusCode,
@@ -11,7 +12,6 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     domain::ids::TransitServiceId,
     providers::{ServiceConditionProvider, TdxServiceConditionProvider},
-    tdx::{TdxClient, TdxCredentials},
 };
 
 async fn fixture_provider(app: Router) -> TdxServiceConditionProvider {
@@ -24,19 +24,7 @@ async fn fixture_provider(app: Router) -> TdxServiceConditionProvider {
             }))
         }),
     );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let base_url = format!("http://{address}/");
-    let client = Arc::new(
-        TdxClient::with_urls(
-            TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
-            &base_url,
-            &base_url,
-        )
-        .unwrap(),
-    );
-    TdxServiceConditionProvider::new(client)
+    TdxServiceConditionProvider::new(spawn_tdx_fixture(app).await)
 }
 
 #[tokio::test]

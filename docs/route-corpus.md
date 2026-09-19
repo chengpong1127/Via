@@ -2,7 +2,7 @@
 
 This is the small deterministic corpus used when changing the Trip-Based
 search or its immutable indexes. Static fixture assertions use the existing
-`server/tests/routing_fixtures.rs` network and schedules; live TDX runs should
+`server/tests/routing/fixtures.rs` network and schedules; live TDX runs should
 assert route structure rather than exact arrival times.
 
 | Case | Fixture or real route | Structural assertion |

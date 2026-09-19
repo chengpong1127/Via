@@ -145,13 +145,18 @@ fn generated_openapi_covers_the_http_contract() {
     }
 
     let request: PlanningRequest =
-        serde_json::from_str(include_str!("../fixtures/api/planning-request.json")).unwrap();
+        serde_json::from_str(include_str!("../../fixtures/api/planning-request.json")).unwrap();
     request.validate().unwrap();
+    let _: Value = serde_json::from_str(include_str!(
+        "../../fixtures/api/journey-options-result.json"
+    ))
+    .unwrap();
     let _: Value =
-        serde_json::from_str(include_str!("../fixtures/api/journey-options-result.json")).unwrap();
-    let _: Value = serde_json::from_str(include_str!("../fixtures/api/empty-result.json")).unwrap();
-    let _: Value =
-        serde_json::from_str(include_str!("../fixtures/api/invalid-request-error.json")).unwrap();
+        serde_json::from_str(include_str!("../../fixtures/api/empty-result.json")).unwrap();
+    let _: Value = serde_json::from_str(include_str!(
+        "../../fixtures/api/invalid-request-error.json"
+    ))
+    .unwrap();
 }
 
 #[tokio::test]
@@ -181,7 +186,7 @@ async fn openapi_endpoint_serves_the_generated_document_without_caching() {
 fn representative_payload_serialization_remains_compatible_with_generated_schemas() {
     let document = serde_json::to_value(openapi_document()).unwrap();
     let request_fixture: Value =
-        serde_json::from_str(include_str!("../fixtures/api/planning-request.json")).unwrap();
+        serde_json::from_str(include_str!("../../fixtures/api/planning-request.json")).unwrap();
     let request: PlanningRequest = serde_json::from_value(request_fixture.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), request_fixture);
     assert_schema_compatible(
@@ -194,15 +199,15 @@ fn representative_payload_serialization_remains_compatible_with_generated_schema
     for (schema, fixture) in [
         (
             "JourneyOptionsResult",
-            include_str!("../fixtures/api/journey-options-result.json"),
+            include_str!("../../fixtures/api/journey-options-result.json"),
         ),
         (
             "EmptyResult",
-            include_str!("../fixtures/api/empty-result.json"),
+            include_str!("../../fixtures/api/empty-result.json"),
         ),
         (
             "ErrorEnvelope",
-            include_str!("../fixtures/api/invalid-request-error.json"),
+            include_str!("../../fixtures/api/invalid-request-error.json"),
         ),
     ] {
         let payload: Value = serde_json::from_str(fixture).unwrap();

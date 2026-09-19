@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use crate::support::tdx::spawn_tdx_fixture;
 use axum::{
     Json, Router,
     http::{Method, StatusCode, Uri},
@@ -21,7 +22,7 @@ use via_server::{
         transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
-    tdx::{TdxClient, TdxCredentials},
+    tdx::TdxClient,
 };
 
 #[derive(Clone)]
@@ -55,17 +56,7 @@ async fn fixture_client(payload: Value, status: StatusCode) -> (Arc<TdxClient>, 
             (status, Json(payload)).into_response()
         }
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let base_url = format!("http://{address}/");
-    let client = TdxClient::with_urls(
-        TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
-        &base_url,
-        &base_url,
-    )
-    .unwrap();
-    (Arc::new(client), stats)
+    (spawn_tdx_fixture(app).await, stats)
 }
 
 fn recent_update() -> String {

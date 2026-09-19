@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+pub mod network;
+pub mod routing;
+pub mod tdx;
+
 use via_server::street::{
     Coordinate, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, Metres, RouteQuery,
     Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
