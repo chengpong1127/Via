@@ -6,18 +6,23 @@ use via_server::{
     api::PlanningRequest,
     data::load_network_artifact,
     domain::{
+        bikeshare::BikeShareNetwork,
         ids::BoardingPointId,
         realtime::FreshnessPolicy,
         transit::{TransferEdge, TransitNetwork},
     },
     providers::{
+        BikeAvailabilitySource,
         service_conditions::{CachedServiceConditionProvider, NullServiceConditionProvider},
         timing::{
             BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
             TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{JourneyAugmenter, RoutingService, TransferIndex, transfers::TransferShortcutIndex},
+    routing::{
+        BikeAugmentationPolicy, BikeJourneyAugmenter, JourneyAugmenter, RoutingService,
+        TransferIndex, transfers::TransferShortcutIndex,
+    },
     street::{Coordinate, FakeStreetRouter},
     tdx::TdxClient,
 };
@@ -83,7 +88,7 @@ pub(crate) async fn route_body(
     realtime: FixtureRealtime,
     body: Value,
 ) -> Value {
-    route_body_inner(street, realtime, body, None).await
+    route_body_inner(street, realtime, body, None, None).await
 }
 
 pub(crate) async fn route_body_with_augmenter(
@@ -92,7 +97,25 @@ pub(crate) async fn route_body_with_augmenter(
     body: Value,
     augmenter: Arc<dyn JourneyAugmenter>,
 ) -> Value {
-    route_body_inner(street, realtime, body, Some(augmenter)).await
+    route_body_inner(street, realtime, body, Some(augmenter), None).await
+}
+
+pub(crate) async fn route_body_with_bike(
+    street: FakeStreetRouter,
+    realtime: FixtureRealtime,
+    body: Value,
+    network: Arc<BikeShareNetwork>,
+    availability_source: Arc<dyn BikeAvailabilitySource>,
+    policy: BikeAugmentationPolicy,
+) -> Value {
+    route_body_inner(
+        street,
+        realtime,
+        body,
+        None,
+        Some((network, availability_source, policy)),
+    )
+    .await
 }
 
 async fn route_body_inner(
@@ -100,6 +123,11 @@ async fn route_body_inner(
     realtime: FixtureRealtime,
     body: Value,
     augmenter: Option<Arc<dyn JourneyAugmenter>>,
+    bike: Option<(
+        Arc<BikeShareNetwork>,
+        Arc<dyn BikeAvailabilitySource>,
+        BikeAugmentationPolicy,
+    )>,
 ) -> Value {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
@@ -133,10 +161,25 @@ async fn route_body_inner(
     let cached = Arc::new(CachedServiceConditionProvider::new(Arc::new(
         NullServiceConditionProvider,
     )));
+    let service_street = Arc::new(street.clone());
     let service =
-        RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
+        RoutingService::new(service_street, departure, cached).with_transit_network_arc(network);
     let service = match augmenter {
         Some(augmenter) => service.with_journey_augmenter(augmenter),
+        None => service,
+    };
+    let service = match bike {
+        Some((bike_network, availability_source, policy)) => {
+            let augmenter = BikeJourneyAugmenter::new(
+                bike_network.clone(),
+                availability_source,
+                Arc::new(street),
+                policy,
+            );
+            service
+                .with_bike_share_network(bike_network)
+                .with_journey_augmenter(Arc::new(augmenter))
+        }
         None => service,
     };
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()

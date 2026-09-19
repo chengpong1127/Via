@@ -119,7 +119,7 @@ fn generated_openapi_covers_the_http_contract() {
     );
     assert_eq!(
         openapi["components"]["schemas"]["JourneyMode"]["enum"],
-        serde_json::json!(["walking", "transit"])
+        serde_json::json!(["walking", "transit", "bicycle"])
     );
     assert_eq!(
         openapi["components"]["schemas"]["TransitMode"]["enum"],

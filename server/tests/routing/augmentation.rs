@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
+use serde_json::json;
 use time::{Duration, OffsetDateTime, macros::datetime};
 use via_server::{
     api::{DepartureSetting, PlanningRequest, RequestCoordinate, SelectedPlace},
@@ -23,7 +24,7 @@ use via_server::{
 };
 
 use super::fixtures::{self, FixtureRealtime};
-use crate::support::routing::near_stop;
+use crate::support::routing::{near_stop, path, stop_coordinate};
 
 const START: OffsetDateTime = datetime!(2026-08-31 10:00 UTC);
 
@@ -381,6 +382,272 @@ async fn bike_augmenter_rejects_stale_availability_and_matrix_failures() {
         .await;
     assert_eq!(failed_variants.len(), 1);
     assert!(failed_variants[0].is_baseline());
+}
+
+#[tokio::test]
+async fn bike_variant_reconstructs_with_station_legs_and_bicycle_geometry() {
+    let transit_network = fixtures::network();
+    let origin = near_stop(&transit_network, "F-M1");
+    let destination = near_stop(&transit_network, "F-M2-RED");
+    let pickup_coordinate = RequestCoordinate {
+        latitude: 25.01,
+        longitude: 121.51,
+    };
+    let dropoff_coordinate = RequestCoordinate {
+        latitude: 25.02,
+        longitude: 121.52,
+    };
+    let pickup_id = via_server::domain::ids::BikeStationId::new("pickup");
+    let dropoff_id = via_server::domain::ids::BikeStationId::new("dropoff");
+    let bike_network = Arc::new(
+        BikeShareNetwork::new(vec![
+            BikeStation::new(pickup_id.clone(), "Fixture Pickup", pickup_coordinate),
+            BikeStation::new(dropoff_id.clone(), "Fixture Dropoff", dropoff_coordinate),
+        ])
+        .with_access_links(vec![
+            BikeStationAccess::new(
+                BoardingPointId::new("F-M1"),
+                pickup_id.clone(),
+                Some(BikeWalkingAccess::new(20, 100)),
+                None,
+            ),
+            BikeStationAccess::new(
+                BoardingPointId::new("F-M2-RED"),
+                dropoff_id.clone(),
+                None,
+                Some(BikeWalkingAccess::new(20, 100)),
+            ),
+        ])
+        .with_revision("fixture-bike"),
+    );
+    let m1 = stop_coordinate(&transit_network, "F-M1");
+    let m2 = stop_coordinate(&transit_network, "F-M2-RED");
+    let pickup = via_server::street::Coordinate::try_new(
+        pickup_coordinate.latitude,
+        pickup_coordinate.longitude,
+    )
+    .unwrap();
+    let dropoff = via_server::street::Coordinate::try_new(
+        dropoff_coordinate.latitude,
+        dropoff_coordinate.longitude,
+    )
+    .unwrap();
+    let street = FakeStreetRouter::builder()
+        .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
+        .path(
+            StreetTravelMode::Walking,
+            m2,
+            destination,
+            path(m2, destination, 60),
+        )
+        .path(StreetTravelMode::Walking, m1, pickup, path(m1, pickup, 15))
+        .path(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            path(pickup, dropoff, 90),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            dropoff,
+            m2,
+            path(dropoff, m2, 15),
+        )
+        .matrix_leg(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            Seconds(90),
+            Metres(600),
+        )
+        .build();
+    let source = Arc::new(FixtureAvailabilitySource {
+        snapshot: Ok(bike_snapshot(START, false)),
+    });
+    let repeated_street = street.clone();
+    let repeated_network = bike_network.clone();
+    let repeated_source = source.clone();
+    let body = fixtures::route_body_with_bike(
+        street,
+        FixtureRealtime::empty(),
+        fixtures::request(origin, destination, &["transit"]),
+        bike_network,
+        source,
+        BikeAugmentationPolicy {
+            now: Some(START),
+            ..BikeAugmentationPolicy::default()
+        },
+    )
+    .await;
+    let options = body["journey_options"].as_array().unwrap();
+    let bike = options
+        .iter()
+        .find(|option| option["bike_share_uses"] == 1)
+        .unwrap_or_else(|| panic!("bike option missing: {body}"));
+    assert_eq!(bike["travel_modes"], json!(["walking", "bicycle"]));
+    assert_eq!(
+        bike["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leg| leg["mode"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["walking", "walking", "bicycle", "walking", "walking"]
+    );
+    assert_eq!(bike["bicycle_seconds"], 90);
+    assert_eq!(bike["legs"][2]["details"]["type"], "bike_share");
+    assert_eq!(bike["legs"][2]["details"]["pickup_station_id"], "pickup");
+    assert_eq!(
+        bike["legs"][2]["details"]["dropoff_station_name"],
+        "Fixture Dropoff"
+    );
+    assert_eq!(bike["legs"][2]["from"]["coordinate"]["latitude"], 25.01);
+    assert_eq!(bike["legs"][2]["to"]["coordinate"]["longitude"], 121.52);
+    assert_eq!(bike["legs"][1]["from"]["kind"], "boarding_point");
+    assert_eq!(bike["legs"][1]["to"]["kind"], "bike_station");
+    let repeated = fixtures::route_body_with_bike(
+        repeated_street,
+        FixtureRealtime::empty(),
+        fixtures::request(origin, destination, &["transit"]),
+        repeated_network,
+        repeated_source,
+        BikeAugmentationPolicy {
+            now: Some(START),
+            ..BikeAugmentationPolicy::default()
+        },
+    )
+    .await;
+    let repeated_options = repeated["journey_options"].as_array().unwrap();
+    let repeated_bike = repeated_options
+        .iter()
+        .find(|option| option["bike_share_uses"] == 1)
+        .unwrap();
+    let baseline = options
+        .iter()
+        .find(|option| option["bike_share_uses"] == 0)
+        .unwrap();
+    assert_ne!(bike["matching_key"], baseline["matching_key"]);
+    assert_eq!(bike["matching_key"], repeated_bike["matching_key"]);
+}
+
+#[tokio::test]
+async fn bike_connector_becomes_the_transfer_between_retained_transit_legs() {
+    let transit_network = fixtures::network();
+    let origin = near_stop(&transit_network, "F-M1");
+    let destination = near_stop(&transit_network, "F-M3-BLUE");
+    let pickup_coordinate = RequestCoordinate {
+        latitude: 25.03,
+        longitude: 121.53,
+    };
+    let dropoff_coordinate = RequestCoordinate {
+        latitude: 25.04,
+        longitude: 121.54,
+    };
+    let pickup_id = via_server::domain::ids::BikeStationId::new("pickup");
+    let dropoff_id = via_server::domain::ids::BikeStationId::new("dropoff");
+    let bike_network = Arc::new(
+        BikeShareNetwork::new(vec![
+            BikeStation::new(pickup_id.clone(), "Transfer Pickup", pickup_coordinate),
+            BikeStation::new(dropoff_id.clone(), "Transfer Dropoff", dropoff_coordinate),
+        ])
+        .with_access_links(vec![
+            BikeStationAccess::new(
+                BoardingPointId::new("F-M2-RED"),
+                pickup_id,
+                Some(BikeWalkingAccess::new(15, 75)),
+                None,
+            ),
+            BikeStationAccess::new(
+                BoardingPointId::new("F-M2-BLUE"),
+                dropoff_id,
+                None,
+                Some(BikeWalkingAccess::new(15, 75)),
+            ),
+        ])
+        .with_revision("fixture-bike-transfer"),
+    );
+    let m1 = stop_coordinate(&transit_network, "F-M1");
+    let m2_red = stop_coordinate(&transit_network, "F-M2-RED");
+    let m2_blue = stop_coordinate(&transit_network, "F-M2-BLUE");
+    let m3_blue = stop_coordinate(&transit_network, "F-M3-BLUE");
+    let pickup = via_server::street::Coordinate::try_new(
+        pickup_coordinate.latitude,
+        pickup_coordinate.longitude,
+    )
+    .unwrap();
+    let dropoff = via_server::street::Coordinate::try_new(
+        dropoff_coordinate.latitude,
+        dropoff_coordinate.longitude,
+    )
+    .unwrap();
+    let street = FakeStreetRouter::builder()
+        .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
+        .path(
+            StreetTravelMode::Walking,
+            m3_blue,
+            destination,
+            path(m3_blue, destination, 60),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            m2_red,
+            pickup,
+            path(m2_red, pickup, 10),
+        )
+        .path(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            path(pickup, dropoff, 60),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            dropoff,
+            m2_blue,
+            path(dropoff, m2_blue, 10),
+        )
+        .matrix_leg(
+            StreetTravelMode::Bicycle,
+            pickup,
+            dropoff,
+            Seconds(60),
+            Metres(400),
+        )
+        .build();
+    let body = fixtures::route_body_with_bike(
+        street,
+        FixtureRealtime::empty(),
+        fixtures::request(origin, destination, &["transit"]),
+        bike_network,
+        Arc::new(FixtureAvailabilitySource {
+            snapshot: Ok(bike_snapshot(START, false)),
+        }),
+        BikeAugmentationPolicy {
+            now: Some(START),
+            ..BikeAugmentationPolicy::default()
+        },
+    )
+    .await;
+    let bike = fixtures::option_for_services(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
+    assert_eq!(bike["bike_share_uses"], 1);
+    assert_eq!(bike["transfer_count"], 1);
+    let transfers = bike["transfers"].as_array().unwrap();
+    assert_eq!(transfers.len(), 1);
+    let connector_ids = transfers[0]["connector_leg_ids"].as_array().unwrap();
+    assert_eq!(connector_ids.len(), 3);
+    let leg_by_id = bike["legs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|leg| (leg["id"].as_str().unwrap(), leg["mode"].as_str().unwrap()))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        connector_ids
+            .iter()
+            .map(|id| leg_by_id[id.as_str().unwrap()])
+            .collect::<Vec<_>>(),
+        vec!["walking", "bicycle", "walking"]
+    );
 }
 
 #[test]

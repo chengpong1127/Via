@@ -53,6 +53,10 @@ struct ServerDetails: Decodable, Sendable {
     let alightingPointID: String?
     let serviceLabel: String?
     let headsign: String?
+    let pickupStationID: String?
+    let pickupStationName: String?
+    let dropoffStationID: String?
+    let dropoffStationName: String?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -62,6 +66,10 @@ struct ServerDetails: Decodable, Sendable {
         case alightingPointID = "via_alighting_point_id"
         case serviceLabel = "service_label"
         case headsign
+        case pickupStationID = "pickup_station_id"
+        case pickupStationName = "pickup_station_name"
+        case dropoffStationID = "dropoff_station_id"
+        case dropoffStationName = "dropoff_station_name"
     }
 }
 

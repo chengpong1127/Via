@@ -27,6 +27,8 @@ struct ServerJourneyOptionDTO: Decodable, Sendable {
     let arrivalTime: String
     let durationSeconds: Int
     let walkingSeconds: Int
+    let bicycleSeconds: Int?
+    let bikeShareUses: Int?
     let transferCount: Int
     let travelModes: [String]
     let liveStatusSummary: ServerLiveStatusSummary
@@ -42,6 +44,8 @@ struct ServerJourneyOptionDTO: Decodable, Sendable {
         case arrivalTime = "arrival_time"
         case durationSeconds = "duration_seconds"
         case walkingSeconds = "walking_seconds"
+        case bicycleSeconds = "bicycle_seconds"
+        case bikeShareUses = "bike_share_uses"
         case transferCount = "transfer_count"
         case travelModes = "travel_modes"
         case liveStatusSummary = "live_status_summary"

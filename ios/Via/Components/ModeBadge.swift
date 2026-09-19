@@ -24,6 +24,7 @@ struct ModeBadge: View {
         switch mode {
         case .transit: .purple
         case .walking: .gray
+        case .bicycle: .orange
         }
     }
 }

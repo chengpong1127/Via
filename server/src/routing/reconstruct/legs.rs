@@ -12,7 +12,7 @@ use crate::{
         ranking::TransferEvidence,
         realtime::FreshnessState,
         transit::TransitMode,
-        transit_timing::TimingBasis,
+        transit_timing::{TimingBasis, TimingReliability},
     },
     street::{Coordinate, RoutingTimeKind, StreetPath, StreetTravelMode},
 };
@@ -20,7 +20,10 @@ use crate::{
 use super::{
     super::{
         algorithm::JourneySegment,
-        augmentation::JourneyVariant,
+        augmentation::{
+            JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyVariant,
+            WalkingMovementKind,
+        },
         service::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
         },
@@ -47,6 +50,10 @@ pub(crate) struct ReconstructedLegs {
     pub(crate) main_service_sequence: Vec<String>,
     pub(crate) transfer_evidence: Vec<TransferEvidence>,
     pub(crate) walking_seconds: u32,
+    pub(crate) bicycle_seconds: u32,
+    pub(crate) bike_share_uses: u32,
+    pub(crate) timing_bases: Vec<TimingBasis>,
+    pub(crate) timing_reliability: TimingReliability,
 }
 
 struct PendingTransfer {
@@ -63,9 +70,7 @@ pub(crate) async fn assemble(
     variant: &JourneyVariant,
     context: &PlanningContext,
 ) -> Result<Option<ReconstructedLegs>, PlanningError> {
-    let Some(candidate) = variant.candidate() else {
-        return Err(PlanningError::Internal);
-    };
+    let candidate = variant.skeleton().candidate();
     let mut result = ReconstructedLegs {
         legs: Vec::new(),
         transfers: Vec::new(),
@@ -76,150 +81,407 @@ pub(crate) async fn assemble(
         main_service_sequence: Vec::new(),
         transfer_evidence: Vec::new(),
         walking_seconds: 0,
+        bicycle_seconds: 0,
+        bike_share_uses: 0,
+        timing_bases: Vec::new(),
+        timing_reliability: TimingReliability::Reliable,
     };
     let origin = service.origin_place(request);
     let destination = service.destination_place(request);
-    let first_stop = service
-        .stop_place(&candidate.access.stop_id)
-        .ok_or(PlanningError::Internal)?;
-    append_hydrated_walking(
-        service,
-        context,
-        &origin,
-        &first_stop,
-        candidate.access.walking_seconds,
-        candidate.access.distance_metres,
-        &mut result,
-    )
-    .await?;
-
     let mut pending_transfer = None;
     let mut current_stop = candidate.access.stop_id.clone();
-    for segment in &candidate.segments {
-        match segment {
-            JourneySegment::WalkingTransfer { shortcut } => {
-                if shortcut.from != current_stop {
+    let mut current_anchor = 0;
+    let final_anchor = variant.skeleton().anchors().len().saturating_sub(1);
+    for step in variant.path() {
+        if step.from_anchor != current_anchor || step.to_anchor <= step.from_anchor {
+            return Ok(None);
+        }
+        match &step.movement {
+            JourneyPathMovement::Baseline { movement_index } => {
+                let movement = variant
+                    .skeleton()
+                    .movements()
+                    .get(*movement_index)
+                    .ok_or(PlanningError::Internal)?;
+                if movement.from_anchor != step.from_anchor || movement.to_anchor != step.to_anchor
+                {
                     return Ok(None);
                 }
-                let from = service
-                    .stop_place(&shortcut.from)
-                    .ok_or(PlanningError::Internal)?;
-                let to = service
-                    .stop_place(&shortcut.to)
+                match &movement.kind {
+                    JourneyMovementKind::Walking {
+                        kind: WalkingMovementKind::Access,
+                        duration_seconds,
+                        distance_metres,
+                    } => {
+                        if current_anchor != 0 {
+                            return Ok(None);
+                        }
+                        let first_stop = service
+                            .stop_place(&current_stop)
+                            .ok_or(PlanningError::Internal)?;
+                        append_hydrated_walking(
+                            service,
+                            context,
+                            &origin,
+                            &first_stop,
+                            *duration_seconds,
+                            *distance_metres,
+                            &mut result,
+                        )
+                        .await?;
+                    }
+                    JourneyMovementKind::Walking {
+                        kind: WalkingMovementKind::Transfer,
+                        duration_seconds,
+                        ..
+                    } => {
+                        let from = service
+                            .stop_place(&current_stop)
+                            .ok_or(PlanningError::Internal)?;
+                        let to_stop = anchor_boarding_point(variant, step.to_anchor)
+                            .ok_or(PlanningError::Internal)?;
+                        if to_stop == current_stop {
+                            return Ok(None);
+                        }
+                        let to = service
+                            .stop_place(&to_stop)
+                            .ok_or(PlanningError::Internal)?;
+                        let connector_start = result.legs.len();
+                        append_static_walking(&from, &to, *duration_seconds, &mut result);
+                        register_pending_transfer(&result, &mut pending_transfer, connector_start);
+                        current_stop = to_stop;
+                    }
+                    JourneyMovementKind::Walking {
+                        kind: WalkingMovementKind::Egress,
+                        duration_seconds,
+                        distance_metres,
+                    } => {
+                        if step.to_anchor != final_anchor {
+                            return Ok(None);
+                        }
+                        let final_stop = service
+                            .stop_place(&current_stop)
+                            .ok_or(PlanningError::Internal)?;
+                        append_hydrated_walking(
+                            service,
+                            context,
+                            &final_stop,
+                            &destination,
+                            *duration_seconds,
+                            *distance_metres,
+                            &mut result,
+                        )
+                        .await?;
+                    }
+                    JourneyMovementKind::Transit { segment_index } => {
+                        let Some(JourneySegment::Transit {
+                            trip,
+                            board_index,
+                            alight_index,
+                        }) = candidate.segments.get(*segment_index)
+                        else {
+                            return Err(PlanningError::Internal);
+                        };
+                        let board = trip
+                            .stop_times
+                            .get(*board_index)
+                            .ok_or(PlanningError::Internal)?;
+                        let alight = trip
+                            .stop_times
+                            .get(*alight_index)
+                            .ok_or(PlanningError::Internal)?;
+                        if board.stop_id != current_stop || result.arrival_time > board.departure_at
+                        {
+                            return Ok(None);
+                        }
+                        let service_data = service
+                            .transit_network
+                            .service(&trip.service_id)
+                            .ok_or(PlanningError::Internal)?;
+                        let boarding = service
+                            .transit_network
+                            .stop(&board.stop_id)
+                            .ok_or(PlanningError::Internal)?;
+                        let alighting = service
+                            .transit_network
+                            .stop(&alight.stop_id)
+                            .ok_or(PlanningError::Internal)?;
+                        let live = trip
+                            .evidence
+                            .iter()
+                            .map(evidence::from_realtime_value)
+                            .collect::<Vec<_>>();
+                        result
+                            .required_states
+                            .extend(trip.evidence.iter().map(|status| status.freshness.state));
+                        result.live_evidence.extend(live.clone());
+                        let leg_id = format!("candidate_leg_{}", result.legs.len());
+                        result.legs.push(transit_leg(
+                            leg_id.clone(),
+                            service_data,
+                            boarding,
+                            alighting,
+                            &EffectiveRide {
+                                scheduled_departure: board.departure_at,
+                                scheduled_arrival: alight.arrival_at,
+                                departure: board.departure_at,
+                                arrival: alight.arrival_at,
+                                evidence: live,
+                            },
+                            trip.timing_basis,
+                        ));
+                        if let Some(pending) = pending_transfer.take() {
+                            add_transfer(
+                                &mut result,
+                                pending,
+                                leg_id,
+                                service_data.transit_mode,
+                                board.departure_at,
+                            );
+                        }
+                        result.arrival_time = alight.arrival_at;
+                        result.timing_bases.push(trip.timing_basis);
+                        if trip.timing_reliability == TimingReliability::Fallback {
+                            result.timing_reliability = TimingReliability::Fallback;
+                        }
+                        evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Transit);
+                        result
+                            .main_service_sequence
+                            .push(service_data.id.as_str().to_owned());
+                        current_stop = alight.stop_id.clone();
+                    }
+                }
+            }
+            JourneyPathMovement::BikeShare { shortcut } => {
+                if shortcut.from_anchor != step.from_anchor || shortcut.to_anchor != step.to_anchor
+                {
+                    return Ok(None);
+                }
+                let to_stop = anchor_boarding_point(variant, step.to_anchor)
                     .ok_or(PlanningError::Internal)?;
                 let connector_start = result.legs.len();
-                append_static_walking(&from, &to, shortcut.duration_seconds, &mut result);
-                if let Some(from_leg) = result
-                    .legs
-                    .iter()
-                    .rev()
-                    .find(|leg| leg.mode == JourneyMode::Transit)
+                if !append_bike_share(
+                    service,
+                    context,
+                    &current_stop,
+                    &to_stop,
+                    shortcut,
+                    &mut result,
+                )
+                .await?
                 {
-                    let from_mode = match &from_leg.details {
-                        LegDetails::Transit { transit_mode, .. } => Some(*transit_mode),
-                        _ => None,
-                    };
-                    pending_transfer = Some(PendingTransfer {
-                        from_leg_id: from_leg.id.clone(),
-                        from_arrival: from_leg.arrival_time,
-                        duration_seconds: shortcut.duration_seconds,
-                        connector_leg_ids: result.legs[connector_start..]
-                            .iter()
-                            .map(|leg| leg.id.clone())
-                            .collect(),
-                        from_mode,
-                    });
-                }
-                current_stop = shortcut.to.clone();
-            }
-            JourneySegment::Transit {
-                trip,
-                board_index,
-                alight_index,
-            } => {
-                let board = trip
-                    .stop_times
-                    .get(*board_index)
-                    .ok_or(PlanningError::Internal)?;
-                let alight = trip
-                    .stop_times
-                    .get(*alight_index)
-                    .ok_or(PlanningError::Internal)?;
-                if board.stop_id != current_stop || result.arrival_time > board.departure_at {
                     return Ok(None);
                 }
-                let service_data = service
-                    .transit_network
-                    .service(&trip.service_id)
-                    .ok_or(PlanningError::Internal)?;
-                let boarding = service
-                    .transit_network
-                    .stop(&board.stop_id)
-                    .ok_or(PlanningError::Internal)?;
-                let alighting = service
-                    .transit_network
-                    .stop(&alight.stop_id)
-                    .ok_or(PlanningError::Internal)?;
-                let live = trip
-                    .evidence
-                    .iter()
-                    .map(evidence::from_realtime_value)
-                    .collect::<Vec<_>>();
-                result
-                    .required_states
-                    .extend(trip.evidence.iter().map(|status| status.freshness.state));
-                result.live_evidence.extend(live.clone());
-                let leg_id = format!("candidate_leg_{}", result.legs.len());
-                result.legs.push(transit_leg(
-                    leg_id.clone(),
-                    service_data,
-                    boarding,
-                    alighting,
-                    &EffectiveRide {
-                        scheduled_departure: board.departure_at,
-                        scheduled_arrival: alight.arrival_at,
-                        departure: board.departure_at,
-                        arrival: alight.arrival_at,
-                        evidence: live,
-                    },
-                    trip.timing_basis,
-                ));
-                if let Some(pending) = pending_transfer.take() {
-                    add_transfer(
-                        &mut result,
-                        pending,
-                        leg_id,
-                        service_data.transit_mode,
-                        board.departure_at,
-                    );
-                }
-                result.arrival_time = alight.arrival_at;
-                evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Transit);
-                result
-                    .main_service_sequence
-                    .push(service_data.id.as_str().to_owned());
-                current_stop = alight.stop_id.clone();
+                register_pending_transfer(&result, &mut pending_transfer, connector_start);
+                current_stop = to_stop;
             }
         }
+        current_anchor = step.to_anchor;
     }
 
-    if candidate.segments.is_empty() {
+    if current_anchor != final_anchor {
         return Ok(None);
     }
-    let final_stop = service
-        .stop_place(&candidate.egress.stop_id)
-        .ok_or(PlanningError::Internal)?;
-    append_hydrated_walking(
+    Ok((!result.legs.is_empty()).then_some(result))
+}
+
+fn anchor_boarding_point(
+    variant: &JourneyVariant,
+    anchor: usize,
+) -> Option<crate::domain::ids::BoardingPointId> {
+    match &variant.skeleton().anchors().get(anchor)?.kind {
+        JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
+        JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::Destination { .. } => None,
+    }
+}
+
+fn register_pending_transfer(
+    result: &ReconstructedLegs,
+    pending_transfer: &mut Option<PendingTransfer>,
+    connector_start: usize,
+) {
+    let Some(from_leg) = result
+        .legs
+        .iter()
+        .rev()
+        .find(|leg| leg.mode == JourneyMode::Transit)
+    else {
+        return;
+    };
+    let connector_legs = result.legs[connector_start..].iter();
+    let connector_leg_ids = connector_legs
+        .clone()
+        .map(|leg| leg.id.clone())
+        .collect::<Vec<_>>();
+    let duration_seconds = connector_legs.map(|leg| leg.duration_seconds).sum();
+    let from_mode = match &from_leg.details {
+        LegDetails::Transit { transit_mode, .. } => Some(*transit_mode),
+        LegDetails::Walking { .. } | LegDetails::BikeShare { .. } => None,
+    };
+    if let Some(pending) = pending_transfer
+        .as_mut()
+        .filter(|pending| pending.from_leg_id == from_leg.id)
+    {
+        pending.duration_seconds = pending.duration_seconds.saturating_add(duration_seconds);
+        pending.connector_leg_ids.extend(connector_leg_ids);
+    } else {
+        *pending_transfer = Some(PendingTransfer {
+            from_leg_id: from_leg.id.clone(),
+            from_arrival: from_leg.arrival_time,
+            duration_seconds,
+            connector_leg_ids,
+            from_mode,
+        });
+    }
+}
+
+async fn append_bike_share(
+    service: &RoutingService,
+    context: &PlanningContext,
+    from_stop_id: &crate::domain::ids::BoardingPointId,
+    to_stop_id: &crate::domain::ids::BoardingPointId,
+    shortcut: &crate::routing::augmentation::BikeShortcut,
+    result: &mut ReconstructedLegs,
+) -> Result<bool, PlanningError> {
+    let Some(from_stop) = service.stop_place(from_stop_id) else {
+        return Err(PlanningError::Internal);
+    };
+    let Some(to_stop) = service.stop_place(to_stop_id) else {
+        return Err(PlanningError::Internal);
+    };
+    let Some(pickup) = service.bike_station_place(&shortcut.pickup_station_id) else {
+        return Ok(false);
+    };
+    let Some(dropoff) = service.bike_station_place(&shortcut.dropoff_station_id) else {
+        return Ok(false);
+    };
+
+    let Some(to_pickup) = strict_bike_path(
         service,
         context,
-        &final_stop,
-        &destination,
-        candidate.egress.walking_seconds,
-        candidate.egress.distance_metres,
-        &mut result,
+        &from_stop,
+        &pickup,
+        StreetTravelMode::Walking,
+        result.arrival_time,
     )
-    .await?;
-    Ok((!result.legs.is_empty()).then_some(result))
+    .await
+    else {
+        return Ok(false);
+    };
+    append_routed_walking(&from_stop, &pickup, to_pickup, result);
+
+    let Some(bicycle) = strict_bike_path(
+        service,
+        context,
+        &pickup,
+        &dropoff,
+        StreetTravelMode::Bicycle,
+        result.arrival_time,
+    )
+    .await
+    else {
+        return Ok(false);
+    };
+    append_bicycle(&pickup, &dropoff, bicycle, result);
+
+    let Some(from_dropoff) = strict_bike_path(
+        service,
+        context,
+        &dropoff,
+        &to_stop,
+        StreetTravelMode::Walking,
+        result.arrival_time,
+    )
+    .await
+    else {
+        return Ok(false);
+    };
+    append_routed_walking(&dropoff, &to_stop, from_dropoff, result);
+    result.bike_share_uses = result.bike_share_uses.saturating_add(1);
+    Ok(true)
+}
+
+async fn strict_bike_path(
+    service: &RoutingService,
+    context: &PlanningContext,
+    from: &Place,
+    to: &Place,
+    mode: StreetTravelMode,
+    departure: OffsetDateTime,
+) -> Option<StreetPath> {
+    hydrate_path(service, context, from, to, mode, departure)
+        .await
+        .unwrap_or_default()
+}
+
+fn append_routed_walking(
+    from: &Place,
+    to: &Place,
+    path: StreetPath,
+    result: &mut ReconstructedLegs,
+) {
+    let departure = result.arrival_time;
+    let arrival = departure + Duration::seconds(i64::from(path.duration.0));
+    let leg_id = format!("candidate_leg_{}", result.legs.len());
+    result
+        .legs
+        .push(walking_leg(leg_id, from, to, departure, arrival, &path));
+    result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
+    result.arrival_time = arrival;
+    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+}
+
+fn append_bicycle(
+    pickup: &Place,
+    dropoff: &Place,
+    path: StreetPath,
+    result: &mut ReconstructedLegs,
+) {
+    let departure = result.arrival_time;
+    let arrival = departure + Duration::seconds(i64::from(path.duration.0));
+    let leg_id = format!("candidate_leg_{}", result.legs.len());
+    result.legs.push(Leg {
+        id: leg_id,
+        mode: JourneyMode::Bicycle,
+        from: pickup.clone(),
+        to: dropoff.clone(),
+        departure_time: departure,
+        arrival_time: arrival,
+        scheduled_departure_time: None,
+        scheduled_arrival_time: None,
+        duration_seconds: path.duration.0,
+        distance_metres: path.distance.0,
+        geometry: Geometry {
+            encoding: "polyline6",
+            points: geometry::encode_polyline6(&path.geometry),
+        },
+        guidance: vec![Guidance {
+            code: "bike_share",
+            required: true,
+            parameters: std::collections::BTreeMap::from([
+                (
+                    "pickup_station_name".into(),
+                    serde_json::json!(pickup.display_name),
+                ),
+                (
+                    "dropoff_station_name".into(),
+                    serde_json::json!(dropoff.display_name),
+                ),
+            ]),
+        }],
+        details: LegDetails::BikeShare {
+            pickup_station_id: pickup.via_id.clone().unwrap_or_default(),
+            pickup_station_name: pickup.display_name.clone(),
+            dropoff_station_id: dropoff.via_id.clone().unwrap_or_default(),
+            dropoff_station_name: dropoff.display_name.clone(),
+        },
+        live_status: Vec::new(),
+        warnings: Vec::new(),
+        attribution: path.attribution.clone(),
+    });
+    result.bicycle_seconds = result.bicycle_seconds.saturating_add(path.duration.0);
+    result.arrival_time = arrival;
+    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Bicycle);
 }
 
 async fn append_hydrated_walking(

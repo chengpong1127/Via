@@ -13,6 +13,8 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         departure_epoch_seconds: 1_000,
         arrival_epoch_seconds: arrival,
         walking_seconds: 300,
+        bicycle_seconds: 0,
+        bike_share_uses: 0,
         transfer_count: 1,
         main_service_sequence: vec![key.into()],
         timing_bases: Vec::new(),
@@ -225,6 +227,27 @@ fn same_arrival_and_class_prefers_fewer_transfers_then_less_walking() {
 
     assert_eq!(ranked[0].stable_key, "fewer-transfers");
     assert_eq!(ranked[1].stable_key, "less-walking");
+}
+
+#[test]
+fn bike_aware_ranking_keeps_faster_bike_and_slower_zero_bike_options() {
+    let mut bike = candidate("bike", 1_800);
+    bike.walking_seconds = 180;
+    bike.bicycle_seconds = 420;
+    bike.bike_share_uses = 1;
+    bike.main_service_sequence = vec!["shared-service".into()];
+
+    let mut transit = candidate("transit", 2_000);
+    transit.walking_seconds = 300;
+    transit.bicycle_seconds = 0;
+    transit.bike_share_uses = 0;
+    transit.main_service_sequence = vec!["shared-service".into()];
+
+    let ranked = RankingPolicy::default().rank(vec![transit, bike]);
+
+    assert_eq!(ranked.len(), 2);
+    assert_eq!(ranked[0].stable_key, "bike");
+    assert_eq!(ranked[1].stable_key, "transit");
 }
 
 #[test]

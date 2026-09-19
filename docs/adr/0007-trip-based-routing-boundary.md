@@ -55,5 +55,6 @@ separate static transfer artifact: the canonical network persists transit
 transfer edges and runtime derives their in-memory index from that network.
 Transfer reconstruction has no street-router or matrix dependency.
 
-Reconstruction consumes `JourneyCandidate` directly; `RouteGraph` is not part
-of the production architecture.
+Reconstruction consumes the `JourneyVariant` path and resolves retained
+baseline movements back to the owning `JourneyCandidate`; `RouteGraph` is not
+part of the production architecture.

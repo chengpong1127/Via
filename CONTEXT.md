@@ -2,7 +2,8 @@
 
 Via plans multimodal journeys in Taipei and New Taipei using TDX transit data,
 Valhalla street routing, and TDX realtime status. The server returns provider-
-neutral `JourneyOption` values for walking and transit journeys.
+neutral `JourneyOption` values for walking, transit, and opt-in bike-share
+journeys.
 
 ## Request flow
 
@@ -14,7 +15,7 @@ PlanningRequest
   → TripBasedRouter
   → JourneyCandidate
   → JourneySkeleton
-  → JourneyAugmenter (baseline only)
+  → JourneyAugmenter (baseline or opt-in BikeShare)
   → JourneyVariant
   → reconstruction
   → ranking
@@ -32,11 +33,10 @@ service does not depend on a graph or a second planner abstraction.
 provider-neutral `BikeShareNetwork`, enriches directional transit walking
 transfers and BoardingPoint ↔ bike-station walking access through the
 `StreetRouter`, validates both networks, and writes `transit-network.json`,
-`bikeshare-network.json`, and `manifest.json`. Bike access is static build-time
-data only: realtime availability, bicycle routing, BikeShortcut, and journey
-augmentation do not consume it yet. The runtime loads one validated immutable
-transit artifact and one validated immutable bike-share artifact; there is no
-database or provider identity-reconciliation layer.
+`bikeshare-network.json`, and `manifest.json`. Runtime bike augmentation
+consumes the immutable bike-share artifact plus realtime availability only when
+`VIA_ENABLE_BIKE_AUGMENTATION=true`; the default remains baseline-only. There
+is no database or provider identity-reconciliation layer.
 
 The TDX static bike source is `/v2/Bike/Station/City/{City}` for the selected
 `DataScope` cities. Bike station IDs are opaque domain IDs constructed as
@@ -60,10 +60,13 @@ augmentation, and must not be implemented as `TransferResolver` behavior.
 Journey augmentation is a separate seam after `JourneyCandidate` creation and
 before reconstruction. `JourneySkeleton` projects only origin, boarding-point,
 and destination anchors plus indexed baseline movement. The current
-`BaselineJourneyAugmenter` returns one `JourneyVariant` containing the original
-path, so it does not change route search, reconstruction, ranking, or the public
-`JourneyOption` contract. Trip-Based search remains unaware of augmentation;
-future mobility shortcuts must not be added as `TransferResolver` behavior.
+`BaselineJourneyAugmenter` returns one original path; when
+`VIA_ENABLE_BIKE_AUGMENTATION=true`, `BikeJourneyAugmenter` adds optional
+BikeShare paths using the immutable `BikeShareNetwork`, realtime availability,
+and bicycle matrix search. Reconstruction hydrates retained bike paths with
+walking/bicycle street routes and exposes provider-neutral bike-share legs.
+Trip-Based search remains unaware of augmentation; future mobility shortcuts
+must not be added as `TransferResolver` behavior.
 `DepartureResolver` is the algorithm-facing timing boundary. Its current
 implementation is a `DepartureDispatcher` that groups queries by
 `TransitMode` and delegates to mode-owned sources. Each source owns its static

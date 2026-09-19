@@ -317,6 +317,9 @@ fn leg_summary(leg: &via_server::domain::journey::Leg) -> String {
             "{transit_mode:?}: {service_label} ({} min)",
             leg.duration_seconds.div_ceil(60)
         ),
+        via_server::domain::journey::LegDetails::BikeShare { .. } => {
+            format!("Bike share ({} min)", leg.duration_seconds.div_ceil(60))
+        }
     }
 }
 
@@ -361,6 +364,14 @@ fn print_trace(result: &PlanningOutcome, events: &Arc<Mutex<Vec<String>>>) {
                             via_boarding_point_id,
                             via_alighting_point_id,
                             leg.duration_seconds
+                        ),
+                        via_server::domain::journey::LegDetails::BikeShare {
+                            pickup_station_id,
+                            dropoff_station_id,
+                            ..
+                        } => eprintln!(
+                            "  BICYCLE pickup={} dropoff={} ({}s)",
+                            pickup_station_id, dropoff_station_id, leg.duration_seconds
                         ),
                     }
                 }

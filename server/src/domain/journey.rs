@@ -30,6 +30,7 @@ pub use super::ranking::{JourneyClass, JourneyLabel, RankingReason};
 pub enum JourneyMode {
     Walking,
     Transit,
+    Bicycle,
     #[serde(other)]
     Unknown,
 }
@@ -116,6 +117,8 @@ pub struct JourneyOption {
     pub arrival_time: OffsetDateTime,
     pub duration_seconds: u32,
     pub walking_seconds: u32,
+    pub bicycle_seconds: u32,
+    pub bike_share_uses: u32,
     pub transfer_count: u32,
     pub travel_modes: Vec<JourneyMode>,
     pub live_status_summary: LiveStatusSummary,
@@ -217,6 +220,12 @@ pub enum LegDetails {
         service_label: String,
         headsign: String,
         stop_count: Option<u32>,
+    },
+    BikeShare {
+        pickup_station_id: String,
+        pickup_station_name: String,
+        dropoff_station_id: String,
+        dropoff_station_name: String,
     },
 }
 

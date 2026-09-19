@@ -28,9 +28,7 @@ impl RoutingService {
         variant: &JourneyVariant,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let Some(candidate) = variant.candidate() else {
-            return Err(PlanningError::Internal);
-        };
+        let candidate = variant.skeleton().candidate();
         let Some(assembled) = legs::assemble(self, request, variant, context).await? else {
             return Ok(None);
         };
@@ -43,8 +41,12 @@ impl RoutingService {
         let duration_seconds =
             legs::seconds_between(candidate.departure_time, assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
-        let matching_key =
-            geometry::short_digest(&format!("candidate:v2:{}", candidate.signature()));
+        let transfer_count = assembled.transfers.len() as u32;
+        let matching_key = if variant.is_baseline() {
+            geometry::short_digest(&format!("candidate:v2:{}", variant.signature()))
+        } else {
+            geometry::short_digest(&format!("candidate:bike:v1:{}", variant.signature()))
+        };
         let option = JourneyOption {
             id: "candidate".into(),
             matching_key: matching_key.clone(),
@@ -55,7 +57,9 @@ impl RoutingService {
             arrival_time: assembled.arrival_time,
             duration_seconds,
             walking_seconds: assembled.walking_seconds,
-            transfer_count: candidate.transfer_count,
+            bicycle_seconds: assembled.bicycle_seconds,
+            bike_share_uses: assembled.bike_share_uses,
+            transfer_count,
             travel_modes: assembled.travel_modes,
             live_status_summary: evidence::summary_from_evidence(&assembled.live_evidence),
             overview_geometry: geometry::overview_geometry(&assembled.legs),
@@ -63,20 +67,23 @@ impl RoutingService {
             transfers: assembled.transfers,
             warnings: Vec::new(),
         };
+        let stable_key = format!(
+            "{}:{}",
+            matching_key,
+            candidate.departure_time.unix_timestamp()
+        );
         Ok(Some(GeneratedCandidate {
             ranking: crate::domain::ranking::CandidateJourney {
-                stable_key: format!(
-                    "{}:{}",
-                    matching_key,
-                    candidate.departure_time.unix_timestamp()
-                ),
+                stable_key,
                 departure_epoch_seconds: candidate.departure_time.unix_timestamp(),
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
                 walking_seconds: assembled.walking_seconds,
-                transfer_count: candidate.transfer_count,
+                bicycle_seconds: assembled.bicycle_seconds,
+                bike_share_uses: assembled.bike_share_uses,
+                transfer_count,
                 main_service_sequence: assembled.main_service_sequence,
-                timing_bases: candidate.timing_bases.clone(),
-                timing_reliability: candidate.timing_reliability,
+                timing_bases: assembled.timing_bases,
+                timing_reliability: assembled.timing_reliability,
                 required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
                 blocking_condition: false,
@@ -117,6 +124,8 @@ impl RoutingService {
             arrival_time: arrival,
             duration_seconds: path.duration.0,
             walking_seconds: path.duration.0,
+            bicycle_seconds: 0,
+            bike_share_uses: 0,
             transfer_count: 0,
             travel_modes: vec![JourneyMode::Walking],
             live_status_summary: evidence::summary_from_evidence(&[]),
@@ -131,6 +140,8 @@ impl RoutingService {
                 departure_epoch_seconds: departure.unix_timestamp(),
                 arrival_epoch_seconds: arrival.unix_timestamp(),
                 walking_seconds: path.duration.0,
+                bicycle_seconds: 0,
+                bike_share_uses: 0,
                 transfer_count: 0,
                 main_service_sequence: Vec::new(),
                 timing_bases: Vec::new(),
@@ -166,6 +177,21 @@ impl RoutingService {
         stop_id: &crate::domain::ids::BoardingPointId,
     ) -> Option<Place> {
         self.transit_network.stop(stop_id).map(legs::transit_place)
+    }
+
+    pub(crate) fn bike_station_place(
+        &self,
+        station_id: &crate::domain::ids::BikeStationId,
+    ) -> Option<Place> {
+        self.bike_share_network
+            .as_ref()?
+            .station(station_id)
+            .map(|station| Place {
+                display_name: station.name.clone(),
+                coordinate: station.coordinate,
+                kind: "bike_station",
+                via_id: Some(station.id.as_str().into()),
+            })
     }
 }
 

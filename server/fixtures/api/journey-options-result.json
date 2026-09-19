@@ -26,6 +26,8 @@
       "arrival_time": "2026-08-31T12:10:20+08:00",
       "duration_seconds": 620,
       "walking_seconds": 620,
+      "bicycle_seconds": 0,
+      "bike_share_uses": 0,
       "transfer_count": 0,
       "travel_modes": ["walking"],
       "live_status_summary": {

@@ -32,6 +32,7 @@ enum JourneyEndpoint: Hashable, Sendable {
 enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case walking
     case transit
+    case bicycle
 
     var id: Self { self }
 
@@ -41,6 +42,7 @@ enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
         switch self {
         case .transit: "Transit"
         case .walking: "Walk"
+        case .bicycle: "Bike"
         }
     }
 
@@ -48,6 +50,7 @@ enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
         switch self {
         case .transit: "tram.fill"
         case .walking: "figure.walk"
+        case .bicycle: "bicycle"
         }
     }
 }
@@ -137,6 +140,13 @@ struct TransitLegMetadata: Sendable {
     let alightingPointID: String
 }
 
+struct BikeShareLegMetadata: Sendable {
+    let pickupStationID: String
+    let pickupStationName: String
+    let dropoffStationID: String
+    let dropoffStationName: String
+}
+
 struct JourneyLeg: Identifiable, Sendable {
     let id: String
     let mode: JourneyMode
@@ -145,6 +155,7 @@ struct JourneyLeg: Identifiable, Sendable {
     let durationSeconds: Int
     let guidance: [GuidanceInstruction]
     let transit: TransitLegMetadata?
+    let bikeShare: BikeShareLegMetadata?
 
     init(
         id: String,
@@ -153,7 +164,8 @@ struct JourneyLeg: Identifiable, Sendable {
         subtitle: String,
         durationSeconds: Int,
         guidance: [GuidanceInstruction],
-        transit: TransitLegMetadata? = nil
+        transit: TransitLegMetadata? = nil,
+        bikeShare: BikeShareLegMetadata? = nil
     ) {
         self.id = id
         self.mode = mode
@@ -162,6 +174,7 @@ struct JourneyLeg: Identifiable, Sendable {
         self.durationSeconds = durationSeconds
         self.guidance = guidance
         self.transit = transit
+        self.bikeShare = bikeShare
     }
 
     var symbolName: String {
@@ -181,6 +194,8 @@ struct JourneyOption: Identifiable, Sendable {
     let arrivalTime: Date
     let durationSeconds: Int
     let walkingSeconds: Int
+    let bicycleSeconds: Int = 0
+    let bikeShareUses: Int = 0
     let transferCount: Int
     let travelModes: [JourneyMode]
     let liveStatusSummary: LiveStatusSummary

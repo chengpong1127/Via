@@ -5,6 +5,7 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     api::{PlanningRequest, new_request_id},
     domain::{
+        bikeshare::BikeShareNetwork,
         journey::{
             EmptyResult, JourneyMode, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
             ResultMetadata, SemanticObject,
@@ -15,7 +16,7 @@ use crate::{
         transit_timing::DepartureResolver,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::service_conditions::ServiceConditionProvider,
+    providers::{BikeAvailabilitySource, service_conditions::ServiceConditionProvider},
     street::{
         Coordinate, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetPath,
         StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -43,6 +44,7 @@ pub struct RoutingService {
     pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
+    pub(crate) bike_share_network: Option<Arc<BikeShareNetwork>>,
     pub(crate) ranking: RankingPolicy,
     pub(crate) limits: RoutingLimits,
     pub(crate) request_slots: Arc<tokio::sync::Semaphore>,
@@ -104,6 +106,7 @@ impl RoutingService {
             transfer_resolver,
             service_conditions,
             transit_network,
+            bike_share_network: None,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(
                 RoutingLimits::default().max_concurrent_requests,
@@ -136,6 +139,27 @@ impl RoutingService {
 
     pub fn with_journey_augmenter(mut self, augmenter: Arc<dyn JourneyAugmenter>) -> Self {
         self.journey_augmenter = augmenter;
+        self
+    }
+
+    pub fn with_bike_share_network(mut self, network: Arc<BikeShareNetwork>) -> Self {
+        self.bike_share_network = Some(network);
+        self
+    }
+
+    pub fn with_bike_augmentation(
+        mut self,
+        network: Arc<BikeShareNetwork>,
+        availability_source: Arc<dyn BikeAvailabilitySource>,
+    ) -> Self {
+        self.bike_share_network = Some(network.clone());
+        self.journey_augmenter = Arc::new(
+            crate::routing::augmentation::BikeJourneyAugmenter::with_default_policy(
+                network,
+                availability_source,
+                self.street_routing.clone(),
+            ),
+        );
         self
     }
 

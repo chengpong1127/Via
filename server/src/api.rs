@@ -38,6 +38,7 @@ impl PlanningRequest {
         if self.selected_modes.is_empty()
             || self.selected_modes.contains(&JourneyMode::Unknown)
             || self.selected_modes.contains(&JourneyMode::Walking)
+            || self.selected_modes.contains(&JourneyMode::Bicycle)
             || self
                 .selected_modes
                 .windows(2)

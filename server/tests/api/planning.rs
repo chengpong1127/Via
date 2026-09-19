@@ -109,7 +109,7 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
 }
 
 #[test]
-fn walking_is_implicit_and_cannot_be_selected_as_a_filter() {
+fn walking_and_bicycle_are_implicit_and_cannot_be_selected_as_filters() {
     let request: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
@@ -128,6 +128,24 @@ fn walking_is_implicit_and_cannot_be_selected_as_a_filter() {
     let error = request.validate().unwrap_err();
     assert_eq!(error.code(), "invalid_selected_modes");
     assert_eq!(error.field(), "/selected_modes");
+
+    let bicycle_request: PlanningRequest = serde_json::from_value(json!({
+        "origin": {
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "display_text": "Origin"
+        },
+        "destination": {
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "display_text": "Destination"
+        },
+        "selected_modes": ["bicycle"],
+        "locale": "en",
+        "departure_setting": {"type": "depart_now"}
+    }))
+    .unwrap();
+    let bicycle_error = bicycle_request.validate().unwrap_err();
+    assert_eq!(bicycle_error.code(), "invalid_selected_modes");
+    assert_eq!(bicycle_error.field(), "/selected_modes");
 }
 
 #[test]

@@ -53,6 +53,8 @@ pub struct CandidateJourney {
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
+    pub bicycle_seconds: u32,
+    pub bike_share_uses: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
     pub timing_bases: Vec<TimingBasis>,
@@ -71,6 +73,8 @@ pub struct RankedJourney {
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
+    pub bicycle_seconds: u32,
+    pub bike_share_uses: u32,
     pub transfer_count: u32,
     pub main_service_sequence: Vec<String>,
 }
@@ -168,6 +172,8 @@ impl RankingPolicy {
             departure_epoch_seconds: candidate.departure_epoch_seconds,
             arrival_epoch_seconds: candidate.arrival_epoch_seconds,
             walking_seconds: candidate.walking_seconds,
+            bicycle_seconds: candidate.bicycle_seconds,
+            bike_share_uses: candidate.bike_share_uses,
             transfer_count: candidate.transfer_count,
             main_service_sequence: candidate.main_service_sequence,
         })
@@ -183,6 +189,8 @@ impl RankingPolicy {
                         <= self.near_duplicate_arrival_seconds
                     && current.walking_seconds.abs_diff(candidate.walking_seconds)
                         < self.material_walking_difference_seconds
+                    && current.bicycle_seconds == candidate.bicycle_seconds
+                    && current.bike_share_uses == candidate.bike_share_uses
             });
             if !duplicate {
                 kept.push(candidate);
@@ -197,20 +205,25 @@ impl RankingPolicy {
             .walking_seconds
             .saturating_sub(candidate.walking_seconds)
             >= self.material_walking_difference_seconds;
+        let different_bicycle = candidate.bicycle_seconds != current.bicycle_seconds
+            || candidate.bike_share_uses != current.bike_share_uses;
         let different_sequence = candidate.main_service_sequence != current.main_service_sequence;
-        if !different_sequence && !fewer_transfers && !less_walking {
+        if !different_sequence && !fewer_transfers && !less_walking && !different_bicycle {
             return false;
         }
         candidate.arrival_epoch_seconds - current.arrival_epoch_seconds
             <= self.excessive_alternative_delay_seconds
             || fewer_transfers
             || less_walking
+            || different_bicycle
     }
 
     fn compare_ranked(&self, left: &RankedJourney, right: &RankedJourney) -> Ordering {
         compare_primary_preference(self, left, right)
             .then(left.transfer_count.cmp(&right.transfer_count))
             .then(left.walking_seconds.cmp(&right.walking_seconds))
+            .then(left.bicycle_seconds.cmp(&right.bicycle_seconds))
+            .then(left.bike_share_uses.cmp(&right.bike_share_uses))
             .then(left.arrival_epoch_seconds.cmp(&right.arrival_epoch_seconds))
             .then(
                 left.departure_epoch_seconds
@@ -262,11 +275,15 @@ fn dominates(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney
     let no_worse = class_is_no_worse(policy, left, right)
         && left.arrival_epoch_seconds <= right.arrival_epoch_seconds
         && left.transfer_count <= right.transfer_count
-        && left.walking_seconds <= right.walking_seconds;
+        && left.walking_seconds <= right.walking_seconds
+        && left.bicycle_seconds <= right.bicycle_seconds
+        && left.bike_share_uses <= right.bike_share_uses;
     let strictly_better = class_is_strictly_better(policy, left, right)
         || left.arrival_epoch_seconds < right.arrival_epoch_seconds
         || left.transfer_count < right.transfer_count
-        || left.walking_seconds < right.walking_seconds;
+        || left.walking_seconds < right.walking_seconds
+        || left.bicycle_seconds < right.bicycle_seconds
+        || left.bike_share_uses < right.bike_share_uses;
     no_worse && strictly_better
 }
 

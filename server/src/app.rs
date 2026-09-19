@@ -55,6 +55,7 @@ pub struct RouterDependencies {
     pub service_condition_cache_ttl: Duration,
     pub bike_share_network: Option<Arc<BikeShareNetwork>>,
     pub bike_availability_source: Option<Arc<dyn BikeAvailabilitySource>>,
+    pub bike_augmentation_enabled: bool,
 }
 
 impl RouterDependencies {
@@ -65,6 +66,7 @@ impl RouterDependencies {
             service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
             bike_share_network: None,
             bike_availability_source: None,
+            bike_augmentation_enabled: false,
         }
     }
 
@@ -85,6 +87,11 @@ impl RouterDependencies {
     ) -> Self {
         self.bike_share_network = Some(network);
         self.bike_availability_source = Some(availability_source);
+        self
+    }
+
+    pub fn with_bike_augmentation_enabled(mut self, enabled: bool) -> Self {
+        self.bike_augmentation_enabled = enabled;
         self
     }
 }
@@ -200,9 +207,20 @@ where
         ],
     ));
     let metrics = OperationalMetrics::default();
-    let routing = RoutingService::new(street_router, departure_resolver, service_conditions)
+    let mut routing = RoutingService::new(street_router, departure_resolver, service_conditions)
         .with_transit_network_arc(transit_network.clone())
         .with_metrics(metrics.clone());
+    if let Some(network) = dependencies.bike_share_network.clone() {
+        routing = routing.with_bike_share_network(network);
+    }
+    if dependencies.bike_augmentation_enabled
+        && let (Some(network), Some(availability_source)) = (
+            dependencies.bike_share_network.clone(),
+            dependencies.bike_availability_source.clone(),
+        )
+    {
+        routing = routing.with_bike_augmentation(network, availability_source);
+    }
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router
@@ -260,7 +278,7 @@ fn apply_schema_constraints(document: &mut OpenApi) {
     set_schema_enum(
         document,
         "JourneyMode",
-        ["walking", "transit"].map(serde_json::Value::from),
+        ["walking", "transit", "bicycle"].map(serde_json::Value::from),
     );
     set_schema_property_enum(
         document,

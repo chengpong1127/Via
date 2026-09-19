@@ -334,6 +334,38 @@ impl JourneyVariant {
         self.skeleton.candidate().signature()
     }
 
+    pub(crate) fn signature(&self) -> String {
+        if self.is_baseline() {
+            return self.baseline_signature();
+        }
+        let path = self
+            .path
+            .iter()
+            .map(|step| match &step.movement {
+                JourneyPathMovement::Baseline { movement_index } => {
+                    format!(
+                        "baseline:{movement_index}:{}:{}",
+                        step.from_anchor, step.to_anchor
+                    )
+                }
+                JourneyPathMovement::BikeShare { shortcut } => format!(
+                    "bike:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    step.from_anchor,
+                    step.to_anchor,
+                    shortcut.pickup_station_id.as_str(),
+                    shortcut.dropoff_station_id.as_str(),
+                    shortcut.walk_to_pickup.duration_seconds,
+                    shortcut.bicycle_duration_seconds,
+                    shortcut.bicycle_distance_metres,
+                    shortcut.walk_from_dropoff.duration_seconds,
+                    shortcut.total_seconds,
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        format!("{}|path:{path}", self.baseline_signature())
+    }
+
     /// Evaluate the path without re-running transit search.
     pub fn evaluate_timing(&self) -> Result<JourneyVariantTiming, JourneyTimingError> {
         let mut current_anchor = 0;
@@ -418,10 +450,6 @@ impl JourneyVariant {
 
     pub fn timing(&self) -> Result<JourneyVariantTiming, JourneyTimingError> {
         self.evaluate_timing()
-    }
-
-    pub(crate) fn candidate(&self) -> Option<&JourneyCandidate> {
-        self.is_baseline().then(|| self.skeleton.candidate())
     }
 
     pub(crate) fn from_path(skeleton: JourneySkeleton, path: Vec<JourneyPathStep>) -> Self {

@@ -57,6 +57,8 @@ private extension ServerJourneyOptionDTO {
             arrivalTime: arrivalTime,
             durationSeconds: durationSeconds,
             walkingSeconds: walkingSeconds,
+            bicycleSeconds: bicycleSeconds ?? 0,
+            bikeShareUses: bikeShareUses ?? 0,
             transferCount: transferCount,
             travelModes: travelModes,
             liveStatusSummary: liveStatusSummary,
@@ -87,6 +89,7 @@ private extension ServerLegDTO {
         }
         let title: String
         let transit: TransitLegMetadata?
+        let bikeShare: BikeShareLegMetadata?
         switch mode {
         case .walking:
             guard details.type == "walking" else {
@@ -94,6 +97,7 @@ private extension ServerLegDTO {
             }
             title = "Walk"
             transit = nil
+            bikeShare = nil
         case .transit:
             guard details.type == "transit",
                   let transitMode = details.transitMode.flatMap(TransitMode.init(rawValue)),
@@ -112,6 +116,24 @@ private extension ServerLegDTO {
                 boardingPointID: boardingPointID,
                 alightingPointID: alightingPointID
             )
+            bikeShare = nil
+        case .bicycle:
+            guard details.type == "bike_share",
+                  let pickupStationID = details.pickupStationID,
+                  let pickupStationName = details.pickupStationName,
+                  let dropoffStationID = details.dropoffStationID,
+                  let dropoffStationName = details.dropoffStationName
+            else {
+                throw JourneyPlanningError.unsupportedResponse
+            }
+            title = "Bike share"
+            transit = nil
+            bikeShare = BikeShareLegMetadata(
+                pickupStationID: pickupStationID,
+                pickupStationName: pickupStationName,
+                dropoffStationID: dropoffStationID,
+                dropoffStationName: dropoffStationName
+            )
         }
         let subtitle = "\(from.displayName) → \(to.displayName)"
         let guidance = guidance.map { instruction in
@@ -124,7 +146,8 @@ private extension ServerLegDTO {
             subtitle: subtitle,
             durationSeconds: durationSeconds,
             guidance: guidance,
-            transit: transit
+            transit: transit,
+            bikeShare: bikeShare
         )
     }
 }
