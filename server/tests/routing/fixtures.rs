@@ -17,7 +17,7 @@ use via_server::{
             TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{RoutingService, TransferIndex, transfers::TransferShortcutIndex},
+    routing::{JourneyAugmenter, RoutingService, TransferIndex, transfers::TransferShortcutIndex},
     street::{Coordinate, FakeStreetRouter},
     tdx::TdxClient,
 };
@@ -83,6 +83,24 @@ pub(crate) async fn route_body(
     realtime: FixtureRealtime,
     body: Value,
 ) -> Value {
+    route_body_inner(street, realtime, body, None).await
+}
+
+pub(crate) async fn route_body_with_augmenter(
+    street: FakeStreetRouter,
+    realtime: FixtureRealtime,
+    body: Value,
+    augmenter: Arc<dyn JourneyAugmenter>,
+) -> Value {
+    route_body_inner(street, realtime, body, Some(augmenter)).await
+}
+
+async fn route_body_inner(
+    street: FakeStreetRouter,
+    realtime: FixtureRealtime,
+    body: Value,
+    augmenter: Option<Arc<dyn JourneyAugmenter>>,
+) -> Value {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
     let network = Arc::new(network());
@@ -117,6 +135,10 @@ pub(crate) async fn route_body(
     )));
     let service =
         RoutingService::new(Arc::new(street), departure, cached).with_transit_network_arc(network);
+    let service = match augmenter {
+        Some(augmenter) => service.with_journey_augmenter(augmenter),
+        None => service,
+    };
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()
 }
 

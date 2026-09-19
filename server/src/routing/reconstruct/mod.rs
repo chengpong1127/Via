@@ -15,20 +15,23 @@ use crate::{
 };
 
 use super::{
-    algorithm::JourneyCandidate,
+    augmentation::JourneyVariant,
     service::{GeneratedCandidate, PlanningContext, RoutingService},
 };
 
 pub(crate) use geometry::{taipei_now, to_street_coordinate};
 
 impl RoutingService {
-    pub(crate) async fn reconstruct_multimodal_candidate(
+    pub(crate) async fn reconstruct_multimodal_variant(
         &self,
         request: &PlanningRequest,
-        candidate: &JourneyCandidate,
+        variant: &JourneyVariant,
         context: &PlanningContext,
     ) -> Result<Option<GeneratedCandidate>, PlanningError> {
-        let Some(assembled) = legs::assemble(self, request, candidate, context).await? else {
+        let Some(candidate) = variant.candidate() else {
+            return Err(PlanningError::Internal);
+        };
+        let Some(assembled) = legs::assemble(self, request, variant, context).await? else {
             return Ok(None);
         };
         if context

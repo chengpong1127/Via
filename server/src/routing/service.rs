@@ -25,6 +25,7 @@ use crate::{
 use super::{
     access,
     algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
+    augmentation::{BaselineJourneyAugmenter, JourneyAugmenter, JourneySkeleton},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -38,6 +39,7 @@ pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
     pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
+    pub(crate) journey_augmenter: Arc<dyn JourneyAugmenter>,
     pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
@@ -98,6 +100,7 @@ impl RoutingService {
             street_routing,
             departure_resolver,
             routing_algorithm,
+            journey_augmenter: Arc::new(BaselineJourneyAugmenter),
             transfer_resolver,
             service_conditions,
             transit_network,
@@ -128,6 +131,11 @@ impl RoutingService {
 
     pub fn with_metrics(mut self, metrics: OperationalMetrics) -> Self {
         self.operational_metrics = metrics;
+        self
+    }
+
+    pub fn with_journey_augmenter(mut self, augmenter: Arc<dyn JourneyAugmenter>) -> Self {
+        self.journey_augmenter = augmenter;
         self
     }
 
@@ -271,17 +279,29 @@ impl RoutingService {
                         )
                         .await;
                         had_transient_failure |= condition_failed;
-                        for candidate in &candidates {
-                            match self
-                                .reconstruct_multimodal_candidate(&request, candidate, &context)
-                                .await
-                            {
-                                Ok(Some(candidate)) => generated.push(candidate),
-                                Ok(None) => {}
+                        for candidate in candidates {
+                            let skeleton = match JourneySkeleton::from_candidate(
+                                &request, candidate,
+                            ) {
+                                Ok(skeleton) => skeleton,
                                 Err(error) => {
-                                    had_transient_failure |=
-                                        error == PlanningError::TemporarilyUnavailable;
-                                    had_global_failure |= error == PlanningError::Internal;
+                                    tracing::warn!(error = %error, "journey candidate could not be skeletonized");
+                                    had_global_failure = true;
+                                    continue;
+                                }
+                            };
+                            for variant in self.journey_augmenter.augment(skeleton) {
+                                match self
+                                    .reconstruct_multimodal_variant(&request, &variant, &context)
+                                    .await
+                                {
+                                    Ok(Some(candidate)) => generated.push(candidate),
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        had_transient_failure |=
+                                            error == PlanningError::TemporarilyUnavailable;
+                                        had_global_failure |= error == PlanningError::Internal;
+                                    }
                                 }
                             }
                         }

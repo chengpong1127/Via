@@ -19,7 +19,8 @@ use crate::{
 
 use super::{
     super::{
-        algorithm::{JourneyCandidate, JourneySegment},
+        algorithm::JourneySegment,
+        augmentation::JourneyVariant,
         service::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
         },
@@ -59,9 +60,12 @@ struct PendingTransfer {
 pub(crate) async fn assemble(
     service: &RoutingService,
     request: &PlanningRequest,
-    candidate: &JourneyCandidate,
+    variant: &JourneyVariant,
     context: &PlanningContext,
 ) -> Result<Option<ReconstructedLegs>, PlanningError> {
+    let Some(candidate) = variant.candidate() else {
+        return Err(PlanningError::Internal);
+    };
     let mut result = ReconstructedLegs {
         legs: Vec::new(),
         transfers: Vec::new(),

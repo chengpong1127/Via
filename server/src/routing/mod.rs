@@ -2,6 +2,7 @@
 
 pub(crate) mod access;
 pub mod algorithm;
+pub mod augmentation;
 pub mod reconstruct;
 pub mod transfers;
 pub mod trip_based;
@@ -19,6 +20,11 @@ pub use crate::street::StreetRouter;
 pub use algorithm::{
     AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm,
     RoutingError,
+};
+pub use augmentation::{
+    BaselineJourneyAugmenter, JourneyAnchor, JourneyAnchorKind, JourneyAugmenter, JourneyMovement,
+    JourneyMovementKind, JourneyPathMovement, JourneyPathStep, JourneySkeleton,
+    JourneySkeletonError, JourneyVariant, WalkingMovementKind,
 };
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{

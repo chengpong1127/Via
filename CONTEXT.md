@@ -13,6 +13,9 @@ PlanningRequest
   → RoutingAlgorithm
   → TripBasedRouter
   → JourneyCandidate
+  → JourneySkeleton
+  → JourneyAugmenter (baseline only)
+  → JourneyVariant
   → reconstruction
   → ranking
   → JourneyOption
@@ -42,6 +45,14 @@ distinct `BoardingPoint`s. The only current resolver uses an in-memory
 `TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Future
 dynamic mobility can be implemented behind `TransferResolver` without changing
 Trip-Based search.
+
+Journey augmentation is a separate seam after `JourneyCandidate` creation and
+before reconstruction. `JourneySkeleton` projects only origin, boarding-point,
+and destination anchors plus indexed baseline movement. The current
+`BaselineJourneyAugmenter` returns one `JourneyVariant` containing the original
+path, so it does not change route search, reconstruction, ranking, or the public
+`JourneyOption` contract. Trip-Based search remains unaware of augmentation;
+future mobility shortcuts must not be added as `TransferResolver` behavior.
 `DepartureResolver` is the algorithm-facing timing boundary. Its current
 implementation is a `DepartureDispatcher` that groups queries by
 `TransitMode` and delegates to mode-owned sources. Each source owns its static
