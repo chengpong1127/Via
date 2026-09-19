@@ -34,9 +34,9 @@ transfers and BoardingPoint ↔ bike-station walking access through the
 `StreetRouter`, validates both networks, and writes `transit-network.json`,
 `bikeshare-network.json`, and `manifest.json`. Bike access is static build-time
 data only: realtime availability, bicycle routing, BikeShortcut, and journey
-augmentation do not consume it yet. The runtime transit flow still loads one
-immutable transit artifact revision; there is no database or provider
-identity-reconciliation layer.
+augmentation do not consume it yet. The runtime loads one validated immutable
+transit artifact and one validated immutable bike-share artifact; there is no
+database or provider identity-reconciliation layer.
 
 The TDX static bike source is `/v2/Bike/Station/City/{City}` for the selected
 `DataScope` cities. Bike station IDs are opaque domain IDs constructed as
@@ -54,8 +54,8 @@ and `EffectiveTripId` distinct.
 consumes `DepartureResolver` plus a batch `TransferResolver` for movement between
 distinct `BoardingPoint`s. The only current resolver uses an in-memory
 `TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Future
-dynamic mobility can be implemented behind `TransferResolver` without changing
-Trip-Based search.
+dynamic mobility belongs after transit `JourneyCandidate` creation, in journey
+augmentation, and must not be implemented as `TransferResolver` behavior.
 
 Journey augmentation is a separate seam after `JourneyCandidate` creation and
 before reconstruction. `JourneySkeleton` projects only origin, boarding-point,

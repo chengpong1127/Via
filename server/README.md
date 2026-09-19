@@ -2,7 +2,8 @@
 
 The Rust/Axum server exposes Via's provider-neutral journey-planning API. TDX
 is the current transit source, Valhalla is the street-routing provider, and
-the runtime loads one validated immutable `TransitNetwork` artifact.
+the runtime loads validated immutable `TransitNetwork` and `BikeShareNetwork`
+artifacts.
 
 ## Run locally
 
@@ -33,6 +34,7 @@ Configuration:
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
 | `VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS` | Service-condition cache TTL; default 45 seconds. |
 | `VIA_TRANSIT_NETWORK` | Validated `transit-network.json` path. |
+| `VIA_BIKESHARE_NETWORK` | Validated `bikeshare-network.json` path. |
 | `PORT` | Axum port; default 3000. |
 
 ## Current routing boundary

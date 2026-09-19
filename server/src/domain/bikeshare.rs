@@ -7,6 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::{Duration, OffsetDateTime};
 
 use super::{
     ids::{BikeStationId, BoardingPointId},
@@ -72,6 +73,144 @@ impl BikeStationAccess {
 
     pub fn has_direction(&self) -> bool {
         self.walk_to_station.is_some() || self.walk_from_station.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BikeStationAvailability {
+    pub station_id: BikeStationId,
+    pub available_bikes: u32,
+    pub available_return_slots: u32,
+    pub in_service: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub observed_at: OffsetDateTime,
+}
+
+impl BikeStationAvailability {
+    pub fn new(
+        station_id: BikeStationId,
+        available_bikes: u32,
+        available_return_slots: u32,
+        in_service: bool,
+        observed_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            station_id,
+            available_bikes,
+            available_return_slots,
+            in_service,
+            observed_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BikeAvailabilitySnapshot {
+    #[serde(with = "time::serde::rfc3339")]
+    pub received_at: OffsetDateTime,
+    pub stations: HashMap<BikeStationId, BikeStationAvailability>,
+}
+
+impl BikeAvailabilitySnapshot {
+    pub fn new(
+        received_at: OffsetDateTime,
+        stations: HashMap<BikeStationId, BikeStationAvailability>,
+    ) -> Self {
+        Self {
+            received_at,
+            stations,
+        }
+    }
+
+    pub fn station(&self, id: &BikeStationId) -> Option<&BikeStationAvailability> {
+        self.stations.get(id)
+    }
+
+    pub fn is_fresh(
+        &self,
+        availability: &BikeStationAvailability,
+        now: OffsetDateTime,
+        max_age: Duration,
+    ) -> bool {
+        let age = now - availability.observed_at;
+        age >= Duration::ZERO && age <= max_age
+    }
+}
+
+pub const DEFAULT_BIKE_AVAILABILITY_MAX_AGE: Duration = Duration::seconds(120);
+
+pub struct BikeAvailabilityView<'a> {
+    network: &'a BikeShareNetwork,
+    snapshot: &'a BikeAvailabilitySnapshot,
+    now: OffsetDateTime,
+    max_age: Duration,
+}
+
+impl<'a> BikeAvailabilityView<'a> {
+    pub fn new(network: &'a BikeShareNetwork, snapshot: &'a BikeAvailabilitySnapshot) -> Self {
+        Self::at(
+            network,
+            snapshot,
+            OffsetDateTime::now_utc(),
+            DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
+        )
+    }
+
+    pub fn at(
+        network: &'a BikeShareNetwork,
+        snapshot: &'a BikeAvailabilitySnapshot,
+        now: OffsetDateTime,
+        max_age: Duration,
+    ) -> Self {
+        Self {
+            network,
+            snapshot,
+            now,
+            max_age,
+        }
+    }
+
+    pub fn usable_pickups(
+        &self,
+        boarding_point_id: &BoardingPointId,
+    ) -> Vec<&'a BikeStationAccess> {
+        self.network
+            .access_from_boarding_point(boarding_point_id)
+            .iter()
+            .filter(|access| access.walk_to_station.is_some())
+            .filter(|access| {
+                self.network.station(&access.station_id).is_some()
+                    && self
+                        .snapshot
+                        .station(&access.station_id)
+                        .is_some_and(|availability| {
+                            self.snapshot.is_fresh(availability, self.now, self.max_age)
+                                && availability.in_service
+                                && availability.available_bikes > 0
+                        })
+            })
+            .collect()
+    }
+
+    pub fn usable_dropoffs(
+        &self,
+        boarding_point_id: &BoardingPointId,
+    ) -> Vec<&'a BikeStationAccess> {
+        self.network
+            .access_to_boarding_point(boarding_point_id)
+            .into_iter()
+            .filter(|access| {
+                self.network.station(&access.station_id).is_some()
+                    && self
+                        .snapshot
+                        .station(&access.station_id)
+                        .is_some_and(|availability| {
+                            self.snapshot.is_fresh(availability, self.now, self.max_age)
+                                && availability.in_service
+                                && availability.available_return_slots > 0
+                        })
+            })
+            .collect()
     }
 }
 
@@ -149,6 +288,22 @@ impl BikeShareNetwork {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn availability_view<'a>(
+        &'a self,
+        snapshot: &'a BikeAvailabilitySnapshot,
+    ) -> BikeAvailabilityView<'a> {
+        BikeAvailabilityView::new(self, snapshot)
+    }
+
+    pub fn availability_view_at<'a>(
+        &'a self,
+        snapshot: &'a BikeAvailabilitySnapshot,
+        now: OffsetDateTime,
+        max_age: Duration,
+    ) -> BikeAvailabilityView<'a> {
+        BikeAvailabilityView::at(self, snapshot, now, max_age)
     }
 
     pub fn validate(&self) -> Result<(), BikeShareNetworkValidationError> {
@@ -358,6 +513,8 @@ pub enum BikeShareArtifactError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn coordinate(latitude: f64, longitude: f64) -> RequestCoordinate {
@@ -449,5 +606,141 @@ mod tests {
             network.access_links[0].walk_from_station,
             Some(BikeWalkingAccess::new(35, 90))
         );
+    }
+
+    #[test]
+    fn availability_view_filters_directional_access_and_fresh_serviceable_counts() {
+        let station_a = BikeStation::new(
+            BikeStationId::new("tdx:Taipei:A"),
+            "A",
+            coordinate(25.0, 121.5),
+        );
+        let station_b = BikeStation::new(
+            BikeStationId::new("tdx:Taipei:B"),
+            "B",
+            coordinate(25.001, 121.501),
+        );
+        let network = BikeShareNetwork::new(vec![station_a, station_b])
+            .with_access_links(vec![
+                BikeStationAccess::new(
+                    BoardingPointId::new("bp"),
+                    BikeStationId::new("tdx:Taipei:A"),
+                    Some(BikeWalkingAccess::new(10, 50)),
+                    None,
+                ),
+                BikeStationAccess::new(
+                    BoardingPointId::new("bp"),
+                    BikeStationId::new("tdx:Taipei:B"),
+                    None,
+                    Some(BikeWalkingAccess::new(20, 80)),
+                ),
+            ])
+            .with_revision("revision");
+        let now = OffsetDateTime::parse(
+            "2026-09-19T09:00:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let mut stations = HashMap::new();
+        stations.insert(
+            BikeStationId::new("tdx:Taipei:A"),
+            BikeStationAvailability::new(
+                BikeStationId::new("tdx:Taipei:A"),
+                2,
+                0,
+                true,
+                now - Duration::seconds(30),
+            ),
+        );
+        stations.insert(
+            BikeStationId::new("tdx:Taipei:B"),
+            BikeStationAvailability::new(
+                BikeStationId::new("tdx:Taipei:B"),
+                0,
+                4,
+                true,
+                now - Duration::seconds(30),
+            ),
+        );
+        let snapshot = BikeAvailabilitySnapshot::new(now, stations);
+        let view = network.availability_view_at(&snapshot, now, Duration::seconds(120));
+
+        assert_eq!(
+            view.usable_pickups(&BoardingPointId::new("bp"))
+                .iter()
+                .map(|access| access.station_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tdx:Taipei:A"]
+        );
+        assert_eq!(
+            view.usable_dropoffs(&BoardingPointId::new("bp"))
+                .iter()
+                .map(|access| access.station_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tdx:Taipei:B"]
+        );
+    }
+
+    #[test]
+    fn availability_view_rejects_stale_disabled_and_unknown_observations() {
+        let station = BikeStation::new(
+            BikeStationId::new("tdx:Taipei:A"),
+            "A",
+            coordinate(25.0, 121.5),
+        );
+        let network = BikeShareNetwork::new(vec![station])
+            .with_access_links(vec![BikeStationAccess::new(
+                BoardingPointId::new("bp"),
+                BikeStationId::new("tdx:Taipei:A"),
+                Some(BikeWalkingAccess::new(10, 50)),
+                Some(BikeWalkingAccess::new(20, 80)),
+            )])
+            .with_revision("revision");
+        let now = OffsetDateTime::parse(
+            "2026-09-19T09:00:00Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let mut stations = HashMap::new();
+        stations.insert(
+            BikeStationId::new("tdx:Taipei:A"),
+            BikeStationAvailability::new(
+                BikeStationId::new("tdx:Taipei:A"),
+                8,
+                8,
+                false,
+                now - Duration::seconds(30),
+            ),
+        );
+        stations.insert(
+            BikeStationId::new("tdx:Taipei:UNKNOWN"),
+            BikeStationAvailability::new(
+                BikeStationId::new("tdx:Taipei:UNKNOWN"),
+                8,
+                8,
+                true,
+                now - Duration::seconds(30),
+            ),
+        );
+        let disabled = BikeAvailabilitySnapshot::new(now, stations);
+        let view = network.availability_view_at(&disabled, now, Duration::seconds(120));
+        assert!(view.usable_pickups(&BoardingPointId::new("bp")).is_empty());
+        assert!(view.usable_dropoffs(&BoardingPointId::new("bp")).is_empty());
+
+        let mut stations = HashMap::new();
+        stations.insert(
+            BikeStationId::new("tdx:Taipei:A"),
+            BikeStationAvailability::new(
+                BikeStationId::new("tdx:Taipei:A"),
+                8,
+                8,
+                true,
+                now - Duration::seconds(121),
+            ),
+        );
+        let stale = BikeAvailabilitySnapshot::new(now, stations);
+        let view = network.availability_view_at(&stale, now, Duration::seconds(120));
+        assert!(view.usable_pickups(&BoardingPointId::new("bp")).is_empty());
+        assert!(view.usable_dropoffs(&BoardingPointId::new("bp")).is_empty());
     }
 }

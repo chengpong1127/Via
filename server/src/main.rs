@@ -4,9 +4,11 @@ use url::Url;
 use via_server::{
     app::{RouterDependencies, build_router_with_dependencies},
     config::load_dotenv,
-    data::load_network_artifact,
+    data::{load_bikeshare_artifact, load_network_artifact},
     health::DependencyHealth,
-    providers::{TdxServiceConditionProvider, ValhallaConfig, ValhallaProvider},
+    providers::{
+        TdxBikeAvailabilitySource, TdxServiceConditionProvider, ValhallaConfig, ValhallaProvider,
+    },
     tdx::{TdxClient, TdxCredentials},
 };
 
@@ -51,6 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = load_network_artifact(Path::new(&transit_network_path))
         .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
+    let bike_share_network_path = env::var("VIA_BIKESHARE_NETWORK")
+        .map_err(|_| "VIA_BIKESHARE_NETWORK must point to the immutable bike-share network JSON")?;
+    let bike_share_network = Arc::new(
+        load_bikeshare_artifact(Path::new(&bike_share_network_path))
+            .map_err(|error| format!("VIA_BIKESHARE_NETWORK is invalid: {error}"))?,
+    );
     let tdx_base_url_value = env::var("VIA_TDX_BASE_URL")
         .map_err(|_| "VIA_TDX_BASE_URL must point to the TDX API base URL")?;
     let tdx_base_url = Url::parse(&tdx_base_url_value)?;
@@ -61,6 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TdxCredentials::from_env()?,
         &tdx_base_url_value,
     )?);
+    let bike_availability_source = Arc::new(TdxBikeAvailabilitySource::new(
+        bike_share_network.clone(),
+        tdx_client.clone(),
+    ));
     let mut service_conditions = TdxServiceConditionProvider::new(tdx_client.clone());
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         service_conditions = service_conditions.with_service_condition_path(path);
@@ -73,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(via_server::providers::service_conditions::DEFAULT_SERVICE_CONDITION_CACHE_TTL);
     let dependencies = RouterDependencies::new(Arc::new(service_conditions))
         .with_tdx(tdx_client)
+        .with_bike_share(bike_share_network, bike_availability_source)
         .with_service_condition_cache_ttl(cache_ttl);
     let router = build_router_with_dependencies(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")

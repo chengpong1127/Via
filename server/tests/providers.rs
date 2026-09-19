@@ -1,3 +1,5 @@
+#[path = "providers/bikeshare.rs"]
+mod bikeshare;
 #[path = "providers/service_conditions.rs"]
 mod service_conditions;
 #[path = "providers/street.rs"]

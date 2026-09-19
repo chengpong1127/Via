@@ -3,11 +3,13 @@
 //! Routing imports provider-neutral traits from `domain`/`routing`; these
 //! modules are the only stable public entry points for concrete adapters.
 
+pub mod bikeshare;
 pub mod service_conditions;
 pub mod timing;
 
 pub mod valhalla;
 
+pub use bikeshare::{BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource};
 pub use service_conditions::{
     CachedServiceConditionProvider, NullServiceConditionProvider, ServiceConditionError,
     ServiceConditionMetrics, ServiceConditionProvider, TdxServiceConditionProvider,

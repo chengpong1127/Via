@@ -18,9 +18,10 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
-    domain::transit::TransitNetwork,
+    domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
     health::DependencyHealth,
     observability::OperationalMetrics,
+    providers::bikeshare::BikeAvailabilitySource,
     providers::service_conditions::{
         CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
         NullServiceConditionProvider, ServiceConditionMetrics, ServiceConditionProvider,
@@ -42,6 +43,8 @@ struct AppState {
     metrics: OperationalMetrics,
     service_condition_metrics: ServiceConditionMetrics,
     bus_timing_metrics: BusTimingMetrics,
+    bike_share_network: Option<Arc<BikeShareNetwork>>,
+    bike_availability_source: Option<Arc<dyn BikeAvailabilitySource>>,
     openapi: OpenApi,
 }
 
@@ -50,6 +53,8 @@ pub struct RouterDependencies {
     pub service_conditions: Arc<dyn ServiceConditionProvider>,
     pub tdx: Option<Arc<TdxClient>>,
     pub service_condition_cache_ttl: Duration,
+    pub bike_share_network: Option<Arc<BikeShareNetwork>>,
+    pub bike_availability_source: Option<Arc<dyn BikeAvailabilitySource>>,
 }
 
 impl RouterDependencies {
@@ -58,6 +63,8 @@ impl RouterDependencies {
             service_conditions,
             tdx: None,
             service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
+            bike_share_network: None,
+            bike_availability_source: None,
         }
     }
 
@@ -68,6 +75,16 @@ impl RouterDependencies {
 
     pub fn with_service_condition_cache_ttl(mut self, ttl: Duration) -> Self {
         self.service_condition_cache_ttl = ttl;
+        self
+    }
+
+    pub fn with_bike_share(
+        mut self,
+        network: Arc<BikeShareNetwork>,
+        availability_source: Arc<dyn BikeAvailabilitySource>,
+    ) -> Self {
+        self.bike_share_network = Some(network);
+        self.bike_availability_source = Some(availability_source);
         self
     }
 }
@@ -197,6 +214,8 @@ where
             metrics,
             service_condition_metrics,
             bus_timing_metrics,
+            bike_share_network: dependencies.bike_share_network,
+            bike_availability_source: dependencies.bike_availability_source,
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -462,6 +481,12 @@ struct ReadinessResponse {
     )
 )]
 async fn readiness(State(state): State<AppState>) -> Response {
+    // Bike-share dependencies are loaded and retained for future augmentation,
+    // but readiness remains deliberately independent of realtime availability.
+    let _ = (
+        state.bike_share_network.as_ref(),
+        state.bike_availability_source.as_ref(),
+    );
     let street_routing = state.street_health.healthy().await;
     let static_network = !state
         .transit_network
