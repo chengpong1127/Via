@@ -342,28 +342,28 @@ impl JourneyVariant {
             .path
             .iter()
             .map(|step| match &step.movement {
-                JourneyPathMovement::Baseline { movement_index } => {
-                    format!(
-                        "baseline:{movement_index}:{}:{}",
-                        step.from_anchor, step.to_anchor
-                    )
-                }
+                JourneyPathMovement::Baseline { movement_index } => format!(
+                    "baseline:{}",
+                    self.skeleton.baseline_movement_signature(*movement_index)
+                ),
                 JourneyPathMovement::BikeShare { shortcut } => format!(
-                    "bike:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                    step.from_anchor,
-                    step.to_anchor,
+                    "bike:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    anchor_signature(&self.skeleton.anchors()[step.from_anchor].kind),
+                    anchor_signature(&self.skeleton.anchors()[step.to_anchor].kind),
                     shortcut.pickup_station_id.as_str(),
                     shortcut.dropoff_station_id.as_str(),
                     shortcut.walk_to_pickup.duration_seconds,
+                    shortcut.walk_to_pickup.distance_metres,
                     shortcut.bicycle_duration_seconds,
                     shortcut.bicycle_distance_metres,
                     shortcut.walk_from_dropoff.duration_seconds,
+                    shortcut.walk_from_dropoff.distance_metres,
                     shortcut.total_seconds,
                 ),
             })
             .collect::<Vec<_>>()
             .join("|");
-        format!("{}|path:{path}", self.baseline_signature())
+        format!("path:v2:{path}")
     }
 
     /// Evaluate the path without re-running transit search.
@@ -457,6 +457,58 @@ impl JourneyVariant {
             skeleton: Arc::new(skeleton),
             path,
         }
+    }
+}
+
+impl JourneySkeleton {
+    fn baseline_movement_signature(&self, movement_index: usize) -> String {
+        let Some(movement) = self.movements.get(movement_index) else {
+            return format!("invalid:{movement_index}");
+        };
+        let from = anchor_signature(&self.anchors[movement.from_anchor].kind);
+        let to = anchor_signature(&self.anchors[movement.to_anchor].kind);
+        match &movement.kind {
+            JourneyMovementKind::Walking {
+                kind,
+                duration_seconds,
+                distance_metres,
+            } => format!("walking:{kind:?}:{from}:{to}:{duration_seconds}:{distance_metres}"),
+            JourneyMovementKind::Transit { segment_index } => {
+                let Some(JourneySegment::Transit {
+                    trip,
+                    board_index,
+                    alight_index,
+                }) = self.candidate.segments.get(*segment_index)
+                else {
+                    return format!("invalid-transit:{segment_index}");
+                };
+                let Some(board) = trip.stop_times.get(*board_index) else {
+                    return format!("invalid-transit:{segment_index}");
+                };
+                let Some(alight) = trip.stop_times.get(*alight_index) else {
+                    return format!("invalid-transit:{segment_index}");
+                };
+                format!(
+                    "transit:{}:{}:{}:{}:{}:{}:{}:{}",
+                    trip.id.as_str(),
+                    trip.service_id.as_str(),
+                    board.stop_id.as_str(),
+                    alight.stop_id.as_str(),
+                    board.departure_at.unix_timestamp_nanos(),
+                    alight.arrival_at.unix_timestamp_nanos(),
+                    from,
+                    to,
+                )
+            }
+        }
+    }
+}
+
+fn anchor_signature(kind: &JourneyAnchorKind) -> String {
+    match kind {
+        JourneyAnchorKind::Origin { .. } => "origin".into(),
+        JourneyAnchorKind::BoardingPoint { id } => format!("boarding_point:{}", id.as_str()),
+        JourneyAnchorKind::Destination { .. } => "destination".into(),
     }
 }
 

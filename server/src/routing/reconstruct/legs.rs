@@ -257,23 +257,34 @@ pub(crate) async fn assemble(
                 {
                     return Ok(None);
                 }
-                let to_stop = anchor_boarding_point(variant, step.to_anchor)
-                    .ok_or(PlanningError::Internal)?;
-                let connector_start = result.legs.len();
-                if !append_bike_share(
-                    service,
-                    context,
-                    &current_stop,
-                    &to_stop,
-                    shortcut,
-                    &mut result,
-                )
-                .await?
+                if matches!(
+                    variant.skeleton().anchors()[step.from_anchor].kind,
+                    JourneyAnchorKind::Destination { .. }
+                ) || matches!(
+                    variant.skeleton().anchors()[step.to_anchor].kind,
+                    JourneyAnchorKind::Origin { .. }
+                ) {
+                    return Ok(None);
+                }
+                let source_stop = anchor_boarding_point(variant, step.from_anchor);
+                if source_stop
+                    .as_ref()
+                    .is_some_and(|source_stop| source_stop != &current_stop)
                 {
                     return Ok(None);
                 }
+                let from = anchor_place(service, request, variant, step.from_anchor)
+                    .ok_or(PlanningError::Internal)?;
+                let to = anchor_place(service, request, variant, step.to_anchor)
+                    .ok_or(PlanningError::Internal)?;
+                let connector_start = result.legs.len();
+                if !append_bike_share(service, context, &from, &to, shortcut, &mut result).await? {
+                    return Ok(None);
+                }
                 register_pending_transfer(&result, &mut pending_transfer, connector_start);
-                current_stop = to_stop;
+                if let Some(to_stop) = anchor_boarding_point(variant, step.to_anchor) {
+                    current_stop = to_stop;
+                }
             }
         }
         current_anchor = step.to_anchor;
@@ -292,6 +303,19 @@ fn anchor_boarding_point(
     match &variant.skeleton().anchors().get(anchor)?.kind {
         JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
         JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::Destination { .. } => None,
+    }
+}
+
+fn anchor_place(
+    service: &RoutingService,
+    request: &PlanningRequest,
+    variant: &JourneyVariant,
+    anchor: usize,
+) -> Option<Place> {
+    match &variant.skeleton().anchors().get(anchor)?.kind {
+        JourneyAnchorKind::Origin { .. } => Some(service.origin_place(request)),
+        JourneyAnchorKind::BoardingPoint { id } => service.stop_place(id),
+        JourneyAnchorKind::Destination { .. } => Some(service.destination_place(request)),
     }
 }
 
@@ -338,17 +362,11 @@ fn register_pending_transfer(
 async fn append_bike_share(
     service: &RoutingService,
     context: &PlanningContext,
-    from_stop_id: &crate::domain::ids::BoardingPointId,
-    to_stop_id: &crate::domain::ids::BoardingPointId,
+    from: &Place,
+    to: &Place,
     shortcut: &crate::routing::augmentation::BikeShortcut,
     result: &mut ReconstructedLegs,
 ) -> Result<bool, PlanningError> {
-    let Some(from_stop) = service.stop_place(from_stop_id) else {
-        return Err(PlanningError::Internal);
-    };
-    let Some(to_stop) = service.stop_place(to_stop_id) else {
-        return Err(PlanningError::Internal);
-    };
     let Some(pickup) = service.bike_station_place(&shortcut.pickup_station_id) else {
         return Ok(false);
     };
@@ -359,7 +377,7 @@ async fn append_bike_share(
     let Some(to_pickup) = strict_bike_path(
         service,
         context,
-        &from_stop,
+        from,
         &pickup,
         StreetTravelMode::Walking,
         result.arrival_time,
@@ -368,7 +386,7 @@ async fn append_bike_share(
     else {
         return Ok(false);
     };
-    append_routed_walking(&from_stop, &pickup, to_pickup, result);
+    append_routed_walking(from, &pickup, to_pickup, result);
 
     let Some(bicycle) = strict_bike_path(
         service,
@@ -388,7 +406,7 @@ async fn append_bike_share(
         service,
         context,
         &dropoff,
-        &to_stop,
+        to,
         StreetTravelMode::Walking,
         result.arrival_time,
     )
@@ -396,7 +414,7 @@ async fn append_bike_share(
     else {
         return Ok(false);
     };
-    append_routed_walking(&dropoff, &to_stop, from_dropoff, result);
+    append_routed_walking(&dropoff, to, from_dropoff, result);
     result.bike_share_uses = result.bike_share_uses.saturating_add(1);
     Ok(true)
 }

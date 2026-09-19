@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Instant,
+};
 
 use time::{Duration, OffsetDateTime};
 
@@ -356,6 +360,11 @@ impl RoutingService {
         request: PlanningRequest,
         generated: Vec<GeneratedCandidate>,
     ) -> Result<PlanningOutcome, PlanningError> {
+        let mut seen_keys = HashSet::new();
+        let generated = generated
+            .into_iter()
+            .filter(|candidate| seen_keys.insert(candidate.ranking.stable_key.clone()))
+            .collect::<Vec<_>>();
         let ranked = self.ranking.rank(
             generated
                 .iter()

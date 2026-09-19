@@ -178,17 +178,7 @@ impl<'a> BikeAvailabilityView<'a> {
             .access_from_boarding_point(boarding_point_id)
             .iter()
             .filter(|access| access.walk_to_station.is_some())
-            .filter(|access| {
-                self.network.station(&access.station_id).is_some()
-                    && self
-                        .snapshot
-                        .station(&access.station_id)
-                        .is_some_and(|availability| {
-                            self.snapshot.is_fresh(availability, self.now, self.max_age)
-                                && availability.in_service
-                                && availability.available_bikes > 0
-                        })
-            })
+            .filter(|access| self.station_usable_as_pickup(&access.station_id))
             .collect()
     }
 
@@ -200,18 +190,35 @@ impl<'a> BikeAvailabilityView<'a> {
             .access_to_boarding_point(boarding_point_id)
             .into_iter()
             .filter(|access| access.walk_from_station.is_some())
-            .filter(|access| {
-                self.network.station(&access.station_id).is_some()
-                    && self
-                        .snapshot
-                        .station(&access.station_id)
-                        .is_some_and(|availability| {
-                            self.snapshot.is_fresh(availability, self.now, self.max_age)
-                                && availability.in_service
-                                && availability.available_return_slots > 0
-                        })
-            })
+            .filter(|access| self.station_usable_as_dropoff(&access.station_id))
             .collect()
+    }
+
+    pub fn station_usable_as_pickup(&self, station_id: &BikeStationId) -> bool {
+        self.station_is_serviceable(station_id)
+            && self
+                .snapshot
+                .station(station_id)
+                .is_some_and(|availability| availability.available_bikes > 0)
+    }
+
+    pub fn station_usable_as_dropoff(&self, station_id: &BikeStationId) -> bool {
+        self.station_is_serviceable(station_id)
+            && self
+                .snapshot
+                .station(station_id)
+                .is_some_and(|availability| availability.available_return_slots > 0)
+    }
+
+    fn station_is_serviceable(&self, station_id: &BikeStationId) -> bool {
+        self.network.station(station_id).is_some_and(|_| {
+            self.snapshot
+                .station(station_id)
+                .is_some_and(|availability| {
+                    self.snapshot.is_fresh(availability, self.now, self.max_age)
+                        && availability.in_service
+                })
+        })
     }
 }
 

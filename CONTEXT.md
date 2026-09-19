@@ -63,10 +63,20 @@ and destination anchors plus indexed baseline movement. The current
 `BaselineJourneyAugmenter` returns one original path; when
 `VIA_ENABLE_BIKE_AUGMENTATION=true`, `BikeJourneyAugmenter` adds optional
 BikeShare paths using the immutable `BikeShareNetwork`, realtime availability,
-and bicycle matrix search. Reconstruction hydrates retained bike paths with
+endpoint-time station discovery, and bicycle matrix search. Endpoint station
+discovery scans the immutable station list within a conservative 300 metre
+radius, filters fresh serviceable pickup/return counts before walking matrix
+work, and applies bounded candidate, walking-time, and walking-distance limits.
+The resulting shortcuts may span Origin → BoardingPoint, BoardingPoint →
+Destination, or the complete Origin → Destination interval; the latter is a
+normal skeleton path and reconstructs as walking → bicycle → walking with no
+transit metadata. Reconstruction hydrates retained bike paths with
 walking/bicycle street routes and exposes provider-neutral bike-share legs.
-Trip-Based search remains unaware of augmentation; future mobility shortcuts
-must not be added as `TransferResolver` behavior.
+Stable variant identity is based on retained baseline movement/trip identity
+and actual BikeStation shortcuts, so identical pure-bike paths from different
+transit skeletons can be deduplicated before ranking. Trip-Based search remains
+unaware of augmentation; future mobility shortcuts must not be added as
+`TransferResolver` behavior.
 `DepartureResolver` is the algorithm-facing timing boundary. Its current
 implementation is a `DepartureDispatcher` that groups queries by
 `TransitMode` and delegates to mode-owned sources. Each source owns its static

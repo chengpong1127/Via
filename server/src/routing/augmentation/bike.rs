@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use time::{Duration, OffsetDateTime};
 
 use crate::{
+    api::RequestCoordinate,
     domain::{
         bikeshare::{
             BikeShareNetwork, BikeStationAccess, BikeWalkingAccess,
@@ -16,8 +17,8 @@ use crate::{
     },
     providers::BikeAvailabilitySource,
     street::{
-        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
-        StreetTravelMode,
+        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, Metres, RoutingConstraints,
+        StreetRouter, StreetTravelMode,
     },
 };
 
@@ -30,6 +31,10 @@ use super::{
 pub struct BikeAugmentationPolicy {
     pub max_variants: usize,
     pub availability_max_age: Duration,
+    pub max_endpoint_geometric_radius_metres: u32,
+    pub max_endpoint_station_candidates: usize,
+    pub max_endpoint_walking_seconds: u32,
+    pub max_endpoint_walking_distance_metres: u32,
     pub now: Option<OffsetDateTime>,
 }
 
@@ -38,6 +43,10 @@ impl Default for BikeAugmentationPolicy {
         Self {
             max_variants: 8,
             availability_max_age: DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
+            max_endpoint_geometric_radius_metres: 300,
+            max_endpoint_station_candidates: 16,
+            max_endpoint_walking_seconds: 8 * 60,
+            max_endpoint_walking_distance_metres: 800,
             now: None,
         }
     }
@@ -96,7 +105,12 @@ impl JourneyAugmenter for BikeJourneyAugmenter {
         let view =
             self.network
                 .availability_view_at(&snapshot, now, self.policy.availability_max_age);
-        let Some(intervals) = collect_eligible_intervals(&skeleton, &self.network, &view) else {
+        let Some(endpoint_choices) = self.collect_endpoint_choices(&skeleton, &view).await else {
+            return vec![baseline];
+        };
+        let Some(intervals) =
+            collect_eligible_intervals(&skeleton, &self.network, &view, &endpoint_choices)
+        else {
             return vec![baseline];
         };
         if intervals.is_empty() {
@@ -115,6 +129,146 @@ impl JourneyAugmenter for BikeJourneyAugmenter {
 }
 
 impl BikeJourneyAugmenter {
+    async fn collect_endpoint_choices(
+        &self,
+        skeleton: &JourneySkeleton,
+        view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
+    ) -> Option<EndpointChoices> {
+        let origin = match &skeleton.anchors().first()?.kind {
+            JourneyAnchorKind::Origin { coordinate } => *coordinate,
+            JourneyAnchorKind::BoardingPoint { .. } | JourneyAnchorKind::Destination { .. } => {
+                return None;
+            }
+        };
+        let destination = match &skeleton.anchors().last()?.kind {
+            JourneyAnchorKind::Destination { coordinate } => *coordinate,
+            JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::BoardingPoint { .. } => {
+                return None;
+            }
+        };
+
+        let pickup_candidates = endpoint_station_candidates(
+            &self.network,
+            origin,
+            self.policy.max_endpoint_geometric_radius_metres,
+            self.policy.max_endpoint_station_candidates,
+            |station_id| view.station_usable_as_pickup(station_id),
+        );
+        let dropoff_candidates = endpoint_station_candidates(
+            &self.network,
+            destination,
+            self.policy.max_endpoint_geometric_radius_metres,
+            self.policy.max_endpoint_station_candidates,
+            |station_id| view.station_usable_as_dropoff(station_id),
+        );
+
+        let pickups = self
+            .origin_pickup_choices(origin, &pickup_candidates)
+            .await?;
+        let dropoffs = self
+            .destination_dropoff_choices(destination, &dropoff_candidates)
+            .await?;
+        Some(EndpointChoices { pickups, dropoffs })
+    }
+
+    async fn origin_pickup_choices(
+        &self,
+        origin: RequestCoordinate,
+        candidates: &[EndpointStationCandidate],
+    ) -> Option<Vec<StationChoice>> {
+        if candidates.is_empty() {
+            return Some(Vec::new());
+        }
+        let limits = self.street_router.matrix_limits();
+        let max_targets = limits.max_targets;
+        if limits.max_sources == 0 || max_targets == 0 {
+            return None;
+        }
+        let origin = Coordinate::try_new(origin.latitude, origin.longitude).ok()?;
+        let constraints = endpoint_matrix_constraints(&self.policy);
+        let mut choices = Vec::new();
+        for chunk in candidates.chunks(max_targets) {
+            let result = self
+                .street_router
+                .matrix(MatrixQuery {
+                    orientation: MatrixOrientation::OneToMany,
+                    travel_mode: StreetTravelMode::Walking,
+                    sources: vec![origin],
+                    targets: chunk.iter().map(|candidate| candidate.coordinate).collect(),
+                    constraints,
+                })
+                .await
+                .ok()?;
+            let row = result.cells.first()?;
+            if result.cells.len() != 1 || row.len() != chunk.len() {
+                return None;
+            }
+            for (candidate, cell) in chunk.iter().zip(row) {
+                if let Some(walking) = accepted_endpoint_metric(
+                    *cell,
+                    self.policy.max_endpoint_walking_seconds,
+                    self.policy.max_endpoint_walking_distance_metres,
+                ) {
+                    choices.push(StationChoice {
+                        station_id: candidate.station_id.clone(),
+                        walking,
+                    });
+                }
+            }
+        }
+        choices.sort_by(|left, right| left.station_id.as_str().cmp(right.station_id.as_str()));
+        Some(choices)
+    }
+
+    async fn destination_dropoff_choices(
+        &self,
+        destination: RequestCoordinate,
+        candidates: &[EndpointStationCandidate],
+    ) -> Option<Vec<StationChoice>> {
+        if candidates.is_empty() {
+            return Some(Vec::new());
+        }
+        let limits = self.street_router.matrix_limits();
+        let max_sources = limits.max_sources;
+        if max_sources == 0 || limits.max_targets == 0 {
+            return None;
+        }
+        let destination = Coordinate::try_new(destination.latitude, destination.longitude).ok()?;
+        let constraints = endpoint_matrix_constraints(&self.policy);
+        let mut choices = Vec::new();
+        for chunk in candidates.chunks(max_sources) {
+            let result = self
+                .street_router
+                .matrix(MatrixQuery {
+                    orientation: MatrixOrientation::ManyToOne,
+                    travel_mode: StreetTravelMode::Walking,
+                    sources: chunk.iter().map(|candidate| candidate.coordinate).collect(),
+                    targets: vec![destination],
+                    constraints,
+                })
+                .await
+                .ok()?;
+            if result.cells.len() != chunk.len() || result.cells.iter().any(|row| row.len() != 1) {
+                return None;
+            }
+            for (candidate, row) in chunk.iter().zip(result.cells) {
+                let cell = row.into_iter().next()?;
+                if let Some(walking) = accepted_endpoint_metric(
+                    cell,
+                    self.policy.max_endpoint_walking_seconds,
+                    self.policy.max_endpoint_walking_distance_metres,
+                ) {
+                    choices.push(StationChoice {
+                        station_id: candidate.station_id.clone(),
+                        walking,
+                    });
+                }
+            }
+        }
+        choices.sort_by(|left, right| left.station_id.as_str().cmp(right.station_id.as_str()));
+        Some(choices)
+    }
+
     async fn matrix_shortcuts(
         &self,
         network: &BikeShareNetwork,
@@ -275,6 +429,19 @@ struct StationChoice {
 }
 
 #[derive(Clone)]
+struct EndpointChoices {
+    pickups: Vec<StationChoice>,
+    dropoffs: Vec<StationChoice>,
+}
+
+#[derive(Clone)]
+struct EndpointStationCandidate {
+    station_id: BikeStationId,
+    coordinate: Coordinate,
+    geometric_distance_metres: u64,
+}
+
+#[derive(Clone)]
 struct EligibleInterval {
     from_anchor: usize,
     to_anchor: usize,
@@ -299,24 +466,31 @@ fn collect_eligible_intervals(
     skeleton: &JourneySkeleton,
     network: &BikeShareNetwork,
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
+    endpoint_choices: &EndpointChoices,
 ) -> Option<Vec<EligibleInterval>> {
     let anchors = skeleton.anchors();
     let mut intervals = Vec::new();
     for from_anchor in 0..anchors.len() {
-        let JourneyAnchorKind::BoardingPoint { id: from_id } = &anchors[from_anchor].kind else {
-            continue;
-        };
         for to_anchor in (from_anchor + 1)..anchors.len() {
-            let JourneyAnchorKind::BoardingPoint { id: to_id } = &anchors[to_anchor].kind else {
-                continue;
+            let pickups = match &anchors[from_anchor].kind {
+                JourneyAnchorKind::Origin { .. } => endpoint_choices.pickups.clone(),
+                JourneyAnchorKind::BoardingPoint { id } => {
+                    station_choices(network, view.usable_pickups(id), true)
+                }
+                JourneyAnchorKind::Destination { .. } => continue,
+            };
+            let dropoffs = match &anchors[to_anchor].kind {
+                JourneyAnchorKind::BoardingPoint { id } => {
+                    station_choices(network, view.usable_dropoffs(id), false)
+                }
+                JourneyAnchorKind::Destination { .. } => endpoint_choices.dropoffs.clone(),
+                JourneyAnchorKind::Origin { .. } => continue,
             };
             let elapsed = anchors[to_anchor].reached_at - anchors[from_anchor].reached_at;
             let baseline_seconds = u32::try_from(elapsed.whole_seconds()).ok()?;
             if baseline_seconds == 0 {
                 continue;
             }
-            let pickups = station_choices(network, view.usable_pickups(from_id), true);
-            let dropoffs = station_choices(network, view.usable_dropoffs(to_id), false);
             if pickups.is_empty() || dropoffs.is_empty() {
                 continue;
             }
@@ -385,6 +559,60 @@ fn station_choices(
 fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Option<Coordinate> {
     let station = network.station(id)?;
     Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude).ok()
+}
+
+fn endpoint_station_candidates(
+    network: &BikeShareNetwork,
+    endpoint: RequestCoordinate,
+    max_radius_metres: u32,
+    max_candidates: usize,
+    usable: impl Fn(&BikeStationId) -> bool,
+) -> Vec<EndpointStationCandidate> {
+    if max_candidates == 0 {
+        return Vec::new();
+    }
+    let mut candidates = network
+        .stations
+        .iter()
+        .filter(|station| usable(&station.id))
+        .filter_map(|station| {
+            let coordinate = station_coordinate(network, &station.id)?;
+            let geometric_distance_metres = endpoint.planar_distance_metres(station.coordinate);
+            (geometric_distance_metres <= u64::from(max_radius_metres)).then_some(
+                EndpointStationCandidate {
+                    station_id: station.id.clone(),
+                    coordinate,
+                    geometric_distance_metres,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.geometric_distance_metres
+            .cmp(&right.geometric_distance_metres)
+            .then(left.station_id.as_str().cmp(right.station_id.as_str()))
+    });
+    candidates.truncate(max_candidates);
+    candidates
+}
+
+fn endpoint_matrix_constraints(policy: &BikeAugmentationPolicy) -> RoutingConstraints {
+    RoutingConstraints {
+        time: None,
+        max_distance: Some(Metres(policy.max_endpoint_walking_distance_metres)),
+    }
+}
+
+fn accepted_endpoint_metric(
+    cell: MatrixCell,
+    max_duration_seconds: u32,
+    max_distance_metres: u32,
+) -> Option<BikeWalkingAccess> {
+    let MatrixCell::Reachable { duration, distance } = cell else {
+        return None;
+    };
+    (duration.0 > 0 && duration.0 <= max_duration_seconds && distance.0 <= max_distance_metres)
+        .then(|| BikeWalkingAccess::new(duration.0, distance.0))
 }
 
 #[derive(Clone)]
