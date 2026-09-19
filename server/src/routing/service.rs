@@ -290,7 +290,7 @@ impl RoutingService {
                                     continue;
                                 }
                             };
-                            for variant in self.journey_augmenter.augment(skeleton) {
+                            for variant in self.journey_augmenter.augment(skeleton).await {
                                 match self
                                     .reconstruct_multimodal_variant(&request, &variant, &context)
                                     .await

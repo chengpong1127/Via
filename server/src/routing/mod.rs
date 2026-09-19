@@ -22,9 +22,10 @@ pub use algorithm::{
     RoutingError,
 };
 pub use augmentation::{
-    BaselineJourneyAugmenter, JourneyAnchor, JourneyAnchorKind, JourneyAugmenter, JourneyMovement,
-    JourneyMovementKind, JourneyPathMovement, JourneyPathStep, JourneySkeleton,
-    JourneySkeletonError, JourneyVariant, WalkingMovementKind,
+    BaselineJourneyAugmenter, BikeAugmentationPolicy, BikeJourneyAugmenter, BikeRide, BikeShortcut,
+    JourneyAnchor, JourneyAnchorKind, JourneyAugmenter, JourneyMovement, JourneyMovementKind,
+    JourneyPathMovement, JourneyPathStep, JourneySkeleton, JourneySkeletonError,
+    JourneyTimingError, JourneyVariant, JourneyVariantTiming, WalkingMovementKind,
 };
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{

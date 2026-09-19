@@ -199,6 +199,7 @@ impl<'a> BikeAvailabilityView<'a> {
         self.network
             .access_to_boarding_point(boarding_point_id)
             .into_iter()
+            .filter(|access| access.walk_from_station.is_some())
             .filter(|access| {
                 self.network.station(&access.station_id).is_some()
                     && self
