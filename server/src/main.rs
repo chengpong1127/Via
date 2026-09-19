@@ -86,7 +86,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dependencies = RouterDependencies::new(Arc::new(service_conditions))
         .with_tdx(tdx_client)
         .with_bike_share(bike_share_network, bike_availability_source)
-        .with_bike_augmentation_enabled(env_bool("VIA_ENABLE_BIKE_AUGMENTATION")?)
         .with_service_condition_cache_ttl(cache_ttl);
     let router = build_router_with_dependencies(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")
@@ -103,14 +102,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
-}
-
-fn env_bool(name: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    match env::var(name) {
-        Ok(value) if value.eq_ignore_ascii_case("true") => Ok(true),
-        Ok(value) if value.eq_ignore_ascii_case("false") => Ok(false),
-        Ok(_) => Err(format!("{name} must be true or false").into()),
-        Err(env::VarError::NotPresent) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }

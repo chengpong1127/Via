@@ -13,7 +13,7 @@
     },
     "display_text": "Taipei 101"
   },
-  "selected_modes": ["transit"],
+  "selected_modes": ["bus", "metro", "tra", "thsr", "bike_share"],
   "locale": "zh-Hant-TW",
   "departure_setting": {
     "type": "depart_now"

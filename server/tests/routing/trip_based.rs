@@ -54,6 +54,33 @@ async fn scheduled_router_selects_the_earliest_boardable_trip() {
 }
 
 #[tokio::test]
+async fn query_allowed_transit_modes_filter_services_before_departure_resolution() {
+    let network = network(&[("line", &["a", "b"])]);
+    let resolver = resolver(vec![trip(
+        "bus-trip",
+        "line",
+        &["a", "b"],
+        &[300, 900],
+        &[300, 900],
+        false,
+    )]);
+    let calls = resolver.calls.clone();
+    let router = TripBasedRouter::new(
+        network,
+        Arc::new(resolver),
+        Arc::new(TransferShortcutIndex::default()),
+    );
+
+    let candidates = router
+        .route(query("a", "b").with_allowed_transit_modes([TransitMode::Metro]))
+        .await
+        .unwrap();
+
+    assert!(candidates.is_empty());
+    assert!(calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn runtime_resolution_is_lazy_and_scans_the_effective_trip_forward() {
     let network = network(&[("explored", &["a", "b"]), ("unused", &["x", "y"])]);
     let resolver = resolver(vec![trip(

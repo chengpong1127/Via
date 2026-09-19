@@ -24,14 +24,14 @@ cargo run --manifest-path server/Cargo.toml --quiet --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
-  --modes transit --service-conditions fixture --trace
+  --modes bus,metro,tra,thsr --service-conditions fixture --trace
 
 cargo run --manifest-path server/Cargo.toml --quiet --bin via-route -- \
   --network server/data/dev/taipei/transit-network.json \
   --from-lat 25.0143 --from-lon 121.4637 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
-  --modes transit --service-conditions fixture --trace
+  --modes bus,metro,tra,thsr --service-conditions fixture --trace
 ```
 
 For a timing comparison, warm the binary first and run each case repeatedly:
@@ -42,7 +42,7 @@ time cargo run --manifest-path server/Cargo.toml --quiet --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
-  --modes transit --service-conditions fixture --json >/dev/null
+  --modes bus,metro,tra,thsr --service-conditions fixture --json >/dev/null
 ```
 
 Compare median and p95 wall time, route existence, service sequence, transfer

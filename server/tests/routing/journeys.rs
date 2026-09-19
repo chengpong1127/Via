@@ -16,7 +16,7 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
     let body = route_body(
         street,
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-mrt-red"]);
@@ -51,7 +51,7 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
         FixtureRealtime::bus(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-main"]);
@@ -82,7 +82,7 @@ async fn static_bus_schedule_is_used_when_realtime_is_unavailable() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-main"]);
@@ -110,7 +110,7 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
     let body = route_body(
         transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
@@ -142,7 +142,7 @@ async fn three_transit_services_reconstruct_with_two_transfers() {
     let body = route_body(
         transit_street(&network, origin, "F-M1", destination, "F-M4"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(
@@ -186,7 +186,7 @@ async fn bus_to_mrt_transfer_keeps_the_bus_then_metro_order() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-M3-BLUE"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-in", "fixture-mrt-blue"]);
@@ -226,7 +226,7 @@ async fn mrt_to_bus_transfer_keeps_the_metro_then_bus_order() {
     let body = route_body(
         transit_street(&network, origin, "F-M2-BLUE", destination, "F-BUS-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-mrt-blue", "fixture-bus-out"]);
@@ -258,7 +258,7 @@ async fn train_route_uses_the_rail_service_and_stops() {
     let body = route_body(
         transit_street(&network, origin, "F-TRA-A", destination, "F-TRA-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-tra-local"]);
@@ -290,7 +290,7 @@ async fn high_speed_rail_route_uses_the_generic_transit_model() {
     let body = route_body(
         transit_street(&network, origin, "F-HSR-A", destination, "F-HSR-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-thsr"]);
@@ -321,7 +321,7 @@ async fn train_can_transfer_to_local_mrt() {
     let body = route_body(
         transit_street(&network, origin, "F-TRA-A", destination, "F-M2-RED"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-tra-local", "fixture-mrt-red"]);
@@ -355,7 +355,7 @@ async fn direct_walking_is_returned_when_no_transit_access_is_reachable() {
             )
             .build(),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
 
@@ -375,7 +375,7 @@ async fn disconnected_points_return_a_clean_empty_result() {
     let body = route_body(
         FakeStreetRouter::builder().build(),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
 
@@ -391,7 +391,7 @@ async fn missed_transfer_is_rejected_by_the_two_minute_connection_constraint() {
     let body = route_body(
         transit_street(&network, origin, "F-MISS-A", destination, "F-MISS-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
 
@@ -406,7 +406,7 @@ async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
         FixtureRealtime::bus(),
-        request(origin, destination, &["transit"]),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-main"]);

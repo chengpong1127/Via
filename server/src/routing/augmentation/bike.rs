@@ -105,9 +105,7 @@ impl JourneyAugmenter for BikeJourneyAugmenter {
         let view =
             self.network
                 .availability_view_at(&snapshot, now, self.policy.availability_max_age);
-        let Some(endpoint_choices) = self.collect_endpoint_choices(&skeleton, &view).await else {
-            return vec![baseline];
-        };
+        let endpoint_choices = self.collect_endpoint_choices(&skeleton, &view).await;
         let Some(intervals) =
             collect_eligible_intervals(&skeleton, &self.network, &view, &endpoint_choices)
         else {
@@ -133,18 +131,28 @@ impl BikeJourneyAugmenter {
         &self,
         skeleton: &JourneySkeleton,
         view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
-    ) -> Option<EndpointChoices> {
-        let origin = match &skeleton.anchors().first()?.kind {
-            JourneyAnchorKind::Origin { coordinate } => *coordinate,
-            JourneyAnchorKind::BoardingPoint { .. } | JourneyAnchorKind::Destination { .. } => {
-                return None;
-            }
+    ) -> EndpointChoices {
+        let Some(origin) = skeleton
+            .anchors()
+            .first()
+            .and_then(|anchor| match &anchor.kind {
+                JourneyAnchorKind::Origin { coordinate } => Some(*coordinate),
+                JourneyAnchorKind::BoardingPoint { .. } | JourneyAnchorKind::Destination { .. } => {
+                    None
+                }
+            })
+        else {
+            return EndpointChoices::default();
         };
-        let destination = match &skeleton.anchors().last()?.kind {
-            JourneyAnchorKind::Destination { coordinate } => *coordinate,
-            JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::BoardingPoint { .. } => {
-                return None;
-            }
+        let Some(destination) = skeleton
+            .anchors()
+            .last()
+            .and_then(|anchor| match &anchor.kind {
+                JourneyAnchorKind::Destination { coordinate } => Some(*coordinate),
+                JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::BoardingPoint { .. } => None,
+            })
+        else {
+            return EndpointChoices::default();
         };
 
         let pickup_candidates = endpoint_station_candidates(
@@ -162,29 +170,29 @@ impl BikeJourneyAugmenter {
             |station_id| view.station_usable_as_dropoff(station_id),
         );
 
-        let pickups = self
-            .origin_pickup_choices(origin, &pickup_candidates)
-            .await?;
+        let pickups = self.origin_pickup_choices(origin, &pickup_candidates).await;
         let dropoffs = self
             .destination_dropoff_choices(destination, &dropoff_candidates)
-            .await?;
-        Some(EndpointChoices { pickups, dropoffs })
+            .await;
+        EndpointChoices { pickups, dropoffs }
     }
 
     async fn origin_pickup_choices(
         &self,
         origin: RequestCoordinate,
         candidates: &[EndpointStationCandidate],
-    ) -> Option<Vec<StationChoice>> {
+    ) -> Vec<StationChoice> {
         if candidates.is_empty() {
-            return Some(Vec::new());
+            return Vec::new();
         }
         let limits = self.street_router.matrix_limits();
         let max_targets = limits.max_targets;
         if limits.max_sources == 0 || max_targets == 0 {
-            return None;
+            return Vec::new();
         }
-        let origin = Coordinate::try_new(origin.latitude, origin.longitude).ok()?;
+        let Ok(origin) = Coordinate::try_new(origin.latitude, origin.longitude) else {
+            return Vec::new();
+        };
         let constraints = endpoint_matrix_constraints(&self.policy);
         let mut choices = Vec::new();
         for chunk in candidates.chunks(max_targets) {
@@ -198,10 +206,15 @@ impl BikeJourneyAugmenter {
                     constraints,
                 })
                 .await
-                .ok()?;
-            let row = result.cells.first()?;
+                .ok();
+            let Some(result) = result else {
+                return Vec::new();
+            };
+            let Some(row) = result.cells.first() else {
+                return Vec::new();
+            };
             if result.cells.len() != 1 || row.len() != chunk.len() {
-                return None;
+                return Vec::new();
             }
             for (candidate, cell) in chunk.iter().zip(row) {
                 if let Some(walking) = accepted_endpoint_metric(
@@ -217,23 +230,26 @@ impl BikeJourneyAugmenter {
             }
         }
         choices.sort_by(|left, right| left.station_id.as_str().cmp(right.station_id.as_str()));
-        Some(choices)
+        choices
     }
 
     async fn destination_dropoff_choices(
         &self,
         destination: RequestCoordinate,
         candidates: &[EndpointStationCandidate],
-    ) -> Option<Vec<StationChoice>> {
+    ) -> Vec<StationChoice> {
         if candidates.is_empty() {
-            return Some(Vec::new());
+            return Vec::new();
         }
         let limits = self.street_router.matrix_limits();
         let max_sources = limits.max_sources;
         if max_sources == 0 || limits.max_targets == 0 {
-            return None;
+            return Vec::new();
         }
-        let destination = Coordinate::try_new(destination.latitude, destination.longitude).ok()?;
+        let Ok(destination) = Coordinate::try_new(destination.latitude, destination.longitude)
+        else {
+            return Vec::new();
+        };
         let constraints = endpoint_matrix_constraints(&self.policy);
         let mut choices = Vec::new();
         for chunk in candidates.chunks(max_sources) {
@@ -247,12 +263,17 @@ impl BikeJourneyAugmenter {
                     constraints,
                 })
                 .await
-                .ok()?;
+                .ok();
+            let Some(result) = result else {
+                return Vec::new();
+            };
             if result.cells.len() != chunk.len() || result.cells.iter().any(|row| row.len() != 1) {
-                return None;
+                return Vec::new();
             }
             for (candidate, row) in chunk.iter().zip(result.cells) {
-                let cell = row.into_iter().next()?;
+                let Some(cell) = row.into_iter().next() else {
+                    return Vec::new();
+                };
                 if let Some(walking) = accepted_endpoint_metric(
                     cell,
                     self.policy.max_endpoint_walking_seconds,
@@ -266,7 +287,7 @@ impl BikeJourneyAugmenter {
             }
         }
         choices.sort_by(|left, right| left.station_id.as_str().cmp(right.station_id.as_str()));
-        Some(choices)
+        choices
     }
 
     async fn matrix_shortcuts(
@@ -428,7 +449,7 @@ struct StationChoice {
     walking: BikeWalkingAccess,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct EndpointChoices {
     pickups: Vec<StationChoice>,
     dropoffs: Vec<StationChoice>,

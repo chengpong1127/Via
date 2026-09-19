@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use unicode_normalization::UnicodeNormalization;
 
-use crate::street::Coordinate;
+use crate::{domain::transit::TransitMode as DomainTransitMode, street::Coordinate};
 
 pub use crate::domain::location::RequestCoordinate;
 
@@ -24,8 +24,8 @@ pub fn new_request_id() -> String {
 pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
-    #[schema(min_items = 1, max_items = 1)]
-    pub selected_modes: Vec<JourneyMode>,
+    #[schema(min_items = 1)]
+    pub selected_modes: Vec<TransportMode>,
     #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
     pub locale: String,
     pub departure_setting: DepartureSetting,
@@ -36,13 +36,12 @@ impl PlanningRequest {
         self.origin.validate("/origin")?;
         self.destination.validate("/destination")?;
         if self.selected_modes.is_empty()
-            || self.selected_modes.contains(&JourneyMode::Unknown)
-            || self.selected_modes.contains(&JourneyMode::Walking)
-            || self.selected_modes.contains(&JourneyMode::Bicycle)
             || self
                 .selected_modes
                 .windows(2)
                 .any(|modes| modes[0] >= modes[1])
+            || (self.selected_modes.len() == 1
+                && self.selected_modes[0] == TransportMode::BikeShare)
         {
             return Err(RequestValidationError::new(
                 "invalid_selected_modes",
@@ -53,6 +52,17 @@ impl PlanningRequest {
             .map_err(|_| RequestValidationError::new("invalid_locale", "/locale"))?;
         self.departure_setting.validate()?;
         Ok(())
+    }
+
+    pub fn allowed_transit_modes(&self) -> Vec<DomainTransitMode> {
+        self.selected_modes
+            .iter()
+            .filter_map(|mode| mode.transit_mode())
+            .collect()
+    }
+
+    pub fn allows_bike_share(&self) -> bool {
+        self.selected_modes.contains(&TransportMode::BikeShare)
     }
 }
 
@@ -106,6 +116,40 @@ impl TryFrom<RequestCoordinate> for Coordinate {
 }
 
 pub use crate::domain::journey::JourneyMode;
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Serialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportMode {
+    Bus,
+    Metro,
+    Tra,
+    Thsr,
+    BikeShare,
+}
+
+impl TransportMode {
+    fn transit_mode(self) -> Option<DomainTransitMode> {
+        match self {
+            Self::Bus => Some(DomainTransitMode::Bus),
+            Self::Metro => Some(DomainTransitMode::Metro),
+            Self::Tra => Some(DomainTransitMode::Rail),
+            Self::Thsr => Some(DomainTransitMode::HighSpeedRail),
+            Self::BikeShare => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

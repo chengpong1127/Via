@@ -28,7 +28,7 @@ fn request_body() -> Value {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["transit"],
+        "selected_modes": ["bus", "metro"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     })

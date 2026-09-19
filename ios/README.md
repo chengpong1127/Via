@@ -15,4 +15,4 @@ The app uses `HTTPJourneyPlanner` at the app root and calls `POST /v1/journey-pl
 
 `DemoJourneyPlanner` remains available for previews, offline UI development, and deterministic tests. It is selected explicitly by preview/test code; it is not injected into the real app. Production feature code depends on `JourneyPlanning`, not on a concrete HTTP transport. Future Navigation code belongs under `Features/Navigation` and is intentionally not implemented here.
 
-The demo never persists selected places, coordinates, Journey Options, Legs, or Live Status. Only the two selectable Journey Mode filters are stored as local preferences; Walking is implicit.
+The demo never persists selected places, coordinates, Journey Options, Legs, or Live Status. The selected transport systems (`bus`, `metro`, `tra`, `thsr`, and `bike_share`) are stored as local preferences; Walking remains implicit.

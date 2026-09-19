@@ -2,7 +2,8 @@ use serde_json::json;
 use time::macros::{date, datetime};
 use via_server::{
     api::{
-        DepartureSetting, JourneyMode, PlanningRequest, RequestValidationError, normalize_to_taipei,
+        DepartureSetting, PlanningRequest, RequestValidationError, TransportMode,
+        normalize_to_taipei,
     },
     domain::realtime::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
 };
@@ -75,14 +76,29 @@ fn planning_request_accepts_the_provider_neutral_contract() {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["transit"],
+        "selected_modes": ["bus", "metro", "bike_share"],
         "locale": "zh-Hant-TW",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
 
     request.validate().unwrap();
-    assert_eq!(request.selected_modes, vec![JourneyMode::Transit]);
+    assert_eq!(
+        request.selected_modes,
+        vec![
+            TransportMode::Bus,
+            TransportMode::Metro,
+            TransportMode::BikeShare
+        ]
+    );
+    assert_eq!(
+        request.allowed_transit_modes(),
+        vec![
+            via_server::domain::transit::TransitMode::Bus,
+            via_server::domain::transit::TransitMode::Metro,
+        ]
+    );
+    assert!(request.allows_bike_share());
 }
 
 #[test]
@@ -96,7 +112,7 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Taipei 101"
         },
-        "selected_modes": ["walking", "transit"],
+        "selected_modes": ["metro", "bus"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
@@ -109,7 +125,7 @@ fn planning_request_rejects_noncanonical_or_sensitive_input_without_echoing_it()
 }
 
 #[test]
-fn walking_and_bicycle_are_implicit_and_cannot_be_selected_as_filters() {
+fn bike_share_only_is_rejected_until_standalone_bike_search_exists() {
     let request: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
@@ -119,7 +135,7 @@ fn walking_and_bicycle_are_implicit_and_cannot_be_selected_as_filters() {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Destination"
         },
-        "selected_modes": ["walking"],
+        "selected_modes": ["bike_share"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
@@ -128,8 +144,11 @@ fn walking_and_bicycle_are_implicit_and_cannot_be_selected_as_filters() {
     let error = request.validate().unwrap_err();
     assert_eq!(error.code(), "invalid_selected_modes");
     assert_eq!(error.field(), "/selected_modes");
+}
 
-    let bicycle_request: PlanningRequest = serde_json::from_value(json!({
+#[test]
+fn planning_request_rejects_duplicate_modes_and_bike_share_only() {
+    let duplicate: PlanningRequest = serde_json::from_value(json!({
         "origin": {
             "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
             "display_text": "Origin"
@@ -138,14 +157,34 @@ fn walking_and_bicycle_are_implicit_and_cannot_be_selected_as_filters() {
             "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
             "display_text": "Destination"
         },
-        "selected_modes": ["bicycle"],
+        "selected_modes": ["bus", "bus"],
         "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
-    let bicycle_error = bicycle_request.validate().unwrap_err();
-    assert_eq!(bicycle_error.code(), "invalid_selected_modes");
-    assert_eq!(bicycle_error.field(), "/selected_modes");
+    assert_eq!(
+        duplicate.validate().unwrap_err().code(),
+        "invalid_selected_modes"
+    );
+
+    let bike_only: PlanningRequest = serde_json::from_value(json!({
+        "origin": {
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "display_text": "Origin"
+        },
+        "destination": {
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "display_text": "Destination"
+        },
+        "selected_modes": ["bike_share"],
+        "locale": "en",
+        "departure_setting": {"type": "depart_now"}
+    }))
+    .unwrap();
+    assert_eq!(
+        bike_only.validate().unwrap_err().code(),
+        "invalid_selected_modes"
+    );
 }
 
 #[test]

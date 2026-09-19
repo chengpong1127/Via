@@ -4,6 +4,7 @@ use super::super::{
 };
 use super::{
     TripBasedLimits, TripBasedRouter,
+    boarding::BoardingRequest,
     diagnostics::SearchDiagnostics,
     dominance::{pareto_boarding_needs, pareto_candidates},
     state::{
@@ -86,7 +87,10 @@ impl RoutingAlgorithm for TripBasedRouter {
             }
             let states = self
                 .resolve_boardings(
-                    needs,
+                    BoardingRequest {
+                        needs,
+                        allowed_transit_modes: query.allowed_transit_modes.clone(),
+                    },
                     &limits,
                     &mut departure_cache,
                     &mut reached_index,

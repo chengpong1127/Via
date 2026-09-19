@@ -6,15 +6,21 @@ use super::{
 };
 use crate::domain::{
     ids::{EffectiveTripId, TransitServiceId},
+    transit::TransitMode,
     transit_timing::{DepartureError, DepartureQuery, EffectiveTrip},
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+pub(super) struct BoardingRequest {
+    pub needs: Vec<BoardingNeed>,
+    pub allowed_transit_modes: Vec<TransitMode>,
+}
+
 impl TripBasedRouter {
     pub(super) async fn resolve_boardings(
         &self,
-        needs: Vec<BoardingNeed>,
+        request: BoardingRequest,
         limits: &TripBasedLimits,
         cache: &mut HashMap<DepartureCacheKey, Result<Vec<EffectiveTrip>, DepartureError>>,
         reached_index: &mut HashMap<(EffectiveTripId, usize), Vec<ReachedTripLabel>>,
@@ -23,8 +29,11 @@ impl TripBasedRouter {
     ) -> Vec<TripState> {
         let mut query_frontier =
             HashMap::<(TransitServiceId, usize, usize), Vec<(DynamicLabel, DepartureQuery)>>::new();
-        for need in &needs {
+        for need in &request.needs {
             for service_id in self.index.services_at(&need.stop_id) {
+                if !self.service_mode_allowed(service_id, &request.allowed_transit_modes) {
+                    continue;
+                }
                 if need
                     .excluded_service
                     .as_ref()
@@ -104,8 +113,11 @@ impl TripBasedRouter {
         }
 
         let mut states = Vec::new();
-        for need in needs {
+        for need in request.needs {
             for service_id in self.index.services_at(&need.stop_id) {
+                if !self.service_mode_allowed(service_id, &request.allowed_transit_modes) {
+                    continue;
+                }
                 if need
                     .excluded_service
                     .as_ref()
@@ -208,5 +220,15 @@ impl TripBasedRouter {
                 .then(left.trip.id.as_str().cmp(right.trip.id.as_str()))
         });
         states
+    }
+
+    fn service_mode_allowed(
+        &self,
+        service_id: &TransitServiceId,
+        allowed_transit_modes: &[TransitMode],
+    ) -> bool {
+        self.network
+            .service(service_id)
+            .is_some_and(|service| allowed_transit_modes.contains(&service.transit_mode))
     }
 }

@@ -49,8 +49,11 @@ provider-neutral seams. `TripBasedRouter` consumes realtime-first `EffectiveTrip
 values and static walking `TransferShortcutIndex` alternatives.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
-transfers. Walking access, transit, and egress are the only journey modes in the
-current product contract.
+transfers. Requests select fine-grained transport systems through
+`selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
+Walking remains an implicit connector, while output legs retain the coarse
+`walking`, `transit`, and `bicycle` `JourneyMode` values. BikeShare-only
+requests are rejected until standalone BikeShare search exists.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and

@@ -2,8 +2,7 @@
 
 Via plans multimodal journeys in Taipei and New Taipei using TDX transit data,
 Valhalla street routing, and TDX realtime status. The server returns provider-
-neutral `JourneyOption` values for walking, transit, and opt-in bike-share
-journeys.
+neutral `JourneyOption` values for walking, transit, and bicycle journeys.
 
 ## Request flow
 
@@ -15,7 +14,7 @@ PlanningRequest
   → TripBasedRouter
   → JourneyCandidate
   → JourneySkeleton
-  → JourneyAugmenter (baseline or opt-in BikeShare)
+  → JourneyAugmenter (baseline or request-selected BikeShare)
   → JourneyVariant
   → reconstruction
   → ranking
@@ -33,10 +32,10 @@ service does not depend on a graph or a second planner abstraction.
 provider-neutral `BikeShareNetwork`, enriches directional transit walking
 transfers and BoardingPoint ↔ bike-station walking access through the
 `StreetRouter`, validates both networks, and writes `transit-network.json`,
-`bikeshare-network.json`, and `manifest.json`. Runtime bike augmentation
-consumes the immutable bike-share artifact plus realtime availability only when
-`VIA_ENABLE_BIKE_AUGMENTATION=true`; the default remains baseline-only. There
-is no database or provider identity-reconciliation layer.
+`bikeshare-network.json`, and `manifest.json`. Runtime always wires the
+BikeShare capability when its immutable artifact and realtime availability
+source are available; each request selects whether that capability is used.
+There is no database or provider identity-reconciliation layer.
 
 The TDX static bike source is `/v2/Bike/Station/City/{City}` for the selected
 `DataScope` cities. Bike station IDs are opaque domain IDs constructed as
@@ -60,13 +59,16 @@ augmentation, and must not be implemented as `TransferResolver` behavior.
 Journey augmentation is a separate seam after `JourneyCandidate` creation and
 before reconstruction. `JourneySkeleton` projects only origin, boarding-point,
 and destination anchors plus indexed baseline movement. The current
-`BaselineJourneyAugmenter` returns one original path; when
-`VIA_ENABLE_BIKE_AUGMENTATION=true`, `BikeJourneyAugmenter` adds optional
-BikeShare paths using the immutable `BikeShareNetwork`, realtime availability,
+`BaselineJourneyAugmenter` returns one original path. When `bike_share` is in
+the request's `selected_modes`, `BikeJourneyAugmenter` adds optional BikeShare
+paths using the immutable `BikeShareNetwork`, realtime availability,
 endpoint-time station discovery, and bicycle matrix search. Endpoint station
 discovery scans the immutable station list within a conservative 300 metre
 radius, filters fresh serviceable pickup/return counts before walking matrix
 work, and applies bounded candidate, walking-time, and walking-distance limits.
+Origin and destination endpoint discovery failures are isolated to their own
+intervals; boarding-point-to-boarding-point shortcuts remain eligible. A
+realtime availability failure still disables all BikeShare augmentation.
 The resulting shortcuts may span Origin → BoardingPoint, BoardingPoint →
 Destination, or the complete Origin → Destination interval; the latter is a
 normal skeleton path and reconstructs as walking → bicycle → walking with no

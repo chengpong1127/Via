@@ -10,14 +10,13 @@ use async_trait::async_trait;
 use serde_json::json;
 use time::{Duration, OffsetDateTime, macros::datetime};
 use via_server::{
-    api::{DepartureSetting, PlanningRequest, RequestCoordinate, SelectedPlace},
+    api::{DepartureSetting, PlanningRequest, RequestCoordinate, SelectedPlace, TransportMode},
     domain::{
         bikeshare::{
             BikeAvailabilitySnapshot, BikeShareNetwork, BikeStation, BikeStationAccess,
             BikeStationAvailability, BikeWalkingAccess,
         },
         ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
-        journey::JourneyMode,
         transit_timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
     },
     providers::{BikeAvailabilityError, BikeAvailabilitySource},
@@ -27,8 +26,8 @@ use via_server::{
         JourneyPathMovement, JourneySegment, JourneySkeleton, TransferShortcut,
     },
     street::{
-        FakeStreetRouter, MatrixQuery, MatrixResult, Metres, RouteQuery, Seconds, StreetPath,
-        StreetRouter, StreetRoutingError, StreetTravelMode,
+        FakeStreetRouter, MatrixCell, MatrixOrientation, MatrixQuery, MatrixResult, Metres,
+        RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -53,7 +52,7 @@ fn request() -> PlanningRequest {
             },
             display_text: "Destination".into(),
         },
-        selected_modes: vec![JourneyMode::Transit],
+        selected_modes: vec![TransportMode::Bus],
         locale: "en".into(),
         departure_setting: DepartureSetting::DepartAt { time: START },
     }
@@ -148,9 +147,67 @@ impl StreetRouter for CountingMatrixRouter {
     }
 }
 
+#[derive(Clone, Copy)]
+struct EndpointFailureRouter {
+    fail_origin: bool,
+    fail_destination: bool,
+}
+
+#[async_trait]
+impl StreetRouter for EndpointFailureRouter {
+    async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
+        query.validate()?;
+        if (self.fail_origin
+            && query.travel_mode == StreetTravelMode::Walking
+            && query.orientation == MatrixOrientation::OneToMany)
+            || (self.fail_destination
+                && query.travel_mode == StreetTravelMode::Walking
+                && query.orientation == MatrixOrientation::ManyToOne)
+        {
+            return Err(StreetRoutingError::Timeout);
+        }
+        let cell = if query.travel_mode == StreetTravelMode::Bicycle {
+            MatrixCell::Reachable {
+                duration: Seconds(100),
+                distance: Metres(600),
+            }
+        } else {
+            MatrixCell::Reachable {
+                duration: Seconds(20),
+                distance: Metres(100),
+            }
+        };
+        Ok(MatrixResult {
+            cells: query
+                .sources
+                .iter()
+                .map(|_| vec![cell; query.targets.len()])
+                .collect(),
+        })
+    }
+
+    async fn route(&self, _query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        Err(StreetRoutingError::Unreachable)
+    }
+}
+
 #[async_trait]
 impl BikeAvailabilitySource for FixtureAvailabilitySource {
     async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        self.snapshot.clone()
+    }
+}
+
+#[derive(Clone)]
+struct CountingAvailabilitySource {
+    snapshot: Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl BikeAvailabilitySource for CountingAvailabilitySource {
+    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
         self.snapshot.clone()
     }
 }
@@ -238,6 +295,49 @@ fn endpoint_bike_network(
     ])
     .with_revision("fixture-endpoints");
     (Arc::new(network), pickup_coordinate, dropoff_coordinate)
+}
+
+fn endpoint_and_boarding_bike_network(
+    origin: RequestCoordinate,
+    destination: RequestCoordinate,
+) -> Arc<BikeShareNetwork> {
+    let pickup_id = via_server::domain::ids::BikeStationId::new("pickup");
+    let dropoff_id = via_server::domain::ids::BikeStationId::new("dropoff");
+    Arc::new(
+        BikeShareNetwork::new(vec![
+            BikeStation::new(
+                pickup_id.clone(),
+                "Endpoint and boarding pickup",
+                RequestCoordinate {
+                    latitude: origin.latitude + 0.0001,
+                    longitude: origin.longitude + 0.0001,
+                },
+            ),
+            BikeStation::new(
+                dropoff_id.clone(),
+                "Endpoint and boarding dropoff",
+                RequestCoordinate {
+                    latitude: destination.latitude + 0.0001,
+                    longitude: destination.longitude + 0.0001,
+                },
+            ),
+        ])
+        .with_access_links(vec![
+            BikeStationAccess::new(
+                BoardingPointId::new("A"),
+                pickup_id,
+                Some(BikeWalkingAccess::new(10, 50)),
+                None,
+            ),
+            BikeStationAccess::new(
+                BoardingPointId::new("C"),
+                dropoff_id,
+                None,
+                Some(BikeWalkingAccess::new(10, 50)),
+            ),
+        ])
+        .with_revision("fixture-endpoints-and-boarding"),
+    )
 }
 
 #[test]
@@ -803,6 +903,47 @@ async fn unavailable_endpoint_stations_skip_endpoint_matrix_work() {
 }
 
 #[tokio::test]
+async fn endpoint_matrix_failures_are_isolated_from_boarding_point_shortcuts() {
+    let origin = request().origin.coordinate;
+    let destination = request().destination.coordinate;
+    let network = endpoint_and_boarding_bike_network(origin, destination);
+    let skeleton = JourneySkeleton::from_candidate(&request(), candidate()).unwrap();
+
+    for (fail_origin, fail_destination, expected_shortcut) in [
+        (true, false, (1, 5)),
+        (false, true, (0, 3)),
+        (true, true, (1, 3)),
+    ] {
+        let augmenter = BikeJourneyAugmenter::new(
+            network.clone(),
+            Arc::new(FixtureAvailabilitySource {
+                snapshot: Ok(bike_snapshot(START, false)),
+            }),
+            Arc::new(EndpointFailureRouter {
+                fail_origin,
+                fail_destination,
+            }),
+            BikeAugmentationPolicy {
+                now: Some(START),
+                ..BikeAugmentationPolicy::default()
+            },
+        );
+
+        let variants = augmenter.augment(skeleton.clone()).await;
+
+        assert!(variants.iter().any(|variant| {
+            variant.path().iter().any(|step| {
+                matches!(
+                    step.movement,
+                    JourneyPathMovement::BikeShare { ref shortcut }
+                        if (shortcut.from_anchor, shortcut.to_anchor) == expected_shortcut
+                )
+            })
+        }));
+    }
+}
+
+#[tokio::test]
 async fn pure_endpoint_bike_variant_reconstructs_without_transit_metadata() {
     let transit_network = fixtures::network();
     let origin = near_stop(&transit_network, "F-M1");
@@ -873,7 +1014,11 @@ async fn pure_endpoint_bike_variant_reconstructs_without_transit_metadata() {
     let body = fixtures::route_body_with_bike(
         street,
         FixtureRealtime::empty(),
-        fixtures::request(origin, destination, &["transit"]),
+        fixtures::request(
+            origin,
+            destination,
+            &["bus", "metro", "tra", "thsr", "bike_share"],
+        ),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
             snapshot: Ok(bike_snapshot(START, false)),
@@ -1001,7 +1146,11 @@ async fn bike_variant_reconstructs_with_station_legs_and_bicycle_geometry() {
     let body = fixtures::route_body_with_bike(
         street,
         FixtureRealtime::empty(),
-        fixtures::request(origin, destination, &["transit"]),
+        fixtures::request(
+            origin,
+            destination,
+            &["bus", "metro", "tra", "thsr", "bike_share"],
+        ),
         bike_network,
         source,
         BikeAugmentationPolicy {
@@ -1039,7 +1188,11 @@ async fn bike_variant_reconstructs_with_station_legs_and_bicycle_geometry() {
     let repeated = fixtures::route_body_with_bike(
         repeated_street,
         FixtureRealtime::empty(),
-        fixtures::request(origin, destination, &["transit"]),
+        fixtures::request(
+            origin,
+            destination,
+            &["bus", "metro", "tra", "thsr", "bike_share"],
+        ),
         repeated_network,
         repeated_source,
         BikeAugmentationPolicy {
@@ -1148,7 +1301,11 @@ async fn bike_connector_becomes_the_transfer_between_retained_transit_legs() {
     let body = fixtures::route_body_with_bike(
         street,
         FixtureRealtime::empty(),
-        fixtures::request(origin, destination, &["transit"]),
+        fixtures::request(
+            origin,
+            destination,
+            &["bus", "metro", "tra", "thsr", "bike_share"],
+        ),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
             snapshot: Ok(bike_snapshot(START, false)),
@@ -1198,7 +1355,7 @@ async fn baseline_augmentation_does_not_change_route_results() {
     let network = fixtures::network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M2-RED");
-    let body = fixtures::request(origin, destination, &["transit"]);
+    let body = fixtures::request(origin, destination, &["bus", "metro", "tra", "thsr"]);
 
     let default_result = fixtures::route_body(
         fixtures::transit_street(&network, origin, "F-M1", destination, "F-M2-RED"),
@@ -1221,4 +1378,30 @@ async fn baseline_augmentation_does_not_change_route_results() {
         baseline_result["journey_options"]
     );
     assert_eq!(default_result["warnings"], baseline_result["warnings"]);
+}
+
+#[tokio::test]
+async fn bike_dependencies_are_not_queried_without_bike_share_mode() {
+    let network = fixtures::network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M2-RED");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let body = fixtures::route_body_with_bike(
+        fixtures::transit_street(&network, origin, "F-M1", destination, "F-M2-RED"),
+        FixtureRealtime::empty(),
+        fixtures::request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        bike_network().0,
+        Arc::new(CountingAvailabilitySource {
+            snapshot: Ok(bike_snapshot(START, false)),
+            calls: calls.clone(),
+        }),
+        BikeAugmentationPolicy {
+            now: Some(START),
+            ..BikeAugmentationPolicy::default()
+        },
+    )
+    .await;
+
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(body["journey_options"].is_array());
 }

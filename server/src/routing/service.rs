@@ -11,7 +11,7 @@ use crate::{
     domain::{
         bikeshare::BikeShareNetwork,
         journey::{
-            EmptyResult, JourneyMode, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
+            EmptyResult, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
             ResultMetadata, SemanticObject,
         },
         normalize_to_taipei,
@@ -30,7 +30,7 @@ use crate::{
 use super::{
     access,
     algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
-    augmentation::{BaselineJourneyAugmenter, JourneyAugmenter, JourneySkeleton},
+    augmentation::{BaselineJourneyAugmenter, JourneyAugmenter, JourneySkeleton, JourneyVariant},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -246,7 +246,7 @@ impl RoutingService {
             }
         }
 
-        if request.selected_modes.contains(&JourneyMode::Transit) {
+        if !request.allowed_transit_modes().is_empty() {
             let access_started = Instant::now();
             let access = access::discover_access_points(
                 self.street_routing.as_ref(),
@@ -282,6 +282,7 @@ impl RoutingService {
                 let query = AlgorithmQuery {
                     origin_access: access,
                     destination_egress: egress,
+                    allowed_transit_modes: request.allowed_transit_modes(),
                     departure_time: context.search_start,
                     latest_arrival: context.latest_arrival,
                     max_transfers: self.limits.max_transfer_count as usize,
@@ -318,7 +319,12 @@ impl RoutingService {
                                     continue;
                                 }
                             };
-                            for variant in self.journey_augmenter.augment(skeleton).await {
+                            let variants = if request.allows_bike_share() {
+                                self.journey_augmenter.augment(skeleton).await
+                            } else {
+                                vec![JourneyVariant::baseline(skeleton)]
+                            };
+                            for variant in variants {
                                 match self
                                     .reconstruct_multimodal_variant(&request, &variant, &context)
                                     .await

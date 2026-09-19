@@ -166,7 +166,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-at 2026-09-15T07:55:00+08:00 \
-  --modes transit \
+  --modes bus,metro,tra,thsr \
   --service-conditions fixture \
   --trace
 ```
@@ -181,13 +181,15 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-now \
-  --modes transit \
+  --modes bus,metro,tra,thsr \
   --service-conditions live \
   --trace
 ```
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
-`--json`. It accepts only the product-level `transit` mode.
+`--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, `thsr`, and
+`bike_share` transport systems; `bike_share` is rejected when selected alone
+because BikeShare currently augments a transit skeleton.
 It never accepts credential flags.
 
 Recommended smoke routes are Taipei Main Station → Taipei 101, Banqiao →

@@ -14,6 +14,6 @@
   "empty": {
     "code": "no_feasible_journey_option",
     "required": true,
-    "parameters": {"selected_modes": ["transit"]}
+    "parameters": {"selected_modes": ["bus", "metro", "tra", "thsr", "bike_share"]}
   }
 }

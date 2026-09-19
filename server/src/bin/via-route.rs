@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    api::{DepartureSetting, PlanningRequest, SelectedPlace},
+    api::{DepartureSetting, PlanningRequest, SelectedPlace, TransportMode},
     config::load_dotenv,
     data::load_network_artifact,
     domain::{
         ids::TransitServiceId,
-        journey::{JourneyMode, PlanningOutcome},
+        journey::PlanningOutcome,
         realtime::{FreshnessState, NormalizedRealtimeValue},
     },
     health::DependencyHealth,
@@ -54,7 +54,7 @@ struct Cli {
     depart_at: Option<String>,
     #[arg(long, conflicts_with = "depart_at")]
     arrive_by: Option<String>,
-    #[arg(long, default_value = "transit")]
+    #[arg(long, default_value = "bus,metro,tra,thsr")]
     modes: String,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
@@ -240,19 +240,27 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
     Ok(request)
 }
 
-fn parse_modes(value: &str) -> Result<Vec<JourneyMode>, Box<dyn Error>> {
+fn parse_modes(value: &str) -> Result<Vec<TransportMode>, Box<dyn Error>> {
     let mut modes = value
         .split(',')
         .map(str::trim)
         .map(|mode| match mode {
-            "transit" => Ok(JourneyMode::Transit),
-            _ => Err(format!("unsupported mode {mode:?}; use transit")),
+            "bus" => Ok(TransportMode::Bus),
+            "metro" => Ok(TransportMode::Metro),
+            "tra" => Ok(TransportMode::Tra),
+            "thsr" => Ok(TransportMode::Thsr),
+            "bike_share" => Ok(TransportMode::BikeShare),
+            _ => Err(format!(
+                "unsupported mode {mode:?}; use bus, metro, tra, thsr, or bike_share"
+            )),
         })
         .collect::<Result<Vec<_>, _>>()?;
     modes.sort();
-    modes.dedup();
     if modes.is_empty() {
         return Err("at least one routing mode is required".into());
+    }
+    if modes.windows(2).any(|modes| modes[0] == modes[1]) {
+        return Err("routing modes must not contain duplicates".into());
     }
     Ok(modes)
 }

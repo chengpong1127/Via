@@ -7,8 +7,9 @@ actor DemoJourneyPlanner: JourneyPlanning {
 
         let allOptions = makeOptions(origin: request.origin.coordinate, destination: request.destination.coordinate)
         let options = allOptions.filter { option in
-            option.travelModes
-                .filter { $0 != .walking }
+            option.legs
+                .compactMap { $0.transit?.mode }
+                .map { transportMode(for: $0) }
                 .allSatisfy(request.selectedModes.contains)
         }
 
@@ -23,6 +24,15 @@ actor DemoJourneyPlanner: JourneyPlanning {
             ),
             options: Array(options.prefix(3))
         )
+    }
+
+    private func transportMode(for mode: TransitMode) -> TransportMode {
+        switch mode {
+        case .bus: .bus
+        case .metro: .metro
+        case .rail: .tra
+        case .highSpeedRail: .thsr
+        }
     }
 
     private func makeOptions(origin: Coordinate, destination: Coordinate) -> [JourneyOption] {

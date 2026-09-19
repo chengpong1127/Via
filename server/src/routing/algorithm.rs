@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
+    transit::TransitMode,
     transit_timing::{TimingBasis, TimingReliability},
 };
 
@@ -59,6 +60,7 @@ impl EgressPoint {
 pub struct AlgorithmQuery {
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
+    pub allowed_transit_modes: Vec<TransitMode>,
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
     pub max_transfers: usize,
@@ -76,6 +78,12 @@ impl AlgorithmQuery {
         Self {
             origin_access,
             destination_egress,
+            allowed_transit_modes: vec![
+                TransitMode::Bus,
+                TransitMode::Metro,
+                TransitMode::Rail,
+                TransitMode::HighSpeedRail,
+            ],
             departure_time,
             latest_arrival: None,
             max_transfers: 4,
@@ -83,6 +91,16 @@ impl AlgorithmQuery {
             max_expansions: 2_000,
             max_journey_duration_seconds: 4 * 60 * 60,
         }
+    }
+
+    pub fn with_allowed_transit_modes(
+        mut self,
+        allowed_transit_modes: impl IntoIterator<Item = TransitMode>,
+    ) -> Self {
+        self.allowed_transit_modes = allowed_transit_modes.into_iter().collect();
+        self.allowed_transit_modes.sort();
+        self.allowed_transit_modes.dedup();
+        self
     }
 
     pub fn with_limits(
