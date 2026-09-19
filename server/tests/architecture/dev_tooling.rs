@@ -2,8 +2,8 @@ use std::{fs, path::PathBuf, process::Command};
 
 use via_server::{
     data::{
-        DataScope, StaticTransferPolicy, build_from_raw, build_from_raw_with_street, load_manifest,
-        load_network_artifact,
+        DataScope, StaticTransferPolicy, build_from_raw, build_from_raw_with_street,
+        load_bikeshare_artifact, load_manifest, load_network_artifact,
     },
     domain::transit::{TransitNetwork, TransitService, TransitStop},
     street::StraightLineStreetRouter,
@@ -43,6 +43,17 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
     assert_eq!(first_result.manifest.counts.scheduled_trips, 3);
     assert_eq!(first_result.manifest.counts.transfer_edges, 2);
     assert_eq!(first_result.network.transfer_edges.len(), 2);
+    assert_eq!(first_result.bike_share_network.stations.len(), 3);
+    assert!(
+        first_result
+            .bike_share_network
+            .static_network_revision
+            .starts_with("sha256:")
+    );
+    assert_eq!(
+        load_bikeshare_artifact(&first.join("bikeshare-network.json")).unwrap(),
+        first_result.bike_share_network
+    );
     assert!(
         first_result.network.transfer_seconds(
             &via_server::domain::ids::BoardingPointId::new("TRTC-BL12"),
@@ -57,11 +68,15 @@ fn fixture_build_is_offline_deterministic_and_secret_free() {
         load_manifest(&first.join("manifest.json"))
             .unwrap()
             .schema_version,
-        4
+        5
     );
     assert_eq!(
         load_network_artifact(&first.join("transit-network.json")).unwrap(),
         first_result.network
+    );
+    assert_eq!(
+        first_result.manifest.counts.bike_stations,
+        first_result.bike_share_network.stations.len()
     );
 }
 
@@ -138,6 +153,18 @@ async fn enriched_build_publishes_walking_transfers_in_the_network_artifact() {
     assert_eq!(
         load_network_artifact(&output.join("transit-network.json")).unwrap(),
         result.network
+    );
+    assert_eq!(
+        load_bikeshare_artifact(&output.join("bikeshare-network.json")).unwrap(),
+        result.bike_share_network
+    );
+    assert!(
+        result
+            .diagnostics
+            .bike_access
+            .unwrap()
+            .retained_access_links
+            > 0
     );
 }
 

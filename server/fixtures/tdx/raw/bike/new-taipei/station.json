@@ -1,0 +1,12 @@
+[
+  {
+    "StationUID": "NWT-BIKE-001",
+    "StationID": "BIKE-001",
+    "AuthorityID": "NWT",
+    "StationName": {"Zh_tw": "新北測試站", "En": "New Taipei Fixture Station"},
+    "StationPosition": {"PositionLon": 121.4638, "PositionLat": 25.0142},
+    "StationAddress": {"Zh_tw": "測試地址", "En": "Fixture Address"},
+    "BikesCapacity": 24,
+    "ServiceType": 2
+  }
+]

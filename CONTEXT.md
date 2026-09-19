@@ -28,10 +28,21 @@ service does not depend on a graph or a second planner abstraction.
 ## Static data
 
 `via-data` fetches TDX payloads, normalizes them into the provider-neutral
-`TransitNetwork`, enriches directional walking transfers through the
-`StreetRouter`, validates the network, and writes
-`transit-network.json` plus `manifest.json`. The runtime loads one immutable
-artifact revision; it has no database or provider identity-reconciliation layer.
+`TransitNetwork`, normalizes static TDX Bike Station payloads into a separate
+provider-neutral `BikeShareNetwork`, enriches directional transit walking
+transfers and BoardingPoint ↔ bike-station walking access through the
+`StreetRouter`, validates both networks, and writes `transit-network.json`,
+`bikeshare-network.json`, and `manifest.json`. Bike access is static build-time
+data only: realtime availability, bicycle routing, BikeShortcut, and journey
+augmentation do not consume it yet. The runtime transit flow still loads one
+immutable transit artifact revision; there is no database or provider
+identity-reconciliation layer.
+
+The TDX static bike source is `/v2/Bike/Station/City/{City}` for the selected
+`DataScope` cities. Bike station IDs are opaque domain IDs constructed as
+`tdx:{City}:{StationUID}` so Taipei and New Taipei remain collision-safe even
+if a provider station ID is only locally unique. Each retained bike access link
+can carry independent `walk_to_station` and `walk_from_station` metrics.
 
 TDX-derived ID constructors are shared by static normalization and realtime
 normalization. Keep `BoardingPointId`, `TransitServiceId`, `ScheduledTripId`,

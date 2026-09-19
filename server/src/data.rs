@@ -19,6 +19,7 @@ use time::{Date, Weekday, format_description::well_known::Rfc3339};
 
 use crate::{
     domain::{
+        bikeshare::BikeShareNetwork,
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{
             MetroFrequency, MetroStationTiming, MetroTiming, ScheduledStopTime, ScheduledTrip,
@@ -32,12 +33,15 @@ use crate::{
     },
 };
 
+pub mod bike_access;
+pub mod bikeshare;
 pub mod static_transfers;
+pub use bike_access::{BikeAccessDiagnostics, BikeAccessPolicy, precompute_bike_access};
 pub use static_transfers::{
     StaticTransferPolicy, TransferDiscoveryDiagnostics, enrich_network_with_static_transfers,
 };
 
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 4;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 5;
 const TDX_REQUEST_SPACING: Duration = Duration::from_secs(13);
 const TDX_RETRY_BACKOFFS: [Duration; 4] = [
     Duration::from_secs(15),
@@ -92,12 +96,18 @@ pub struct ArtifactCounts {
     pub services: usize,
     pub scheduled_trips: usize,
     pub transfer_edges: usize,
+    #[serde(default)]
+    pub bike_stations: usize,
+    #[serde(default)]
+    pub bike_access_links: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactRevisions {
     pub static_network_revision: String,
     pub schedule_revision: String,
+    #[serde(default)]
+    pub bike_share_network_revision: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +165,7 @@ pub enum FetchProgress {
 #[derive(Clone, Debug)]
 pub struct BuildOutput {
     pub network: TransitNetwork,
+    pub bike_share_network: BikeShareNetwork,
     pub manifest: ArtifactManifest,
     pub diagnostics: BuildDiagnostics,
 }
@@ -166,6 +177,8 @@ pub struct BuildDiagnostics {
     pub unresolved_bus_stop_references: usize,
     pub duplicate_bus_stop_artifacts_removed: usize,
     pub transfer_discovery: Option<TransferDiscoveryDiagnostics>,
+    pub bike_station_normalization: Option<bikeshare::BikeStationNormalizationDiagnostics>,
+    pub bike_access: Option<BikeAccessDiagnostics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,6 +227,10 @@ pub enum DataError {
     InvalidArtifactJson(String),
     #[error("static transfer discovery failed: {0}")]
     StaticTransferDiscovery(#[from] crate::street::StreetRoutingError),
+    #[error("bike-share access discovery failed: {0}")]
+    BikeAccessDiscovery(crate::street::StreetRoutingError),
+    #[error("bike-share artifact is invalid: {0}")]
+    InvalidBikeShareArtifact(#[from] crate::domain::bikeshare::BikeShareNetworkValidationError),
 }
 
 #[derive(Clone, Debug)]
@@ -1614,6 +1631,7 @@ impl Normalizer {
 
 struct NormalizedSnapshot {
     network: TransitNetwork,
+    bike_share_network: BikeShareNetwork,
     diagnostics: BuildDiagnostics,
     documents: Vec<RawDocument>,
     manifest_scope: String,
@@ -1646,6 +1664,16 @@ pub async fn build_from_raw_with_street(
         enrich_network_with_static_transfers(snapshot.network, street, policy).await?;
     snapshot.network = network;
     snapshot.diagnostics.transfer_discovery = Some(transfer_diagnostics);
+    let (bike_share_network, bike_access_diagnostics) = precompute_bike_access(
+        &snapshot.network,
+        snapshot.bike_share_network,
+        street,
+        BikeAccessPolicy::default(),
+    )
+    .await
+    .map_err(DataError::BikeAccessDiscovery)?;
+    snapshot.bike_share_network = bike_share_network;
+    snapshot.diagnostics.bike_access = Some(bike_access_diagnostics);
     let mut result = finish_build(snapshot, output)?;
     if let Some(transfer) = &mut result.diagnostics.transfer_discovery {
         transfer.build_wall_clock_milliseconds =
@@ -1698,6 +1726,9 @@ fn normalize_raw_snapshot(
     }
     normalizer.validate_diagnostics()?;
     let (mut network, diagnostics) = normalizer.finish();
+    let (bike_share_network, bike_diagnostics) = bikeshare::normalize_documents(&documents)?;
+    let mut diagnostics = diagnostics;
+    diagnostics.bike_station_normalization = Some(bike_diagnostics);
     network = network.canonicalize();
     if network.stops.is_empty() {
         return Err(DataError::EmptyNetwork);
@@ -1710,6 +1741,7 @@ fn normalize_raw_snapshot(
         raw_snapshot_date.or_else(|| raw_manifest.map(|manifest| manifest.date));
     Ok(NormalizedSnapshot {
         network,
+        bike_share_network,
         diagnostics,
         documents,
         manifest_scope,
@@ -1720,6 +1752,7 @@ fn normalize_raw_snapshot(
 fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutput, DataError> {
     let NormalizedSnapshot {
         mut network,
+        mut bike_share_network,
         diagnostics,
         documents,
         manifest_scope,
@@ -1729,6 +1762,9 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
     let schedule_revision = revision_for_network(&network, true)?;
     network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
     network.validate()?;
+    let bike_share_network_revision = revision_for_bike_share_network(&bike_share_network)?;
+    bike_share_network = bike_share_network.with_revision(bike_share_network_revision.clone());
+    bike_share_network.validate()?;
     let sources = documents
         .iter()
         .map(|document| {
@@ -1751,16 +1787,21 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
             transfer_edges: network.transfer_edges.len(),
+            bike_stations: bike_share_network.stations.len(),
+            bike_access_links: bike_share_network.access_links.len(),
         },
         revisions: ArtifactRevisions {
             static_network_revision: static_revision,
             schedule_revision,
+            bike_share_network_revision,
         },
     };
     write_network_artifact(output, &network)?;
+    write_bikeshare_artifact(output, &bike_share_network)?;
     write_json_atomic(&output.join("manifest.json"), &manifest)?;
     Ok(BuildOutput {
         network,
+        bike_share_network,
         manifest,
         diagnostics,
     })
@@ -1769,6 +1810,12 @@ fn finish_build(snapshot: NormalizedSnapshot, output: &Path) -> Result<BuildOutp
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {
     let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
     TransitNetwork::from_artifact_json(&body)
+        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))
+}
+
+pub fn load_bikeshare_artifact(path: &Path) -> Result<BikeShareNetwork, DataError> {
+    let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
+    BikeShareNetwork::from_artifact_json(&body)
         .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))
 }
 
@@ -1781,6 +1828,15 @@ pub fn write_network_artifact(output: &Path, network: &TransitNetwork) -> Result
     let body = serde_json::to_string_pretty(&network.clone().canonicalize())
         .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
     write_text_atomic(&output.join("transit-network.json"), &body)
+}
+
+pub fn write_bikeshare_artifact(
+    output: &Path,
+    network: &BikeShareNetwork,
+) -> Result<(), DataError> {
+    let body = serde_json::to_string_pretty(&network.clone().canonicalize())
+        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
+    write_text_atomic(&output.join("bikeshare-network.json"), &body)
 }
 
 pub async fn fetch_raw_snapshot_with_progress<F>(
@@ -2068,6 +2124,13 @@ fn static_sources(scope: DataScope) -> Vec<StaticSource> {
                 city,
             ));
         }
+    }
+    for (city_key, city) in scope.cities() {
+        sources.push(source(
+            format!("tdx_bike_{city_key}_station"),
+            format!("v2/Bike/Station/City/{city}"),
+            format!("bike/{city_key}/station.json"),
+        ));
     }
     sources.extend([
         source(
@@ -2607,6 +2670,14 @@ fn revision_for_network(network: &TransitNetwork, schedule: bool) -> Result<Stri
     Ok(format!("sha256:{}", sha256_hex(&bytes)))
 }
 
+fn revision_for_bike_share_network(network: &BikeShareNetwork) -> Result<String, DataError> {
+    let mut network = network.clone();
+    network.static_network_revision.clear();
+    let bytes = serde_json::to_vec(&network.canonicalize())
+        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
+    Ok(format!("sha256:{}", sha256_hex(&bytes)))
+}
+
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(bytes);
@@ -2874,6 +2945,16 @@ mod tests {
                 "bus/new-taipei/schedule.json",
             ),
             (
+                "tdx_bike_taipei_station",
+                "v2/Bike/Station/City/Taipei",
+                "bike/taipei/station.json",
+            ),
+            (
+                "tdx_bike_new-taipei_station",
+                "v2/Bike/Station/City/NewTaipei",
+                "bike/new-taipei/station.json",
+            ),
+            (
                 "tdx_metro_station",
                 "v2/Rail/Metro/Station/TRTC",
                 "metro/trtc-station.json",
@@ -2940,9 +3021,9 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 18);
+        assert_eq!(report.reused_count, 20);
         assert_eq!(report.downloaded_count, 0);
-        assert_eq!(report.manifest.sources.len(), 18);
+        assert_eq!(report.manifest.sources.len(), 20);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
         assert!(sleeper.waits.is_empty());
@@ -2984,9 +3065,9 @@ mod tests {
         let report = result.unwrap();
 
         assert_eq!(report.reused_count, 5);
-        assert_eq!(report.downloaded_count, 13);
-        assert_eq!(report.manifest.sources.len(), 18);
-        assert_eq!(state.data_calls.load(Ordering::Relaxed), 13);
+        assert_eq!(report.downloaded_count, 15);
+        assert_eq!(report.manifest.sources.len(), 20);
+        assert_eq!(state.data_calls.load(Ordering::Relaxed), 15);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 1);
         assert!(
             output
@@ -3016,7 +3097,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 16);
+        assert_eq!(report.reused_count, 18);
         assert_eq!(report.downloaded_count, 2);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert!(valid_existing_json(&snapshot.join(&sources[0].output_path)).is_some());
@@ -3039,7 +3120,7 @@ mod tests {
         let (result, sleeper, progress) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 17);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 2);
         assert_eq!(sleeper.waits, vec![Duration::from_secs(7)]);
@@ -3116,7 +3197,7 @@ mod tests {
         let (second, _, _) = run_fetch(&output, &client, fast_timing()).await;
 
         assert_eq!(first.unwrap().downloaded_count, 0);
-        assert_eq!(second.unwrap().reused_count, 18);
+        assert_eq!(second.unwrap().reused_count, 20);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 0);
         assert_eq!(state.token_calls.load(Ordering::Relaxed), 0);
     }
@@ -3143,7 +3224,7 @@ mod tests {
         let manifest: RawSnapshotManifest =
             serde_json::from_str(&fs::read_to_string(manifest_path).unwrap()).unwrap();
 
-        assert_eq!(report.reused_count, 17);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         let downloaded_body = valid_existing_json(
@@ -3208,7 +3289,7 @@ mod tests {
         let (result, _, _) = run_fetch(&output, &client, fast_timing()).await;
         let report = result.unwrap();
 
-        assert_eq!(report.reused_count, 17);
+        assert_eq!(report.reused_count, 19);
         assert_eq!(report.downloaded_count, 1);
         assert_eq!(state.data_calls.load(Ordering::Relaxed), 1);
         assert_eq!(

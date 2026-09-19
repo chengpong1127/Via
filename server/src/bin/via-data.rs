@@ -7,7 +7,7 @@ use via_server::{
     data::{
         ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress,
         StaticTransferPolicy, build_from_raw_with_street, fetch_raw_snapshot_with_progress,
-        load_manifest, load_network_artifact,
+        load_bikeshare_artifact, load_manifest, load_network_artifact,
     },
     domain::{
         ids::BoardingPointId,
@@ -207,6 +207,10 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
         "network artifact: {}",
         args.output.join("transit-network.json").display()
     );
+    println!(
+        "bike-share artifact: {}",
+        args.output.join("bikeshare-network.json").display()
+    );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
 }
@@ -231,11 +235,15 @@ async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> 
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let network = load_network_artifact(&args.artifact)?;
+    let bike_share_network =
+        load_bikeshare_artifact(&args.artifact.with_file_name("bikeshare-network.json"))?;
     let counts = ArtifactCounts {
         stops: network.stops.len(),
         services: network.services.len(),
         scheduled_trips: network.trips.len(),
         transfer_edges: network.transfer_edges.len(),
+        bike_stations: bike_share_network.stations.len(),
+        bike_access_links: bike_share_network.access_links.len(),
     };
     print_counts(
         "validated",
@@ -243,6 +251,7 @@ fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
         &via_server::data::ArtifactRevisions {
             static_network_revision: network.static_network_revision.clone(),
             schedule_revision: network.schedule_revision.clone(),
+            bike_share_network_revision: bike_share_network.static_network_revision.clone(),
         },
     );
     Ok(())
@@ -354,6 +363,13 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
 
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     let network = load_network_artifact(&args.artifact.artifact)?;
+    let bike_share_network = load_bikeshare_artifact(
+        &args
+            .artifact
+            .artifact
+            .with_file_name("bikeshare-network.json"),
+    )
+    .ok();
     let manifest_path = args.artifact.artifact.with_file_name("manifest.json");
     let counts = load_manifest(&manifest_path)
         .ok()
@@ -363,9 +379,21 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
             services: network.services.len(),
             scheduled_trips: network.trips.len(),
             transfer_edges: network.transfer_edges.len(),
+            bike_stations: bike_share_network
+                .as_ref()
+                .map_or(0, |network| network.stations.len()),
+            bike_access_links: bike_share_network
+                .as_ref()
+                .map_or(0, |network| network.access_links.len()),
         });
     println!("network revision: {}", network.static_network_revision);
     println!("schedule revision: {}", network.schedule_revision);
+    if let Some(bike_share_network) = &bike_share_network {
+        println!(
+            "bike-share artifact revision: {}",
+            bike_share_network.static_network_revision
+        );
+    }
     println!("stop count: {}", counts.stops);
     println!("service count: {}", counts.services);
     println!("scheduled trip count: {}", counts.scheduled_trips);
@@ -386,6 +414,8 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         );
     }
     println!("transfer edge count: {}", counts.transfer_edges);
+    println!("bike station count: {}", counts.bike_stations);
+    println!("bike access link count: {}", counts.bike_access_links);
     println!("service-day boundary: {}", network.service_day_boundary);
     Ok(())
 }
@@ -402,8 +432,17 @@ fn print_counts(
     );
     println!("  schedule revision: {}", revisions.schedule_revision);
     println!(
-        "  stops={} services={} scheduled_trips={} transfer_edges={}",
-        counts.stops, counts.services, counts.scheduled_trips, counts.transfer_edges
+        "  bike-share network revision: {}",
+        revisions.bike_share_network_revision
+    );
+    println!(
+        "  stops={} services={} scheduled_trips={} transfer_edges={} bike_stations={} bike_access_links={}",
+        counts.stops,
+        counts.services,
+        counts.scheduled_trips,
+        counts.transfer_edges,
+        counts.bike_stations,
+        counts.bike_access_links
     );
 }
 
@@ -441,6 +480,27 @@ fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
             transfer.explicit_edges_kept,
             transfer.total_transfer_edges,
             transfer.build_wall_clock_milliseconds,
+        );
+    }
+    if let Some(bike) = &diagnostics.bike_station_normalization {
+        println!(
+            "bike station normalization: records={} malformed={} duplicates_removed={} stations={}",
+            bike.station_records,
+            bike.malformed_records,
+            bike.duplicate_records_removed,
+            bike.stations_normalized,
+        );
+    }
+    if let Some(bike) = &diagnostics.bike_access {
+        println!(
+            "bike access discovery: boarding_points_processed={} geometric_candidate_pairs={} matrix_requests={} reachable_bp_to_station={} reachable_station_to_bp={} retained_links={} wall_clock_ms={}",
+            bike.boarding_points_processed,
+            bike.geometric_candidate_pairs,
+            bike.walking_matrix_requests,
+            bike.reachable_boarding_point_to_station_links,
+            bike.reachable_station_to_boarding_point_links,
+            bike.retained_access_links,
+            bike.build_wall_clock_milliseconds,
         );
     }
 }

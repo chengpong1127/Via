@@ -2,6 +2,7 @@
 
 use time::{OffsetDateTime, UtcOffset};
 
+pub mod bikeshare;
 pub mod ids;
 pub mod journey;
 pub mod location;

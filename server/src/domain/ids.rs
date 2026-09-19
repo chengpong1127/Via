@@ -20,6 +20,7 @@ macro_rules! opaque_id {
 }
 
 opaque_id!(BoardingPointId);
+opaque_id!(BikeStationId);
 opaque_id!(TransitServiceId);
 opaque_id!(ScheduledTripId);
 opaque_id!(EffectiveTripId);

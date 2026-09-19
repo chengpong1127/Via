@@ -11,6 +11,17 @@ pub fn boarding_point_id(stop_uid: impl Into<String>) -> crate::domain::ids::Boa
     crate::domain::ids::BoardingPointId::new(stop_uid)
 }
 
+/// Construct a collision-safe static bike station ID from the TDX city scope
+/// and the provider's station UID. Station UIDs are authority-scoped in the
+/// TDX payloads, but retaining the city scope keeps locally unique IDs from
+/// colliding if a source changes its authority prefix.
+pub fn bike_station_id(
+    city: impl Into<String>,
+    station_uid: impl Into<String>,
+) -> crate::domain::ids::BikeStationId {
+    crate::domain::ids::BikeStationId::new(format!("tdx:{}:{}", city.into(), station_uid.into()))
+}
+
 /// Construct the domain ID for a TDX sub-route service.
 pub fn transit_service_id(
     sub_route_uid: impl Into<String>,
