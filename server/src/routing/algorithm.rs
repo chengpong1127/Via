@@ -7,10 +7,10 @@ use crate::domain::{
     ids::{BoardingPointId, TransitServiceId},
     realtime::NormalizedRealtimeValue,
     transit::TransitMode,
-    transit_timing::{TimingBasis, TimingReliability},
+    transit_timing::{DepartureError, EffectiveTrip, TimingBasis, TimingReliability},
 };
 
-use super::{EffectiveTrip, TransferShortcut};
+use super::transfers::TransferShortcut;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {
@@ -66,6 +66,7 @@ pub struct AlgorithmQuery {
     pub max_transfers: usize,
     pub max_candidates: usize,
     pub max_expansions: usize,
+    pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
 }
 
@@ -89,6 +90,7 @@ impl AlgorithmQuery {
             max_transfers: 4,
             max_candidates: 16,
             max_expansions: 2_000,
+            max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
         }
     }
@@ -108,11 +110,13 @@ impl AlgorithmQuery {
         max_transfers: usize,
         max_candidates: usize,
         max_expansions: usize,
+        max_departures_per_query: usize,
         max_journey_duration_seconds: u32,
     ) -> Self {
         self.max_transfers = max_transfers;
         self.max_candidates = max_candidates;
         self.max_expansions = max_expansions;
+        self.max_departures_per_query = max_departures_per_query;
         self.max_journey_duration_seconds = max_journey_duration_seconds;
         self
     }
@@ -234,7 +238,7 @@ pub enum RoutingError {
     #[error("routing query has no usable access or egress")]
     InvalidQuery,
     #[error("routing departure resolution failed: {0}")]
-    Departure(#[from] super::DepartureError),
+    Departure(#[from] DepartureError),
     #[error("routing expansion limit reached")]
     ExpansionLimit,
 }

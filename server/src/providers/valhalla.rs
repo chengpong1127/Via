@@ -599,8 +599,6 @@ fn decode_component(bytes: &[u8], index: &mut usize) -> Result<i64, StreetRoutin
 
 #[derive(Deserialize)]
 struct StatusResponse {
-    #[allow(dead_code)]
-    version: String,
     tileset_last_modified: u64,
     has_tiles: Option<bool>,
 }

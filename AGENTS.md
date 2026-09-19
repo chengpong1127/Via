@@ -22,7 +22,7 @@ interfaces. Do not reintroduce the removed `planner`, `normalization`, or
 
 iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `Resources`, `Services`). Production planning flows through
-`JourneyPlanner → HTTPJourneyPlanner → JourneyAPI → APIClient`; keep
+`JourneyPlanner → HTTPJourneyPlanner → APIClient`; keep
 `DemoJourneyPlanner` for previews and offline tests. Navigation under
 `Features/Navigation` is not part of the current implementation.
 

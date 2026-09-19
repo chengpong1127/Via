@@ -18,19 +18,23 @@ use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
-    domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
+    domain::{
+        bikeshare::BikeShareNetwork,
+        journey::{PlanningError, PlanningOutcome},
+        transit::TransitNetwork,
+    },
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::bikeshare::{BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
+    providers::bikeshare::BikeAvailabilitySource,
     providers::service_conditions::{
         CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-        NullServiceConditionProvider, ServiceConditionMetrics, ServiceConditionProvider,
+        ServiceConditionMetrics, ServiceConditionProvider,
     },
     providers::timing::{
         BusDepartureSource, BusTimingMetrics, DepartureDispatcher, MetroDepartureSource,
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
     },
-    routing::{PlanningError, PlanningOutcome, RoutingService},
+    routing::{BikeJourneyAugmenter, RoutingLimits, RoutingService},
     street::{StreetRouter, StreetRoutingError},
     tdx::TdxClient,
 };
@@ -48,23 +52,25 @@ struct AppState {
 
 #[derive(Clone)]
 pub struct RouterDependencies {
-    pub service_conditions: Arc<dyn ServiceConditionProvider>,
-    pub tdx: Option<Arc<TdxClient>>,
-    pub service_condition_cache_ttl: Duration,
-    pub bike_share_network: Arc<BikeShareNetwork>,
-    pub bike_availability_source: Arc<dyn BikeAvailabilitySource>,
+    service_conditions: Arc<dyn ServiceConditionProvider>,
+    tdx: Option<Arc<TdxClient>>,
+    service_condition_cache_ttl: Duration,
+    bike_share_network: Arc<BikeShareNetwork>,
+    bike_availability_source: Arc<dyn BikeAvailabilitySource>,
 }
 
 impl RouterDependencies {
-    pub fn new(service_conditions: Arc<dyn ServiceConditionProvider>) -> Self {
+    pub fn new(
+        service_conditions: Arc<dyn ServiceConditionProvider>,
+        bike_share_network: Arc<BikeShareNetwork>,
+        bike_availability_source: Arc<dyn BikeAvailabilitySource>,
+    ) -> Self {
         Self {
             service_conditions,
             tdx: None,
             service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-            bike_share_network: Arc::new(
-                BikeShareNetwork::new(Vec::new()).with_revision("disabled"),
-            ),
-            bike_availability_source: Arc::new(UnavailableBikeAvailabilitySource),
+            bike_share_network,
+            bike_availability_source,
         }
     }
 
@@ -77,95 +83,9 @@ impl RouterDependencies {
         self.service_condition_cache_ttl = ttl;
         self
     }
-
-    pub fn with_bike_share(
-        mut self,
-        network: Arc<BikeShareNetwork>,
-        availability_source: Arc<dyn BikeAvailabilitySource>,
-    ) -> Self {
-        self.bike_share_network = network;
-        self.bike_availability_source = availability_source;
-        self
-    }
 }
 
-pub async fn build_router<P>(provider: Arc<P>) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_dependencies(
-        provider,
-        RouterDependencies::new(Arc::new(NullServiceConditionProvider)),
-        TransitNetwork::default().with_revisions("development-static", "development-schedule"),
-    )
-    .await
-}
-
-pub async fn build_router_with_service_conditions<P>(
-    provider: Arc<P>,
-    service_conditions: Arc<dyn ServiceConditionProvider>,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_service_conditions_and_network(
-        provider,
-        service_conditions,
-        TransitNetwork::default(),
-    )
-    .await
-}
-
-pub async fn build_router_with_network<P>(
-    provider: Arc<P>,
-    transit_network: TransitNetwork,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_dependencies(
-        provider,
-        RouterDependencies::new(Arc::new(NullServiceConditionProvider)),
-        transit_network,
-    )
-    .await
-}
-
-pub async fn build_router_with_service_conditions_and_network<P>(
-    provider: Arc<P>,
-    service_conditions: Arc<dyn ServiceConditionProvider>,
-    transit_network: TransitNetwork,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_dependencies(
-        provider,
-        RouterDependencies::new(service_conditions),
-        transit_network,
-    )
-    .await
-}
-
-pub async fn build_router_with_service_conditions_and_network_and_ttl<P>(
-    provider: Arc<P>,
-    service_conditions: Arc<dyn ServiceConditionProvider>,
-    transit_network: TransitNetwork,
-    service_condition_cache_ttl: Duration,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    build_router_with_dependencies(
-        provider,
-        RouterDependencies::new(service_conditions)
-            .with_service_condition_cache_ttl(service_condition_cache_ttl),
-        transit_network,
-    )
-    .await
-}
-
-pub async fn build_router_with_dependencies<P>(
+pub async fn build_router<P>(
     provider: Arc<P>,
     dependencies: RouterDependencies,
     transit_network: TransitNetwork,
@@ -199,18 +119,21 @@ where
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let bike_share_network = dependencies.bike_share_network.clone();
-    let bike_availability_source = dependencies.bike_availability_source.clone();
-    let metrics = OperationalMetrics::default();
+    let bike_augmenter = BikeJourneyAugmenter::with_default_policy(
+        dependencies.bike_share_network.clone(),
+        dependencies.bike_availability_source,
+        street_router.clone(),
+    );
     let routing = RoutingService::new(
         street_router,
+        transit_network.clone(),
         departure_resolver,
         service_conditions,
-        bike_share_network.clone(),
-        bike_availability_source.clone(),
-    )
-    .with_transit_network_arc(transit_network.clone())
-    .with_metrics(metrics.clone());
+        dependencies.bike_share_network,
+        bike_augmenter,
+        RoutingLimits::default(),
+    );
+    let metrics = routing.operational_metrics.clone();
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
     Ok(router

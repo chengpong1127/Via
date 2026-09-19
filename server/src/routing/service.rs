@@ -20,7 +20,7 @@ use crate::{
         transit_timing::DepartureResolver,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::{BikeAvailabilitySource, service_conditions::ServiceConditionProvider},
+    providers::service_conditions::ServiceConditionProvider,
     street::{
         Coordinate, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetPath,
         StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -30,7 +30,7 @@ use crate::{
 use super::{
     access,
     algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
-    augmentation::{BikeJourneyAugmenter, JourneyAugmenter, JourneySkeleton, JourneyVariant},
+    augmentation::{BikeJourneyAugmenter, JourneySkeleton, JourneyVariant},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -42,14 +42,11 @@ use super::{
 #[derive(Clone)]
 pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
-    pub(crate) departure_resolver: Arc<dyn DepartureResolver>,
     pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
-    pub(crate) journey_augmenter: Arc<dyn JourneyAugmenter>,
-    pub(crate) transfer_resolver: Arc<dyn TransferResolver>,
+    pub(crate) bike_augmenter: BikeJourneyAugmenter,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
     pub(crate) bike_share_network: Arc<BikeShareNetwork>,
-    pub(crate) bike_availability_source: Arc<dyn BikeAvailabilitySource>,
     pub(crate) ranking: RankingPolicy,
     pub(crate) limits: RoutingLimits,
     pub(crate) request_slots: Arc<tokio::sync::Semaphore>,
@@ -92,12 +89,13 @@ impl Default for RoutingLimits {
 impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
+        transit_network: Arc<TransitNetwork>,
         departure_resolver: Arc<dyn DepartureResolver>,
         service_conditions: Arc<dyn ServiceConditionProvider>,
         bike_share_network: Arc<BikeShareNetwork>,
-        bike_availability_source: Arc<dyn BikeAvailabilitySource>,
+        bike_augmenter: BikeJourneyAugmenter,
+        limits: RoutingLimits,
     ) -> Self {
-        let transit_network = Arc::new(TransitNetwork::default());
         let transfer_resolver: Arc<dyn TransferResolver> =
             Arc::new(TransferShortcutIndex::from_network(&transit_network));
         let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(TripBasedRouter::new(
@@ -105,103 +103,42 @@ impl RoutingService {
             departure_resolver.clone(),
             transfer_resolver.clone(),
         ));
+        let limits = limits.normalized();
         Self {
             street_routing: street_routing.clone(),
-            departure_resolver,
             routing_algorithm,
-            journey_augmenter: Arc::new(BikeJourneyAugmenter::with_default_policy(
-                bike_share_network.clone(),
-                bike_availability_source.clone(),
-                street_routing.clone(),
-            )),
-            transfer_resolver,
+            bike_augmenter,
             service_conditions,
             transit_network,
             bike_share_network,
-            bike_availability_source,
             ranking: RankingPolicy::default(),
-            request_slots: Arc::new(tokio::sync::Semaphore::new(
-                RoutingLimits::default().max_concurrent_requests,
-            )),
-            limits: RoutingLimits::default(),
+            request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
+            limits,
             operational_metrics: OperationalMetrics::default(),
         }
     }
+}
 
-    pub fn with_transit_network_arc(mut self, transit_network: Arc<TransitNetwork>) -> Self {
-        self.transit_network = transit_network;
-        self.transfer_resolver =
-            Arc::new(TransferShortcutIndex::from_network(&self.transit_network));
-        self.rebuild_default_algorithm();
-        self
-    }
-
-    fn rebuild_default_algorithm(&mut self) {
-        self.routing_algorithm = Arc::new(TripBasedRouter::new(
-            self.transit_network.clone(),
-            self.departure_resolver.clone(),
-            self.transfer_resolver.clone(),
-        ));
-    }
-
-    pub fn with_metrics(mut self, metrics: OperationalMetrics) -> Self {
-        self.operational_metrics = metrics;
-        self
-    }
-
-    pub fn with_journey_augmenter(mut self, augmenter: Arc<dyn JourneyAugmenter>) -> Self {
-        self.journey_augmenter = augmenter;
-        self
-    }
-
-    pub fn with_bike_share_network(mut self, network: Arc<BikeShareNetwork>) -> Self {
-        self.bike_share_network = network.clone();
-        self.journey_augmenter = Arc::new(BikeJourneyAugmenter::with_default_policy(
-            network,
-            self.bike_availability_source.clone(),
-            self.street_routing.clone(),
-        ));
-        self
-    }
-
-    pub fn with_bike_augmentation(
-        mut self,
-        network: Arc<BikeShareNetwork>,
-        availability_source: Arc<dyn BikeAvailabilitySource>,
-    ) -> Self {
-        self.bike_share_network = network.clone();
-        self.bike_availability_source = availability_source.clone();
-        self.journey_augmenter = Arc::new(
-            crate::routing::augmentation::BikeJourneyAugmenter::with_default_policy(
-                network,
-                availability_source,
-                self.street_routing.clone(),
-            ),
-        );
-        self
-    }
-
-    pub fn with_limits(mut self, limits: RoutingLimits) -> Self {
-        let max_candidates = limits.max_candidates.max(1);
-        let limits = RoutingLimits {
-            request_timeout: limits.request_timeout,
-            max_concurrent_requests: limits.max_concurrent_requests.max(1),
-            max_transit_access_stops: limits.max_transit_access_stops.max(1),
-            max_transit_egress_stops: limits.max_transit_egress_stops.max(1),
+impl RoutingLimits {
+    fn normalized(self) -> Self {
+        let max_candidates = self.max_candidates.max(1);
+        Self {
+            request_timeout: self.request_timeout,
+            max_concurrent_requests: self.max_concurrent_requests.max(1),
+            max_transit_access_stops: self.max_transit_access_stops.max(1),
+            max_transit_egress_stops: self.max_transit_egress_stops.max(1),
             max_candidates,
-            max_walking_radius_metres: limits.max_walking_radius_metres.max(1),
-            max_walking_seconds: limits.max_walking_seconds.max(1),
-            max_transfer_count: limits.max_transfer_count.max(1),
-            max_search_expansions: limits.max_search_expansions.max(1),
-            max_departures_per_query: limits.max_departures_per_query.max(1),
-            max_journey_duration_seconds: limits.max_journey_duration_seconds.max(1),
-        };
-        self.request_slots = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests));
-        self.limits = limits;
-        self.rebuild_default_algorithm();
-        self
+            max_walking_radius_metres: self.max_walking_radius_metres.max(1),
+            max_walking_seconds: self.max_walking_seconds.max(1),
+            max_transfer_count: self.max_transfer_count.max(1),
+            max_search_expansions: self.max_search_expansions.max(1),
+            max_departures_per_query: self.max_departures_per_query.max(1),
+            max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
+        }
     }
+}
 
+impl RoutingService {
     pub async fn route(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
         let timeout = self.limits.request_timeout;
         match tokio::time::timeout(timeout, async {
@@ -325,6 +262,7 @@ impl RoutingService {
                     max_transfers: self.limits.max_transfer_count as usize,
                     max_candidates: self.limits.max_candidates,
                     max_expansions: self.limits.max_search_expansions,
+                    max_departures_per_query: self.limits.max_departures_per_query,
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
                 };
                 let search_started = Instant::now();
@@ -399,7 +337,7 @@ impl RoutingService {
         skeleton: JourneySkeleton,
     ) -> Vec<Result<Option<GeneratedCandidate>, PlanningError>> {
         let variants = if request.allows_bike_share() {
-            self.journey_augmenter.augment(skeleton).await
+            self.bike_augmenter.augment(skeleton).await
         } else {
             vec![JourneyVariant::baseline(skeleton)]
         };

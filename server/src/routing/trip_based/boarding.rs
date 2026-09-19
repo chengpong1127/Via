@@ -1,5 +1,5 @@
 use super::{
-    TripBasedLimits, TripBasedRouter,
+    TripBasedRouter,
     diagnostics::SearchDiagnostics,
     dominance::{dynamic_label_dominates, dynamic_label_dominates_or_equals, insert_dynamic_label},
     state::{BoardingNeed, DepartureCacheKey, DynamicLabel, ReachedTripLabel, TripState},
@@ -21,7 +21,7 @@ impl TripBasedRouter {
     pub(super) async fn resolve_boardings(
         &self,
         request: BoardingRequest,
-        limits: &TripBasedLimits,
+        query: &super::super::AlgorithmQuery,
         cache: &mut HashMap<DepartureCacheKey, Result<Vec<EffectiveTrip>, DepartureError>>,
         reached_index: &mut HashMap<(EffectiveTripId, usize), Vec<ReachedTripLabel>>,
         dynamic_best: &mut HashMap<(TransitServiceId, usize, usize), Vec<DynamicLabel>>,
@@ -62,7 +62,7 @@ impl TripBasedRouter {
                     service_id.clone(),
                     need.stop_id.clone(),
                     need.ready_at,
-                    limits.max_departures_per_query,
+                    query.max_departures_per_query.max(1),
                 );
                 let labels = query_frontier.entry(dynamic_key).or_default();
                 if labels
@@ -146,7 +146,7 @@ impl TripBasedRouter {
                     service_id.clone(),
                     need.stop_id.clone(),
                     need.ready_at,
-                    limits.max_departures_per_query,
+                    query.max_departures_per_query.max(1),
                 );
                 let Some(Ok(trips)) = cache.get(&DepartureCacheKey(query)) else {
                     continue;

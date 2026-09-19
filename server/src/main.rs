@@ -2,7 +2,7 @@ use std::{env, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 
 use url::Url;
 use via_server::{
-    app::{RouterDependencies, build_router_with_dependencies},
+    app::{RouterDependencies, build_router},
     config::load_dotenv,
     data::{load_bikeshare_artifact, load_network_artifact},
     health::DependencyHealth,
@@ -83,11 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .transpose()?
         .map(Duration::from_secs)
         .unwrap_or(via_server::providers::service_conditions::DEFAULT_SERVICE_CONDITION_CACHE_TTL);
-    let dependencies = RouterDependencies::new(Arc::new(service_conditions))
-        .with_tdx(tdx_client)
-        .with_bike_share(bike_share_network, bike_availability_source)
-        .with_service_condition_cache_ttl(cache_ttl);
-    let router = build_router_with_dependencies(provider, dependencies, transit_network).await?;
+    let dependencies = RouterDependencies::new(
+        Arc::new(service_conditions),
+        bike_share_network,
+        bike_availability_source,
+    )
+    .with_tdx(tdx_client)
+    .with_service_condition_cache_ttl(cache_ttl);
+    let router = build_router(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())
         .parse::<u16>()?;

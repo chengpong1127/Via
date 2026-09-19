@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::support::{build_test_router, build_test_router_with_network};
 use axum::{
     body::Body,
     http::{Request, StatusCode, header::CACHE_CONTROL},
@@ -7,7 +8,6 @@ use axum::{
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 use via_server::{
-    app::{build_router, build_router_with_network},
     domain::ids::BoardingPointId,
     domain::{
         location::RequestCoordinate,
@@ -19,7 +19,7 @@ use via_server::{
 #[tokio::test]
 async fn axum_receives_the_provider_by_injection_and_reports_provider_name() {
     let provider = Arc::new(FakeStreetRouter::builder().build());
-    let app = build_router(provider).await.unwrap();
+    let app = build_test_router(provider).await.unwrap();
 
     let response = app
         .oneshot(
@@ -43,7 +43,7 @@ async fn axum_receives_the_provider_by_injection_and_reports_provider_name() {
 #[tokio::test]
 async fn health_fails_when_the_street_dependency_is_unhealthy() {
     let provider = Arc::new(FakeStreetRouter::builder().unhealthy().build());
-    let app = build_router(provider).await.unwrap();
+    let app = build_test_router(provider).await.unwrap();
 
     let response = app
         .oneshot(
@@ -79,7 +79,9 @@ async fn readiness_uses_the_immutable_static_network_without_a_snapshot() {
         Vec::new(),
     )
     .with_revisions("static-1", "schedule-1");
-    let app = build_router_with_network(provider, network).await.unwrap();
+    let app = build_test_router_with_network(provider, network)
+        .await
+        .unwrap();
 
     let response = app
         .oneshot(

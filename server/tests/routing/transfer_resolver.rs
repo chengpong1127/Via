@@ -15,7 +15,7 @@ use via_server::{
     routing::{
         AccessPoint, AlgorithmQuery, EgressPoint, JourneySegment, ResolvedTransfer,
         RoutingAlgorithm, TransferNeed, TransferResolver, TransferShortcut, TransferTarget,
-        TripBasedRouter,
+        trip_based::TripBasedRouter,
     },
 };
 
@@ -139,7 +139,7 @@ async fn batched_fake_transfer_reaches_the_next_transit_service() {
         vec![EgressPoint::new(BoardingPointId::new("d"), 0, 0)],
         departure,
     )
-    .with_limits(1, 16, 2_000, 4 * 3600);
+    .with_limits(1, 16, 2_000, 3, 4 * 3600);
     let candidates = router.route(query).await.unwrap();
     assert_eq!(candidates.len(), 1);
     let candidate = &candidates[0];
@@ -200,7 +200,7 @@ async fn same_stop_interchange_succeeds_with_an_empty_transfer_resolver() {
         vec![EgressPoint::new(BoardingPointId::new("d"), 0, 0)],
         departure,
     )
-    .with_limits(1, 16, 2_000, 4 * 3600);
+    .with_limits(1, 16, 2_000, 3, 4 * 3600);
     let candidates = router.route(query).await.unwrap();
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].transfer_count, 1);

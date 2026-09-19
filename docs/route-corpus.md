@@ -16,6 +16,20 @@ assert route structure rather than exact arrival times.
 | Multi-transfer | `three_transit_services_reconstruct_with_two_transfers` | ordered three-service sequence |
 | TRA → MRT | `train_can_transfer_to_local_mrt` | rail then metro when fixture data supports it |
 
+The selected-mode checks are also part of the fixture corpus:
+
+| Selected modes | Fixture assertion |
+| --- | --- |
+| `bike_share` | `bike_share_only_uses_the_direct_walking_skeleton` |
+| `metro` | `simple_mrt_uses_the_fixture_schedule_end_to_end` |
+| `metro`, `bike_share` | `bike_variant_reconstructs_with_station_legs_and_bicycle_geometry` |
+| `bus`, `metro`, `tra`, `thsr`, `bike_share` | `bike_connector_becomes_the_transfer_between_retained_transit_legs` |
+
+The station-leg case replays the same request as `bike_share`, `metro` and
+asserts the same stable matching key, covering selected-mode reordering.
+The offline `via-route` tool rejects `bike_share`; production HTTP assembly
+uses the explicit BikeShare artifact and availability source instead.
+
 The real artifact smoke routes are:
 
 ```bash

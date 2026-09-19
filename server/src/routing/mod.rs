@@ -10,28 +10,20 @@ pub mod trip_based;
 pub(crate) mod service;
 pub(crate) mod status;
 
-pub use crate::domain::journey::{JourneyOption, PlanningError, PlanningOutcome};
-pub use crate::domain::transit_timing::{
-    DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-    ScheduleDepartureResolver, TimingBasis, TimingReliability,
-};
-pub use crate::providers::service_conditions::ServiceConditionProvider;
-pub use crate::street::StreetRouter;
 pub use algorithm::{
     AccessPoint, AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm,
     RoutingError,
 };
 pub use augmentation::{
-    BaselineJourneyAugmenter, BikeAugmentationPolicy, BikeJourneyAugmenter, BikeRide, BikeShortcut,
-    JourneyAnchor, JourneyAnchorKind, JourneyAugmenter, JourneyMovement, JourneyMovementKind,
-    JourneyPathMovement, JourneyPathStep, JourneySkeleton, JourneySkeletonError,
-    JourneyTimingError, JourneyVariant, JourneyVariantTiming, WalkingMovementKind,
+    BikeAugmentationPolicy, BikeJourneyAugmenter, BikeRide, BikeShortcut, JourneyAnchor,
+    JourneyAnchorKind, JourneyMovement, JourneyMovementKind, JourneyPathMovement, JourneyPathStep,
+    JourneySkeleton, JourneySkeletonError, JourneyTimingError, JourneyVariant,
+    JourneyVariantTiming, WalkingMovementKind,
 };
 pub use service::{RoutingLimits, RoutingService};
 pub use transfers::{
     ResolvedTransfer, TransferIndex, TransferNeed, TransferResolver, TransferShortcut,
     TransferShortcutIndex, TransferTarget,
 };
-pub use trip_based::{TripBasedIndex, TripBasedLimits, TripBasedRouter};
 
 pub type RouteQuery = crate::api::PlanningRequest;

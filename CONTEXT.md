@@ -13,8 +13,8 @@ PlanningRequest
   → RoutingAlgorithm
   → TripBasedRouter
   → JourneyCandidate
-  → JourneySkeleton
-  → JourneyAugmenter (baseline or request-selected BikeShare)
+  → JourneySkeleton (direct walking or transit candidate)
+  → request-selected BikeJourneyAugmenter
   → JourneyVariant
   → reconstruction
   → ranking
@@ -56,12 +56,11 @@ distinct `BoardingPoint`s. The only current resolver uses an in-memory
 dynamic mobility belongs after transit `JourneyCandidate` creation, in journey
 augmentation, and must not be implemented as `TransferResolver` behavior.
 
-Journey augmentation is a separate seam after `JourneyCandidate` creation and
-before reconstruction. `JourneySkeleton` projects only origin, boarding-point,
-and destination anchors plus indexed baseline movement. The current
-`BaselineJourneyAugmenter` returns one original path. When `bike_share` is in
-the request's `selected_modes`, `BikeJourneyAugmenter` adds optional BikeShare
-paths using the immutable `BikeShareNetwork`, realtime availability,
+Journey augmentation is a concrete step after `JourneyCandidate` creation and
+before reconstruction. Direct walking and Trip-Based candidates both become a
+`JourneySkeleton`; when `bike_share` is in the request's `selected_modes`, the
+single `BikeJourneyAugmenter` adds optional BikeShare paths using the immutable
+`BikeShareNetwork`, realtime availability,
 endpoint-time station discovery, and bicycle matrix search. Endpoint station
 discovery scans the immutable station list within a conservative 300 metre
 radius, filters fresh serviceable pickup/return counts before walking matrix

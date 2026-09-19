@@ -8,6 +8,7 @@ mod metro;
 mod metro_realtime;
 #[path = "timing/reliability.rs"]
 mod reliability;
+#[path = "support/timing.rs"]
 mod support;
 #[path = "timing/tra.rs"]
 mod tra;

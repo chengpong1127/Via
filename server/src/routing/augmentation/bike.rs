@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use time::{Duration, OffsetDateTime};
 
 use crate::{
@@ -23,8 +22,8 @@ use crate::{
 };
 
 use super::{
-    BikeRide, BikeShortcut, JourneyAnchorKind, JourneyAugmenter, JourneyPathMovement,
-    JourneyPathStep, JourneySkeleton, JourneyVariant,
+    BikeRide, BikeShortcut, JourneyAnchorKind, JourneyPathMovement, JourneyPathStep,
+    JourneySkeleton, JourneyVariant,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,14 +87,7 @@ impl BikeJourneyAugmenter {
         )
     }
 
-    pub fn policy(&self) -> &BikeAugmentationPolicy {
-        &self.policy
-    }
-}
-
-#[async_trait]
-impl JourneyAugmenter for BikeJourneyAugmenter {
-    async fn augment(&self, skeleton: JourneySkeleton) -> Vec<JourneyVariant> {
+    pub async fn augment(&self, skeleton: JourneySkeleton) -> Vec<JourneyVariant> {
         let baseline = JourneyVariant::baseline(skeleton.clone());
         let Ok(snapshot) = self.availability_source.snapshot().await else {
             return vec![baseline];

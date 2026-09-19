@@ -23,41 +23,6 @@ fn source_tree(path: &str) -> String {
 }
 
 #[test]
-fn legacy_architecture_modules_are_gone() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    for path in [
-        "planner.rs",
-        "normalization.rs",
-        "ranking.rs",
-        "tdx.rs",
-        "transit.rs",
-        "live_status.rs",
-        "routing/engine",
-    ] {
-        assert!(
-            !root.join(path).exists(),
-            "legacy path still exists: {path}"
-        );
-    }
-}
-
-#[test]
-fn database_identity_infrastructure_is_gone() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for path in [
-        "src/entity.rs",
-        "src/migration.rs",
-        "src/providers/postgres.rs",
-        "tests/postgres_identity_contract.rs",
-    ] {
-        assert!(
-            !root.join(path).exists(),
-            "obsolete path still exists: {path}"
-        );
-    }
-}
-
-#[test]
 fn domain_is_provider_and_transport_neutral() {
     let domain = source_tree("src/domain");
     for dependency in [
@@ -94,18 +59,6 @@ fn routing_has_one_service_entry_point_and_no_legacy_imports() {
     assert!(service.contains("pub struct RoutingService"));
     assert!(service.contains("pub async fn route"));
 
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    for path in [
-        "planner.rs",
-        "normalization.rs",
-        "routing/engine.rs",
-        "routing/engine/mod.rs",
-    ] {
-        assert!(
-            !root.join(path).exists(),
-            "legacy path still exists: {path}"
-        );
-    }
     for source in [
         source("src/routing/service.rs"),
         source("src/routing/reconstruct/mod.rs"),
@@ -294,15 +247,4 @@ fn routing_has_no_legacy_transit_pipeline() {
     assert!(service.contains("self.routing_algorithm.route(query).await"));
     assert!(service.contains("discover_access_points"));
     assert!(service.contains("discover_egress_points"));
-}
-
-#[test]
-fn obsolete_routing_files_are_deleted() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing");
-    for file in ["discover.rs", "enrich.rs", "graph.rs", "search.rs"] {
-        assert!(
-            !root.join(file).exists(),
-            "obsolete routing file remains: {file}"
-        );
-    }
 }

@@ -36,8 +36,6 @@ enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
 
     var id: Self { self }
 
-    static let selectable: [JourneyMode] = [.transit]
-
     var titleKey: String {
         switch self {
         case .transit: "Transit"

@@ -20,8 +20,8 @@ use via_server::{
         },
     },
     routing::{
-        BikeAugmentationPolicy, BikeJourneyAugmenter, JourneyAugmenter, RoutingService,
-        TransferIndex, transfers::TransferShortcutIndex,
+        BikeAugmentationPolicy, BikeJourneyAugmenter, RoutingLimits, RoutingService, TransferIndex,
+        transfers::TransferShortcutIndex,
     },
     street::{Coordinate, FakeStreetRouter},
     tdx::TdxClient,
@@ -88,16 +88,7 @@ pub(crate) async fn route_body(
     realtime: FixtureRealtime,
     body: Value,
 ) -> Value {
-    route_body_inner(street, realtime, body, None, None).await
-}
-
-pub(crate) async fn route_body_with_augmenter(
-    street: FakeStreetRouter,
-    realtime: FixtureRealtime,
-    body: Value,
-    augmenter: Arc<dyn JourneyAugmenter>,
-) -> Value {
-    route_body_inner(street, realtime, body, Some(augmenter), None).await
+    route_body_inner(street, realtime, body, None).await
 }
 
 pub(crate) async fn route_body_with_bike(
@@ -112,7 +103,6 @@ pub(crate) async fn route_body_with_bike(
         street,
         realtime,
         body,
-        None,
         Some((network, availability_source, policy)),
     )
     .await
@@ -122,7 +112,6 @@ async fn route_body_inner(
     street: FakeStreetRouter,
     realtime: FixtureRealtime,
     body: Value,
-    augmenter: Option<Arc<dyn JourneyAugmenter>>,
     bike: Option<(
         Arc<BikeShareNetwork>,
         Arc<dyn BikeAvailabilitySource>,
@@ -161,33 +150,29 @@ async fn route_body_inner(
     let cached = Arc::new(CachedServiceConditionProvider::new(Arc::new(
         NullServiceConditionProvider,
     )));
-    let service_street = Arc::new(street.clone());
+    let service_street = Arc::new(street);
+    let (bike_network, availability_source, policy) = bike.unwrap_or_else(|| {
+        (
+            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled")),
+            Arc::new(UnavailableBikeAvailabilitySource) as Arc<dyn BikeAvailabilitySource>,
+            BikeAugmentationPolicy::default(),
+        )
+    });
+    let bike_augmenter = BikeJourneyAugmenter::new(
+        bike_network.clone(),
+        availability_source,
+        service_street.clone(),
+        policy,
+    );
     let service = RoutingService::new(
         service_street,
+        network,
         departure,
         cached,
-        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled")),
-        Arc::new(UnavailableBikeAvailabilitySource),
-    )
-    .with_transit_network_arc(network);
-    let service = match augmenter {
-        Some(augmenter) => service.with_journey_augmenter(augmenter),
-        None => service,
-    };
-    let service = match bike {
-        Some((bike_network, availability_source, policy)) => {
-            let augmenter = BikeJourneyAugmenter::new(
-                bike_network.clone(),
-                availability_source,
-                Arc::new(street),
-                policy,
-            );
-            service
-                .with_bike_share_network(bike_network)
-                .with_journey_augmenter(Arc::new(augmenter))
-        }
-        None => service,
-    };
+        bike_network,
+        bike_augmenter,
+        RoutingLimits::default(),
+    );
     serde_json::to_value(service.route(request).await.unwrap()).unwrap()
 }
 

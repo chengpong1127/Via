@@ -37,24 +37,6 @@ pub enum WalkingMovementKind {
     Direct,
 }
 
-impl WalkingMovementKind {
-    pub fn is_access(self) -> bool {
-        matches!(self, Self::Access)
-    }
-
-    pub fn is_transfer(self) -> bool {
-        matches!(self, Self::Transfer)
-    }
-
-    pub fn is_egress(self) -> bool {
-        matches!(self, Self::Egress)
-    }
-
-    pub fn is_direct(self) -> bool {
-        matches!(self, Self::Direct)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JourneyMovementKind {
     Walking {
@@ -383,13 +365,9 @@ impl JourneyVariant {
             })
     }
 
-    pub fn baseline_signature(&self) -> String {
-        self.skeleton.baseline_signature()
-    }
-
     pub(crate) fn signature(&self) -> String {
         if self.is_baseline() {
-            return self.baseline_signature();
+            return self.skeleton.baseline_signature();
         }
         let path = self
             .path
@@ -499,10 +477,6 @@ impl JourneyVariant {
         }
         timing.arrival_at = current_time;
         Ok(timing)
-    }
-
-    pub fn timing(&self) -> Result<JourneyVariantTiming, JourneyTimingError> {
-        self.evaluate_timing()
     }
 
     pub(crate) fn from_path(skeleton: JourneySkeleton, path: Vec<JourneyPathStep>) -> Self {

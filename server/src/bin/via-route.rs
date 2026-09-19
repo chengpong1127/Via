@@ -28,7 +28,7 @@ use via_server::{
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         UnavailableBikeAvailabilitySource, ValhallaConfig, ValhallaProvider,
     },
-    routing::{RoutingLimits, RoutingService},
+    routing::{BikeJourneyAugmenter, RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
     tdx::{TdxClient, TdxCredentials},
 };
@@ -36,7 +36,7 @@ use via_server::{
 #[derive(Parser, Debug)]
 #[command(
     name = "via-route",
-    about = "Run a query through Via's production routing stack"
+    about = "Run an offline transit query through Via's production routing stack"
 )]
 struct Cli {
     #[arg(long)]
@@ -125,16 +125,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;
     }
+    let request = request_from_cli(&cli)?;
+    if request.selected_modes.contains(&TransportMode::BikeShare) {
+        return Err(
+            "via-route is an offline transit-only debugging tool and does not support bike_share; use the production server for BikeShare routing".into(),
+        );
+    }
+    let bike_share_network =
+        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled"));
+    let bike_availability_source = Arc::new(UnavailableBikeAvailabilitySource);
+    let bike_augmenter = BikeJourneyAugmenter::with_default_policy(
+        bike_share_network.clone(),
+        bike_availability_source,
+        street.clone(),
+    );
     let routing = RoutingService::new(
         street,
+        network.clone(),
         departure,
         cached,
-        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled")),
-        Arc::new(UnavailableBikeAvailabilitySource),
-    )
-    .with_transit_network_arc(network.clone())
-    .with_limits(limits);
-    let request = request_from_cli(&cli)?;
+        bike_share_network,
+        bike_augmenter,
+        limits,
+    );
     if cli.trace {
         eprintln!("ACCESS");
         eprintln!("  origin ({:.6}, {:.6})", cli.from_lat, cli.from_lon);

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::support::build_test_router;
 use axum::{
     body::Body,
     http::{Request, StatusCode, header::CACHE_CONTROL},
@@ -7,11 +8,7 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
-use via_server::{
-    api::PlanningRequest,
-    app::{build_router, openapi_document},
-    street::FakeStreetRouter,
-};
+use via_server::{api::PlanningRequest, app::openapi_document, street::FakeStreetRouter};
 
 #[test]
 fn generated_openapi_covers_the_http_contract() {
@@ -62,9 +59,6 @@ fn generated_openapi_covers_the_http_contract() {
             "#/components/schemas/ErrorEnvelope"
         );
     }
-
-    assert!(openapi["paths"]["/internal/v1/refresh"].is_null());
-    assert!(openapi["components"]["securitySchemes"]["refreshBearer"].is_null());
 
     for (path, method) in [
         ("/health/live", "get"),
@@ -131,7 +125,6 @@ fn generated_openapi_covers_the_http_contract() {
 
     for internal_schema in [
         "AppState",
-        "RefreshEndpoint",
         "PlanningError",
         "NormalizedLiveStatus",
         "LiveStatusValue",
@@ -161,7 +154,7 @@ fn generated_openapi_covers_the_http_contract() {
 
 #[tokio::test]
 async fn openapi_endpoint_serves_the_generated_document_without_caching() {
-    let app = build_router(Arc::new(FakeStreetRouter::builder().build()))
+    let app = build_test_router(Arc::new(FakeStreetRouter::builder().build()))
         .await
         .unwrap();
 

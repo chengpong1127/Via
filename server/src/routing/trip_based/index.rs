@@ -5,21 +5,15 @@ use crate::domain::{
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Line {
-    pub pattern: Vec<BoardingPointId>,
-    pub service_ids: Vec<TransitServiceId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinePosition {
-    pub line_index: usize,
-    pub stop_index: usize,
+struct Line {
+    pattern: Vec<BoardingPointId>,
+    service_ids: Vec<TransitServiceId>,
 }
 
 /// Static Trip-Based index. It contains only service patterns and stable
 /// schedule ordering; runtime trips are supplied by `DepartureResolver`.
 #[derive(Clone, Debug, Default)]
-pub struct TripBasedIndex {
+pub(super) struct TripBasedIndex {
     lines: Vec<Line>,
     service_to_line: HashMap<TransitServiceId, usize>,
     services_by_stop: HashMap<BoardingPointId, Vec<TransitServiceId>>,
@@ -27,7 +21,7 @@ pub struct TripBasedIndex {
 }
 
 impl TripBasedIndex {
-    pub fn new(network: &TransitNetwork) -> Self {
+    pub(super) fn new(network: &TransitNetwork) -> Self {
         let mut lines = Vec::<Line>::new();
         let mut service_to_line = HashMap::new();
         let mut services_by_stop = HashMap::<BoardingPointId, Vec<TransitServiceId>>::new();
@@ -73,24 +67,20 @@ impl TripBasedIndex {
         }
     }
 
-    pub fn lines(&self) -> &[Line] {
-        &self.lines
-    }
-
-    pub fn line_for_service(&self, service_id: &TransitServiceId) -> Option<&Line> {
+    fn line_for_service(&self, service_id: &TransitServiceId) -> Option<&Line> {
         self.service_to_line
             .get(service_id)
             .and_then(|index| self.lines.get(*index))
     }
 
-    pub fn services_at(&self, stop_id: &BoardingPointId) -> &[TransitServiceId] {
+    pub(super) fn services_at(&self, stop_id: &BoardingPointId) -> &[TransitServiceId] {
         self.services_by_stop
             .get(stop_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    pub fn stop_index(
+    pub(super) fn stop_index(
         &self,
         service_id: &TransitServiceId,
         stop_id: &BoardingPointId,
@@ -101,7 +91,7 @@ impl TripBasedIndex {
             .copied()
     }
 
-    pub fn pattern(&self, service_id: &TransitServiceId) -> Option<&[BoardingPointId]> {
+    pub(super) fn pattern(&self, service_id: &TransitServiceId) -> Option<&[BoardingPointId]> {
         self.line_for_service(service_id)
             .map(|line| line.pattern.as_slice())
     }

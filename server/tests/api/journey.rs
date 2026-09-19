@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::support::build_test_router;
 use axum::{
     body::Body,
     http::{Request, StatusCode, header::CACHE_CONTROL},
@@ -7,11 +8,8 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use via_server::{
-    app::build_router,
-    street::{
-        Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
-    },
+use via_server::street::{
+    Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
 };
 
 fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
@@ -52,7 +50,7 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
             },
         )
         .build();
-    let app = build_router(Arc::new(provider)).await.unwrap();
+    let app = build_test_router(Arc::new(provider)).await.unwrap();
 
     let response = app
         .oneshot(
@@ -91,7 +89,7 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
 #[tokio::test]
 async fn invalid_request_returns_a_redacted_error_envelope() {
     let provider = FakeStreetRouter::builder().build();
-    let app = build_router(Arc::new(provider)).await.unwrap();
+    let app = build_test_router(Arc::new(provider)).await.unwrap();
     let mut invalid = request_body();
     invalid["origin"]["coordinate"]["latitude"] = json!(91);
 
@@ -119,7 +117,7 @@ async fn invalid_request_returns_a_redacted_error_envelope() {
 #[tokio::test]
 async fn successful_empty_result_is_distinct_from_service_unavailability() {
     let provider = FakeStreetRouter::builder().build();
-    let app = build_router(Arc::new(provider)).await.unwrap();
+    let app = build_test_router(Arc::new(provider)).await.unwrap();
 
     let response = app
         .oneshot(

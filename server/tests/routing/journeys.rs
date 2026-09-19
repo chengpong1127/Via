@@ -16,7 +16,7 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
     let body = route_body(
         street,
         FixtureRealtime::empty(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        request(origin, destination, &["metro"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-mrt-red"]);

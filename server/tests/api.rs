@@ -6,3 +6,5 @@ mod journey;
 mod openapi;
 #[path = "api/planning.rs"]
 mod planning;
+#[path = "support/app.rs"]
+mod support;

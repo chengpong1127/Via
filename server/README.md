@@ -52,8 +52,14 @@ Static `TransitNetwork.transfer_edges` contain directional transit walking
 transfers. Requests select fine-grained transport systems through
 `selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
 Walking remains an implicit connector, while output legs retain the coarse
-`walking`, `transit`, and `bicycle` `JourneyMode` values. BikeShare-only
-requests are rejected until standalone BikeShare search exists.
+`walking`, `transit`, and `bicycle` `JourneyMode` values. BikeShare augments
+the direct walking baseline or a transit skeleton when selected; walking
+remains the implicit connector.
+
+The `via-route` binary is intentionally an offline transit-debugging tool and
+rejects `bike_share` rather than constructing a fake BikeShare capability.
+Production HTTP assembly requires the immutable BikeShare artifact and its
+availability source explicitly.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and

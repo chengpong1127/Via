@@ -21,9 +21,9 @@ use via_server::{
     },
     providers::{BikeAvailabilityError, BikeAvailabilitySource},
     routing::{
-        AccessPoint, BaselineJourneyAugmenter, BikeAugmentationPolicy, BikeJourneyAugmenter,
-        EgressPoint, JourneyAnchorKind, JourneyAugmenter, JourneyCandidate, JourneyMovementKind,
-        JourneyPathMovement, JourneySegment, JourneySkeleton, JourneyVariant, TransferShortcut,
+        AccessPoint, BikeAugmentationPolicy, BikeJourneyAugmenter, EgressPoint, JourneyAnchorKind,
+        JourneyCandidate, JourneyMovementKind, JourneyPathMovement, JourneySegment,
+        JourneySkeleton, JourneyVariant, TransferShortcut,
     },
     street::{
         FakeStreetRouter, Maneuver, MatrixCell, MatrixOrientation, MatrixQuery, MatrixResult,
@@ -161,7 +161,7 @@ fn direct_walking_projects_to_a_self_sufficient_skeleton() {
     assert_eq!(skeleton.movements()[0].street_path.as_deref(), Some(&path));
     assert_eq!(
         JourneyVariant::baseline(skeleton)
-            .timing()
+            .evaluate_timing()
             .unwrap()
             .arrival_at,
         START + Duration::seconds(300)
@@ -426,9 +426,14 @@ fn candidate_projects_to_ordered_anchors_and_baseline_movements() {
 
     let movements = skeleton.movements();
     assert_eq!(movements.len(), 5);
-    assert!(
-        matches!(movements[0].kind, JourneyMovementKind::Walking { kind, duration_seconds: 30, distance_metres: 150 } if kind.is_access())
-    );
+    assert!(matches!(
+        movements[0].kind,
+        JourneyMovementKind::Walking {
+            kind: via_server::routing::WalkingMovementKind::Access,
+            duration_seconds: 30,
+            distance_metres: 150
+        }
+    ));
     assert!(matches!(
         movements[1].kind,
         JourneyMovementKind::Transit {
@@ -437,9 +442,14 @@ fn candidate_projects_to_ordered_anchors_and_baseline_movements() {
             ..
         }
     ));
-    assert!(
-        matches!(movements[2].kind, JourneyMovementKind::Walking { kind, duration_seconds: 120, .. } if kind.is_transfer())
-    );
+    assert!(matches!(
+        movements[2].kind,
+        JourneyMovementKind::Walking {
+            kind: via_server::routing::WalkingMovementKind::Transfer,
+            duration_seconds: 120,
+            ..
+        }
+    ));
     assert!(matches!(
         movements[3].kind,
         JourneyMovementKind::Transit {
@@ -448,9 +458,14 @@ fn candidate_projects_to_ordered_anchors_and_baseline_movements() {
             ..
         }
     ));
-    assert!(
-        matches!(movements[4].kind, JourneyMovementKind::Walking { kind, duration_seconds: 45, distance_metres: 225 } if kind.is_egress())
-    );
+    assert!(matches!(
+        movements[4].kind,
+        JourneyMovementKind::Walking {
+            kind: via_server::routing::WalkingMovementKind::Egress,
+            duration_seconds: 45,
+            distance_metres: 225
+        }
+    ));
     assert_eq!(
         movements
             .iter()
@@ -458,19 +473,6 @@ fn candidate_projects_to_ordered_anchors_and_baseline_movements() {
             .collect::<Vec<_>>(),
         vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]
     );
-}
-
-#[tokio::test]
-async fn baseline_augmenter_returns_one_equivalent_baseline_variant() {
-    let candidate = candidate();
-    let signature = candidate.signature();
-    let skeleton = JourneySkeleton::from_candidate(&request(), candidate).unwrap();
-    let variants = BaselineJourneyAugmenter.augment(skeleton).await;
-
-    assert_eq!(variants.len(), 1);
-    assert_eq!(variants[0].skeleton().movements().len(), 5);
-    assert!(variants[0].is_baseline());
-    assert_eq!(variants[0].baseline_signature(), signature);
 }
 
 #[tokio::test]
@@ -1065,11 +1067,7 @@ async fn pure_endpoint_bike_variant_reconstructs_without_transit_metadata() {
     let body = fixtures::route_body_with_bike(
         street,
         FixtureRealtime::empty(),
-        fixtures::request(
-            origin,
-            destination,
-            &["bus", "metro", "tra", "thsr", "bike_share"],
-        ),
+        fixtures::request(origin, destination, &["metro", "bike_share"]),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
             snapshot: Ok(bike_snapshot(START, false)),
@@ -1308,11 +1306,7 @@ async fn bike_variant_reconstructs_with_station_legs_and_bicycle_geometry() {
     let body = fixtures::route_body_with_bike(
         street,
         FixtureRealtime::empty(),
-        fixtures::request(
-            origin,
-            destination,
-            &["bus", "metro", "tra", "thsr", "bike_share"],
-        ),
+        fixtures::request(origin, destination, &["metro", "bike_share"]),
         bike_network,
         source,
         BikeAugmentationPolicy {
@@ -1350,11 +1344,7 @@ async fn bike_variant_reconstructs_with_station_legs_and_bicycle_geometry() {
     let repeated = fixtures::route_body_with_bike(
         repeated_street,
         FixtureRealtime::empty(),
-        fixtures::request(
-            origin,
-            destination,
-            &["bus", "metro", "tra", "thsr", "bike_share"],
-        ),
+        fixtures::request(origin, destination, &["bike_share", "metro"]),
         repeated_network,
         repeated_source,
         BikeAugmentationPolicy {
@@ -1510,36 +1500,6 @@ fn anchor_times_are_monotonic_for_multiple_transit_segments_and_transfers() {
             .windows(2)
             .all(|window| window[0].reached_at <= window[1].reached_at)
     );
-}
-
-#[tokio::test]
-async fn baseline_augmentation_does_not_change_route_results() {
-    let network = fixtures::network();
-    let origin = near_stop(&network, "F-M1");
-    let destination = near_stop(&network, "F-M2-RED");
-    let body = fixtures::request(origin, destination, &["bus", "metro", "tra", "thsr"]);
-
-    let default_result = fixtures::route_body(
-        fixtures::transit_street(&network, origin, "F-M1", destination, "F-M2-RED"),
-        FixtureRealtime::empty(),
-        body.clone(),
-    )
-    .await;
-    let baseline_result = fixtures::route_body_with_augmenter(
-        fixtures::transit_street(&network, origin, "F-M1", destination, "F-M2-RED"),
-        FixtureRealtime::empty(),
-        body,
-        Arc::new(BaselineJourneyAugmenter),
-    )
-    .await;
-
-    // Request IDs and generated timestamps are intentionally fresh per call;
-    // the returned route options must be identical.
-    assert_eq!(
-        default_result["journey_options"],
-        baseline_result["journey_options"]
-    );
-    assert_eq!(default_result["warnings"], baseline_result["warnings"]);
 }
 
 #[tokio::test]

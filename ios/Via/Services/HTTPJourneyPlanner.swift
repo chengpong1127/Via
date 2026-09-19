@@ -1,21 +1,21 @@
 import Foundation
 
-/// The app-facing production planner. Transport and server-shape details live
-/// behind JourneyAPI and are mapped back into the iOS domain model here.
+/// The app-facing production planner. Transport and server-shape details stay
+/// in APIClient and are mapped back into the iOS domain model here.
 actor HTTPJourneyPlanner: JourneyPlanning {
-    private let journeyAPI: JourneyAPI
+    private let client: APIClient
 
     init(baseURL: URL, urlSession: URLSession = .shared) {
-        journeyAPI = JourneyAPI(client: APIClient(baseURL: baseURL, urlSession: urlSession))
-    }
-
-    init(api: JourneyAPI) {
-        journeyAPI = api
+        client = APIClient(baseURL: baseURL, urlSession: urlSession)
     }
 
     func plan(_ request: PlanningRequest) async throws -> JourneyResult {
         do {
-            let response = try await journeyAPI.plan(JourneyPlanRequestDTO(request: request))
+            let response = try await client.send(
+                request: JourneyPlanRequestDTO(request: request),
+                path: "v1/journey-plans",
+                response: JourneyPlanResponseDTO.self
+            )
             return try JourneyMapper.result(from: response)
         } catch let error as JourneyPlanningError {
             throw error

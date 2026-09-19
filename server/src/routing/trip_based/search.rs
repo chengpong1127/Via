@@ -3,7 +3,7 @@ use super::super::{
     AlgorithmQuery, EgressPoint, JourneyCandidate, JourneySegment, RoutingAlgorithm, RoutingError,
 };
 use super::{
-    TripBasedLimits, TripBasedRouter,
+    TripBasedRouter,
     boarding::BoardingRequest,
     diagnostics::SearchDiagnostics,
     dominance::{pareto_boarding_needs, pareto_candidates},
@@ -51,16 +51,6 @@ impl RoutingAlgorithm for TripBasedRouter {
         if query.max_expansions == 0 {
             return Ok(Vec::new());
         }
-        let limits = TripBasedLimits {
-            max_transfers: query.max_transfers.min(self.limits.max_transfers),
-            max_candidates: query.max_candidates.min(self.limits.max_candidates).max(1),
-            max_expansions: query.max_expansions.min(self.limits.max_expansions),
-            max_departures_per_query: self.limits.max_departures_per_query.max(1),
-            max_journey_duration_seconds: query
-                .max_journey_duration_seconds
-                .min(self.limits.max_journey_duration_seconds),
-        };
-
         let mut departure_cache =
             HashMap::<DepartureCacheKey, Result<Vec<EffectiveTrip>, DepartureError>>::new();
         let mut reached_index = HashMap::<(EffectiveTripId, usize), Vec<ReachedTripLabel>>::new();
@@ -77,7 +67,7 @@ impl RoutingAlgorithm for TripBasedRouter {
         let mut candidates = Vec::new();
         let mut expansions = 0usize;
 
-        for round in 0..=limits.max_transfers {
+        for round in 0..=query.max_transfers {
             if needs.is_empty() {
                 break;
             }
@@ -91,7 +81,7 @@ impl RoutingAlgorithm for TripBasedRouter {
                         needs,
                         allowed_transit_modes: query.allowed_transit_modes.clone(),
                     },
-                    &limits,
+                    &query,
                     &mut departure_cache,
                     &mut reached_index,
                     &mut dynamic_best,
@@ -106,7 +96,7 @@ impl RoutingAlgorithm for TripBasedRouter {
             let mut next_needs = Vec::new();
             let mut transfer_seeds = Vec::new();
             for state in states {
-                if expansions >= limits.max_expansions {
+                if expansions >= query.max_expansions {
                     break;
                 }
                 expansions += 1;
@@ -117,9 +107,9 @@ impl RoutingAlgorithm for TripBasedRouter {
                     transfer_seeds: &mut transfer_seeds,
                     diagnostics: &mut diagnostics,
                 };
-                self.scan_state(&query, &limits, &state, &mut outputs);
+                self.scan_state(&query, &state, &mut outputs);
             }
-            if expansions >= limits.max_expansions {
+            if expansions >= query.max_expansions {
                 break;
             }
             next_needs.extend(
@@ -131,7 +121,7 @@ impl RoutingAlgorithm for TripBasedRouter {
 
         diagnostics.final_candidate_count = candidates.len();
         diagnostics.report(started_at);
-        pareto_candidates(candidates, limits.max_candidates)
+        pareto_candidates(candidates, query.max_candidates.max(1))
     }
 }
 
@@ -240,7 +230,6 @@ impl TripBasedRouter {
     fn scan_state(
         &self,
         query: &AlgorithmQuery,
-        limits: &TripBasedLimits,
         state: &TripState,
         outputs: &mut ScanStateOutputs<'_>,
     ) {
@@ -249,7 +238,7 @@ impl TripBasedRouter {
             let stop_time = &state.trip.stop_times[alight_index];
             let arrival_at_stop = stop_time.arrival_at;
             let elapsed = arrival_at_stop - query.departure_time;
-            if elapsed > Duration::seconds(i64::from(limits.max_journey_duration_seconds)) {
+            if elapsed > Duration::seconds(i64::from(query.max_journey_duration_seconds)) {
                 continue;
             }
             let transit_segment = JourneySegment::Transit {
@@ -269,7 +258,7 @@ impl TripBasedRouter {
                     .latest_arrival
                     .is_some_and(|latest| arrival_time > latest)
                     || arrival_time - query.departure_time
-                        > Duration::seconds(i64::from(limits.max_journey_duration_seconds))
+                        > Duration::seconds(i64::from(query.max_journey_duration_seconds))
                 {
                     continue;
                 }
@@ -291,7 +280,7 @@ impl TripBasedRouter {
                 });
             }
 
-            if state.round >= limits.max_transfers {
+            if state.round >= query.max_transfers {
                 continue;
             }
             let has_same_stop_alternative =
