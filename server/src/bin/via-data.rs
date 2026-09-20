@@ -216,9 +216,7 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
 }
 
 async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    let graph_revision = std::env::var("VIA_VALHALLA_GRAPH_REVISION")?;
-    let tileset_last_modified = std::env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")?.parse()?;
-    let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
+    let mut config = ValhallaConfig::local();
     if let Ok(base_url) = std::env::var("VIA_VALHALLA_URL") {
         config.base_url = url::Url::parse(&base_url)?;
     }
@@ -228,7 +226,7 @@ async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> 
     config.request_timeout = Duration::from_secs(5);
     let provider = ValhallaProvider::new(config)?;
     if !provider.healthy().await {
-        return Err("Valhalla is not healthy for the configured graph artifact".into());
+        return Err("Valhalla is not healthy".into());
     }
     Ok(Arc::new(provider))
 }

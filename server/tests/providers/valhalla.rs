@@ -94,13 +94,11 @@ fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
 fn config(base_url: url::Url) -> ValhallaConfig {
     ValhallaConfig {
         base_url,
-        graph_revision: "taipei-2026-08-30".into(),
         request_timeout: Duration::from_secs(1),
         max_concurrency: 2,
         max_sources: 4,
         max_targets: 4,
         max_response_bytes: 64 * 1024,
-        expected_tileset_last_modified: 1_788_019_200,
     }
 }
 
@@ -280,11 +278,25 @@ async fn malformed_valhalla_responses_use_the_shared_contract_error() {
 }
 
 #[tokio::test]
-async fn health_rejects_a_tileset_that_does_not_match_the_configured_value() {
+async fn health_does_not_compare_valhalla_artifact_identity() {
     let (base_url, _) = spawn_fixture().await;
-    let mut mismatched = config(base_url);
-    mismatched.expected_tileset_last_modified = 1;
-    let provider = ValhallaProvider::new(mismatched).unwrap();
+    let provider = ValhallaProvider::new(config(base_url)).unwrap();
+    assert!(provider.healthy().await);
+}
+
+#[tokio::test]
+async fn health_rejects_a_status_response_without_a_healthy_signal() {
+    let app = Router::new().route(
+        "/status",
+        get(|| async { Json(json!({"version": "3.9.0"})) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let provider = ValhallaProvider::new(config(
+        url::Url::parse(&format!("http://{address}/")).unwrap(),
+    ))
+    .unwrap();
     assert!(!provider.healthy().await);
 }
 

@@ -31,26 +31,22 @@ const ODBL_URL: &str = "https://opendatacommons.org/licenses/odbl/1-0/";
 #[derive(Clone, Debug)]
 pub struct ValhallaConfig {
     pub base_url: Url,
-    pub graph_revision: String,
     pub request_timeout: Duration,
     pub max_concurrency: usize,
     pub max_sources: usize,
     pub max_targets: usize,
     pub max_response_bytes: usize,
-    pub expected_tileset_last_modified: u64,
 }
 
 impl ValhallaConfig {
-    pub fn local(graph_revision: impl Into<String>, expected_tileset_last_modified: u64) -> Self {
+    pub fn local() -> Self {
         Self {
             base_url: Url::parse("http://127.0.0.1:8002/").expect("static URL is valid"),
-            graph_revision: graph_revision.into(),
             request_timeout: Duration::from_millis(1_200),
             max_concurrency: 8,
             max_sources: 32,
             max_targets: 32,
             max_response_bytes: 2 * 1024 * 1024,
-            expected_tileset_last_modified,
         }
     }
 
@@ -68,11 +64,6 @@ impl ValhallaConfig {
         {
             return Err(StreetRoutingError::InvalidRequest {
                 reason: "Valhalla resource bounds must be greater than zero".into(),
-            });
-        }
-        if self.graph_revision.trim().is_empty() {
-            return Err(StreetRoutingError::InvalidRequest {
-                reason: "Valhalla graph revision must not be empty".into(),
             });
         }
         Ok(())
@@ -104,7 +95,6 @@ pub enum RoutingOperation {
 pub struct OperationalEvent {
     pub operation: RoutingOperation,
     pub provider: &'static str,
-    pub graph_revision: String,
     pub latency_milliseconds: u64,
     pub outcome: OperationOutcome,
     pub source_count: usize,
@@ -228,7 +218,6 @@ impl ValhallaProvider {
         self.observer.observe(OperationalEvent {
             operation,
             provider: "valhalla",
-            graph_revision: self.config.graph_revision.clone(),
             latency_milliseconds: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             outcome: result
                 .as_ref()
@@ -261,10 +250,17 @@ impl ValhallaProvider {
             .await
             .map_err(map_transport_error)?;
         let wire: StatusResponse = self.parse_response(response).await?;
-        if wire.tileset_last_modified != self.config.expected_tileset_last_modified {
+        if wire.has_tiles == Some(false) {
             return Err(StreetRoutingError::TemporarilyUnavailable);
         }
-        Ok(wire.has_tiles.unwrap_or(true))
+        let has_routing_actions = wire.available_actions.as_ref().is_some_and(|actions| {
+            actions.iter().any(|action| action == "route")
+                && actions.iter().any(|action| action == "sources_to_targets")
+        });
+        if wire.has_tiles != Some(true) && !has_routing_actions {
+            return Err(StreetRoutingError::TemporarilyUnavailable);
+        }
+        Ok(true)
     }
 
     async fn matrix_inner(&self, query: &MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
@@ -599,8 +595,8 @@ fn decode_component(bytes: &[u8], index: &mut usize) -> Result<i64, StreetRoutin
 
 #[derive(Deserialize)]
 struct StatusResponse {
-    tileset_last_modified: u64,
     has_tiles: Option<bool>,
+    available_actions: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]

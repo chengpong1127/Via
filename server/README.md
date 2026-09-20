@@ -30,8 +30,7 @@ Configuration:
 | --- | --- |
 | `VIA_ENV` | `development`, `staging`, or `production`. |
 | `VIA_VALHALLA_URL` | Valhalla base URL. |
-| `VIA_VALHALLA_GRAPH_REVISION` | Revision label for the loaded graph. |
-| `VIA_VALHALLA_TILESET_LAST_MODIFIED` | Expected Valhalla tileset timestamp. |
+| `VALHALLA_TILE_URL` | OSM PBF URL used by the local scripted Valhalla container. |
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
@@ -79,4 +78,4 @@ cargo run --bin export-openapi > /tmp/via-openapi.json
 
 The checked-in Valhalla and street-router fixtures allow the contract and route
 tests to run without a production graph. Real static builds still require a
-reviewed TDX snapshot and a healthy Valhalla graph.
+reviewed TDX snapshot and a healthy Valhalla service.

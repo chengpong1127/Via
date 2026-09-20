@@ -74,9 +74,10 @@ hashes and retrieval metadata to `raw/<date>/manifest.json`, uses bounded
 concurrency and timeouts, and fails without writing an incomplete manifest.
 
 Before the build, start the repository Valhalla service and configure
-`VIA_VALHALLA_URL`, `VIA_VALHALLA_GRAPH_REVISION`, and
-`VIA_VALHALLA_TILESET_LAST_MODIFIED`. In the current development environment,
-the URL is `http://valhalla:8002/`. The normal build discovers bounded,
+`VIA_VALHALLA_URL`. In the current development environment, the URL is
+`http://valhalla:8002/`; the local Compose service downloads the OSM PBF from
+`VALHALLA_TILE_URL` and manages its own cached graph files. The normal build
+discovers bounded,
 provider-validated walking transfers between public-transit BoardingPoints and
 merges them into `TransitNetwork.transfer_edges`. No second transfer artifact
 is created.

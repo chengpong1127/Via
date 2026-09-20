@@ -208,15 +208,13 @@ async fn build_street_router(
     if matches!(service_conditions, ServiceConditionMode::Fixture) {
         return Ok(Arc::new(StraightLineStreetRouter::default()));
     }
-    let graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")?;
-    let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")?.parse()?;
-    let mut config = ValhallaConfig::local(graph_revision, tileset_last_modified);
+    let mut config = ValhallaConfig::local();
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
         config.base_url = url::Url::parse(&base_url)?;
     }
     let provider = ValhallaProvider::new(config)?;
     if !provider.healthy().await {
-        return Err("Valhalla is not healthy for the configured graph artifact".into());
+        return Err("Valhalla is not healthy".into());
     }
     Ok(Arc::new(provider))
 }

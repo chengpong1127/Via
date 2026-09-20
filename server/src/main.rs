@@ -33,12 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    let valhalla_graph_revision = env::var("VIA_VALHALLA_GRAPH_REVISION")
-        .map_err(|_| "VIA_VALHALLA_GRAPH_REVISION must identify the immutable graph artifact")?;
-    let tileset_last_modified = env::var("VIA_VALHALLA_TILESET_LAST_MODIFIED")
-        .map_err(|_| "VIA_VALHALLA_TILESET_LAST_MODIFIED must pin the loaded graph artifact")?
-        .parse()?;
-    let mut config = ValhallaConfig::local(valhalla_graph_revision, tileset_last_modified);
+    let mut config = ValhallaConfig::local();
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
         config.base_url = Url::parse(&base_url)?;
     }
@@ -47,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let provider = Arc::new(ValhallaProvider::new(config)?);
     if !provider.healthy().await {
-        return Err("Valhalla is not healthy for the configured graph artifact".into());
+        return Err("Valhalla is not healthy".into());
     }
     let transit_network_path = env::var("VIA_TRANSIT_NETWORK")
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
