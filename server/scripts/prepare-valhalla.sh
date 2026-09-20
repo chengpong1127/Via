@@ -7,6 +7,7 @@ readonly DATA_DIR="${VALHALLA_DATA_DIR:-/data/valhalla}"
 readonly OSM_PBF_PATH="$VALHALLA_OSM_PBF"
 readonly OSM_PBF_URL="${VALHALLA_OSM_PBF_URL:-}"
 readonly EXPECTED_SHA256="${VALHALLA_OSM_PBF_SHA256:-}"
+readonly EXPECTED_TILESET_LAST_MODIFIED="${VALHALLA_TILESET_LAST_MODIFIED:-}"
 readonly VALHALLA_CONFIG_PATH="$DATA_DIR/valhalla.json"
 readonly REVISION_FILE="$DATA_DIR/graph-revision"
 
@@ -55,7 +56,24 @@ if [[ ! -f "$DATA_DIR/tiles.tar" ]]; then
     > "$VALHALLA_CONFIG_PATH"
   valhalla_build_tiles -c "$VALHALLA_CONFIG_PATH" "$OSM_PBF_PATH"
   valhalla_build_extract -c "$VALHALLA_CONFIG_PATH" -v
+  if [[ -n "$EXPECTED_TILESET_LAST_MODIFIED" ]]; then
+    if ! [[ "$EXPECTED_TILESET_LAST_MODIFIED" =~ ^[0-9]+$ ]]; then
+      echo "VALHALLA_TILESET_LAST_MODIFIED must be a Unix timestamp" >&2
+      exit 1
+    fi
+    touch -d "@$EXPECTED_TILESET_LAST_MODIFIED" "$DATA_DIR/tiles.tar"
+  fi
   printf '%s\n' "$GRAPH_REVISION" > "$REVISION_FILE"
+elif [[ -n "$EXPECTED_TILESET_LAST_MODIFIED" ]]; then
+  if ! [[ "$EXPECTED_TILESET_LAST_MODIFIED" =~ ^[0-9]+$ ]]; then
+    echo "VALHALLA_TILESET_LAST_MODIFIED must be a Unix timestamp" >&2
+    exit 1
+  fi
+  actual_tileset_last_modified="$(stat -c '%Y' "$DATA_DIR/tiles.tar")"
+  if [[ "$actual_tileset_last_modified" != "$EXPECTED_TILESET_LAST_MODIFIED" ]]; then
+    echo "The mounted tileset does not match the pinned last-modified timestamp" >&2
+    exit 1
+  fi
 fi
 
 exec valhalla_service "$VALHALLA_CONFIG_PATH" 1

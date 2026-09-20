@@ -104,5 +104,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result.expect("wait for Ctrl-C signal");
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c()
+        .await
+        .expect("wait for Ctrl-C signal");
 }

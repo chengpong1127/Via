@@ -1,4 +1,22 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      VIA_VALHALLA_URL: http://valhalla:8002/
+      VIA_TRANSIT_NETWORK: /app/server/data/dev/taipei/transit-network.json
+      VIA_BIKESHARE_NETWORK: /app/server/data/dev/taipei/bikeshare-network.json
+    volumes:
+      - ./data:/app/server/data:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      valhalla:
+        condition: service_healthy
+
   valhalla:
     image: ghcr.io/valhalla/valhalla:3.8.3
     command: ["/opt/via/prepare-valhalla.sh"]
@@ -6,10 +24,10 @@ services:
       VALHALLA_OSM_PBF: /real-input/taiwan-latest.osm.pbf
       VALHALLA_OSM_PBF_SHA256: e05dd2ca18acafe9f9e5a58ef4c9b792824c93ce2dcd11207ac49447ccb13d02
       VALHALLA_GRAPH_REVISION: valhalla-3.8.3-taiwan-osm-2026-09-10-e05dd2ca18ac
+      VALHALLA_TILESET_LAST_MODIFIED: ${VIA_VALHALLA_TILESET_LAST_MODIFIED:-1789151498}
     ports:
       - "127.0.0.1:8002:8002"
     volumes:
-      - ./fixtures/valhalla:/fixtures:ro
       - ./var/valhalla/taiwan-latest.osm.pbf:/real-input/taiwan-latest.osm.pbf:ro
       - ./scripts/prepare-valhalla.sh:/opt/via/prepare-valhalla.sh:ro
       - ./var/valhalla-taiwan:/data/valhalla
@@ -18,5 +36,4 @@ services:
       interval: 2s
       timeout: 1s
       retries: 30
-      start_period: 30s
-    restart: unless-stopped
+      start_period: 180s

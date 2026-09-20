@@ -9,14 +9,17 @@ artifacts.
 
 The static-data and route-debug workflow is in [`docs/dev-tooling.md`](../docs/dev-tooling.md).
 Copy the repository environment template, fill in TDX credentials, publish a
-network artifact, and start Valhalla before starting Axum:
+network artifact, and start the complete backend development stack from the
+repository root:
 
 ```sh
 cp .env.example .env
-docker compose up -d valhalla
-./scripts/wait-for-valhalla.sh
-cargo run
+docker compose -f server/docker-compose.yml up --build
 ```
+
+The iOS app remains a host process. The API is published at
+`http://127.0.0.1:3000` for the iOS Simulator, while Valhalla is also available
+at `http://127.0.0.1:8002` for host-side debugging.
 
 The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
 `GET /health/street-routing`. Planning responses are not cached.
