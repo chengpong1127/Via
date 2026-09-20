@@ -100,7 +100,7 @@ private extension ServerLegDTO {
             bikeShare = nil
         case .transit:
             guard details.type == "transit",
-                  let transitMode = details.transitMode.flatMap(TransitMode.init(rawValue)),
+                  let transitMode = details.transitMode.flatMap({ TransitMode(rawValue: $0) }),
                   let serviceID = details.serviceID,
                   let boardingPointID = details.boardingPointID,
                   let alightingPointID = details.alightingPointID
