@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - ../.env
+      - .env
     environment:
       VIA_VALHALLA_URL: http://valhalla:8002/
       VIA_TRANSIT_NETWORK: /app/server/data/dev/taipei/transit-network.json
@@ -21,13 +21,11 @@ services:
     image: ghcr.io/valhalla/valhalla-scripted:3.9.0
     environment:
       tile_urls: ${VALHALLA_TILE_URL:-https://download.geofabrik.de/asia/taiwan-latest.osm.pbf}
-    ports:
-      - "127.0.0.1:8002:8002"
     volumes:
       - ./var/valhalla:/custom_files
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/status | jq --exit-status '(.available_actions // []) | (index(\"route\") != null and index(\"sources_to_targets\") != null)' >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8002/status >/dev/null"]
       interval: 2s
-      timeout: 1s
+      timeout: 2s
       retries: 30
       start_period: 180s

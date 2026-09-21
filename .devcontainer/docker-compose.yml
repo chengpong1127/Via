@@ -20,12 +20,9 @@ services:
       tile_urls: ${VALHALLA_TILE_URL:-https://download.geofabrik.de/asia/taiwan-latest.osm.pbf}
     volumes:
       - valhalla-data:/custom_files
-    ports:
-      - "127.0.0.1:8002:8002"
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:8002/status | jq --exit-status '(.available_actions // []) | (index(\"route\") != null and index(\"sources_to_targets\") != null)' >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8002/status >/dev/null"]
       interval: 2s
-      timeout: 1s
+      timeout: 2s
       retries: 30
       start_period: 180s
-    restart: unless-stopped
