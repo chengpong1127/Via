@@ -3,13 +3,18 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
+    extract::{DefaultBodyLimit, Extension, State, rejection::JsonRejection},
+    http::{HeaderValue, Request, StatusCode, header::CACHE_CONTROL},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
+use tower_http::{
+    request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
+    trace::TraceLayer,
+};
+use tracing::{Span, field};
 use utoipa::{
     openapi::schema::{ArrayItems, Object, Schema, Type},
     openapi::{InfoBuilder, OpenApi, RefOr},
@@ -148,7 +153,18 @@ where
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(middleware::from_fn(http_timeout)))
+        .layer(middleware::from_fn(http_timeout))
+        // These layers are listed in response-path order. SetRequestId must run
+        // before TraceLayer on the request path, while propagation must run
+        // before TraceLayer observes the response.
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(make_request_span)
+                .on_response(on_http_response)
+                .on_failure(()),
+        )
+        .layer(SetRequestIdLayer::x_request_id(ViaMakeRequestId)))
 }
 
 fn provider_interfaces<P>(provider: Arc<P>) -> (Arc<dyn StreetRouter>, Arc<dyn DependencyHealth>)
@@ -334,10 +350,104 @@ fn set_schema_property_items_enum<I>(
     }
 }
 
-async fn http_timeout(request: axum::http::Request<Body>, next: Next) -> Response {
+#[derive(Clone, Copy, Default)]
+struct ViaMakeRequestId;
+
+impl MakeRequestId for ViaMakeRequestId {
+    fn make_request_id<B>(&mut self, _request: &Request<B>) -> Option<RequestId> {
+        new_request_id().parse().ok().map(RequestId::new)
+    }
+}
+
+fn request_id_string(request_id: &RequestId) -> String {
+    request_id
+        .header_value()
+        .to_str()
+        .unwrap_or("invalid_request_id")
+        .to_owned()
+}
+
+fn make_request_span(request: &Request<Body>) -> Span {
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("missing_request_id");
+    let method = request.method();
+    let path = request.uri().path();
+    let span_fields = || {
+        (
+            request_id,
+            method,
+            path,
+            field::Empty,
+            field::Empty,
+            field::Empty,
+            field::Empty,
+            field::Empty,
+        )
+    };
+
+    if path == "/v1/journey-plans" {
+        let (request_id, method, path, status, outcome, journey_options, error_code, elapsed_ms) =
+            span_fields();
+        tracing::info_span!(
+            "journey_plan",
+            request_id = %request_id,
+            method = %method,
+            path = %path,
+            selected_modes = field::Empty,
+            departure_setting = field::Empty,
+            status,
+            outcome,
+            journey_options,
+            error_code,
+            elapsed_ms,
+        )
+    } else {
+        let (request_id, method, path, status, outcome, journey_options, error_code, elapsed_ms) =
+            span_fields();
+        tracing::info_span!(
+            "http_request",
+            request_id = %request_id,
+            method = %method,
+            path = %path,
+            status,
+            outcome,
+            journey_options,
+            error_code,
+            elapsed_ms,
+        )
+    }
+}
+
+fn on_http_response<B>(response: &Response<B>, latency: Duration, span: &Span) {
+    let status = u64::from(response.status().as_u16());
+    let elapsed_ms = latency.as_millis().min(u128::from(u64::MAX)) as u64;
+    span.record("status", status);
+    span.record("elapsed_ms", elapsed_ms);
+    tracing::info!(
+        target: "via_server::http",
+        status,
+        elapsed_ms,
+        "request completed"
+    );
+}
+
+async fn http_timeout(request: Request<Body>, next: Next) -> Response {
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(request_id_string)
+        .unwrap_or_else(|| "missing_request_id".into());
     match tokio::time::timeout(std::time::Duration::from_secs(10), next.run(request)).await {
         Ok(response) => response,
-        Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, "request_timeout", None),
+        Err(_) => error_response(
+            &request_id,
+            StatusCode::REQUEST_TIMEOUT,
+            "request_timeout",
+            None,
+        ),
     }
 }
 
@@ -496,28 +606,52 @@ async fn street_routing_health(State(state): State<AppState>) -> Response {
 )]
 async fn journey_plan(
     State(state): State<AppState>,
+    Extension(request_id): Extension<RequestId>,
     request: Result<Json<PlanningRequest>, JsonRejection>,
 ) -> Response {
+    let request_id = request_id_string(&request_id);
     let request = match request {
         Ok(Json(request)) => request,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid_request", Some("/")),
+        Err(_) => {
+            return error_response(
+                &request_id,
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                Some("/"),
+            );
+        }
     };
     if let Err(error) = request.validate() {
-        return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
+        return error_response(
+            &request_id,
+            StatusCode::BAD_REQUEST,
+            error.code(),
+            Some(error.field()),
+        );
     }
-    match state.routing.route(request).await {
+    record_request_fields(&request);
+    match state.routing.route(request, request_id.clone()).await {
         Ok(outcome) => {
-            match &outcome {
-                PlanningOutcome::Options(result) => state
-                    .metrics
-                    .record_planning_success(result.journey_options.len()),
-                PlanningOutcome::Empty(_) => state.metrics.record_planning_success(0),
-            }
+            let journey_options = match &outcome {
+                PlanningOutcome::Options(result) => result.journey_options.len(),
+                PlanningOutcome::Empty(_) => 0,
+            };
+            state.metrics.record_planning_success(journey_options);
+            Span::current().record(
+                "outcome",
+                if journey_options == 0 {
+                    "empty"
+                } else {
+                    "options"
+                },
+            );
+            Span::current().record("journey_options", journey_options as u64);
             no_store((StatusCode::OK, Json(outcome)))
         }
         Err(PlanningError::TemporarilyUnavailable) => {
             state.metrics.record_planning_failure();
             error_response(
+                &request_id,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "temporarily_unavailable",
                 None,
@@ -525,9 +659,30 @@ async fn journey_plan(
         }
         Err(PlanningError::Internal) => {
             state.metrics.record_planning_failure();
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
+            error_response(
+                &request_id,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "planner_failure",
+                None,
+            )
         }
     }
+}
+
+fn record_request_fields(request: &PlanningRequest) {
+    let span = Span::current();
+    span.record(
+        "selected_modes",
+        field::debug(request.canonical_selected_modes()),
+    );
+    span.record(
+        "departure_setting",
+        match request.departure_setting {
+            crate::api::DepartureSetting::DepartNow => "depart_now",
+            crate::api::DepartureSetting::DepartAt { .. } => "depart_at",
+            crate::api::DepartureSetting::ArriveBy { .. } => "arrive_by",
+        },
+    );
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -547,13 +702,20 @@ struct ErrorObject {
     parameters: serde_json::Value,
 }
 
-fn error_response(status: StatusCode, code: &str, field: Option<&str>) -> Response {
+fn error_response(
+    request_id: &str,
+    status: StatusCode,
+    code: &str,
+    field: Option<&str>,
+) -> Response {
+    Span::current().record("outcome", "error");
+    Span::current().record("error_code", code);
     no_store((
         status,
         Json(ErrorEnvelope {
             api_version: API_VERSION,
             semantic_catalog_version: SEMANTIC_CATALOG_VERSION,
-            request_id: new_request_id(),
+            request_id: request_id.to_owned(),
             error: ErrorObject {
                 code: code.into(),
                 required: true,

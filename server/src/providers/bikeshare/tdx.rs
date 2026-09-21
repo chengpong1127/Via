@@ -126,10 +126,31 @@ impl TdxBikeAvailabilitySource {
 impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
     async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
         let source = self.clone();
-        self.snapshot_cache
+        let result = self
+            .snapshot_cache
             .try_get_with((), async move { source.fetch_snapshot().await })
             .await
-            .map_err(|error| (*error).clone())
+            .map_err(|error| (*error).clone());
+        if let Err(error) = &result {
+            tracing::warn!(
+                target: "via_server::providers::bikeshare",
+                provider = "tdx",
+                operation = "bike_availability",
+                outcome = bike_availability_outcome(error),
+                error = %error,
+                "bike availability lookup failed; continuing without bike-share variants"
+            );
+        }
+        result
+    }
+}
+
+fn bike_availability_outcome(error: &BikeAvailabilityError) -> &'static str {
+    match error {
+        BikeAvailabilityError::RejectedPayload => "rejected_payload",
+        BikeAvailabilityError::TemporarilyUnavailable => "unavailable",
+        BikeAvailabilityError::RateLimited => "rate_limited",
+        BikeAvailabilityError::InvalidConfiguration => "invalid_configuration",
     }
 }
 

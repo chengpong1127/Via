@@ -21,6 +21,7 @@ time = { version = "=0.3.41", features = ["formatting", "macros", "parsing", "se
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tower-http = { version = "0.6", features = ["trace", "request-id"] }
 utoipa = { version = "5.5", features = ["time"] }
 utoipa-axum = "0.2"
 language-tags = "0.3"

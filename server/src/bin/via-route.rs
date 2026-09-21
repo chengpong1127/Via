@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    api::{DepartureSetting, PlanningRequest, SelectedPlace, TransportMode},
+    api::{DepartureSetting, PlanningRequest, SelectedPlace, TransportMode, new_request_id},
     config::load_dotenv,
     data::load_network_artifact,
     domain::{
@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("  network={}", network.static_network_revision);
     }
     let result = routing
-        .route(request)
+        .route(request, new_request_id())
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {

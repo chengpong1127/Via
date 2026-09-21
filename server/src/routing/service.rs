@@ -7,7 +7,7 @@ use std::{
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    api::{PlanningRequest, new_request_id},
+    api::PlanningRequest,
     domain::{
         bikeshare::BikeShareNetwork,
         journey::{
@@ -139,30 +139,47 @@ impl RoutingLimits {
 }
 
 impl RoutingService {
-    pub async fn route(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
+    pub async fn route(
+        &self,
+        request: PlanningRequest,
+        request_id: String,
+    ) -> Result<PlanningOutcome, PlanningError> {
         let timeout = self.limits.request_timeout;
         match tokio::time::timeout(timeout, async {
-            let _permit = self
-                .request_slots
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| PlanningError::TemporarilyUnavailable)?;
-            self.plan_multimodal_inner(request).await
+            let _permit = match self.request_slots.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tracing::warn!(
+                        target: "via_server::routing",
+                        "journey planning rejected because routing capacity is exhausted"
+                    );
+                    return Err(PlanningError::TemporarilyUnavailable);
+                }
+            };
+            self.plan_multimodal_inner(request, request_id).await
         })
         .await
         {
             Ok(result) => result,
-            Err(_) => Err(PlanningError::TemporarilyUnavailable),
+            Err(_) => {
+                tracing::warn!(
+                    target: "via_server::routing",
+                    timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+                    "journey planning timed out"
+                );
+                Err(PlanningError::TemporarilyUnavailable)
+            }
         }
     }
 
     async fn plan_multimodal_inner(
         &self,
         request: PlanningRequest,
+        request_id: String,
     ) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
         let metadata = ResultMetadata::new(
-            new_request_id(),
+            request_id,
             request_started_at,
             request
                 .departure_setting
@@ -214,7 +231,7 @@ impl RoutingService {
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(error = %error, "direct walking path could not be skeletonized");
+                    tracing::error!(error = %error, "direct walking path could not be skeletonized");
                     had_global_failure = true;
                 }
             }
@@ -289,7 +306,7 @@ impl RoutingService {
                             ) {
                                 Ok(skeleton) => skeleton,
                                 Err(error) => {
-                                    tracing::warn!(error = %error, "journey candidate could not be skeletonized");
+                                    tracing::error!(error = %error, "journey candidate could not be skeletonized");
                                     had_global_failure = true;
                                     continue;
                                 }
@@ -314,17 +331,43 @@ impl RoutingService {
                         if let super::algorithm::RoutingError::Departure(departure) = &error {
                             had_transient_failure |= departure.is_transient();
                         }
-                        tracing::warn!(error = %error, "routing algorithm failed");
+                        if matches!(
+                            &error,
+                            super::algorithm::RoutingError::Departure(departure)
+                                if departure.is_transient()
+                        ) {
+                            tracing::warn!(error = %error, "routing algorithm dependency failed");
+                        } else {
+                            tracing::error!(error = %error, "routing algorithm failed");
+                        }
                     }
                 }
             }
         }
 
         self.operational_metrics.record_planner_stage(stage_metrics);
+        tracing::debug!(
+            target: "via_server::routing",
+            candidate_discovery_ms = stage_metrics.candidate_discovery_duration_ms,
+            multimodal_search_ms = stage_metrics.multimodal_search_duration_ms,
+            transit_candidate_stops = stage_metrics.transit_candidate_stops,
+            transit_candidate_services = stage_metrics.transit_candidate_services,
+            realtime_lookups = stage_metrics.transit_realtime_lookups,
+            generated_candidates = generated.len(),
+            "journey planning routing stages"
+        );
         if had_global_failure {
+            tracing::error!(
+                target: "via_server::routing",
+                "journey planning failed due to an internal routing error"
+            );
             return Err(PlanningError::Internal);
         }
         if generated.is_empty() && had_transient_failure {
+            tracing::warn!(
+                target: "via_server::routing",
+                "journey planning has no result because a dependency was temporarily unavailable"
+            );
             return Err(PlanningError::TemporarilyUnavailable);
         }
         self.rank_generated(metadata, request, generated)
@@ -375,6 +418,10 @@ impl RoutingService {
         let mut journey_options = Vec::with_capacity(ranked.len());
         for (index, ranked_journey) in ranked.into_iter().enumerate() {
             let Some(mut candidate) = by_key.remove(&ranked_journey.stable_key) else {
+                tracing::error!(
+                    target: "via_server::routing",
+                    "ranking produced a candidate that could not be reconstructed"
+                );
                 return Err(PlanningError::Internal);
             };
             apply_ranked_journey(&mut candidate.option, &ranked_journey);

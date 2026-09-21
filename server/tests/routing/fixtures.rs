@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
 use via_server::{
-    api::PlanningRequest,
+    api::{PlanningRequest, new_request_id},
     data::load_network_artifact,
     domain::{
         bikeshare::BikeShareNetwork,
@@ -173,7 +173,7 @@ async fn route_body_inner(
         bike_augmenter,
         RoutingLimits::default(),
     );
-    serde_json::to_value(service.route(request).await.unwrap()).unwrap()
+    serde_json::to_value(service.route(request, new_request_id()).await.unwrap()).unwrap()
 }
 
 pub(crate) fn option_for_services<'a>(body: &'a Value, services: &[&str]) -> &'a Value {

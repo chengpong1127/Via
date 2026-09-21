@@ -23,5 +23,5 @@ pub use timing::{
 };
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,
-    RoutingOperation, ValhallaConfig, ValhallaProvider,
+    RoutingOperation, TracingOperationalEventObserver, ValhallaConfig, ValhallaProvider,
 };

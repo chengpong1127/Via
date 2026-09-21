@@ -111,6 +111,59 @@ impl OperationalEventObserver for NoopOperationalEventObserver {
     fn observe(&self, _event: OperationalEvent) {}
 }
 
+#[derive(Default)]
+pub struct TracingOperationalEventObserver;
+
+impl OperationalEventObserver for TracingOperationalEventObserver {
+    fn observe(&self, event: OperationalEvent) {
+        let operation = operation_name(event.operation);
+        let outcome = outcome_name(event.outcome);
+        match event.outcome {
+            OperationOutcome::Success => tracing::debug!(
+                target: "via_server::providers::valhalla",
+                provider = event.provider,
+                operation,
+                outcome,
+                latency_ms = event.latency_milliseconds,
+                sources = event.source_count,
+                targets = event.target_count,
+                "street routing provider operation completed"
+            ),
+            _ => tracing::warn!(
+                target: "via_server::providers::valhalla",
+                provider = event.provider,
+                operation,
+                outcome,
+                latency_ms = event.latency_milliseconds,
+                sources = event.source_count,
+                targets = event.target_count,
+                "street routing provider operation failed"
+            ),
+        }
+    }
+}
+
+fn operation_name(operation: RoutingOperation) -> &'static str {
+    match operation {
+        RoutingOperation::Health => "health",
+        RoutingOperation::Matrix => "matrix",
+        RoutingOperation::Route => "route",
+    }
+}
+
+fn outcome_name(outcome: OperationOutcome) -> &'static str {
+    match outcome {
+        OperationOutcome::Success => "success",
+        OperationOutcome::InvalidRequest => "invalid_request",
+        OperationOutcome::Unreachable => "unreachable",
+        OperationOutcome::Timeout => "timeout",
+        OperationOutcome::RateLimited => "rate_limited",
+        OperationOutcome::Unavailable => "unavailable",
+        OperationOutcome::MalformedResponse => "malformed_response",
+        OperationOutcome::ResponseTooLarge => "response_too_large",
+    }
+}
+
 #[derive(Clone)]
 pub struct ValhallaProvider {
     config: ValhallaConfig,

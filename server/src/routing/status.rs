@@ -18,7 +18,14 @@ pub(crate) async fn collect_service_conditions(
     match service_conditions.service_conditions(&service_ids).await {
         Ok(values) => (values, false),
         Err(error) => {
-            tracing::warn!(error = %error, "service-condition lookup failed");
+            tracing::warn!(
+                target: "via_server::providers::tdx",
+                provider = "tdx",
+                operation = "service_conditions",
+                outcome = if error.is_transient() { "unavailable" } else { "rejected" },
+                error = %error,
+                "service-condition lookup failed"
+            );
             (Vec::new(), error.is_transient())
         }
     }

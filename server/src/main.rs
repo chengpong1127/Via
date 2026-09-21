@@ -7,7 +7,8 @@ use via_server::{
     data::{load_bikeshare_artifact, load_network_artifact},
     health::DependencyHealth,
     providers::{
-        TdxBikeAvailabilitySource, TdxServiceConditionProvider, ValhallaConfig, ValhallaProvider,
+        TdxBikeAvailabilitySource, TdxServiceConditionProvider, TracingOperationalEventObserver,
+        ValhallaConfig, ValhallaProvider,
     },
     tdx::{TdxClient, TdxCredentials},
 };
@@ -40,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if environment == "production" && config.base_url.scheme() != "https" {
         return Err("VIA_VALHALLA_URL must use HTTPS in production".into());
     }
-    let provider = Arc::new(ValhallaProvider::new(config)?);
+    let provider = Arc::new(ValhallaProvider::with_observer(
+        config,
+        Arc::new(TracingOperationalEventObserver),
+    )?);
     if !provider.healthy().await {
         return Err("Valhalla is not healthy".into());
     }

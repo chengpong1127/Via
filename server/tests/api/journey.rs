@@ -66,6 +66,10 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let response_request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["api_version"], "1.0");
@@ -81,6 +85,8 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
         body["network_revision"]["schedule_revision"],
         "development-schedule"
     );
+    assert_eq!(body["request_id"], response_request_id);
+    assert!(response_request_id.starts_with("req_"));
     let serialized = body.to_string();
     assert!(!serialized.contains("revision-a"));
     assert!(!serialized.contains("fake"));
@@ -107,11 +113,42 @@ async fn invalid_request_returns_a_redacted_error_envelope() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let response_request_id = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_coordinate");
     assert_eq!(body["error"]["field"], "/origin/coordinate/latitude");
+    assert_eq!(body["request_id"], response_request_id);
+    assert!(response_request_id.starts_with("req_"));
     assert!(!body.to_string().contains("Taipei Main Station"));
+}
+
+#[tokio::test]
+async fn supplied_request_id_is_preserved_across_result_and_response() {
+    let provider = FakeStreetRouter::builder().build();
+    let app = build_test_router(Arc::new(provider)).await.unwrap();
+    let request_id = "req_existing-correlation-id";
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/journey-plans")
+                .header("x-request-id", request_id)
+                .header("content-type", "application/json")
+                .body(Body::from(request_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-request-id"], request_id);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["request_id"], request_id);
 }
 
 #[tokio::test]

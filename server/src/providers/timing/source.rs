@@ -55,6 +55,20 @@ pub trait TransitDepartureSource: Send + Sync {
         }
 
         let realtime = self.realtime_departures_batch(queries.clone()).await;
+        if let Some(realtime) = &realtime {
+            let failed_queries = realtime.iter().filter(|result| result.is_err()).count();
+            if failed_queries > 0 {
+                tracing::warn!(
+                    target: "via_server::providers::timing",
+                    provider = "tdx",
+                    operation = "realtime_departures",
+                    outcome = "fallback",
+                    mode = ?self.mode(),
+                    failed_queries,
+                    "realtime departure lookup failed for some queries; using fallback policy"
+                );
+            }
+        }
         let mut results = vec![None; queries.len()];
         let mut fallback_queries = Vec::new();
         let mut fallback_indices = Vec::new();
