@@ -222,7 +222,7 @@ impl TripBasedRouter {
         states
     }
 
-    fn service_mode_allowed(
+    pub(super) fn service_mode_allowed(
         &self,
         service_id: &TransitServiceId,
         allowed_transit_modes: &[TransitMode],

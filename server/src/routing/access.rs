@@ -28,10 +28,17 @@ pub(crate) async fn discover_access_points(
     origin: RequestCoordinate,
     departure_time: OffsetDateTime,
     constraints: RoutingConstraints,
+    allowed_transit_modes: &[TransitMode],
     limits: &RoutingLimits,
 ) -> Result<Vec<AccessPoint>, StreetRoutingError> {
     let origin = Coordinate::try_new(origin.latitude, origin.longitude)?;
-    let stops = nearby_stops(network, origin, limits.max_transit_access_stops, limits);
+    let stops = nearby_stops(
+        network,
+        origin,
+        allowed_transit_modes,
+        limits.max_transit_access_stops,
+        limits,
+    );
     if stops.is_empty() {
         return Ok(Vec::new());
     }
@@ -82,12 +89,14 @@ pub(crate) async fn discover_egress_points(
     network: &TransitNetwork,
     destination: RequestCoordinate,
     constraints: RoutingConstraints,
+    allowed_transit_modes: &[TransitMode],
     limits: &RoutingLimits,
 ) -> Result<Vec<EgressPoint>, StreetRoutingError> {
     let destination = Coordinate::try_new(destination.latitude, destination.longitude)?;
     let stops = nearby_stops(
         network,
         destination,
+        allowed_transit_modes,
         limits.max_transit_egress_stops,
         limits,
     );
@@ -188,6 +197,7 @@ fn stop_coverage_dominates(
 fn nearby_stops(
     network: &TransitNetwork,
     coordinate: Coordinate,
+    allowed_transit_modes: &[TransitMode],
     limit: usize,
     limits: &RoutingLimits,
 ) -> Vec<(crate::domain::ids::BoardingPointId, Coordinate)> {
@@ -198,6 +208,12 @@ fn nearby_stops(
     let candidates = network
         .stops_within_radius(request_coordinate, limits.max_walking_radius_metres)
         .into_iter()
+        .filter(|stop| {
+            network
+                .modes_at_stop(&stop.id)
+                .iter()
+                .any(|mode| allowed_transit_modes.contains(mode))
+        })
         .filter_map(|stop| {
             Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
                 .ok()
@@ -206,15 +222,10 @@ fn nearby_stops(
         .collect::<Vec<_>>();
     let limit = limit.max(1);
     let mut selected = Vec::with_capacity(limit.min(candidates.len()));
-    for mode in [
-        TransitMode::Bus,
-        TransitMode::Metro,
-        TransitMode::Rail,
-        TransitMode::HighSpeedRail,
-    ] {
+    for mode in allowed_transit_modes {
         if let Some(candidate) = candidates
             .iter()
-            .find(|(stop_id, _)| network.modes_at_stop(stop_id).contains(&mode))
+            .find(|(stop_id, _)| network.modes_at_stop(stop_id).contains(mode))
             && !selected.iter().any(
                 |(stop_id, _): &(crate::domain::ids::BoardingPointId, Coordinate)| {
                     stop_id == &candidate.0
@@ -371,6 +382,12 @@ mod tests {
         let nearby = nearby_stops(
             &network,
             Coordinate::try_new(origin.latitude, origin.longitude).unwrap(),
+            &[
+                TransitMode::Bus,
+                TransitMode::Metro,
+                TransitMode::Rail,
+                TransitMode::HighSpeedRail,
+            ],
             24,
             &limits,
         );
@@ -380,6 +397,73 @@ mod tests {
             nearby
                 .iter()
                 .any(|(stop_id, _)| stop_id.as_str() == "metro-stop")
+        );
+    }
+
+    #[test]
+    fn nearby_stops_filters_access_and_egress_candidates_by_mode_before_selection() {
+        let origin = RequestCoordinate {
+            latitude: 25.0,
+            longitude: 121.5,
+        };
+        let far_away = RequestCoordinate {
+            latitude: 25.1,
+            longitude: 121.5,
+        };
+        let network = TransitNetwork::new(
+            time::Time::from_hms(4, 0, 0).unwrap(),
+            vec![
+                stop_at("bus", origin),
+                stop_at("metro", origin),
+                stop_at("bus-end", far_away),
+                stop_at("metro-end", far_away),
+            ],
+            vec![
+                TransitService::new(
+                    crate::domain::ids::TransitServiceId::new("bus"),
+                    TransitMode::Bus,
+                    "bus",
+                    "bus",
+                    vec![BoardingPointId::new("bus"), BoardingPointId::new("bus-end")],
+                ),
+                TransitService::new(
+                    crate::domain::ids::TransitServiceId::new("metro"),
+                    TransitMode::Metro,
+                    "metro",
+                    "metro",
+                    vec![
+                        BoardingPointId::new("metro"),
+                        BoardingPointId::new("metro-end"),
+                    ],
+                ),
+            ],
+            Vec::new(),
+        );
+        let limits = RoutingLimits::default();
+        let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
+
+        let metro_only = nearby_stops(&network, coordinate, &[TransitMode::Metro], 8, &limits);
+        assert_eq!(
+            metro_only
+                .iter()
+                .map(|(stop_id, _)| stop_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["metro"]
+        );
+
+        let bus_and_metro = nearby_stops(
+            &network,
+            coordinate,
+            &[TransitMode::Bus, TransitMode::Metro],
+            8,
+            &limits,
+        );
+        assert_eq!(
+            bus_and_metro
+                .iter()
+                .map(|(stop_id, _)| stop_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bus", "metro"]
         );
     }
 }

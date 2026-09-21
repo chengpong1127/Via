@@ -54,6 +54,14 @@ impl TransferResolver for FakeTransferResolver {
 }
 
 fn network(second_start: &str) -> Arc<TransitNetwork> {
+    network_with_modes(second_start, TransitMode::Bus, TransitMode::Bus)
+}
+
+fn network_with_modes(
+    second_start: &str,
+    first_mode: TransitMode,
+    second_mode: TransitMode,
+) -> Arc<TransitNetwork> {
     let ids = ["a", "b", "x", "c", "d"];
     let stops = ids
         .into_iter()
@@ -70,14 +78,14 @@ fn network(second_start: &str) -> Arc<TransitNetwork> {
         .collect();
     let second_pattern = [second_start, "d"];
     let services = [
-        ("first", &["a", "b", "x"][..]),
-        ("second", &second_pattern[..]),
+        ("first", &["a", "b", "x"][..], first_mode),
+        ("second", &second_pattern[..], second_mode),
     ]
     .into_iter()
-    .map(|(id, pattern)| {
+    .map(|(id, pattern, mode)| {
         TransitService::new(
             TransitServiceId::new(id),
-            TransitMode::Bus,
+            mode,
             id,
             "destination",
             pattern
@@ -176,6 +184,78 @@ async fn batched_fake_transfer_reaches_the_next_transit_service() {
             .map(|need| need.source.as_str())
             .collect::<Vec<_>>(),
         vec!["b", "x"]
+    );
+}
+
+#[tokio::test]
+async fn walking_transfer_targets_are_filtered_by_allowed_modes() {
+    let network = network_with_modes("c", TransitMode::Metro, TransitMode::Bus);
+    let transfers = Arc::new(FakeTransferResolver {
+        allow_b_to_c: true,
+        ..Default::default()
+    });
+    let router = TripBasedRouter::new(
+        network.clone(),
+        Arc::new(ScheduleDepartureResolver::new(network)),
+        transfers,
+    );
+    let departure = datetime!(2026-08-31 10:00 +08:00);
+    let query = AlgorithmQuery::new(
+        vec![AccessPoint::new(
+            BoardingPointId::new("a"),
+            departure,
+            departure,
+            0,
+            0,
+        )],
+        vec![EgressPoint::new(BoardingPointId::new("d"), 0, 0)],
+        departure,
+    )
+    .with_limits(1, 16, 2_000, 3, 4 * 3600)
+    .with_allowed_transit_modes([TransitMode::Metro]);
+
+    assert!(router.route(query.clone()).await.unwrap().is_empty());
+
+    let candidates = router
+        .route(query.with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro]))
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].transfer_count, 1);
+}
+
+#[tokio::test]
+async fn same_stop_interchange_keeps_allowed_mode_alternatives() {
+    let network = network_with_modes("x", TransitMode::Metro, TransitMode::Metro);
+    let router = TripBasedRouter::new(
+        network.clone(),
+        Arc::new(ScheduleDepartureResolver::new(network)),
+        Arc::new(FakeTransferResolver::default()),
+    );
+    let departure = datetime!(2026-08-31 10:00 +08:00);
+    let query = AlgorithmQuery::new(
+        vec![AccessPoint::new(
+            BoardingPointId::new("a"),
+            departure,
+            departure,
+            0,
+            0,
+        )],
+        vec![EgressPoint::new(BoardingPointId::new("d"), 0, 0)],
+        departure,
+    )
+    .with_limits(1, 16, 2_000, 3, 4 * 3600)
+    .with_allowed_transit_modes([TransitMode::Metro]);
+    let candidates = router.route(query).await.unwrap();
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].transfer_count, 1);
+    assert_eq!(
+        candidates[0].transit_service_sequence(),
+        vec![
+            TransitServiceId::new("first"),
+            TransitServiceId::new("second"),
+        ]
     );
 }
 

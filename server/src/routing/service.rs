@@ -237,7 +237,8 @@ impl RoutingService {
             }
         }
 
-        if !request.allowed_transit_modes().is_empty() {
+        let allowed_transit_modes = request.allowed_transit_modes();
+        if !allowed_transit_modes.is_empty() {
             let access_started = Instant::now();
             let access = access::discover_access_points(
                 self.street_routing.as_ref(),
@@ -245,6 +246,7 @@ impl RoutingService {
                 request.origin.coordinate,
                 context.search_start,
                 context.access_constraints(),
+                &allowed_transit_modes,
                 &self.limits,
             )
             .await;
@@ -253,6 +255,7 @@ impl RoutingService {
                 &self.transit_network,
                 request.destination.coordinate,
                 context.direct_constraints(),
+                &allowed_transit_modes,
                 &self.limits,
             )
             .await;
@@ -273,7 +276,7 @@ impl RoutingService {
                 let query = AlgorithmQuery {
                     origin_access: access,
                     destination_egress: egress,
-                    allowed_transit_modes: request.allowed_transit_modes(),
+                    allowed_transit_modes,
                     departure_time: context.search_start,
                     latest_arrival: context.latest_arrival,
                     max_transfers: self.limits.max_transfer_count as usize,

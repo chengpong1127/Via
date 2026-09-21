@@ -14,6 +14,7 @@ use super::{
 use crate::domain::ids::{EffectiveTripId, TransitServiceId};
 use crate::domain::{
     ids::BoardingPointId,
+    transit::TransitMode,
     transit_timing::{DepartureError, EffectiveTrip},
 };
 use async_trait::async_trait;
@@ -113,8 +114,12 @@ impl RoutingAlgorithm for TripBasedRouter {
                 break;
             }
             next_needs.extend(
-                self.expand_transfers(transfer_seeds, &mut diagnostics)
-                    .await,
+                self.expand_transfers(
+                    transfer_seeds,
+                    &query.allowed_transit_modes,
+                    &mut diagnostics,
+                )
+                .await,
             );
             needs = pareto_boarding_needs(next_needs);
         }
@@ -150,8 +155,12 @@ impl TripBasedRouter {
             needs.push(need);
         }
         needs.extend(
-            self.expand_transfers(transfer_seeds, &mut SearchDiagnostics::default())
-                .await,
+            self.expand_transfers(
+                transfer_seeds,
+                &query.allowed_transit_modes,
+                &mut SearchDiagnostics::default(),
+            )
+            .await,
         );
         pareto_boarding_needs(needs)
     }
@@ -159,6 +168,7 @@ impl TripBasedRouter {
     async fn expand_transfers(
         &self,
         seeds: Vec<TransferSeed>,
+        allowed_transit_modes: &[TransitMode],
         diagnostics: &mut SearchDiagnostics,
     ) -> Vec<BoardingNeed> {
         let mut requests = Vec::new();
@@ -201,6 +211,14 @@ impl TripBasedRouter {
                 continue;
             };
             let TransferTarget::BoardingPoint(target) = transfer.target();
+            if !self
+                .network
+                .modes_at_stop(target)
+                .iter()
+                .any(|mode| allowed_transit_modes.contains(mode))
+            {
+                continue;
+            }
             for seed in seeds {
                 if transfer.source() != &seed.stop_id || target == &seed.stop_id {
                     continue;
@@ -289,6 +307,7 @@ impl TripBasedRouter {
                     .iter()
                     .any(|service_id| {
                         service_id != &state.trip.service_id
+                            && self.service_mode_allowed(service_id, &query.allowed_transit_modes)
                             && self
                                 .index
                                 .stop_index(service_id, &stop_time.stop_id)
