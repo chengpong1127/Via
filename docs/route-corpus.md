@@ -1,7 +1,7 @@
 # Via route corpus
 
-This is the small deterministic corpus used when changing the Trip-Based
-search or its immutable indexes. Static fixture assertions use the existing
+This is the small deterministic corpus used when changing destination
+reachability, timing snapshots, or temporal search. Static fixture assertions use the existing
 `server/tests/routing/fixtures.rs` network and schedules; live TDX runs should
 assert route structure rather than exact arrival times.
 
@@ -11,8 +11,8 @@ assert route structure rather than exact arrival times.
 | Bus-only | `simple_bus_uses_the_earliest_realtime_departure` | one bus leg, fresh realtime evidence |
 | Bus → MRT | `bus_to_mrt_transfer_keeps_the_bus_then_metro_order` | service sequence and one transfer |
 | MRT → Bus | `mrt_to_bus_transfer_keeps_the_metro_then_bus_order` | service sequence and one transfer |
-| Bus → Bus, same stop | `same_stop_transfer_uses_default_transfer_seconds` | default transfer time is required |
-| Bus → Bus, walking | `walking_transfer_shortcut_expands_a_second_service` | walking transfer is retained |
+| MRT → MRT, same stop | `mrt_to_mrt_transfer_reconstructs_one_transfer` | default transfer time is required |
+| Bus → MRT, walking | `bus_to_mrt_transfer_keeps_the_bus_then_metro_order` | walking transfer is retained |
 | Multi-transfer | `three_transit_services_reconstruct_with_two_transfers` | ordered three-service sequence |
 | TRA → MRT | `train_can_transfer_to_local_mrt` | rail then metro when fixture data supports it |
 
@@ -60,7 +60,7 @@ time cargo run --manifest-path server/Cargo.toml --quiet --bin via-route -- \
 ```
 
 Compare median and p95 wall time, route existence, service sequence, transfer
-count, walking seconds, and the Trip-Based debug diagnostics. The default
+count, walking seconds, and the reachability/snapshot/temporal debug diagnostics. The default
 `max_departures_per_query = 3` remains the control value; a 1/2/3 departure
 comparison has not justified changing it yet.
 

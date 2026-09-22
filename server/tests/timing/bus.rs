@@ -1,9 +1,6 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use crate::support::tdx::spawn_tdx_fixture;
@@ -19,7 +16,7 @@ use via_server::{
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
-        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
+        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{BusDepartureSource, DepartureDispatcher, TransitDepartureSource},
     tdx::TdxClient,
@@ -102,6 +99,37 @@ async fn scoped_fixture_client(
     (spawn_tdx_fixture(app).await, stats)
 }
 
+async fn rate_limit_after_first_client(payload: Value) -> (Arc<TdxClient>, FixtureStats) {
+    let stats = FixtureStats {
+        calls: Arc::new(AtomicUsize::new(0)),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let calls = stats.calls.clone();
+    let requests = stats.requests.clone();
+    let app = Router::new().fallback(any(move |method: Method, uri: Uri| {
+        let calls = calls.clone();
+        let requests = requests.clone();
+        let payload = payload.clone();
+        async move {
+            if method == Method::POST {
+                return (
+                    StatusCode::OK,
+                    Json(json!({"access_token": "fixture-token", "expires_in": 300})),
+                )
+                    .into_response();
+            }
+            let call = calls.fetch_add(1, Ordering::Relaxed);
+            requests.lock().unwrap().push(uri.to_string());
+            if call == 0 {
+                (StatusCode::OK, Json(payload)).into_response()
+            } else {
+                StatusCode::TOO_MANY_REQUESTS.into_response()
+            }
+        }
+    }));
+    (spawn_tdx_fixture(app).await, stats)
+}
+
 fn recent_update() -> String {
     (OffsetDateTime::now_utc() - Duration::seconds(30))
         .format(&Rfc3339)
@@ -173,6 +201,48 @@ fn network_for_with_scopes(
         trips,
     )
     .with_revisions("static", "schedule")
+}
+
+fn network_for_unique_stops(count: usize) -> (TransitNetwork, Vec<DepartureQuery>) {
+    let mut services = Vec::with_capacity(count);
+    let mut trips = Vec::with_capacity(count);
+    let mut queries = Vec::with_capacity(count);
+    for index in 0..count {
+        let service_id = TransitServiceId::new(format!("service-{index}"));
+        let board = BoardingPointId::new(format!("stop-{index}"));
+        let downstream = BoardingPointId::new(format!("downstream-{index}"));
+        services.push(
+            TransitService::new(
+                service_id.clone(),
+                TransitMode::Bus,
+                "Bus",
+                "Downstream",
+                vec![board.clone(), downstream],
+            )
+            .with_timing_source("bus_n1")
+            .with_realtime_scope("Taipei"),
+        );
+        trips.push(ScheduledTrip::weekdays(
+            ScheduledTripId::new(format!("run-{index}")),
+            service_id.clone(),
+            vec![time::Weekday::Monday],
+            vec![
+                ScheduledStopTime::new(10 * 3600, 10 * 3600),
+                ScheduledStopTime::new(10 * 3600 + 600, 10 * 3600 + 600),
+            ],
+        ));
+        queries.push(DepartureQuery::new(service_id, board, NOW, 1));
+    }
+    (
+        TransitNetwork::new(
+            time::Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            services,
+            trips,
+        )
+        .with_revisions("static", "schedule"),
+        queries,
+    )
 }
 
 fn query(service_id: &str, board_stop_id: &str, after: OffsetDateTime) -> DepartureQuery {
@@ -397,7 +467,7 @@ async fn malformed_or_stale_realtime_falls_back_safely() {
 }
 
 #[tokio::test]
-async fn bus_needs_are_batched_per_realtime_scope_and_capped_at_64_pairs() {
+async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
     let service_ids = (0..97)
         .map(|index| TransitServiceId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
@@ -436,23 +506,22 @@ async fn bus_needs_are_batched_per_realtime_scope_and_capped_at_64_pairs() {
             .iter()
             .all(|result| result.as_ref().is_ok_and(|trips| !trips.is_empty()))
     );
-    assert_eq!(stats.calls.load(Ordering::Relaxed), 3);
+    assert_eq!(stats.calls.load(Ordering::Relaxed), 2);
     let requests = stats.requests.lock().unwrap();
-    let mut batch_sizes = HashMap::<&str, Vec<usize>>::new();
+    let mut scopes_seen = Vec::new();
     for request in requests.iter() {
-        let size = request.matches("service-").count();
+        assert!(request.contains("StopUID"));
+        assert!(!request.contains("SubRouteUID"));
+        assert_eq!(request.matches("stop-x").count(), 1);
         let scope = if request.contains("/NewTaipei?") {
             "NewTaipei"
         } else {
             "Taipei"
         };
-        batch_sizes.entry(scope).or_default().push(size);
+        scopes_seen.push(scope);
     }
-    batch_sizes
-        .values_mut()
-        .for_each(|sizes| sizes.sort_unstable());
-    assert_eq!(batch_sizes.get("Taipei"), Some(&vec![1, 64]));
-    assert_eq!(batch_sizes.get("NewTaipei"), Some(&vec![32]));
+    scopes_seen.sort_unstable();
+    assert_eq!(scopes_seen, vec!["NewTaipei", "Taipei"]);
 }
 
 #[tokio::test]
@@ -541,4 +610,66 @@ async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].timing_basis, TimingBasis::Schedule);
     assert_eq!(result[0].timing_reliability, TimingReliability::Fallback);
+}
+
+#[tokio::test]
+async fn first_rate_limit_stops_remaining_chunks_for_the_scope() {
+    let (network, queries) = network_for_unique_stops(201);
+    let (tdx, stats) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
+    let resolver = bus_dispatcher(Arc::new(network), tdx);
+
+    let results = resolver.next_departures_batch(queries).await;
+
+    assert_eq!(stats.calls.load(Ordering::Relaxed), 1);
+    assert!(results.iter().all(|result| {
+        result.as_ref().is_ok_and(|trips| {
+            trips.len() == 1 && trips[0].timing_reliability == TimingReliability::Fallback
+        })
+    }));
+}
+
+#[tokio::test]
+async fn later_rate_limit_preserves_successful_earlier_chunks() {
+    let (network, queries) = network_for_unique_stops(201);
+    let update = recent_update();
+    let payload = Value::Array(
+        (0..201)
+            .map(|index| {
+                arrival(
+                    &format!("service-{index}"),
+                    &format!("stop-{index}"),
+                    60,
+                    &update,
+                )
+            })
+            .collect(),
+    );
+    let (tdx, stats) = rate_limit_after_first_client(payload).await;
+    let resolver = bus_dispatcher(Arc::new(network), tdx);
+
+    let results = resolver.next_departures_batch(queries).await;
+
+    assert_eq!(stats.calls.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|trips| trips[0].timing_reliability == TimingReliability::Reliable)
+            })
+            .count(),
+        100
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|trips| trips[0].timing_reliability == TimingReliability::Fallback)
+            })
+            .count(),
+        101
+    );
 }

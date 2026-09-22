@@ -20,7 +20,7 @@ use via_server::{
         },
     },
     routing::{
-        BikeAugmentationPolicy, BikeJourneyAugmenter, RoutingLimits, RoutingService, TransferIndex,
+        BikeAugmentationPolicy, BikeJourneyAugmenter, RoutingLimits, RoutingService,
         transfers::TransferShortcutIndex,
     },
     street::{Coordinate, FakeStreetRouter},

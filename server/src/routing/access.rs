@@ -1,4 +1,4 @@
-//! Algorithm-neutral street access and egress discovery.
+//! Mode-aware street access and egress discovery.
 
 use time::OffsetDateTime;
 
@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    algorithm::{AccessPoint, EgressPoint},
+    model::{AccessPoint, EgressPoint},
     service::RoutingLimits,
 };
 

@@ -6,7 +6,7 @@ use via_server::{
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         transit::TransitMode,
-        transit_timing::{DepartureQuery, DepartureResolver},
+        transit_timing::DepartureQuery,
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };

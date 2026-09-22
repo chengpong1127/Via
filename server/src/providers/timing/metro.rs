@@ -114,6 +114,7 @@ impl MetroDepartureSource {
         board_stop_id: &BoardingPointId,
         service_day_start: OffsetDateTime,
         after: OffsetDateTime,
+        before: Option<OffsetDateTime>,
         limit: usize,
     ) -> Vec<(OffsetDateTime, TimingBasis)> {
         let Some(station_timing) = timing
@@ -125,6 +126,12 @@ impl MetroDepartureSource {
         };
         let after_seconds =
             u32::try_from((after - service_day_start).whole_seconds().max(0)).unwrap_or(u32::MAX);
+        let before_seconds = before
+            .map(|before| {
+                u32::try_from((before - service_day_start).whole_seconds().max(0))
+                    .unwrap_or(u32::MAX)
+            })
+            .unwrap_or(u32::MAX);
         let mut candidates = station_timing
             .departures_seconds
             .iter()
@@ -139,7 +146,9 @@ impl MetroDepartureSource {
                 station_timing
                     .frequencies
                     .iter()
-                    .flat_map(|frequency| expand_frequency(frequency, after_seconds, limit))
+                    .flat_map(|frequency| {
+                        expand_frequency(frequency, after_seconds, before_seconds, limit)
+                    })
                     .map(|seconds| {
                         (
                             service_day_start + TimeDuration::seconds(i64::from(seconds)),
@@ -147,7 +156,9 @@ impl MetroDepartureSource {
                         )
                     }),
             )
-            .filter(|(departure_at, _)| *departure_at >= after)
+            .filter(|(departure_at, _)| {
+                *departure_at >= after && before.is_none_or(|before| *departure_at <= before)
+            })
             .collect::<Vec<_>>();
         candidates.sort_by(|left, right| {
             left.0
@@ -166,12 +177,12 @@ impl MetroDepartureSource {
         departure_at: OffsetDateTime,
         metadata: MetroTimingMetadata,
         board_stop_id: &BoardingPointId,
+        board_index: usize,
     ) -> Option<EffectiveTrip> {
         let service = self.network.service(service_id)?;
-        let board_index = service
-            .pattern
-            .iter()
-            .position(|stop_id| stop_id == board_stop_id)?;
+        if service.pattern.get(board_index) != Some(board_stop_id) {
+            return None;
+        }
         if (!timing.pattern.is_empty() && timing.pattern != service.pattern)
             || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
             || timing.inter_station_travel_seconds.contains(&0)
@@ -245,6 +256,9 @@ impl MetroDepartureSource {
         else {
             return Vec::new();
         };
+        let Ok(board_index) = query.resolve_board_index(&self.network) else {
+            return Vec::new();
+        };
         let mut departures = observations
             .iter()
             .filter(|observation| {
@@ -252,6 +266,9 @@ impl MetroDepartureSource {
                     && observation.station_id == realtime_match.station_id
                     && observation.destination_station_id == realtime_match.destination_station_id
                     && observation.departure_at >= query.after
+                    && query
+                        .before
+                        .is_none_or(|before| observation.departure_at <= before)
             })
             .filter_map(|observation| {
                 self.effective_trip(
@@ -264,18 +281,10 @@ impl MetroDepartureSource {
                         observed_at: Some(observation.observed_at),
                     },
                     &query.board_stop_id,
+                    board_index,
                 )
             })
             .collect::<Vec<_>>();
-        let board_index = self.network.service(&query.service_id).and_then(|service| {
-            service
-                .pattern
-                .iter()
-                .position(|stop_id| stop_id == &query.board_stop_id)
-        });
-        let Some(board_index) = board_index else {
-            return Vec::new();
-        };
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at
@@ -402,17 +411,39 @@ impl MetroDepartureSource {
         else {
             return Ok(Vec::new());
         };
-        let service_day_start = self
-            .network
-            .service_day_start(self.network.service_day(query.after));
-        Ok(self
-            .candidates(
+        let board_index = query.resolve_board_index(&self.network)?;
+        let first_service_day = self.network.service_day(query.after);
+        let last_service_day = query
+            .before
+            .map(|before| self.network.service_day(before))
+            .unwrap_or(first_service_day);
+        let mut service_day = first_service_day;
+        let mut candidates = Vec::new();
+        loop {
+            candidates.extend(self.candidates(
                 timing,
                 &query.board_stop_id,
-                service_day_start,
+                self.network.service_day_start(service_day),
                 query.after,
+                query.before,
                 query.limit,
-            )
+            ));
+            if service_day >= last_service_day {
+                break;
+            }
+            let Some(next_day) = service_day.next_day() else {
+                break;
+            };
+            service_day = next_day;
+        }
+        candidates.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(timing_basis_order(left.1).cmp(&timing_basis_order(right.1)))
+        });
+        candidates.dedup_by(|left, right| left.0 == right.0);
+        candidates.truncate(query.limit);
+        Ok(candidates
             .into_iter()
             .filter_map(|(departure_at, timing_basis)| {
                 self.effective_trip(
@@ -425,6 +456,7 @@ impl MetroDepartureSource {
                         observed_at: None,
                     },
                     &query.board_stop_id,
+                    board_index,
                 )
             })
             .collect())
@@ -493,7 +525,12 @@ fn escape_odata_literal(value: &str) -> String {
     value.replace('\'', "''")
 }
 
-fn expand_frequency(frequency: &MetroFrequency, after_seconds: u32, limit: usize) -> Vec<u32> {
+fn expand_frequency(
+    frequency: &MetroFrequency,
+    after_seconds: u32,
+    before_seconds: u32,
+    limit: usize,
+) -> Vec<u32> {
     if frequency.headway_seconds == 0 || frequency.start_seconds > frequency.end_seconds {
         return Vec::new();
     }
@@ -508,7 +545,8 @@ fn expand_frequency(frequency: &MetroFrequency, after_seconds: u32, limit: usize
             .start_seconds
             .saturating_add(steps.saturating_mul(frequency.headway_seconds))
     };
-    if seconds > frequency.end_seconds {
+    let end_seconds = frequency.end_seconds.min(before_seconds);
+    if seconds > end_seconds {
         return result;
     }
     loop {
@@ -519,7 +557,7 @@ fn expand_frequency(frequency: &MetroFrequency, after_seconds: u32, limit: usize
         let Some(next) = seconds.checked_add(frequency.headway_seconds) else {
             break;
         };
-        if next > frequency.end_seconds {
+        if next > end_seconds {
             break;
         }
         seconds = next;

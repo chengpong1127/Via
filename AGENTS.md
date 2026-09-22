@@ -5,20 +5,22 @@
 The server's canonical planning flow is:
 
 ```text
-street access/egress → RoutingAlgorithm → TripBasedRouter
-  → reconstruct → rank
+street access/egress → TransitPlanner
+  → DestinationReachability → TimingSnapshot → temporal search
+  → YouBike augmentation → reconstruct → rank
 ```
 
-`RoutingAlgorithm` is the algorithm-neutral routing boundary. `TripBasedRouter`
-owns its Trip-Based index and consumes `DepartureResolver` plus
-`TransferResolver`; same-stop interchange stays in TripBased, while the resolver
-handles movement between distinct BoardingPoints. The current resolver uses
-`TransferShortcutIndex` for static walking. Reconstruction consumes
-`JourneyCandidate` directly and
-there is no `RouteGraph` in the canonical routing path. Keep the dependency
+`TransitPlanner` is the single concrete transit planner. Phase 1 performs a
+backward topology-only search, Phase 2A loads one request-local timing snapshot,
+and Phase 2B performs synchronous forward search without provider I/O. The
+static `TransferShortcutIndex` exposes directional `transfers_from` and
+`transfers_to` lookups. Bus realtime is fetched by unique stop and scope, then
+filtered locally. Reconstruction consumes `JourneyCandidate` directly and there
+is no `RouteGraph` in the canonical routing path. Keep the dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
 interfaces. Do not reintroduce the removed `planner`, `normalization`, or
-`routing/engine` modules, or a `JourneyPlanningService` wrapper.
+`routing/engine` modules, a generic routing-algorithm boundary, Trip-Based
+routing, async transfer resolvers, or a `JourneyPlanningService` wrapper.
 
 iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `Resources`, `Services`). Production planning flows through

@@ -100,54 +100,88 @@ fn reconstruction_modules_have_explicit_responsibilities() {
 }
 
 #[test]
-fn canonical_domain_types_and_algorithm_boundary_have_single_definitions() {
+fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions() {
     let journey = source("src/domain/journey.rs");
     assert_eq!(journey.matches("enum JourneyMode").count(), 1);
     assert!(journey.contains("pub enum JourneyMode"));
     assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
-    assert!(source("src/routing/algorithm.rs").contains("pub trait RoutingAlgorithm"));
+    let planner = source("src/routing/planner.rs");
+    assert!(planner.contains("pub struct TransitPlanner"));
+    assert!(planner.contains("DestinationReachability::build"));
+    assert!(planner.contains("load_snapshot"));
+    assert!(planner.contains("temporal::search"));
     assert!(
-        source("src/routing/trip_based/search.rs")
-            .contains("impl RoutingAlgorithm for TripBasedRouter")
+        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/routing/algorithm.rs")
+            .exists()
+    );
+    assert!(
+        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/routing/trip_based")
+            .exists()
     );
 }
 
 #[test]
-fn trip_based_search_uses_the_generic_transfer_boundary() {
-    let search = source("src/routing/trip_based/search.rs");
-    assert!(search.contains("transfer_resolver.expand_batch"));
-    for forbidden in [
-        "TransferShortcutIndex",
-        "transfers_from",
-        "WalkingTransfer",
-        "BikeShare",
-        "YouBike",
-        "Valhalla",
-    ] {
+fn static_transfer_index_supports_both_search_directions_without_a_resolver() {
+    let transfers = source("src/routing/transfers/index.rs");
+    assert!(transfers.contains("by_from"));
+    assert!(transfers.contains("by_to"));
+    assert!(transfers.contains("transfers_from"));
+    assert!(transfers.contains("transfers_to"));
+    let routing = source_tree("src/routing");
+    for obsolete in ["TransferResolver", "TransferNeed", "ResolvedTransfer"] {
         assert!(
-            !search.contains(forbidden),
-            "Trip-Based search contains {forbidden}"
+            !routing.contains(obsolete),
+            "obsolete transfer type remains: {obsolete}"
         );
     }
 }
 
 #[test]
-fn trip_based_search_is_transport_timing_neutral() {
-    let trip_based = source_tree("src/routing/trip_based");
+fn structural_reachability_has_no_timing_dependency() {
+    let reachability = source("src/routing/reachability.rs");
     for forbidden in [
-        "BusDepartureSource",
-        "MetroDepartureSource",
-        "TraDepartureSource",
-        "ThsrDepartureSource",
-        "ServiceConditionProvider",
+        "DepartureQuery",
+        "EffectiveTrip",
+        "TimingSnapshot",
+        "OffsetDateTime",
+        "scheduled_trip",
         "TDX",
-        "realtime_scope",
+        "reqwest",
     ] {
         assert!(
-            !trip_based.contains(forbidden),
-            "Trip-Based routing contains transport timing detail: {forbidden}"
+            !reachability.contains(forbidden),
+            "structural reachability contains timing detail: {forbidden}"
         );
     }
+}
+
+#[test]
+fn temporal_search_is_local_and_provider_free() {
+    let temporal = source("src/routing/temporal.rs");
+    assert!(temporal.contains("&TimingSnapshot"));
+    assert!(temporal.contains("reachability.remaining_legs"));
+    for forbidden in [
+        "TdxClient",
+        "reqwest",
+        "get_json",
+        ".await",
+        "crate::providers",
+    ] {
+        assert!(
+            !temporal.contains(forbidden),
+            "temporal search contains I/O: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn bus_realtime_requests_are_stop_oriented() {
+    let bus = source("src/providers/timing/bus.rs");
+    assert!(bus.contains("MAX_REALTIME_STOPS_PER_REQUEST"));
+    assert!(bus.contains("odata_in_filter(\"StopUID\""));
+    assert!(!bus.contains("odata_in_filter(\"SubRouteUID\""));
 }
 
 #[test]
@@ -244,7 +278,7 @@ fn routing_has_no_legacy_transit_pipeline() {
             "legacy routing symbol remains: {legacy}"
         );
     }
-    assert!(service.contains("self.routing_algorithm.route(query).await"));
+    assert!(service.contains("self.transit_planner.plan_with_stats(query).await"));
     assert!(service.contains("discover_access_points"));
     assert!(service.contains("discover_egress_points"));
 }

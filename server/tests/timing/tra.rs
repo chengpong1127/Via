@@ -19,7 +19,7 @@ use via_server::{
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
         transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
-        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
+        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, TraDepartureSource, TransitDepartureSource},
     tdx::TdxClient,

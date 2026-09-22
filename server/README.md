@@ -43,12 +43,17 @@ Configuration:
 
 ```text
 PlanningRequest → RoutingService → street access / egress
-→ RoutingAlgorithm → TripBasedRouter → reconstruct → rank → JourneyOption[]
+→ TransitPlanner
+→ DestinationReachability → TimingSnapshot → temporal search
+→ BikeJourneyAugmenter → reconstruct → rank → JourneyOption[]
 ```
 
-`RoutingAlgorithm`, `StreetRouter`, and `DepartureResolver` are the intentional
-provider-neutral seams. `TripBasedRouter` consumes realtime-first `EffectiveTrip`
-values and static walking `TransferShortcutIndex` alternatives.
+`RoutingService` owns the concrete `TransitPlanner`. The planner first finds
+structurally useful boarding positions without reading time data, then loads all
+request-local timing through `TimingSnapshotLoader`, and finally searches using
+only the immutable network, snapshot, and static transfer index. Bus realtime
+requests are deduplicated by stop and grouped by TDX city scope; temporal search
+never performs network I/O.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
 transfers. Requests select fine-grained transport systems through

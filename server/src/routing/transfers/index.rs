@@ -24,15 +24,11 @@ impl TransferShortcut {
     }
 }
 
-/// Lookup seam used by the static walking resolver.
-pub trait TransferIndex: Send + Sync {
-    fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut];
-}
-
 /// The in-memory index of static public-transit interchange edges.
 #[derive(Clone, Debug, Default)]
 pub struct TransferShortcutIndex {
     by_from: HashMap<BoardingPointId, Vec<TransferShortcut>>,
+    by_to: HashMap<BoardingPointId, Vec<TransferShortcut>>,
 }
 
 impl TransferShortcutIndex {
@@ -52,9 +48,13 @@ impl TransferShortcutIndex {
     }
 
     fn insert_unsorted(&mut self, shortcut: TransferShortcut) {
-        let alternatives = self.by_from.entry(shortcut.from.clone()).or_default();
-        if !alternatives.contains(&shortcut) {
-            alternatives.push(shortcut);
+        let alternatives_from = self.by_from.entry(shortcut.from.clone()).or_default();
+        if !alternatives_from.contains(&shortcut) {
+            alternatives_from.push(shortcut.clone());
+            self.by_to
+                .entry(shortcut.to.clone())
+                .or_default()
+                .push(shortcut);
         }
     }
 
@@ -66,6 +66,14 @@ impl TransferShortcutIndex {
         self.by_from.values().all(Vec::is_empty)
     }
 
+    pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
+        self.by_from.get(stop).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn transfers_to(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
+        self.by_to.get(stop).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     fn sort(&mut self) {
         for alternatives in self.by_from.values_mut() {
             alternatives.sort_by(|left, right| {
@@ -75,12 +83,14 @@ impl TransferShortcutIndex {
                     .then(left.duration_seconds.cmp(&right.duration_seconds))
             });
         }
-    }
-}
-
-impl TransferIndex for TransferShortcutIndex {
-    fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
-        self.by_from.get(stop).map(Vec::as_slice).unwrap_or(&[])
+        for alternatives in self.by_to.values_mut() {
+            alternatives.sort_by(|left, right| {
+                left.from
+                    .as_str()
+                    .cmp(right.from.as_str())
+                    .then(left.duration_seconds.cmp(&right.duration_seconds))
+            });
+        }
     }
 }
 
@@ -121,6 +131,10 @@ mod tests {
         assert_eq!(
             index.transfers_from(&BoardingPointId::new("a"))[0].duration_seconds,
             90
+        );
+        assert_eq!(
+            index.transfers_to(&BoardingPointId::new("b"))[0].from,
+            BoardingPointId::new("a")
         );
     }
 }

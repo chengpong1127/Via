@@ -19,7 +19,7 @@ use via_server::{
             MetroStationTiming, MetroTiming, TransitMode, TransitNetwork, TransitService,
             TransitStop,
         },
-        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
+        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
     tdx::TdxClient,

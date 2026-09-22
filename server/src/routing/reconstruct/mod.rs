@@ -1,4 +1,4 @@
-//! Reconstruct algorithm-neutral candidates into API journey options.
+//! Reconstruct transit-planner candidates into API journey options.
 
 mod evidence;
 mod geometry;

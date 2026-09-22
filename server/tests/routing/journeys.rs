@@ -51,7 +51,7 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
         FixtureRealtime::bus(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        request(origin, destination, &["bus"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-main"]);
@@ -82,7 +82,7 @@ async fn static_bus_schedule_is_used_when_realtime_is_unavailable() {
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
         FixtureRealtime::empty(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        request(origin, destination, &["bus"]),
     )
     .await;
     let option = option_for_services(&body, &["fixture-bus-main"]);
@@ -100,6 +100,27 @@ async fn static_bus_schedule_is_used_when_realtime_is_unavailable() {
         "2026-08-31T10:01:00+08:00"
     );
     assert_eq!(option["live_status_summary"]["state"], "not_applicable");
+}
+
+#[tokio::test]
+async fn arrive_by_rejects_results_after_the_requested_arrival() {
+    let network = network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M2-RED");
+    let mut body = request(origin, destination, &["metro"]);
+    body["departure_setting"] = json!({
+        "type": "arrive_by",
+        "time": "2026-08-31T10:10:00+08:00"
+    });
+    let body = route_body(
+        transit_street(&network, origin, "F-M1", destination, "F-M2-RED"),
+        FixtureRealtime::empty(),
+        body,
+    )
+    .await;
+    let option = option_for_services(&body, &["fixture-mrt-red"]);
+
+    assert!(option["arrival_time"].as_str().unwrap() <= "2026-08-31T10:10:00+08:00");
 }
 
 #[tokio::test]

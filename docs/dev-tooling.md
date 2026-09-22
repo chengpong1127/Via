@@ -157,8 +157,9 @@ routing.
 
 ## Route debugging
 
-The fixture route uses the actual `RoutingService → RoutingAlgorithm →
-TripBasedRouter → reconstruct → rank` path with deterministic fixture street
+The fixture route uses the actual `RoutingService → TransitPlanner →
+DestinationReachability → TimingSnapshot → temporal search → reconstruct → rank`
+path with deterministic fixture street
 and deterministic service-condition providers:
 
 ```bash

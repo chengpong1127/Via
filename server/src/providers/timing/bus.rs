@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
+    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -8,7 +9,6 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::bus_realtime::{
     DEFAULT_ARRIVAL_PATH, map_tdx_error, odata_in_filter, parse_bus_realtime_payload,
-    tdx_sub_route_uid,
 };
 use super::metrics::BusTimingMetrics;
 use super::source::TransitDepartureSource;
@@ -20,19 +20,19 @@ use crate::{
         },
         transit::{TransitMode, TransitNetwork},
         transit_timing::{
-            DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-            ScheduleDepartureResolver, TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
+            TimingReliability,
         },
     },
     tdx::TdxClient,
 };
 
-const MAX_REALTIME_DEPARTURE_BATCH_PAIRS: usize = 64;
+const MAX_REALTIME_STOPS_PER_REQUEST: usize = 100;
 
 pub struct BusDepartureSource {
     network: Arc<TransitNetwork>,
     tdx: Option<Arc<TdxClient>>,
-    schedule: ScheduleDepartureResolver,
+    schedule: ScheduleTiming,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
     metrics: BusTimingMetrics,
@@ -41,7 +41,7 @@ pub struct BusDepartureSource {
 impl BusDepartureSource {
     pub fn new(network: Arc<TransitNetwork>, tdx: Option<Arc<TdxClient>>) -> Self {
         Self {
-            schedule: ScheduleDepartureResolver::new(network.clone()),
+            schedule: ScheduleTiming::new(network.clone()),
             network,
             tdx,
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
@@ -75,10 +75,7 @@ impl BusDepartureSource {
         evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
         let service = self.network.service(&query.service_id)?;
-        let board_index = service
-            .pattern
-            .iter()
-            .position(|stop_id| stop_id == &query.board_stop_id)?;
+        let board_index = query.resolve_board_index(&self.network).ok()?;
         let shape = self.network.representative_trip(&query.service_id);
         if shape.is_none() && self.network.has_invalid_timing_shape(&query.service_id) {
             return None;
@@ -190,7 +187,9 @@ impl BusDepartureSource {
                     return None;
                 }
                 let departure_at = arrival.predicted_arrival_at?;
-                if departure_at < query.after {
+                if departure_at < query.after
+                    || query.before.is_some_and(|before| departure_at > before)
+                {
                     return None;
                 }
                 self.effective_trip(query, departure_at, arrival.transmitted_at, status.clone())
@@ -218,6 +217,7 @@ impl BusDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
+        let started_at = Instant::now();
         if queries.is_empty() {
             return Vec::new();
         }
@@ -230,66 +230,79 @@ impl BusDepartureSource {
             return queries.into_iter().map(|_| Ok(Vec::new())).collect();
         }
 
+        let mut stops_by_scope = BTreeMap::<Option<String>, HashSet<BoardingPointId>>::new();
+        let mut services_by_scope = BTreeMap::<Option<String>, HashSet<TransitServiceId>>::new();
         let mut pairs_by_scope =
-            BTreeMap::<Option<String>, Vec<(TransitServiceId, BoardingPointId)>>::new();
-        let mut seen_pairs = HashSet::new();
+            BTreeMap::<Option<String>, HashSet<(TransitServiceId, BoardingPointId)>>::new();
         for query in &active_queries {
             let pair = (query.service_id.clone(), query.board_stop_id.clone());
-            if seen_pairs.insert(pair.clone()) {
-                let scope = self
-                    .network
-                    .service(&query.service_id)
-                    .and_then(|service| service.realtime_scope.clone());
-                pairs_by_scope.entry(scope).or_default().push(pair);
-            }
+            let scope = self
+                .network
+                .service(&query.service_id)
+                .and_then(|service| service.realtime_scope.clone());
+            stops_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(query.board_stop_id.clone());
+            services_by_scope
+                .entry(scope.clone())
+                .or_default()
+                .insert(query.service_id.clone());
+            pairs_by_scope.entry(scope).or_default().insert(pair);
         }
-        for pairs in pairs_by_scope.values_mut() {
-            pairs.sort_by(|left, right| {
-                left.0
-                    .as_str()
-                    .cmp(right.0.as_str())
-                    .then(left.1.as_str().cmp(right.1.as_str()))
-            });
-        }
-        let unique_pair_count = seen_pairs.len();
-        let batch_count = pairs_by_scope
+        let relevant_stop_count = stops_by_scope.values().map(HashSet::len).sum();
+        let batch_count = stops_by_scope
             .values()
-            .map(|pairs| pairs.len().div_ceil(MAX_REALTIME_DEPARTURE_BATCH_PAIRS))
+            .map(|stops| stops.len().div_ceil(MAX_REALTIME_STOPS_PER_REQUEST))
             .sum();
         self.metrics
-            .record_departure_batch(active_queries.len(), unique_pair_count, batch_count);
+            .record_departure_batch(active_queries.len(), relevant_stop_count, batch_count);
 
         let mut values_by_pair =
             HashMap::<(TransitServiceId, BoardingPointId), Vec<NormalizedRealtimeValue>>::new();
         let mut errors_by_pair =
             HashMap::<(TransitServiceId, BoardingPointId), DepartureError>::new();
-        for (scope, unique_pairs) in pairs_by_scope {
-            for pairs in unique_pairs.chunks(MAX_REALTIME_DEPARTURE_BATCH_PAIRS) {
-                let requested_pairs = pairs.iter().cloned().collect::<HashSet<_>>();
+        let mut http_requests = 0usize;
+        let mut rows_received = 0usize;
+        let mut rows_relevant = 0usize;
+        let scope_count = stops_by_scope.len();
+        for (scope, unique_stops) in stops_by_scope {
+            let mut unique_stops = unique_stops.into_iter().collect::<Vec<_>>();
+            unique_stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+            let requested_services = services_by_scope
+                .get(&scope)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
+            let scope_pairs = pairs_by_scope.get(&scope).cloned().unwrap_or_default();
+            let mut completed_stops = HashSet::new();
+            let mut rate_limited = false;
+            for stops in unique_stops.chunks(MAX_REALTIME_STOPS_PER_REQUEST) {
+                if rate_limited {
+                    for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
+                        errors_by_pair.insert(pair.clone(), DepartureError::RateLimited);
+                    }
+                    continue;
+                }
+                let requested_stops = stops.iter().cloned().collect::<HashSet<_>>();
                 let path = match self.realtime_path_for_scope(scope.as_deref()) {
                     Ok(path) => path,
                     Err(error) => {
-                        for pair in pairs {
+                        for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
                             errors_by_pair.insert(pair.clone(), error.clone());
                         }
                         continue;
                     }
                 };
-                let service_uids = pairs
+                let boarding_point_ids = stops
                     .iter()
-                    .map(|pair| tdx_sub_route_uid(&pair.0).to_owned())
+                    .map(|stop| stop.as_str().to_owned())
                     .collect::<Vec<_>>();
-                let boarding_point_ids = pairs
-                    .iter()
-                    .map(|pair| pair.1.as_str().to_owned())
-                    .collect::<Vec<_>>();
-                let filter = format!(
-                    "({}) and ({})",
-                    odata_in_filter("SubRouteUID", &service_uids),
-                    odata_in_filter("StopUID", &boarding_point_ids)
-                );
+                let filter = odata_in_filter("StopUID", &boarding_point_ids);
                 let query = [("$filter", filter.as_str())];
                 self.metrics.record_departure_upstream_request();
+                http_requests += 1;
                 let payload = self
                     .tdx
                     .as_ref()
@@ -299,7 +312,7 @@ impl BusDepartureSource {
                 let values = match payload {
                     Ok(payload) => parse_bus_realtime_payload(
                         &payload,
-                        &pairs.iter().map(|pair| pair.0.clone()).collect::<Vec<_>>(),
+                        &requested_services,
                         &self.freshness_policy,
                     ),
                     Err(error) => Err(map_tdx_error(error)),
@@ -307,9 +320,16 @@ impl BusDepartureSource {
                 self.metrics
                     .record_departure_upstream_result(values.as_ref().err());
                 let values = match values {
-                    Ok(values) => values,
+                    Ok(values) => {
+                        completed_stops.extend(requested_stops.iter().cloned());
+                        rows_received += values.len();
+                        values
+                    }
                     Err(error) => {
-                        for pair in pairs {
+                        if matches!(error, DepartureError::RateLimited) {
+                            rate_limited = true;
+                        }
+                        for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
                             errors_by_pair.insert(pair.clone(), error.clone());
                         }
                         continue;
@@ -323,12 +343,49 @@ impl BusDepartureSource {
                         arrival.transit_service_id.clone(),
                         arrival.boarding_point_id.clone(),
                     );
-                    if requested_pairs.contains(&pair) {
+                    if requested_stops.contains(&arrival.boarding_point_id)
+                        && scope_pairs.contains(&pair)
+                    {
+                        rows_relevant += 1;
                         values_by_pair.entry(pair).or_default().push(value);
                     }
                 }
             }
+            if rate_limited {
+                for pair in scope_pairs
+                    .into_iter()
+                    .filter(|(_, stop)| !completed_stops.contains(stop))
+                {
+                    errors_by_pair
+                        .entry(pair)
+                        .or_insert(DepartureError::RateLimited);
+                }
+            }
         }
+
+        let outcome = if errors_by_pair
+            .values()
+            .any(|error| matches!(error, DepartureError::RateLimited))
+        {
+            "rate_limited"
+        } else if errors_by_pair.is_empty() {
+            "success"
+        } else {
+            "fallback"
+        };
+        self.metrics
+            .record_snapshot_rows(rows_received, rows_relevant);
+        tracing::debug!(
+            target: "via_server::providers::timing",
+            relevant_stops = relevant_stop_count,
+            scopes = scope_count,
+            http_requests,
+            rows_received,
+            rows_relevant,
+            outcome,
+            latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            "bus timing snapshot"
+        );
 
         queries
             .into_iter()

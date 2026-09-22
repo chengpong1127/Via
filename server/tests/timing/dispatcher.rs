@@ -6,8 +6,8 @@ use via_server::domain::{
     ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
     transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
     transit_timing::{
-        DepartureError, DepartureQuery, DepartureResolver, EffectiveStopTime, EffectiveTrip,
-        TimingBasis, TimingReliability,
+        DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
+        TimingReliability,
     },
 };
 use via_server::providers::timing::{

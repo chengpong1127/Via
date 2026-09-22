@@ -1,160 +1,97 @@
 # Via current architecture
 
-Via plans multimodal journeys in Taipei and New Taipei using TDX transit data,
-Valhalla street routing, and TDX realtime status. The server returns provider-
-neutral `JourneyOption` values for walking, transit, and bicycle journeys.
+Via plans multimodal journeys in Taipei and New Taipei using immutable TDX
+transit artifacts, request-local TDX realtime, Valhalla street routing, and
+provider-neutral API models.
 
 ## Request flow
 
 ```text
 PlanningRequest
   → RoutingService
-  → street access / egress
-  → RoutingAlgorithm
-  → TripBasedRouter
-  → JourneyCandidate
-  → JourneySkeleton (direct walking or transit candidate)
-  → request-selected BikeJourneyAugmenter
-  → JourneyVariant
+  ├─ direct walking
+  └─ mode-aware transit access / egress
+       → TransitPlanner
+       → DestinationReachability (backward, topology only)
+       → TimingSnapshotLoader (all departure provider I/O)
+       → temporal search (forward, local and synchronous)
+       → JourneyCandidate
+  → optional BikeJourneyAugmenter
   → reconstruction
   → ranking
   → JourneyOption
 ```
 
-`RoutingAlgorithm` is the algorithm-neutral boundary. The current implementation
-is `TripBasedRouter`, which owns its Trip-Based index and search state. The
-service does not depend on a graph or a second planner abstraction.
+`TransitPlanner` is concrete; there is no routing-algorithm trait, legacy
+Trip-Based implementation, route graph, or wrapper planning service.
 
-## Static data
+## Transit search
 
-`via-data` fetches TDX payloads, normalizes them into the provider-neutral
-`TransitNetwork`, normalizes static TDX Bike Station payloads into a separate
-provider-neutral `BikeShareNetwork`, enriches directional transit walking
-transfers and BoardingPoint ↔ bike-station walking access through the
-`StreetRouter`, validates both networks, and writes `transit-network.json`,
-`bikeshare-network.json`, and `manifest.json`. Runtime always wires the
-BikeShare capability when its immutable artifact and realtime availability
-source are available; each request selects whether that capability is used.
-There is no database or provider identity-reconciliation layer.
+`TransitTopologyIndex` stores only `(service_id, stop_index)` occurrences by
+boarding point. Using a position index keeps loop routes unambiguous without
+duplicating service patterns.
 
-The TDX static bike source is `/v2/Bike/Station/City/{City}` for the selected
-`DataScope` cities. Bike station IDs are opaque domain IDs constructed as
-`tdx:{City}:{StationUID}` so Taipei and New Taipei remain collision-safe even
-if a provider station ID is only locally unique. Each retained bike access link
-can carry independent `walk_to_station` and `walk_from_station` metrics.
+`DestinationReachability` starts at destination egress stops and traverses
+service patterns backward for at most `max_transfers + 1` transit legs. Between
+rides it considers the same stop or one directional static walking transfer
+through `TransferShortcutIndex::transfers_to`. It filters only by topology,
+selected transit modes, transfer direction, and leg budget. It does not import
+or inspect departure times, timetables, realtime, or effective trips.
 
-TDX-derived ID constructors are shared by static normalization and realtime
-normalization. Keep `BoardingPointId`, `TransitServiceId`, `ScheduledTripId`,
-and `EffectiveTripId` distinct.
+The reachability result defines the timing surface. `TransitPlanner` creates one
+request-local set of timing queries and awaits `TimingSnapshotLoader` before
+calling temporal search. `DepartureDispatcher` groups these queries by mode;
+each mode source owns provider-native batching and static fallback. Bus queries
+are collapsed to unique `StopUID` values per realtime scope and chunked at the
+provider boundary. Returned rows are normalized with direction-sensitive TDX
+service IDs and filtered locally. The first rate limit for a Bus scope prevents
+additional chunks for that scope; unresolved values fall back to static timing.
 
-## Routing and transfers
+Temporal search is a synchronous forward round search over `TransitNetwork`,
+`TransitTopologyIndex`, `TransferShortcutIndex`, `DestinationReachability`, and
+`TimingSnapshot`. It checks structural reachability and the remaining-leg budget
+before every snapshot lookup. Its dominance rule keeps the earliest ready time
+for each `(boarding point, legs used)`. Downstream rides can yield destination
+egress candidates, same-stop interchange, or one outgoing static walking
+transfer. No TDX client, HTTP type, provider adapter, or await point is reachable
+from temporal search.
 
-`TripBasedRouter` owns transit search, including same-stop interchange, and
-consumes `DepartureResolver` plus a batch `TransferResolver` for movement between
-distinct `BoardingPoint`s. The only current resolver uses an in-memory
-`TransferShortcutIndex` derived from `TransitNetwork.transfer_edges`. Future
-dynamic mobility belongs after transit `JourneyCandidate` creation, in journey
-augmentation, and must not be implemented as `TransferResolver` behavior.
+## Timing
 
-Journey augmentation is a concrete step after `JourneyCandidate` creation and
-before reconstruction. Direct walking and Trip-Based candidates both become a
-`JourneySkeleton`; when `bike_share` is in the request's `selected_modes`, the
-single `BikeJourneyAugmenter` adds optional BikeShare paths using the immutable
-`BikeShareNetwork`, realtime availability,
-endpoint-time station discovery, and bicycle matrix search. Endpoint station
-discovery scans the immutable station list within a conservative 300 metre
-radius, filters fresh serviceable pickup/return counts before walking matrix
-work, and applies bounded candidate, walking-time, and walking-distance limits.
-Origin and destination endpoint discovery failures are isolated to their own
-intervals; boarding-point-to-boarding-point shortcuts remain eligible. A
-realtime availability failure still disables all BikeShare augmentation.
-The resulting shortcuts may span Origin → BoardingPoint, BoardingPoint →
-Destination, or the complete Origin → Destination interval; the latter is a
-normal skeleton path and reconstructs as walking → bicycle → walking with no
-transit metadata. Reconstruction hydrates retained bike paths with
-walking/bicycle street routes and exposes provider-neutral bike-share legs.
-Stable variant identity is based on retained baseline movement/trip identity
-and actual BikeStation shortcuts, so identical pure-bike paths from different
-transit skeletons can be deduplicated before ranking. Trip-Based search remains
-unaware of augmentation; future mobility shortcuts must not be added as
-`TransferResolver` behavior.
-`DepartureResolver` is the algorithm-facing timing boundary. Its current
-implementation is a `DepartureDispatcher` that groups queries by
-`TransitMode` and delegates to mode-owned sources. Each source owns its static
-timing, optional realtime timing, per-query fallback policy, and timing
-reliability policy. A resolved `EffectiveTrip` carries both timing provenance
-(`TimingBasis`) and an explicit `TimingReliability`; provenance does not imply
-trust. Static timing may be reliable: THSR is the canonical static-only
-example, while bus static fallback and Metro frequency/timetable timing remain
-fallback reliability under their source policies. Scheduled and effective trip
-identity must not be conflated.
+`EffectiveTrip`, `EffectiveStopTime`, `TimingBasis`, `TimingReliability`, and
+normalized realtime evidence remain provider-neutral domain values. Bus, Metro,
+TRA, and THSR sources retain their established timing policies: Bus/Metro/TRA
+prefetch realtime where available and degrade to their static behavior; THSR is
+static-only. Timing provenance does not imply reliability.
 
-Bus realtime timing is owned by `BusDepartureSource`, which calls the shared
-transport-only `TdxClient` directly. The source owns the bus endpoint path,
-scoped OData query, private TDX DTO parsing, freshness checks, batching,
-request-local effective-trip materialization, and static fallback. TRA timing
-is likewise owned by `TraDepartureSource`: it batches exact `tra:{TrainNo}`
-queries against TDX's TRA `v3/Rail/TRA/TrainLiveBoard`, applies a fresh delay to the
-static scheduled trip shape, and falls back to the schedule on missing, stale,
-malformed, or failed realtime. The `ServiceConditionProvider` and
-`CachedServiceConditionProvider` remain only for request-scoped
-service-condition/status collection; they are not part of departure timing.
-Metro departure timing is also owned by `MetroDepartureSource`, which calls
-TDX's [`v2/Rail/Metro/LiveBoard/TRTC`](https://tdx.transportdata.tw/api-service/swagger/basic/268fc230-2e04-471b-a728-a726167c1cfc)
-directly. It matches fresh station-level LiveBoard predictions by line,
-boarding station, and destination terminal (the directional service identity),
-then uses the existing Metro inter-station travel-time shape to materialize the
-rest of the effective trip. Missing, stale, malformed, unmatched, or failed
-Metro realtime falls back to the existing station timetable/frequency source.
-THSR remains static-only.
+No shared realtime TTL cache, Redis layer, singleflight system, or distributed
+cache exists. `TimingSnapshot` is request-local and is the future caching seam.
 
-The production boundaries are:
+## Transfers and augmentation
 
-```text
-TripBasedRouter
-  → DepartureResolver
-  → DepartureDispatcher
-  → BusDepartureSource ─────→ TdxClient
-    MetroDepartureSource ────→ TdxClient
-    TraDepartureSource ─────→ TdxClient
-    ThsrDepartureSource
+Static transit transfers are directional facts in
+`TransitNetwork.transfer_edges`. Runtime builds one `TransferShortcutIndex` with
+both incoming and outgoing lookup maps. There is no async transfer-provider
+abstraction.
 
-RoutingService
-  → ServiceConditionProvider
-  → TdxServiceConditionProvider
-  → TdxClient
-```
+Direct walking remains independent of transit reachability. BikeShare remains a
+post-transit augmentation phase: direct-walking and transit candidates become
+`JourneySkeleton` values, optional BikeShare variants are produced, then the
+retained movements are reconstructed and ranked. Destination reachability never
+contains bike-share nodes or availability.
 
-`TdxClient` lives under `server/src/tdx/` and owns only OAuth, HTTP limits,
-generic JSON decoding, and small shared TDX ID constructors. Service-condition
-DTO parsing belongs to `providers/service_conditions/tdx.rs`; Bus DTO parsing
-and timing semantics belong to `providers/timing/bus_realtime.rs`.
+## Static data and boundaries
 
-Static transit transfers are directional walking facts preprocessed during the
-data build. Runtime reconstruction uses their duration and synthetic walking
-geometry; it does not call Valhalla for those transfer legs.
+`via-data` fetches and normalizes TDX static transit and BikeShare payloads,
+enriches static walking relationships through `StreetRouter`, validates the
+artifacts, and writes versioned JSON. Static and realtime normalization share
+the pure TDX-derived ID constructors. The server has no database or identity
+reconciliation layer.
 
-## Invariants
-
-- Keep `StreetRouter`, `RoutingAlgorithm`, and `DepartureResolver` as the
-  provider/algorithm-neutral seams.
-- Keep `TripBasedRouter` unaware of transport-specific timing sources. Bus,
-  Metro, TRA, and THSR timing policies belong under
-  `server/src/providers/timing/`.
-- Keep `TimingBasis` for provenance and diagnostics; use explicit timing
-  reliability for ranking. Do not classify every static timetable as
-  `JourneyClass::Feasible`.
-- Keep Trip-Based search and static transfer preprocessing as separate current
-  responsibilities.
-- Keep provider adapters out of the domain and routing modules.
-- Keep departure timing mode-owned: `BusDepartureSource` may use `TdxClient`
-  directly, while `ServiceConditionProvider` is reserved for
-  service-condition/status collection.
-- Keep `TdxClient` transport-agnostic. It owns OAuth, base URL, HTTP limits,
-  and generic JSON decoding, not transport-specific DTOs or timing policy.
-- Do not reintroduce `planner`, `normalization`, `routing/engine`, `RouteGraph`,
-  or a `JourneyPlanningService` wrapper.
-- Navigation is not part of the current implementation.
+Keep provider adapters out of domain and routing. Providers implement the
+domain-facing `TimingSnapshotLoader`, `TransitDepartureSource`, and service
+condition boundaries. `TdxClient` remains transport-agnostic and owns only
+OAuth, bounded HTTP, generic decoding, and shared ID constructors.
 
 ## Essential commands
 
@@ -162,16 +99,7 @@ geometry; it does not call Valhalla for those transfer legs.
 cargo fmt --manifest-path server/Cargo.toml --check
 cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features
 cargo test --manifest-path server/Cargo.toml --all
-
-cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch \
-  --scope taipei-new-taipei --date YYYY-MM-DD --output ./data/dev/taipei
-cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
-  --input ./data/dev/taipei/raw/YYYY-MM-DD --output ./data/dev/taipei
-cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
-  --artifact ./data/dev/taipei/transit-network.json
-cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stats \
-  --artifact ./data/dev/taipei/transit-network.json
 ```
 
-See [`docs/dev-tooling.md`](docs/dev-tooling.md) for the current local data and
-route-debug workflow.
+See [`docs/dev-tooling.md`](docs/dev-tooling.md) for data and route-debug
+commands.

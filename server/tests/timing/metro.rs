@@ -9,7 +9,7 @@ use via_server::{
             MetroFrequency, MetroStationTiming, MetroTiming, TransitMode, TransitNetwork,
             TransitNetworkValidationError, TransitService, TransitStop,
         },
-        transit_timing::{DepartureQuery, DepartureResolver, TimingBasis, TimingReliability},
+        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };
@@ -183,6 +183,81 @@ async fn metro_frequency_timing_remains_static_fallback() {
         departures
             .iter()
             .all(|departure| departure.timing_reliability == TimingReliability::Fallback)
+    );
+}
+
+#[tokio::test]
+async fn metro_static_snapshot_window_crosses_the_service_day_boundary() {
+    let first = BoardingPointId::new("TRTC-A");
+    let second = BoardingPointId::new("TRTC-B");
+    let service_id = TransitServiceId::new("metro:boundary");
+    let network = Arc::new(
+        TransitNetwork::new(
+            time::macros::time!(4:00),
+            vec![
+                TransitStop::new(
+                    first.clone(),
+                    "A",
+                    via_server::api::RequestCoordinate {
+                        latitude: 25.0,
+                        longitude: 121.5,
+                    },
+                ),
+                TransitStop::new(
+                    second.clone(),
+                    "B",
+                    via_server::api::RequestCoordinate {
+                        latitude: 25.1,
+                        longitude: 121.6,
+                    },
+                ),
+            ],
+            vec![TransitService::new(
+                service_id.clone(),
+                TransitMode::Metro,
+                "Boundary",
+                "B",
+                vec![first.clone(), second],
+            )],
+            Vec::new(),
+        )
+        .with_metro_timings(vec![MetroTiming::new(
+            service_id.clone(),
+            vec![MetroStationTiming {
+                stop_id: first.clone(),
+                departures_seconds: vec![27 * 3600 + 55 * 60, 4 * 3600 + 10 * 60],
+                frequencies: Vec::new(),
+            }],
+            vec![240],
+        )])
+        .with_revisions("static", "schedule"),
+    );
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let resolver =
+        DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>]);
+
+    let departures = resolver
+        .next_departures(
+            DepartureQuery::at_position(
+                service_id,
+                first,
+                0,
+                datetime!(2026-08-31 03:50 +08:00),
+                10,
+            )
+            .until(datetime!(2026-08-31 04:30 +08:00)),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(departures.len(), 2);
+    assert_eq!(
+        departures[0].stop_times[0].departure_at,
+        datetime!(2026-08-31 03:55 +08:00)
+    );
+    assert_eq!(
+        departures[1].stop_times[0].departure_at,
+        datetime!(2026-08-31 04:10 +08:00)
     );
 }
 

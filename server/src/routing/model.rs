@@ -1,6 +1,5 @@
-//! Algorithm-neutral routing boundary.
+//! Shared data carried through transit planning and reconstruction.
 
-use async_trait::async_trait;
 use time::OffsetDateTime;
 
 use crate::domain::{
@@ -57,7 +56,7 @@ impl EgressPoint {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct AlgorithmQuery {
+pub struct TransitQuery {
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
     pub allowed_transit_modes: Vec<TransitMode>,
@@ -70,7 +69,7 @@ pub struct AlgorithmQuery {
     pub max_journey_duration_seconds: u32,
 }
 
-impl AlgorithmQuery {
+impl TransitQuery {
     pub fn new(
         origin_access: Vec<AccessPoint>,
         destination_egress: Vec<EgressPoint>,
@@ -97,9 +96,9 @@ impl AlgorithmQuery {
 
     pub fn with_allowed_transit_modes(
         mut self,
-        allowed_transit_modes: impl IntoIterator<Item = TransitMode>,
+        modes: impl IntoIterator<Item = TransitMode>,
     ) -> Self {
-        self.allowed_transit_modes = allowed_transit_modes.into_iter().collect();
+        self.allowed_transit_modes = modes.into_iter().collect();
         self.allowed_transit_modes.sort();
         self.allowed_transit_modes.dedup();
         self
@@ -140,19 +139,6 @@ pub enum JourneySegment {
 }
 
 impl JourneySegment {
-    /// Physical transfer facts used to keep routing and reconstruction aligned.
-    pub(crate) fn transfer_facts(&self) -> Option<(&BoardingPointId, &BoardingPointId, u32, u32)> {
-        match self {
-            Self::WalkingTransfer { shortcut } => Some((
-                &shortcut.from,
-                &shortcut.to,
-                shortcut.duration_seconds,
-                shortcut.duration_seconds,
-            )),
-            Self::Transit { .. } => None,
-        }
-    }
-
     pub fn service_id(&self) -> Option<&TransitServiceId> {
         match self {
             Self::Transit { trip, .. } => Some(&trip.service_id),
@@ -196,17 +182,11 @@ impl JourneyCandidate {
     }
 
     pub fn signature(&self) -> String {
-        let access = format!(
+        let mut parts = vec![format!(
             "access:{}:{}",
             self.access.stop_id.as_str(),
             self.access.walking_seconds
-        );
-        let egress = format!(
-            "egress:{}:{}",
-            self.egress.stop_id.as_str(),
-            self.egress.walking_seconds
-        );
-        let mut parts = vec![access];
+        )];
         parts.extend(self.segments.iter().map(|segment| match segment {
             JourneySegment::Transit {
                 trip,
@@ -228,7 +208,11 @@ impl JourneyCandidate {
                 shortcut.duration_seconds
             ),
         }));
-        parts.push(egress);
+        parts.push(format!(
+            "egress:{}:{}",
+            self.egress.stop_id.as_str(),
+            self.egress.walking_seconds
+        ));
         parts.join("|")
     }
 }
@@ -237,13 +221,6 @@ impl JourneyCandidate {
 pub enum RoutingError {
     #[error("routing query has no usable access or egress")]
     InvalidQuery,
-    #[error("routing departure resolution failed: {0}")]
-    Departure(#[from] DepartureError),
-    #[error("routing expansion limit reached")]
-    ExpansionLimit,
-}
-
-#[async_trait]
-pub trait RoutingAlgorithm: Send + Sync {
-    async fn route(&self, query: AlgorithmQuery) -> Result<Vec<JourneyCandidate>, RoutingError>;
+    #[error("timing snapshot could not be loaded: {0}")]
+    Timing(#[from] DepartureError),
 }

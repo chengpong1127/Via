@@ -5,8 +5,7 @@ use async_trait::async_trait;
 use crate::domain::{
     transit::{TransitMode, TransitNetwork},
     transit_timing::{
-        DepartureError, DepartureQuery, DepartureResolver, EffectiveTrip,
-        ScheduleDepartureResolver, TimingReliability,
+        DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingReliability,
     },
 };
 
@@ -15,13 +14,13 @@ use super::source::TransitDepartureSource;
 /// Static-only THSR timing. The timetable is an authoritative, reliable source.
 pub struct ThsrDepartureSource {
     network: Arc<TransitNetwork>,
-    schedule: ScheduleDepartureResolver,
+    schedule: ScheduleTiming,
 }
 
 impl ThsrDepartureSource {
     pub fn new(network: Arc<TransitNetwork>) -> Self {
         Self {
-            schedule: ScheduleDepartureResolver::new(network.clone()),
+            schedule: ScheduleTiming::new(network.clone()),
             network,
         }
     }

@@ -17,7 +17,7 @@ use crate::{
         normalize_to_taipei,
         ranking::{CandidateJourney, RankingPolicy},
         transit::TransitNetwork,
-        transit_timing::DepartureResolver,
+        transit_timing::TimingSnapshotLoader,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
     providers::service_conditions::ServiceConditionProvider,
@@ -29,20 +29,19 @@ use crate::{
 
 use super::{
     access,
-    algorithm::{AlgorithmQuery, JourneyCandidate, RoutingAlgorithm},
     augmentation::{BikeJourneyAugmenter, JourneySkeleton, JourneyVariant},
+    model::{JourneyCandidate, TransitQuery},
+    planner::TransitPlanner,
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
     status,
-    transfers::{TransferResolver, TransferShortcutIndex},
-    trip_based::TripBasedRouter,
 };
 
 #[derive(Clone)]
 pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
-    pub(crate) routing_algorithm: Arc<dyn RoutingAlgorithm>,
+    pub(crate) transit_planner: TransitPlanner,
     pub(crate) bike_augmenter: BikeJourneyAugmenter,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_network: Arc<TransitNetwork>,
@@ -90,23 +89,17 @@ impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
         transit_network: Arc<TransitNetwork>,
-        departure_resolver: Arc<dyn DepartureResolver>,
+        timing: Arc<dyn TimingSnapshotLoader>,
         service_conditions: Arc<dyn ServiceConditionProvider>,
         bike_share_network: Arc<BikeShareNetwork>,
         bike_augmenter: BikeJourneyAugmenter,
         limits: RoutingLimits,
     ) -> Self {
-        let transfer_resolver: Arc<dyn TransferResolver> =
-            Arc::new(TransferShortcutIndex::from_network(&transit_network));
-        let routing_algorithm: Arc<dyn RoutingAlgorithm> = Arc::new(TripBasedRouter::new(
-            transit_network.clone(),
-            departure_resolver.clone(),
-            transfer_resolver.clone(),
-        ));
+        let transit_planner = TransitPlanner::new(transit_network.clone(), timing);
         let limits = limits.normalized();
         Self {
             street_routing: street_routing.clone(),
-            routing_algorithm,
+            transit_planner,
             bike_augmenter,
             service_conditions,
             transit_network,
@@ -270,10 +263,9 @@ impl RoutingService {
                 }
             };
             stage_metrics.transit_candidate_stops = access.len() + egress.len();
-            stage_metrics.transit_candidate_services = self.transit_network.services.len();
 
             if !access.is_empty() && !egress.is_empty() {
-                let query = AlgorithmQuery {
+                let query = TransitQuery {
                     origin_access: access,
                     destination_egress: egress,
                     allowed_transit_modes,
@@ -286,9 +278,16 @@ impl RoutingService {
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
                 };
                 let search_started = Instant::now();
-                match self.routing_algorithm.route(query).await {
-                    Ok(candidates) => {
-                        stage_metrics.transit_realtime_lookups = candidates
+                match self.transit_planner.plan_with_stats(query).await {
+                    Ok((candidates, planner_stats)) => {
+                        stage_metrics.transit_reachable_boardings =
+                            planner_stats.reachable_boarding_opportunities;
+                        stage_metrics.transit_reachable_services = planner_stats.reachable_services;
+                        stage_metrics.transit_realtime_stops_requested =
+                            planner_stats.realtime_stops_requested;
+                        stage_metrics.transit_temporal_departure_lookups =
+                            planner_stats.temporal_departure_lookups;
+                        stage_metrics.transit_realtime_evidence_values = candidates
                             .iter()
                             .flat_map(|candidate| &candidate.evidence)
                             .count();
@@ -331,18 +330,10 @@ impl RoutingService {
                         }
                     }
                     Err(error) => {
-                        if let super::algorithm::RoutingError::Departure(departure) = &error {
-                            had_transient_failure |= departure.is_transient();
+                        if let super::model::RoutingError::Timing(timing) = &error {
+                            had_transient_failure |= timing.is_transient();
                         }
-                        if matches!(
-                            &error,
-                            super::algorithm::RoutingError::Departure(departure)
-                                if departure.is_transient()
-                        ) {
-                            tracing::warn!(error = %error, "routing algorithm dependency failed");
-                        } else {
-                            tracing::error!(error = %error, "routing algorithm failed");
-                        }
+                        tracing::error!(error = %error, "transit planning failed");
                     }
                 }
             }
@@ -354,8 +345,11 @@ impl RoutingService {
             candidate_discovery_ms = stage_metrics.candidate_discovery_duration_ms,
             multimodal_search_ms = stage_metrics.multimodal_search_duration_ms,
             transit_candidate_stops = stage_metrics.transit_candidate_stops,
-            transit_candidate_services = stage_metrics.transit_candidate_services,
-            realtime_lookups = stage_metrics.transit_realtime_lookups,
+            reachable_boardings = stage_metrics.transit_reachable_boardings,
+            reachable_services = stage_metrics.transit_reachable_services,
+            realtime_stops_requested = stage_metrics.transit_realtime_stops_requested,
+            temporal_departure_lookups = stage_metrics.transit_temporal_departure_lookups,
+            realtime_evidence_values = stage_metrics.transit_realtime_evidence_values,
             generated_candidates = generated.len(),
             "journey planning routing stages"
         );

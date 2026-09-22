@@ -12,8 +12,8 @@ use crate::{
         realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
         transit::{TransitMode, TransitNetwork},
         transit_timing::{
-            DepartureError, DepartureQuery, DepartureResolver, EffectiveTrip,
-            ScheduleDepartureResolver, TimingBasis, TimingReliability,
+            DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingBasis,
+            TimingReliability,
         },
     },
     tdx::{TdxClient, TdxClientError},
@@ -53,7 +53,7 @@ struct TraDelayObservation {
 /// TRA timing owned by the mode source: live train delay over static trip shape.
 pub struct TraDepartureSource {
     network: Arc<TransitNetwork>,
-    schedule: ScheduleDepartureResolver,
+    schedule: ScheduleTiming,
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
@@ -62,7 +62,7 @@ pub struct TraDepartureSource {
 impl TraDepartureSource {
     pub fn new(network: Arc<TransitNetwork>) -> Self {
         Self {
-            schedule: ScheduleDepartureResolver::new(network.clone()),
+            schedule: ScheduleTiming::new(network.clone()),
             network,
             tdx: None,
             realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
@@ -217,16 +217,7 @@ impl TraDepartureSource {
             .into_iter()
             .filter_map(|trip| self.delay_adjusted_trip(trip, query, observation))
             .collect::<Vec<_>>();
-        let board_index = self
-            .network
-            .service(&query.service_id)
-            .and_then(|service| {
-                service
-                    .pattern
-                    .iter()
-                    .position(|stop_id| stop_id == &query.board_stop_id)
-            })
-            .ok_or(DepartureError::InvalidQuery)?;
+        let board_index = query.resolve_board_index(&self.network)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at
@@ -247,8 +238,12 @@ impl TraDepartureSource {
             stop_time.arrival_at = stop_time.arrival_at.checked_add(observation.delay)?;
             stop_time.departure_at = stop_time.departure_at.checked_add(observation.delay)?;
         }
-        let board_index = trip.stop_index(&query.board_stop_id)?;
-        if trip.stop_times[board_index].departure_at < query.after {
+        let board_index = query.resolve_board_index(&self.network).ok()?;
+        if trip.stop_times[board_index].departure_at < query.after
+            || query
+                .before
+                .is_some_and(|before| trip.stop_times[board_index].departure_at > before)
+        {
             return None;
         }
         let scheduled_trip_id = trip.scheduled_trip_id.clone();
