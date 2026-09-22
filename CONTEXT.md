@@ -15,8 +15,8 @@ PlanningRequest
        → DestinationReachability (backward, topology only)
        → TimingSnapshotLoader (all departure provider I/O)
        → temporal search (forward, local and synchronous)
-       → JourneyCandidate
-  → optional BikeJourneyAugmenter
+       → optional BikeAvailabilitySnapshot
+       → adjacent transit/walking segment alternatives
   → reconstruction
   → ranking
   → JourneyOption
@@ -67,18 +67,20 @@ static-only. Timing provenance does not imply reliability.
 No shared realtime TTL cache, Redis layer, singleflight system, or distributed
 cache exists. `TimingSnapshot` is request-local and is the future caching seam.
 
-## Transfers and augmentation
+## Transfers and multimodal planning
 
 Static transit transfers are directional facts in
 `TransitNetwork.transfer_edges`. Runtime builds one `TransferShortcutIndex` with
 both incoming and outgoing lookup maps. There is no async transfer-provider
 abstraction.
 
-Direct walking remains independent of transit reachability. BikeShare remains a
-post-transit augmentation phase: direct-walking and transit candidates become
-`JourneySkeleton` values, optional BikeShare variants are produced, then the
-retained movements are reconstructed and ranked. Destination reachability never
-contains bike-share nodes or availability.
+Direct walking remains independent of transit reachability and does not receive
+BikeShare variants. Phase 2 projects each temporal transit candidate to a
+`JourneySkeleton`, loads BikeShare availability once when selected, and may
+replace only an adjacent transit movement or static walking transfer between
+boarding-point anchors. It keeps the baseline and bounded alternatives, then
+reconstructs and ranks the final variants. BikeShare does not create new transit
+connectivity, replace access/egress, or create a direct BikeShare-only route.
 
 ## Static data and boundaries
 

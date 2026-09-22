@@ -44,24 +44,27 @@ Configuration:
 ```text
 PlanningRequest → RoutingService → street access / egress
 → TransitPlanner
-→ DestinationReachability → TimingSnapshot → temporal search
-→ BikeJourneyAugmenter → reconstruct → rank → JourneyOption[]
+→ DestinationReachability
+→ TimingSnapshot + optional BikeAvailabilitySnapshot
+→ temporal multimodal search → reconstruct → rank → JourneyOption[]
 ```
 
 `RoutingService` owns the concrete `TransitPlanner`. The planner first finds
 structurally useful boarding positions without reading time data, then loads all
-request-local timing through `TimingSnapshotLoader`, and finally searches using
-only the immutable network, snapshot, and static transfer index. Bus realtime
-requests are deduplicated by stop and grouped by TDX city scope; temporal search
-never performs network I/O.
+request-local timing through `TimingSnapshotLoader`, optionally loads one
+BikeShare availability snapshot, and finally searches using only immutable
+networks, snapshots, and the static transfer index. BikeShare can replace an
+existing adjacent transit movement or walking transfer, but cannot create new
+transit connectivity or replace access/egress. Bus realtime requests are
+deduplicated by stop and grouped by TDX city scope; temporal search never
+performs network I/O.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
 transfers. Requests select fine-grained transport systems through
 `selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
 Walking remains an implicit connector, while output legs retain the coarse
-`walking`, `transit`, and `bicycle` `JourneyMode` values. BikeShare augments
-the direct walking baseline or a transit skeleton when selected; walking
-remains the implicit connector.
+`walking`, `transit`, and `bicycle` `JourneyMode` values. Direct walking remains
+walking-only in this version.
 
 The `via-route` binary is intentionally an offline transit-debugging tool and
 rejects `bike_share` rather than constructing a fake BikeShare capability.

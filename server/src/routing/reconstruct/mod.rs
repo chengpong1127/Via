@@ -1,4 +1,4 @@
-//! Reconstruct transit-planner candidates into API journey options.
+//! Reconstruct final planner path variants into API journey options.
 
 mod evidence;
 mod geometry;
@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    augmentation::JourneyVariant,
+    path::JourneyVariant,
     service::{GeneratedCandidate, PlanningContext, RoutingService},
 };
 

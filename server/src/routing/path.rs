@@ -4,7 +4,6 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    api::{PlanningRequest, RequestCoordinate},
     domain::{
         bikeshare::BikeWalkingAccess,
         ids::{BikeStationId, BoardingPointId},
@@ -13,14 +12,14 @@ use crate::{
     street::StreetPath,
 };
 
-use super::super::{JourneyCandidate, JourneySegment};
+use super::{JourneyCandidate, JourneySegment};
 
-/// The only locations an augmenter needs to reason about.
+/// The fixed anchors shared by the baseline and multimodal path choices.
 #[derive(Clone, Debug, PartialEq)]
 pub enum JourneyAnchorKind {
-    Origin { coordinate: RequestCoordinate },
+    Origin,
     BoardingPoint { id: BoardingPointId },
-    Destination { coordinate: RequestCoordinate },
+    Destination,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,8 +60,8 @@ pub struct JourneyMovement {
     pub street_path: Option<Arc<StreetPath>>,
 }
 
-/// A transport-neutral baseline journey projected into augmentation-relevant
-/// anchors and movements.
+/// A transport-neutral baseline journey projected into ordered anchors and
+/// movements.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneySkeleton {
     anchors: Vec<JourneyAnchor>,
@@ -71,10 +70,7 @@ pub struct JourneySkeleton {
 }
 
 impl JourneySkeleton {
-    pub fn from_candidate(
-        request: &PlanningRequest,
-        candidate: JourneyCandidate,
-    ) -> Result<Self, JourneySkeletonError> {
+    pub fn from_candidate(candidate: JourneyCandidate) -> Result<Self, JourneySkeletonError> {
         if candidate.segments.is_empty() {
             return Err(JourneySkeletonError::NoSegments);
         }
@@ -83,9 +79,7 @@ impl JourneySkeleton {
         let mut movements = Vec::with_capacity(candidate.segments.len() + 2);
         let origin = push_anchor(
             &mut anchors,
-            JourneyAnchorKind::Origin {
-                coordinate: request.origin.coordinate,
-            },
+            JourneyAnchorKind::Origin,
             candidate.departure_time,
         )?;
         let access = push_anchor(
@@ -204,9 +198,7 @@ impl JourneySkeleton {
         }
         let destination = push_anchor(
             &mut anchors,
-            JourneyAnchorKind::Destination {
-                coordinate: request.destination.coordinate,
-            },
+            JourneyAnchorKind::Destination,
             candidate.arrival_time,
         )?;
         movements.push(JourneyMovement {
@@ -230,26 +222,13 @@ impl JourneySkeleton {
     }
 
     pub fn from_direct_walking(
-        request: &PlanningRequest,
         path: StreetPath,
         departure_at: OffsetDateTime,
     ) -> Result<Self, JourneySkeletonError> {
         let arrival_at = departure_at + Duration::seconds(i64::from(path.duration.0));
         let mut anchors = Vec::with_capacity(2);
-        let origin = push_anchor(
-            &mut anchors,
-            JourneyAnchorKind::Origin {
-                coordinate: request.origin.coordinate,
-            },
-            departure_at,
-        )?;
-        let destination = push_anchor(
-            &mut anchors,
-            JourneyAnchorKind::Destination {
-                coordinate: request.destination.coordinate,
-            },
-            arrival_at,
-        )?;
+        let origin = push_anchor(&mut anchors, JourneyAnchorKind::Origin, departure_at)?;
+        let destination = push_anchor(&mut anchors, JourneyAnchorKind::Destination, arrival_at)?;
         Ok(Self {
             anchors,
             movements: vec![JourneyMovement {
@@ -317,9 +296,8 @@ pub enum JourneySkeletonError {
 
 /// One selectable path through a skeleton.
 ///
-/// Path steps carry explicit anchor endpoints. A future augmentation can use a
-/// single step spanning any contiguous interval `A_i → A_j`; the baseline path
-/// currently contains one step for each projected movement.
+/// Path steps carry explicit anchor endpoints. BikeShare replacements are
+/// always for one baseline movement between adjacent boarding-point anchors.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneyVariant {
     skeleton: Arc<JourneySkeleton>,
@@ -479,11 +457,58 @@ impl JourneyVariant {
         Ok(timing)
     }
 
-    pub(crate) fn from_path(skeleton: JourneySkeleton, path: Vec<JourneyPathStep>) -> Self {
-        Self {
-            skeleton: Arc::new(skeleton),
-            path,
+    pub(crate) fn with_replacement(
+        baseline: &Self,
+        movement_index: usize,
+        shortcut: BikeShortcut,
+    ) -> Option<Self> {
+        let mut path = baseline.path.clone();
+        let step_index = path.iter().position(|step| {
+            matches!(
+                step.movement,
+                JourneyPathMovement::Baseline { movement_index: index }
+                    if index == movement_index
+            )
+        })?;
+        let step = &path[step_index];
+        if step.from_anchor != shortcut.from_anchor || step.to_anchor != shortcut.to_anchor {
+            return None;
         }
+        path[step_index].movement = JourneyPathMovement::BikeShare { shortcut };
+        Some(Self {
+            skeleton: baseline.skeleton.clone(),
+            path,
+        })
+    }
+
+    pub fn transit_service_sequence(&self) -> Vec<crate::domain::ids::TransitServiceId> {
+        self.path
+            .iter()
+            .filter_map(|step| match &step.movement {
+                JourneyPathMovement::Baseline { movement_index } => {
+                    match &self.skeleton.movements().get(*movement_index)?.kind {
+                        JourneyMovementKind::Transit { trip, .. } => Some(trip.service_id.clone()),
+                        JourneyMovementKind::Walking { .. } => None,
+                    }
+                }
+                JourneyPathMovement::BikeShare { .. } => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn realtime_evidence_count(&self) -> usize {
+        self.path
+            .iter()
+            .filter_map(|step| match &step.movement {
+                JourneyPathMovement::Baseline { movement_index } => {
+                    match &self.skeleton.movements().get(*movement_index)?.kind {
+                        JourneyMovementKind::Transit { trip, .. } => Some(trip.evidence.len()),
+                        JourneyMovementKind::Walking { .. } => None,
+                    }
+                }
+                JourneyPathMovement::BikeShare { .. } => None,
+            })
+            .sum()
     }
 }
 
@@ -599,9 +624,9 @@ impl JourneySkeleton {
 
 fn anchor_signature(kind: &JourneyAnchorKind) -> String {
     match kind {
-        JourneyAnchorKind::Origin { .. } => "origin".into(),
+        JourneyAnchorKind::Origin => "origin".into(),
         JourneyAnchorKind::BoardingPoint { id } => format!("boarding_point:{}", id.as_str()),
-        JourneyAnchorKind::Destination { .. } => "destination".into(),
+        JourneyAnchorKind::Destination => "destination".into(),
     }
 }
 
@@ -641,7 +666,7 @@ impl BikeShortcut {
         bicycle: BikeRide,
         walk_from_dropoff: BikeWalkingAccess,
     ) -> Option<Self> {
-        if pickup_station_id == dropoff_station_id || from_anchor >= to_anchor {
+        if pickup_station_id == dropoff_station_id || to_anchor != from_anchor.saturating_add(1) {
             return None;
         }
         let total_seconds = walk_to_pickup

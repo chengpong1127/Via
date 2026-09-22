@@ -13,26 +13,28 @@ realtime vehicle would make usable.
 
 ## Decision
 
-`RoutingService` owns one concrete `TransitPlanner` with three transit phases:
+`RoutingService` owns one concrete `TransitPlanner` with two planning phases:
 
-1. `DestinationReachability` searches backward over service patterns and static
-   directional transfers. It uses selected modes and a transit-leg budget, but
-   no time information.
-2. `TimingSnapshotLoader` performs all request-local timing work before search.
-   Bus realtime is fetched by unique stop, grouped by TDX city scope, and
-   chunked inside `BusDepartureSource`. Other modes retain provider-native
-   batching. Realtime failure uses the source's static fallback policy.
-3. Temporal search runs forward and synchronously over local network and
-   snapshot data. A boarding must be present in destination reachability and fit
-   the remaining-leg budget before timing is read.
+1. **Destination Reachability** searches backward over service patterns and
+   static directional transfers. It uses selected modes and a transit-leg
+   budget, but no time information.
+2. **Temporal Multimodal Planning** performs all request-local timing work
+   before search. Bus realtime is fetched by unique stop, grouped by TDX city
+   scope, and chunked inside `BusDepartureSource`. Other modes retain
+   provider-native batching. When selected, BikeShare availability is loaded
+   once concurrently with transit timing. Temporal search then runs forward
+   and synchronously over local snapshots and may replace an adjacent transit
+   movement or static walking transfer with a faster BikeShare segment. It
+   never adds a new transit anchor.
 
 The compact topology index stores `(service_id, stop_index)` occurrences so
 loop routes are unambiguous. The static transfer index keeps both incoming and
 outgoing maps. Temporal dominance retains the earliest ready time for each
 `(boarding point, legs used)` pair.
 
-Direct walking remains independent. BikeShare remains an augmentation of
-direct-walking or public-transit skeletons after transit candidate generation.
+Direct walking remains independent and walking-only. BikeShare does not replace
+access or egress, and only substitutes an existing adjacent movement between
+boarding-point anchors after temporal candidate generation.
 
 ## Consequences
 

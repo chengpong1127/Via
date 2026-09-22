@@ -7,16 +7,21 @@ The server's canonical planning flow is:
 ```text
 street access/egress → TransitPlanner
   → DestinationReachability → TimingSnapshot → temporal search
-  → YouBike augmentation → reconstruct → rank
+  → optional BikeAvailabilitySnapshot → multimodal variants
+  → reconstruct → rank
 ```
 
 `TransitPlanner` is the single concrete transit planner. Phase 1 performs a
-backward topology-only search, Phase 2A loads one request-local timing snapshot,
-and Phase 2B performs synchronous forward search without provider I/O. The
-static `TransferShortcutIndex` exposes directional `transfers_from` and
-`transfers_to` lookups. Bus realtime is fetched by unique stop and scope, then
-filtered locally. Reconstruction consumes `JourneyCandidate` directly and there
-is no `RouteGraph` in the canonical routing path. Keep the dependency
+backward topology-only search. Phase 2 loads one request-local timing snapshot
+and, when selected, one BikeShare availability snapshot before synchronous
+forward search and per-segment BikeShare alternatives. The static
+`TransferShortcutIndex` exposes directional `transfers_from` and `transfers_to`
+lookups. Bus realtime is fetched by unique stop and scope, then filtered
+locally. BikeShare only replaces an existing adjacent boarding-point movement;
+it does not add transit connectivity, access/egress alternatives, or direct
+BikeShare-only routes. Reconstruction consumes the planner's final path
+variants and there is no `RouteGraph` in the canonical routing path. Keep the
+dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
 interfaces. Do not reintroduce the removed `planner`, `normalization`, or
 `routing/engine` modules, a generic routing-algorithm boundary, Trip-Based

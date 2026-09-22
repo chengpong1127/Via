@@ -39,7 +39,7 @@ use crate::{
         BusDepartureSource, BusTimingMetrics, DepartureDispatcher, MetroDepartureSource,
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
     },
-    routing::{BikeJourneyAugmenter, RoutingLimits, RoutingService},
+    routing::{RoutingLimits, RoutingService},
     street::{StreetRouter, StreetRoutingError},
     tdx::TdxClient,
 };
@@ -124,18 +124,13 @@ where
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let bike_augmenter = BikeJourneyAugmenter::with_default_policy(
-        dependencies.bike_share_network.clone(),
-        dependencies.bike_availability_source,
-        street_router.clone(),
-    );
     let routing = RoutingService::new(
         street_router,
         transit_network.clone(),
         departure_resolver,
         service_conditions,
         dependencies.bike_share_network,
-        bike_augmenter,
+        dependencies.bike_availability_source,
         RoutingLimits::default(),
     );
     let metrics = routing.operational_metrics.clone();

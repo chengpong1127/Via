@@ -28,7 +28,7 @@ use via_server::{
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         UnavailableBikeAvailabilitySource, ValhallaConfig, ValhallaProvider,
     },
-    routing::{BikeJourneyAugmenter, RoutingLimits, RoutingService},
+    routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
     tdx::{TdxClient, TdxCredentials},
 };
@@ -134,18 +134,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bike_share_network =
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled"));
     let bike_availability_source = Arc::new(UnavailableBikeAvailabilitySource);
-    let bike_augmenter = BikeJourneyAugmenter::with_default_policy(
-        bike_share_network.clone(),
-        bike_availability_source,
-        street.clone(),
-    );
     let routing = RoutingService::new(
         street,
         network.clone(),
         departure,
         cached,
         bike_share_network,
-        bike_augmenter,
+        bike_availability_source,
         limits,
     );
     if cli.trace {

@@ -191,8 +191,9 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
 `--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, and `thsr`
 transport systems. The offline CLI rejects `bike_share` explicitly; the
-production HTTP server supports BikeShare augmentation when its required
-artifact and availability source are configured.
+production HTTP server supports adjacent BikeShare segment alternatives when
+its required artifact and availability source are configured. BikeShare does
+not create new transit connectivity or replace origin/destination access.
 It never accepts credential flags.
 
 Recommended smoke routes are Taipei Main Station → Taipei 101, Banqiao →

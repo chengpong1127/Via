@@ -19,10 +19,7 @@ use via_server::{
             TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{
-        BikeAugmentationPolicy, BikeJourneyAugmenter, RoutingLimits, RoutingService,
-        transfers::TransferShortcutIndex,
-    },
+    routing::{RoutingLimits, RoutingService, transfers::TransferShortcutIndex},
     street::{Coordinate, FakeStreetRouter},
     tdx::TdxClient,
 };
@@ -97,26 +94,15 @@ pub(crate) async fn route_body_with_bike(
     body: Value,
     network: Arc<BikeShareNetwork>,
     availability_source: Arc<dyn BikeAvailabilitySource>,
-    policy: BikeAugmentationPolicy,
 ) -> Value {
-    route_body_inner(
-        street,
-        realtime,
-        body,
-        Some((network, availability_source, policy)),
-    )
-    .await
+    route_body_inner(street, realtime, body, Some((network, availability_source))).await
 }
 
 async fn route_body_inner(
     street: FakeStreetRouter,
     realtime: FixtureRealtime,
     body: Value,
-    bike: Option<(
-        Arc<BikeShareNetwork>,
-        Arc<dyn BikeAvailabilitySource>,
-        BikeAugmentationPolicy,
-    )>,
+    bike: Option<(Arc<BikeShareNetwork>, Arc<dyn BikeAvailabilitySource>)>,
 ) -> Value {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
@@ -151,26 +137,19 @@ async fn route_body_inner(
         NullServiceConditionProvider,
     )));
     let service_street = Arc::new(street);
-    let (bike_network, availability_source, policy) = bike.unwrap_or_else(|| {
+    let (bike_network, availability_source) = bike.unwrap_or_else(|| {
         (
             Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled")),
             Arc::new(UnavailableBikeAvailabilitySource) as Arc<dyn BikeAvailabilitySource>,
-            BikeAugmentationPolicy::default(),
         )
     });
-    let bike_augmenter = BikeJourneyAugmenter::new(
-        bike_network.clone(),
-        availability_source,
-        service_street.clone(),
-        policy,
-    );
     let service = RoutingService::new(
         service_street,
         network,
         departure,
         cached,
         bike_network,
-        bike_augmenter,
+        availability_source,
         RoutingLimits::default(),
     );
     serde_json::to_value(service.route(request, new_request_id()).await.unwrap()).unwrap()

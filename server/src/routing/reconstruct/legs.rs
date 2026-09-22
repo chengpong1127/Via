@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     super::{
-        augmentation::{
+        path::{
             JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyVariant,
             WalkingMovementKind,
         },
@@ -278,10 +278,10 @@ pub(crate) async fn assemble(
                 }
                 if matches!(
                     variant.skeleton().anchors()[step.from_anchor].kind,
-                    JourneyAnchorKind::Destination { .. }
+                    JourneyAnchorKind::Destination
                 ) || matches!(
                     variant.skeleton().anchors()[step.to_anchor].kind,
-                    JourneyAnchorKind::Origin { .. }
+                    JourneyAnchorKind::Origin
                 ) {
                     return Ok(None);
                 }
@@ -321,7 +321,7 @@ fn anchor_boarding_point(
 ) -> Option<crate::domain::ids::BoardingPointId> {
     match &variant.skeleton().anchors().get(anchor)?.kind {
         JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
-        JourneyAnchorKind::Origin { .. } | JourneyAnchorKind::Destination { .. } => None,
+        JourneyAnchorKind::Origin | JourneyAnchorKind::Destination => None,
     }
 }
 
@@ -332,9 +332,9 @@ fn anchor_place(
     anchor: usize,
 ) -> Option<Place> {
     match &variant.skeleton().anchors().get(anchor)?.kind {
-        JourneyAnchorKind::Origin { .. } => Some(service.origin_place(request)),
+        JourneyAnchorKind::Origin => Some(service.origin_place(request)),
         JourneyAnchorKind::BoardingPoint { id } => service.stop_place(id),
-        JourneyAnchorKind::Destination { .. } => Some(service.destination_place(request)),
+        JourneyAnchorKind::Destination => Some(service.destination_place(request)),
     }
 }
 
@@ -383,7 +383,7 @@ async fn append_bike_share(
     context: &PlanningContext,
     from: &Place,
     to: &Place,
-    shortcut: &crate::routing::augmentation::BikeShortcut,
+    shortcut: &crate::routing::BikeShortcut,
     result: &mut ReconstructedLegs,
 ) -> Result<bool, PlanningError> {
     let Some(pickup) = service.bike_station_place(&shortcut.pickup_station_id) else {

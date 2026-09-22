@@ -1,16 +1,20 @@
-//! Canonical three-step transit planner.
+//! Canonical two-phase transit and BikeShare planner.
 
 use std::{sync::Arc, time::Instant};
 
 use time::Duration;
 
 use crate::domain::{
+    bikeshare::BikeShareNetwork,
     transit::TransitNetwork,
     transit_timing::{DepartureQuery, TimingSnapshotLoader},
 };
+use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
 
 use super::{
-    model::{JourneyCandidate, RoutingError, TransitQuery},
+    bike::{BikePlanningStats, BikeSegmentPlanner},
+    model::{RoutingError, TransitQuery},
+    path::{JourneySkeleton, JourneyVariant},
     reachability::DestinationReachability,
     temporal,
     topology::TransitTopologyIndex,
@@ -23,6 +27,7 @@ pub struct TransitPlanner {
     topology: Arc<TransitTopologyIndex>,
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
+    bike: Option<BikeSegmentPlanner>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,6 +36,13 @@ pub struct TransitPlannerStats {
     pub reachable_services: usize,
     pub realtime_stops_requested: usize,
     pub temporal_departure_lookups: usize,
+    pub bike_share_enabled: bool,
+    pub relevant_bike_stations: usize,
+    pub bike_candidate_segments: usize,
+    pub bike_station_pairs: usize,
+    pub bike_matrix_requests: usize,
+    pub bike_shortcuts_accepted: usize,
+    pub multimodal_variants: usize,
 }
 
 impl TransitPlanner {
@@ -40,10 +52,25 @@ impl TransitPlanner {
             transfers: Arc::new(TransferShortcutIndex::from_network(&network)),
             network,
             timing,
+            bike: None,
         }
     }
 
-    pub async fn plan(&self, query: TransitQuery) -> Result<Vec<JourneyCandidate>, RoutingError> {
+    pub fn with_bike_share(
+        mut self,
+        network: Arc<BikeShareNetwork>,
+        availability_source: Arc<dyn BikeAvailabilitySource>,
+        street_router: Arc<dyn StreetRouter>,
+    ) -> Self {
+        self.bike = Some(BikeSegmentPlanner::new(
+            network,
+            availability_source,
+            street_router,
+        ));
+        self
+    }
+
+    pub async fn plan(&self, query: TransitQuery) -> Result<Vec<JourneyVariant>, RoutingError> {
         self.plan_with_stats(query)
             .await
             .map(|(candidates, _)| candidates)
@@ -52,7 +79,7 @@ impl TransitPlanner {
     pub async fn plan_with_stats(
         &self,
         query: TransitQuery,
-    ) -> Result<(Vec<JourneyCandidate>, TransitPlannerStats), RoutingError> {
+    ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
             return Err(RoutingError::InvalidQuery);
         }
@@ -107,10 +134,33 @@ impl TransitPlanner {
             })
             .collect::<Vec<_>>();
         let snapshot_started = Instant::now();
-        let snapshot = self.timing.load_snapshot(timing_queries).await;
+        let bike_enabled = query.allow_bike_share && self.bike.is_some();
+        let max_variants = query.max_candidates;
+        let (snapshot, bike_snapshot) = if bike_enabled {
+            let bike = self.bike.as_ref().expect("bike planner checked above");
+            let (snapshot, bike_snapshot) = tokio::join!(
+                self.timing.load_snapshot(timing_queries),
+                bike.availability_source.snapshot()
+            );
+            let bike_snapshot = match bike_snapshot {
+                Ok(snapshot) => Some(snapshot),
+                Err(error) => {
+                    tracing::debug!(
+                        target: "via_server::routing",
+                        error = %error,
+                        "BikeShare availability unavailable; retaining transit baseline"
+                    );
+                    None
+                }
+            };
+            (snapshot, bike_snapshot)
+        } else {
+            (self.timing.load_snapshot(timing_queries).await, None)
+        };
         tracing::debug!(
             target: "via_server::routing",
             relevant_bus_stops = reachability.bus_stops(&self.network).len(),
+            bike_share_enabled = bike_enabled,
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "timing snapshot"
         );
@@ -131,6 +181,48 @@ impl TransitPlanner {
             query,
         )?;
         planner_stats.temporal_departure_lookups = temporal_stats.departure_lookups;
-        Ok((candidates, planner_stats))
+        planner_stats.bike_share_enabled = bike_enabled;
+
+        let skeletons = candidates
+            .into_iter()
+            .filter_map(|candidate| match JourneySkeleton::from_candidate(candidate) {
+                Ok(skeleton) => Some(skeleton),
+                Err(error) => {
+                    tracing::error!(error = %error, "journey candidate could not be projected to a path");
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let (variants, bike_stats) = match (self.bike.as_ref(), bike_snapshot.as_deref()) {
+            (Some(bike), Some(snapshot)) => {
+                bike.choose_variants(skeletons, snapshot, max_variants)
+                    .await
+            }
+            _ => (
+                skeletons
+                    .into_iter()
+                    .map(JourneyVariant::baseline)
+                    .collect(),
+                BikePlanningStats::default(),
+            ),
+        };
+        planner_stats.relevant_bike_stations = bike_stats.relevant_bike_stations;
+        planner_stats.bike_candidate_segments = bike_stats.candidate_segments;
+        planner_stats.bike_station_pairs = bike_stats.station_pairs;
+        planner_stats.bike_matrix_requests = bike_stats.matrix_requests;
+        planner_stats.bike_shortcuts_accepted = bike_stats.shortcuts_accepted;
+        planner_stats.multimodal_variants = variants.len();
+        tracing::debug!(
+            target: "via_server::routing",
+            bike_share_enabled = bike_enabled,
+            relevant_bike_stations = planner_stats.relevant_bike_stations,
+            bike_candidate_segments = planner_stats.bike_candidate_segments,
+            bike_station_pairs = planner_stats.bike_station_pairs,
+            bike_matrix_requests = planner_stats.bike_matrix_requests,
+            bike_shortcuts_accepted = planner_stats.bike_shortcuts_accepted,
+            multimodal_variants = planner_stats.multimodal_variants,
+            "temporal multimodal planning"
+        );
+        Ok((variants, planner_stats))
     }
 }

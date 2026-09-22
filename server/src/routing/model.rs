@@ -60,6 +60,8 @@ pub struct TransitQuery {
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
     pub allowed_transit_modes: Vec<TransitMode>,
+    /// BikeShare is a Phase 2 movement alternative, never a transit mode.
+    pub allow_bike_share: bool,
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
     pub max_transfers: usize,
@@ -84,6 +86,7 @@ impl TransitQuery {
                 TransitMode::Rail,
                 TransitMode::HighSpeedRail,
             ],
+            allow_bike_share: false,
             departure_time,
             latest_arrival: None,
             max_transfers: 4,
@@ -101,6 +104,11 @@ impl TransitQuery {
         self.allowed_transit_modes = modes.into_iter().collect();
         self.allowed_transit_modes.sort();
         self.allowed_transit_modes.dedup();
+        self
+    }
+
+    pub fn with_bike_share(mut self, allow: bool) -> Self {
+        self.allow_bike_share = allow;
         self
     }
 
