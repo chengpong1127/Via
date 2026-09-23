@@ -5,8 +5,8 @@ mod bike;
 pub mod model;
 mod path;
 pub mod planner;
-pub mod reachability;
 pub mod reconstruct;
+pub mod static_search;
 pub mod temporal;
 pub mod topology;
 pub mod transfers;
@@ -24,6 +24,7 @@ pub use path::{
 };
 pub use planner::{TransitPlanner, TransitPlannerStats};
 pub use service::{RoutingLimits, RoutingService};
+pub use static_search::{CandidateCorridor, StaticCorridor, StaticCostSource, StaticSearchStats};
 pub use transfers::{TransferShortcut, TransferShortcutIndex};
 
 pub type RouteQuery = crate::api::PlanningRequest;

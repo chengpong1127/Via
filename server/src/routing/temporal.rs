@@ -15,7 +15,7 @@ use super::{
     model::{
         AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
     },
-    reachability::DestinationReachability,
+    static_search::CandidateCorridor,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -97,11 +97,11 @@ pub fn search(
     network: &TransitNetwork,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
-    reachability: &DestinationReachability,
+    corridor: &CandidateCorridor,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
 ) -> Result<Vec<JourneyCandidate>, RoutingError> {
-    search_with_stats(network, topology, transfers, reachability, snapshot, query)
+    search_with_stats(network, topology, transfers, corridor, snapshot, query)
         .map(|(items, _)| items)
 }
 
@@ -109,7 +109,7 @@ pub fn search_with_stats(
     network: &TransitNetwork,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
-    reachability: &DestinationReachability,
+    corridor: &CandidateCorridor,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
 ) -> Result<(Vec<JourneyCandidate>, TemporalSearchStats), RoutingError> {
@@ -117,7 +117,7 @@ pub fn search_with_stats(
     if query.origin_access.is_empty() || query.destination_egress.is_empty() {
         return Err(RoutingError::InvalidQuery);
     }
-    if query.max_expansions == 0 || reachability.is_empty() {
+    if query.max_expansions == 0 || corridor.is_empty() {
         return Ok((Vec::new(), TemporalSearchStats::default()));
     }
 
@@ -137,7 +137,23 @@ pub fn search_with_stats(
             path: SearchPath::from_access(access.clone()),
         };
         if insert_if_earlier(&mut best, &state) {
-            frontier.push(state);
+            frontier.push(state.clone());
+        }
+        for shortcut in transfers.transfers_from(&access.stop_id) {
+            if !has_reachable_boarding_opportunity(corridor, &shortcut.to, 0, max_legs) {
+                continue;
+            }
+            let transferred = TimedState {
+                stop_id: shortcut.to.clone(),
+                ready_at: access.available_at
+                    + Duration::seconds(i64::from(shortcut.duration_seconds)),
+                legs_used: 0,
+                path: state.path.with_walking_transfer(shortcut),
+            };
+            if insert_if_earlier(&mut best, &transferred) {
+                frontier.push(transferred);
+                stats.transfer_expansions += 1;
+            }
         }
     }
     let mut candidates = Vec::new();
@@ -151,7 +167,7 @@ pub fn search_with_stats(
             stats.states_expanded += 1;
             for position in topology.occurrences_at(&state.stop_id) {
                 let Some(remaining_legs) =
-                    reachability.remaining_legs(&position.service_id, position.stop_index)
+                    corridor.remaining_legs(&position.service_id, position.stop_index)
                 else {
                     continue;
                 };
@@ -169,7 +185,7 @@ pub fn search_with_stats(
                     scan_trip(
                         network,
                         transfers,
-                        reachability,
+                        corridor,
                         &egress_by_stop,
                         &query,
                         &state,
@@ -207,7 +223,7 @@ pub fn search_with_stats(
 fn scan_trip(
     network: &TransitNetwork,
     transfers: &TransferShortcutIndex,
-    reachability: &DestinationReachability,
+    corridor: &CandidateCorridor,
     egress_by_stop: &HashMap<BoardingPointId, Vec<EgressPoint>>,
     query: &TransitQuery,
     state: &TimedState,
@@ -259,11 +275,53 @@ fn scan_trip(
             });
         }
 
+        for shortcut in transfers.transfers_from(&stop_time.stop_id) {
+            if !corridor.allows_terminal_transfer(&shortcut.from, &shortcut.to) {
+                continue;
+            }
+            let transfer_path = ride_path.with_walking_transfer(shortcut);
+            let transfer_arrival =
+                stop_time.arrival_at + Duration::seconds(i64::from(shortcut.duration_seconds));
+            let mut reached_destination = false;
+            for egress in egress_by_stop.get(&shortcut.to).into_iter().flatten() {
+                let arrival_time =
+                    transfer_arrival + Duration::seconds(i64::from(egress.walking_seconds));
+                if query
+                    .latest_arrival
+                    .is_some_and(|latest| arrival_time > latest)
+                    || arrival_time - query.departure_time
+                        > Duration::seconds(i64::from(query.max_journey_duration_seconds))
+                {
+                    continue;
+                }
+                reached_destination = true;
+                candidates.push(JourneyCandidate {
+                    access: transfer_path.access.clone(),
+                    egress: egress.clone(),
+                    segments: transfer_path.segments.clone(),
+                    departure_time: transfer_path.access.departure_at,
+                    arrival_time,
+                    walking_seconds: transfer_path
+                        .walking_seconds
+                        .saturating_add(egress.walking_seconds),
+                    transfer_count: u32::try_from(next_legs_used.saturating_sub(1))
+                        .unwrap_or(u32::MAX),
+                    uncertainty_seconds: transfer_path.uncertainty_seconds,
+                    evidence: transfer_path.evidence.clone(),
+                    timing_bases: transfer_path.timing_bases.clone(),
+                    timing_reliability: transfer_path.timing_reliability,
+                });
+            }
+            if reached_destination {
+                stats.transfer_expansions += 1;
+            }
+        }
+
         if next_legs_used >= max_legs {
             continue;
         }
         if has_reachable_boarding_opportunity(
-            reachability,
+            corridor,
             &stop_time.stop_id,
             next_legs_used,
             max_legs,
@@ -282,12 +340,8 @@ fn scan_trip(
             );
         }
         for shortcut in transfers.transfers_from(&stop_time.stop_id) {
-            if !has_reachable_boarding_opportunity(
-                reachability,
-                &shortcut.to,
-                next_legs_used,
-                max_legs,
-            ) {
+            if !has_reachable_boarding_opportunity(corridor, &shortcut.to, next_legs_used, max_legs)
+            {
                 continue;
             }
             push_if_earlier(
@@ -307,12 +361,12 @@ fn scan_trip(
 }
 
 fn has_reachable_boarding_opportunity(
-    reachability: &DestinationReachability,
+    corridor: &CandidateCorridor,
     stop_id: &BoardingPointId,
     legs_used: usize,
     max_legs: usize,
 ) -> bool {
-    reachability
+    corridor
         .boardings_at(stop_id)
         .iter()
         .any(|boarding| legs_used.saturating_add(boarding.min_remaining_legs) <= max_legs)
@@ -393,7 +447,8 @@ mod tests {
             transit_timing::EffectiveStopTime,
         },
         routing::{
-            reachability::DestinationReachability, topology::TransitTopologyIndex,
+            static_search::{CandidateCorridor, StaticTravelTimeIndex, generate as static_search},
+            topology::TransitTopologyIndex,
             transfers::TransferShortcutIndex,
         },
     };
@@ -467,25 +522,19 @@ mod tests {
         .with_limits(max_transfers, 16, 2_000, 3, 4 * 60 * 60)
     }
 
-    fn reachability(
+    fn candidate_corridor(
         network: &TransitNetwork,
         query: &TransitQuery,
     ) -> (
         TransitTopologyIndex,
         TransferShortcutIndex,
-        DestinationReachability,
+        CandidateCorridor,
     ) {
         let topology = TransitTopologyIndex::new(network);
         let transfers = TransferShortcutIndex::from_network(network);
-        let reachability = DestinationReachability::build(
-            network,
-            &topology,
-            &transfers,
-            &query.destination_egress,
-            &query.allowed_transit_modes,
-            query.max_transfers.saturating_add(1),
-        );
-        (topology, transfers, reachability)
+        let travel_times = StaticTravelTimeIndex::new(network);
+        let corridor = static_search(network, &topology, &transfers, &travel_times, query).0;
+        (topology, transfers, corridor)
     }
 
     #[test]
@@ -500,7 +549,7 @@ mod tests {
             Vec::new(),
         );
         let query = query("origin", "destination", 1);
-        let (topology, transfers, reachability) = reachability(&network, &query);
+        let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitServiceId::new("early"),
@@ -523,15 +572,9 @@ mod tests {
             )],
         );
 
-        let (candidates, stats) = search_with_stats(
-            &network,
-            &topology,
-            &transfers,
-            &reachability,
-            &snapshot,
-            query,
-        )
-        .unwrap();
+        let (candidates, stats) =
+            search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)
+                .unwrap();
 
         assert_eq!(stats.transfer_expansions, 1);
         assert_eq!(stats.states_expanded, 2);
@@ -557,7 +600,7 @@ mod tests {
             60,
         )]);
         let query = query("origin", "destination", 1);
-        let (topology, transfers, reachability) = reachability(&network, &query);
+        let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitServiceId::new("main"),
@@ -570,15 +613,9 @@ mod tests {
             )],
         );
 
-        let (candidates, stats) = search_with_stats(
-            &network,
-            &topology,
-            &transfers,
-            &reachability,
-            &snapshot,
-            query,
-        )
-        .unwrap();
+        let (candidates, stats) =
+            search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)
+                .unwrap();
 
         assert_eq!(stats.transfer_expansions, 1);
         assert_eq!(stats.states_expanded, 2);
@@ -607,7 +644,7 @@ mod tests {
             60,
         )]);
         let query = query("origin", "destination", 1);
-        let (topology, transfers, reachability) = reachability(&network, &query);
+        let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitServiceId::new("first-service"),
@@ -630,15 +667,9 @@ mod tests {
             )],
         );
 
-        let (candidates, stats) = search_with_stats(
-            &network,
-            &topology,
-            &transfers,
-            &reachability,
-            &snapshot,
-            query,
-        )
-        .unwrap();
+        let (candidates, stats) =
+            search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)
+                .unwrap();
 
         assert_eq!(stats.transfer_expansions, 1);
         assert_eq!(candidates.len(), 1);
@@ -650,6 +681,42 @@ mod tests {
             ]
         );
         assert_eq!(candidates[0].transfer_count, 1);
+    }
+
+    #[test]
+    fn final_walking_transfer_to_egress_remains_searchable() {
+        let network = TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            vec![stop("origin"), stop("alight"), stop("destination")],
+            vec![service("main", &["origin", "alight"])],
+            Vec::new(),
+        )
+        .with_transfer_edges(vec![TransferEdge::new(
+            BoardingPointId::new("alight"),
+            BoardingPointId::new("destination"),
+            60,
+        )]);
+        let query = query("origin", "destination", 0);
+        let (topology, transfers, corridor) = candidate_corridor(&network, &query);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitServiceId::new("main"),
+            0,
+            vec![trip("main-trip", "main", &["origin", "alight"], &[1, 5])],
+        );
+
+        let (candidates, stats) =
+            search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)
+                .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(stats.transfer_expansions, 1);
+        assert!(matches!(
+            candidates[0].segments.last(),
+            Some(JourneySegment::WalkingTransfer { shortcut })
+                if shortcut.to == BoardingPointId::new("destination")
+        ));
+        assert_eq!(candidates[0].arrival_time, datetime!(2026-08-31 10:06 UTC));
     }
 
     #[test]
@@ -699,14 +766,8 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
             datetime!(2026-08-31 10:00 UTC),
         );
-        let reachability = DestinationReachability::build(
-            &network,
-            &topology,
-            &transfers,
-            &query.destination_egress,
-            &query.allowed_transit_modes,
-            1,
-        );
+        let travel_times = StaticTravelTimeIndex::new(&network);
+        let corridor = static_search(&network, &topology, &transfers, &travel_times, &query).0;
         let trip = EffectiveTrip {
             id: EffectiveTripId::new("trip"),
             service_id: TransitServiceId::new("useful"),
@@ -732,15 +793,9 @@ mod tests {
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(TransitServiceId::new("useful"), 0, vec![trip]);
 
-        let (candidates, stats) = search_with_stats(
-            &network,
-            &topology,
-            &transfers,
-            &reachability,
-            &snapshot,
-            query,
-        )
-        .unwrap();
+        let (candidates, stats) =
+            search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)
+                .unwrap();
         assert_eq!(stats.departure_lookups, 1);
         assert_eq!(candidates.len(), 1);
     }

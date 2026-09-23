@@ -44,14 +44,15 @@ Configuration:
 ```text
 PlanningRequest → RoutingService → street access / egress
 → TransitPlanner
-→ DestinationReachability
+→ static Top-K corridor search
 → TimingSnapshot + optional BikeAvailabilitySnapshot
 → temporal multimodal search → reconstruct → rank → JourneyOption[]
 ```
 
-`RoutingService` owns the concrete `TransitPlanner`. The planner first finds
-structurally useful boarding positions without reading time data, then loads all
-request-local timing through `TimingSnapshotLoader`, optionally loads one
+`RoutingService` owns the concrete `TransitPlanner`. The planner first retains
+one global Top-K set of structurally distinct corridors across selected modes,
+then loads request-local timing only for their boarding-position union through
+`TimingSnapshotLoader`, optionally loads one
 BikeShare availability snapshot, and finally searches using only immutable
 networks, snapshots, and the static transfer index. BikeShare can replace an
 existing adjacent transit movement or walking transfer, but cannot create new

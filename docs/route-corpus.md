@@ -60,7 +60,7 @@ time cargo run --manifest-path server/Cargo.toml --quiet --bin via-route -- \
 ```
 
 Compare median and p95 wall time, route existence, service sequence, transfer
-count, walking seconds, and the reachability/snapshot/temporal debug diagnostics. The default
+count, walking seconds, and the static-search/snapshot/temporal debug diagnostics. The default
 `max_departures_per_query = 3` remains the control value; a 1/2/3 departure
 comparison has not justified changing it yet.
 

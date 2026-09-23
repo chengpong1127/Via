@@ -12,8 +12,8 @@ PlanningRequest
   ├─ direct walking
   └─ mode-aware transit access / egress
        → TransitPlanner
-       → DestinationReachability (backward, topology only)
-       → TimingSnapshotLoader (all departure provider I/O)
+       → static Top-K corridor search (forward, one global mode budget)
+       → TimingSnapshotLoader (retained positions only; all provider I/O)
        → temporal search (forward, local and synchronous)
        → optional BikeAvailabilitySnapshot
        → adjacent transit/walking segment alternatives
@@ -31,16 +31,18 @@ Trip-Based implementation, route graph, or wrapper planning service.
 boarding point. Using a position index keeps loop routes unambiguous without
 duplicating service patterns.
 
-`DestinationReachability` starts at destination egress stops and traverses
-service patterns backward for at most `max_transfers + 1` transit legs. Between
-rides it considers the same stop or one directional static walking transfer
-through `TransferShortcutIndex::transfers_to`. It filters only by topology,
-selected transit modes, transfer direction, and leg budget. It does not import
-or inspect departure times, timetables, realtime, or effective trips.
+The static search starts at all origin access points and uses one global K
+across every selected transit mode. It ranks structurally deduplicated corridors
+with access/egress walking, static walking transfers, exact static travel times
+where available, and documented geometry/speed estimates otherwise. BikeShare
+is not part of this phase. Geometry fallback assumes zero wait and optimistic
+speeds of 60 km/h for Bus, 100 km/h for Metro, 160 km/h for Rail, and 350 km/h
+for High Speed Rail. The retained corridor union defines the small set of
+boarding positions, services, and Bus stops used by Phase 2.
 
-The reachability result defines the timing surface. `TransitPlanner` creates one
-request-local set of timing queries and awaits `TimingSnapshotLoader` before
-calling temporal search. `DepartureDispatcher` groups these queries by mode;
+`TransitPlanner` creates timing queries only for that retained union and awaits
+`TimingSnapshotLoader` before calling temporal search. `DepartureDispatcher`
+groups these queries by mode;
 each mode source owns provider-native batching and static fallback. Bus queries
 are collapsed to unique `StopUID` values per realtime scope and chunked at the
 provider boundary. Returned rows are normalized with direction-sensitive TDX
@@ -48,8 +50,8 @@ service IDs and filtered locally. The first rate limit for a Bus scope prevents
 additional chunks for that scope; unresolved values fall back to static timing.
 
 Temporal search is a synchronous forward round search over `TransitNetwork`,
-`TransitTopologyIndex`, `TransferShortcutIndex`, `DestinationReachability`, and
-`TimingSnapshot`. It checks structural reachability and the remaining-leg budget
+`TransitTopologyIndex`, `TransferShortcutIndex`, `CandidateCorridor`, and
+`TimingSnapshot`. It checks corridor membership and the remaining-leg budget
 before every snapshot lookup. Its dominance rule keeps the earliest ready time
 for each `(boarding point, legs used)`. Downstream rides can yield destination
 egress candidates, same-stop interchange, or one outgoing static walking

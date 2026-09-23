@@ -107,7 +107,7 @@ fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions()
     assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
     let planner = source("src/routing/planner.rs");
     assert!(planner.contains("pub struct TransitPlanner"));
-    assert!(planner.contains("DestinationReachability::build"));
+    assert!(planner.contains("static_search::generate"));
     assert!(planner.contains("load_snapshot"));
     assert!(planner.contains("temporal::search"));
     assert!(
@@ -139,8 +139,8 @@ fn static_transfer_index_supports_both_search_directions_without_a_resolver() {
 }
 
 #[test]
-fn structural_reachability_has_no_timing_dependency() {
-    let reachability = source("src/routing/reachability.rs");
+fn static_corridor_search_has_no_realtime_or_bikeshare_dependency() {
+    let static_search = source("src/routing/static_search.rs");
     for forbidden in [
         "DepartureQuery",
         "EffectiveTrip",
@@ -155,8 +155,8 @@ fn structural_reachability_has_no_timing_dependency() {
         "reqwest",
     ] {
         assert!(
-            !reachability.contains(forbidden),
-            "structural reachability contains timing detail: {forbidden}"
+            !static_search.contains(forbidden),
+            "static corridor search contains Phase 2 detail: {forbidden}"
         );
     }
 }
@@ -165,7 +165,7 @@ fn structural_reachability_has_no_timing_dependency() {
 fn temporal_search_is_local_and_provider_free() {
     let temporal = source("src/routing/temporal.rs");
     assert!(temporal.contains("&TimingSnapshot"));
-    assert!(temporal.contains("reachability.remaining_legs"));
+    assert!(temporal.contains("corridor.remaining_legs"));
     for forbidden in [
         "TdxClient",
         "reqwest",

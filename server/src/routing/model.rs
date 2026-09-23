@@ -65,6 +65,9 @@ pub struct TransitQuery {
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
     pub max_transfers: usize,
+    /// One global Phase 1 corridor budget shared by every selected transit mode.
+    pub max_static_corridors: usize,
+    pub max_static_search_expansions: usize,
     pub max_candidates: usize,
     pub max_expansions: usize,
     pub max_departures_per_query: usize,
@@ -90,6 +93,8 @@ impl TransitQuery {
             departure_time,
             latest_arrival: None,
             max_transfers: 4,
+            max_static_corridors: 100,
+            max_static_search_expansions: 20_000,
             max_candidates: 16,
             max_expansions: 2_000,
             max_departures_per_query: 3,
@@ -130,6 +135,11 @@ impl TransitQuery {
 
     pub fn with_latest_arrival(mut self, latest_arrival: OffsetDateTime) -> Self {
         self.latest_arrival = Some(latest_arrival);
+        self
+    }
+
+    pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
+        self.max_static_corridors = max_static_corridors.max(1);
         self
     }
 }
@@ -229,6 +239,8 @@ impl JourneyCandidate {
 pub enum RoutingError {
     #[error("routing query has no usable access or egress")]
     InvalidQuery,
+    #[error("static corridor search exceeded its safety expansion bound")]
+    StaticSearchLimit,
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
 }

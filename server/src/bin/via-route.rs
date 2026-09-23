@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     if cli.trace {
         tracing_subscriber::fmt()
-            .with_env_filter("via::routing=debug")
+            .with_env_filter("via_server::routing=debug")
             .without_time()
             .init();
     }

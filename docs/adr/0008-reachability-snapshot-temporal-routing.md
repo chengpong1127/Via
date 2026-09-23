@@ -2,7 +2,7 @@
 Status: Current
 ---
 
-# Reachability, timing snapshot, and temporal routing
+# Static Top-K corridors, timing snapshot, and temporal routing
 
 ## Context
 
@@ -15,9 +15,12 @@ realtime vehicle would make usable.
 
 `RoutingService` owns one concrete `TransitPlanner` with two planning phases:
 
-1. **Destination Reachability** searches backward over service patterns and
-   static directional transfers. It uses selected modes and a transit-leg
-   budget, but no time information.
+1. **Static Top-K Corridor Search** searches forward from access points over
+   service patterns and static directional transfers. One global K is shared
+   across all selected modes. Corridors use exact static in-vehicle durations
+   where present and optimistic mode-specific geometry estimates otherwise;
+   the retained union, rather than the full topology, defines the timing
+   surface.
 2. **Temporal Multimodal Planning** performs all request-local timing work
    before search. Bus realtime is fetched by unique stop, grouped by TDX city
    scope, and chunked inside `BusDepartureSource`. Other modes retain
@@ -28,9 +31,11 @@ realtime vehicle would make usable.
    never adds a new transit anchor.
 
 The compact topology index stores `(service_id, stop_index)` occurrences so
-loop routes are unambiguous. The static transfer index keeps both incoming and
-outgoing maps. Temporal dominance retains the earliest ready time for each
-`(boarding point, legs used)` pair.
+loop routes are unambiguous. Static candidate identity includes access and
+egress points, ordered transit board/alight positions, and walking transfers,
+so repeated departures do not consume multiple K slots. The static transfer
+index keeps both incoming and outgoing maps. Temporal dominance retains the
+earliest ready time for each `(boarding point, legs used)` pair.
 
 Direct walking remains independent and walking-only. BikeShare does not replace
 access or egress, and only substitutes an existing adjacent movement between
@@ -39,10 +44,12 @@ boarding-point anchors after temporal candidate generation.
 ## Consequences
 
 TDX access is a bounded preprocessing step and is unreachable from temporal
-search. A Bus rate limit stops the remaining chunks for that scope. Structural
-reachability cannot reject a route because its schedule has ended or realtime
-is unavailable. The request-local snapshot is a clean future cache seam, but
-this decision adds no cross-request TTL or distributed cache.
+search. A Bus rate limit stops the remaining chunks for that scope. Missing Bus
+schedule data does not make a service structurally impossible: the static
+search uses an optimistic geometry estimate, while request-local realtime and
+fallback timing remain authoritative for feasibility. The request-local
+snapshot is a clean future cache seam, but this decision adds no cross-request
+TTL or distributed cache.
 
 The former routing-algorithm trait, Trip-Based implementation, departure
 resolver, and async transfer resolver are no longer part of the architecture.

@@ -6,15 +6,17 @@ The server's canonical planning flow is:
 
 ```text
 street access/egress → TransitPlanner
-  → DestinationReachability → TimingSnapshot → temporal search
+  → static Top-K corridors → TimingSnapshot → temporal search
   → optional BikeAvailabilitySnapshot → multimodal variants
   → reconstruct → rank
 ```
 
-`TransitPlanner` is the single concrete transit planner. Phase 1 performs a
-backward topology-only search. Phase 2 loads one request-local timing snapshot
-and, when selected, one BikeShare availability snapshot before synchronous
-forward search and per-segment BikeShare alternatives. The static
+`TransitPlanner` is the single concrete transit planner. Phase 1 performs one
+global, bounded forward Top-K search across the selected transit modes using
+static schedule durations or optimistic geometry estimates. Phase 2 loads one
+request-local timing snapshot for the retained corridor union and, when
+selected, one BikeShare availability snapshot before synchronous forward
+search and per-segment BikeShare alternatives. The static
 `TransferShortcutIndex` exposes directional `transfers_from` and `transfers_to`
 lookups. Bus realtime is fetched by unique stop and scope, then filtered
 locally. BikeShare only replaces an existing adjacent boarding-point movement;
