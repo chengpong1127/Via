@@ -2,33 +2,33 @@
 Status: Current
 ---
 
-# Use TDX-derived typed identifiers
+# Preserve TDX-derived typed identifiers where GTFS maps directly
 
 ## Context
 
-Via's server is stateless and TDX is the authoritative source for Taiwan
-transit static and realtime data, including expected nationwide expansion. The
-server needs static and realtime records for the same TDX entity to join
-reliably; it does not currently combine multiple providers describing the same
-logical entity.
+Via's server is stateless. GTFS is authoritative for static transit data and
+TDX supplies realtime data. The server needs GTFS static records and TDX
+realtime records to join when both describe the same entity; it does not
+currently combine multiple static providers or maintain an identity registry.
 
 ## Decision
 
-Keep Via-owned opaque domain ID types, but derive their underlying values
-directly from the relevant TDX identifiers. Static artifact generation and TDX
-realtime normalization use the same pure constructors. TDX UIDs already carry
-the authority code needed by the current feeds, so Via does not add a
-provider-alias registry, persistent identity mapping, or database-backed
-reconciliation layer.
+Keep Via-owned opaque domain ID types. Normalize GTFS stop and service IDs to
+existing TDX-derived values when the GTFS identifier encodes the same authority
+and entity key. TDX realtime normalization keeps using the pure TDX ID
+constructors. Do not add a provider-alias registry, persistent identity map,
+or database-backed reconciliation layer. The GTFS build reports IDs that do
+not map to current TDX realtime IDs.
 
-The current service artifact may identify a service by `SubRouteUID`. When an
-artifact models each direction separately, it uses a deterministic composite
-key (`SubRouteUID` plus direction); realtime normalization and query projection
-use the same key semantics.
+Bus service IDs retain their matching GTFS/TDX route UID when available. Metro
+service IDs retain Via's current line and direction composite. Directional
+patterns are separate services; where the current TDX feed has no corresponding
+GTFS ID, the builder keeps a deterministic GTFS-based ID and reports it as
+unmapped.
 
 ## Consequences
 
-Routing retains type safety without maintaining a second Via identity universe.
-Static-network revisions remain stateless: an upstream ID change creates the
-new typed ID in the new artifact, provided that artifact and its realtime feed
-use the same TDX identity.
+Routing retains type safety without maintaining a second Via identity
+universe. Static-network revisions remain stateless. An upstream ID change
+creates a new typed ID in the next artifact; realtime joins continue wherever
+the GTFS and TDX identifiers have a direct canonical mapping.

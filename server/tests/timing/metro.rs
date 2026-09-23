@@ -1,8 +1,7 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use time::macros::datetime;
 use via_server::{
-    data::build_from_raw,
     domain::{
         ids::{BoardingPointId, TransitServiceId},
         transit::{
@@ -13,17 +12,6 @@ use via_server::{
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };
-
-fn temporary_path(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "via-metro-{label}-{}",
-        uuid::Uuid::new_v4().simple()
-    ))
-}
-
-fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/tdx/test-data/metro-timing")
-}
 
 #[tokio::test]
 async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
@@ -258,67 +246,6 @@ async fn metro_static_snapshot_window_crosses_the_service_day_boundary() {
     assert_eq!(
         departures[1].stop_times[0].departure_at,
         datetime!(2026-08-31 04:10 +08:00)
-    );
-}
-
-#[test]
-fn metro_station_timetable_is_normalized_without_creating_scheduled_trips() {
-    let input = fixture_path();
-    let output = temporary_path("artifact");
-
-    let result = build_from_raw(&input, &output, None, None).unwrap();
-    assert!(result.network.trips.is_empty());
-    assert_eq!(result.network.metro_timings.len(), 2);
-    assert!(
-        result
-            .network
-            .services
-            .iter()
-            .any(|service| service.id.as_str() == "metro:BL::direction=0")
-    );
-    assert!(
-        result
-            .network
-            .services
-            .iter()
-            .any(|service| service.id.as_str() == "metro:BL::direction=1")
-    );
-    let forward_timing = result
-        .network
-        .metro_timings
-        .iter()
-        .find(|timing| timing.service_id.as_str() == "metro:BL::direction=0")
-        .unwrap();
-    let reverse_timing = result
-        .network
-        .metro_timings
-        .iter()
-        .find(|timing| timing.service_id.as_str() == "metro:BL::direction=1")
-        .unwrap();
-    assert_eq!(forward_timing.inter_station_travel_seconds, vec![240]);
-    assert_eq!(
-        forward_timing.station_timings[0].departures_seconds,
-        vec![28_800, 29_100]
-    );
-    assert!(
-        forward_timing
-            .station_timings
-            .iter()
-            .all(|station| !station.departures_seconds.contains(&32_400))
-    );
-    assert_eq!(
-        forward_timing.station_timings[0].frequencies[0].headway_seconds,
-        120
-    );
-    assert_eq!(reverse_timing.inter_station_travel_seconds, vec![240]);
-    assert_eq!(
-        reverse_timing
-            .station_timings
-            .iter()
-            .find(|station| station.stop_id.as_str() == "TRTC-R03")
-            .unwrap()
-            .departures_seconds,
-        vec![32_400]
     );
 }
 

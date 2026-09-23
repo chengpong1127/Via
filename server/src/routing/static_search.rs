@@ -32,6 +32,7 @@ const HIGH_SPEED_RAIL_OPTIMISTIC_KMH: f64 = 350.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StaticCostSource {
     ExactSchedule,
+    DerivedBus,
     OptimisticEstimate,
     Mixed,
 }
@@ -40,6 +41,7 @@ impl StaticCostSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ExactSchedule => "exact_static_schedule",
+            Self::DerivedBus => "derived_bus_static_cost",
             Self::OptimisticEstimate => "optimistic_estimate",
             Self::Mixed => "mixed",
         }
@@ -304,6 +306,7 @@ pub struct StaticSearchStats {
     pub static_search_latency_ms: u64,
     pub kth_static_duration_seconds: Option<u32>,
     pub exact_schedule_cost: usize,
+    pub derived_bus_cost: usize,
     pub estimated_cost: usize,
     pub mixed_cost: usize,
     pub static_search_limit_reached: bool,
@@ -347,6 +350,25 @@ impl StaticTravelTimeIndex {
                 }
             }
         }
+        for frequency in &network.frequencies {
+            let Some(service) = network.service(&frequency.service_id) else {
+                continue;
+            };
+            if frequency.template_stop_times.len() != service.pattern.len() {
+                continue;
+            }
+            let minimums = scheduled
+                .entry(service.id.clone())
+                .or_insert_with(|| vec![u32::MAX; service.pattern.len().saturating_sub(1)]);
+            for (index, times) in frequency.template_stop_times.windows(2).enumerate() {
+                let duration = times[1]
+                    .arrival_seconds
+                    .saturating_sub(times[0].departure_seconds);
+                if duration > 0 {
+                    minimums[index] = minimums[index].min(duration);
+                }
+            }
+        }
 
         let metro = network
             .metro_timings
@@ -357,6 +379,11 @@ impl StaticTravelTimeIndex {
                     timing.inter_station_travel_seconds.clone(),
                 )
             })
+            .collect::<HashMap<_, _>>();
+        let mut derived_bus = network
+            .derived_bus_travel_times
+            .iter()
+            .map(|timing| (timing.service_id.clone(), timing.adjacent_seconds.clone()))
             .collect::<HashMap<_, _>>();
         let mut services = HashMap::new();
         for service in &network.services {
@@ -372,10 +399,17 @@ impl StaticTravelTimeIndex {
                 });
             let (adjacent_seconds, source) = match exact {
                 Some(durations) => (durations, StaticCostSource::ExactSchedule),
-                None => (
-                    estimated_adjacent_seconds(&coordinates, service),
-                    StaticCostSource::OptimisticEstimate,
-                ),
+                None => match derived_bus.remove(&service.id).filter(|durations| {
+                    service.transit_mode == TransitMode::Bus
+                        && durations.len() == service.pattern.len().saturating_sub(1)
+                        && durations.iter().all(|duration| *duration > 0)
+                }) {
+                    Some(durations) => (durations, StaticCostSource::DerivedBus),
+                    None => (
+                        estimated_adjacent_seconds(&coordinates, service),
+                        StaticCostSource::OptimisticEstimate,
+                    ),
+                },
             };
             services.insert(
                 service.id.clone(),
@@ -442,6 +476,7 @@ struct StaticState {
     transit_legs_used: usize,
     steps: Vec<StaticCorridorStep>,
     has_exact_cost: bool,
+    has_derived_bus_cost: bool,
     has_estimated_cost: bool,
     transfer_ready: bool,
 }
@@ -455,10 +490,15 @@ impl StaticState {
     }
 
     fn cost_source(&self) -> StaticCostSource {
-        match (self.has_exact_cost, self.has_estimated_cost) {
-            (true, true) => StaticCostSource::Mixed,
-            (true, false) => StaticCostSource::ExactSchedule,
-            (false, true) | (false, false) => StaticCostSource::OptimisticEstimate,
+        match (
+            self.has_exact_cost,
+            self.has_derived_bus_cost,
+            self.has_estimated_cost,
+        ) {
+            (true, false, false) => StaticCostSource::ExactSchedule,
+            (false, true, false) => StaticCostSource::DerivedBus,
+            (false, false, true) | (false, false, false) => StaticCostSource::OptimisticEstimate,
+            _ => StaticCostSource::Mixed,
         }
     }
 }
@@ -571,6 +611,7 @@ pub fn generate(
             transit_legs_used: 0,
             steps: Vec::new(),
             has_exact_cost: false,
+            has_derived_bus_cost: false,
             has_estimated_cost: false,
             transfer_ready: false,
         };
@@ -703,6 +744,7 @@ pub fn generate(
                         cost_source: source,
                     }));
                 next.has_exact_cost |= source == StaticCostSource::ExactSchedule;
+                next.has_derived_bus_cost |= source == StaticCostSource::DerivedBus;
                 next.has_estimated_cost |= source == StaticCostSource::OptimisticEstimate;
                 next.transfer_ready = false;
                 record_complete_corridors(
@@ -734,6 +776,7 @@ pub fn generate(
     for corridor in surface.retained() {
         match corridor.cost_source {
             StaticCostSource::ExactSchedule => stats.exact_schedule_cost += 1,
+            StaticCostSource::DerivedBus => stats.derived_bus_cost += 1,
             StaticCostSource::OptimisticEstimate => stats.estimated_cost += 1,
             StaticCostSource::Mixed => stats.mixed_cost += 1,
         }

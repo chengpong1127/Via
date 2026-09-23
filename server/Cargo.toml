@@ -8,6 +8,7 @@ rust-version = "1.85"
 async-trait = "0.1"
 axum = "0.8"
 bytes = "1"
+csv = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures-util = "0.3"
@@ -29,6 +30,7 @@ moka = { version = "0.12", features = ["future"] }
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

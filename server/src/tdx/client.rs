@@ -47,14 +47,6 @@ impl TdxCredentials {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_tests() -> Self {
-        Self {
-            client_id: "test-client-id".into(),
-            client_secret: "test-client-secret".into(),
-        }
-    }
-
     pub fn client_id(&self) -> &str {
         &self.client_id
     }
@@ -121,12 +113,6 @@ pub struct TdxClient {
 struct CachedToken {
     value: String,
     expires_at: Instant,
-}
-
-#[derive(Debug)]
-pub struct TdxRawResponse {
-    pub url: Url,
-    pub body: Vec<u8>,
 }
 
 impl TdxClientError {
@@ -231,15 +217,6 @@ impl TdxClient {
         Ok(value)
     }
 
-    pub async fn get_raw(
-        &self,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> Result<TdxRawResponse, TdxClientError> {
-        self.get_raw_with_limit(path, query, MAX_RESPONSE_BYTES)
-            .await
-    }
-
     /// Fetch and decode one provider-owned JSON response.
     ///
     /// TDX endpoint paths and response types remain the responsibility of the
@@ -250,16 +227,6 @@ impl TdxClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<T, TdxClientError> {
-        let response = self.get_raw(path, query).await?;
-        serde_json::from_slice(&response.body).map_err(TdxClientError::InvalidJson)
-    }
-
-    pub(crate) async fn get_raw_with_limit(
-        &self,
-        path: &str,
-        query: &[(&str, &str)],
-        max_response_bytes: usize,
-    ) -> Result<TdxRawResponse, TdxClientError> {
         let mut url = self
             .api_base_url
             .join(path)
@@ -281,18 +248,15 @@ impl TdxClient {
             .map_err(TdxClientError::ApiRequest)?;
         if response
             .content_length()
-            .is_some_and(|length| length > max_response_bytes as u64)
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
         {
             return Err(TdxClientError::ResponseTooLarge);
         }
         let body = response.bytes().await.map_err(TdxClientError::ApiRequest)?;
-        if body.len() > max_response_bytes {
+        if body.len() > MAX_RESPONSE_BYTES {
             return Err(TdxClientError::ResponseTooLarge);
         }
-        Ok(TdxRawResponse {
-            url,
-            body: body.to_vec(),
-        })
+        serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
     }
 }
 

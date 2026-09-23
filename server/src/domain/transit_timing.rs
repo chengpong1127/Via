@@ -313,6 +313,72 @@ impl EffectiveTrip {
             evidence: Vec::new(),
         })
     }
+
+    pub fn from_frequency(
+        network: &TransitNetwork,
+        service_day: Date,
+        frequency: &super::transit::TransitFrequency,
+        first_departure_seconds: u32,
+    ) -> Option<Self> {
+        if !frequency.runs_on(service_day) {
+            return None;
+        }
+        let service = network.service(&frequency.service_id)?;
+        if frequency.template_stop_times.len() != service.pattern.len() {
+            return None;
+        }
+        let template_start = frequency.template_stop_times.first()?.departure_seconds;
+        let service_day_start = network.service_day_start(service_day);
+        let stop_times = service
+            .pattern
+            .iter()
+            .zip(&frequency.template_stop_times)
+            .map(|(stop_id, template)| {
+                let arrival_offset =
+                    i64::from(template.arrival_seconds) - i64::from(template_start);
+                let departure_offset =
+                    i64::from(template.departure_seconds) - i64::from(template_start);
+                EffectiveStopTime {
+                    stop_id: stop_id.clone(),
+                    arrival_at: service_day_start
+                        + time::Duration::seconds(
+                            i64::from(first_departure_seconds) + arrival_offset,
+                        ),
+                    departure_at: service_day_start
+                        + time::Duration::seconds(
+                            i64::from(first_departure_seconds) + departure_offset,
+                        ),
+                }
+            })
+            .collect::<Vec<_>>();
+        if stop_times.windows(2).any(|times| {
+            times[0].arrival_at > times[0].departure_at
+                || times[0].departure_at > times[1].arrival_at
+        }) {
+            return None;
+        }
+        let timing_basis = if frequency.exact_times {
+            TimingBasis::Schedule
+        } else {
+            TimingBasis::FrequencyEstimate
+        };
+        Some(Self {
+            id: EffectiveTripId::new(format!(
+                "frequency:{}:{}:{}",
+                frequency.id.as_str(),
+                service_day,
+                first_departure_seconds
+            )),
+            service_id: frequency.service_id.clone(),
+            scheduled_trip_id: None,
+            stop_times,
+            timing_basis,
+            timing_reliability: TimingReliability::Fallback,
+            observed_at: None,
+            uncertainty_seconds: (!frequency.exact_times).then_some(frequency.headway_seconds),
+            evidence: Vec::new(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -406,6 +472,140 @@ impl ScheduleTiming {
         departures.truncate(query.limit);
         Ok(departures)
     }
+
+    pub fn next_frequency_departures(
+        &self,
+        query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let Some(service) = self.network.service(&query.service_id) else {
+            return Err(DepartureError::InvalidQuery);
+        };
+        if !service.pattern.contains(&query.board_stop_id) {
+            return Err(DepartureError::InvalidQuery);
+        }
+        let board_index = query.resolve_board_index(&self.network)?;
+        let first_service_day = self.network.service_day(query.after);
+        let last_service_day = query
+            .before
+            .map(|before| self.network.service_day(before))
+            .unwrap_or(first_service_day);
+        let mut departures = Vec::new();
+        let mut service_day = first_service_day;
+        loop {
+            let day_start = self.network.service_day_start(service_day);
+            let after_seconds =
+                u32::try_from((query.after - day_start).whole_seconds().max(0)).unwrap_or(u32::MAX);
+            let before_seconds = query
+                .before
+                .map(|before| {
+                    u32::try_from((before - day_start).whole_seconds().max(0)).unwrap_or(u32::MAX)
+                })
+                .unwrap_or(u32::MAX);
+            for frequency in self
+                .network
+                .frequencies
+                .iter()
+                .filter(|frequency| frequency.service_id == query.service_id)
+            {
+                if !frequency.runs_on(service_day)
+                    || frequency.template_stop_times.len() != service.pattern.len()
+                {
+                    continue;
+                }
+                let Some(template_start) = frequency
+                    .template_stop_times
+                    .first()
+                    .map(|stop_time| stop_time.departure_seconds)
+                else {
+                    continue;
+                };
+                let Some(board_offset) = frequency.template_stop_times[board_index]
+                    .departure_seconds
+                    .checked_sub(template_start)
+                else {
+                    continue;
+                };
+                let Some(start_seconds) = frequency.start_seconds.checked_add(board_offset) else {
+                    continue;
+                };
+                let Some(end_seconds) = frequency.end_seconds.checked_add(board_offset) else {
+                    continue;
+                };
+                for board_seconds in expand_service_frequency(
+                    start_seconds,
+                    end_seconds,
+                    frequency.headway_seconds,
+                    after_seconds,
+                    before_seconds,
+                    query.limit,
+                ) {
+                    let Some(first_departure_seconds) = board_seconds.checked_sub(board_offset)
+                    else {
+                        continue;
+                    };
+                    if let Some(trip) = EffectiveTrip::from_frequency(
+                        &self.network,
+                        service_day,
+                        frequency,
+                        first_departure_seconds,
+                    ) {
+                        let board_departure = trip.stop_times[board_index].departure_at;
+                        if board_departure >= query.after
+                            && query.before.is_none_or(|before| board_departure <= before)
+                        {
+                            departures.push(trip);
+                        }
+                    }
+                }
+            }
+            if service_day >= last_service_day {
+                break;
+            }
+            let Some(next_day) = service_day.next_day() else {
+                break;
+            };
+            service_day = next_day;
+        }
+        departures.sort_by(|left, right| {
+            left.stop_times[board_index]
+                .departure_at
+                .cmp(&right.stop_times[board_index].departure_at)
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        departures.dedup_by(|left, right| {
+            left.stop_times[board_index].departure_at == right.stop_times[board_index].departure_at
+        });
+        departures.truncate(query.limit);
+        Ok(departures)
+    }
+}
+
+fn expand_service_frequency(
+    start: u32,
+    end: u32,
+    headway: u32,
+    after: u32,
+    before: u32,
+    limit: usize,
+) -> Vec<u32> {
+    if headway == 0 || start > end || limit == 0 {
+        return Vec::new();
+    }
+    let elapsed = after.saturating_sub(start);
+    let steps = elapsed.saturating_add(headway - 1) / headway;
+    let mut current = start.saturating_add(steps.saturating_mul(headway));
+    let mut result = Vec::new();
+    while current <= end && current <= before && result.len() < limit {
+        result.push(current);
+        let Some(next) = current.checked_add(headway) else {
+            break;
+        };
+        current = next;
+    }
+    result
 }
 
 #[cfg(test)]

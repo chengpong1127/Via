@@ -1,185 +1,99 @@
 # Via development data and routing tools
 
-The development data flow is deliberately offline-first:
+Static transit data is built only from the local GTFS archive:
 
 ```text
-TDX → via-data fetch → immutable raw snapshot → via-data build
-  → validated TransitNetwork.transfer_edges
-  → server / via-route
+GTFS zip → via-data build → validated TransitNetwork → Phase 1 static Top-K
+TDX realtime APIs → TimingSnapshot → Phase 2 temporal search
 ```
 
-The first supported scope is `taipei-new-taipei`. Static artifacts are not
-downloaded by the production server.
+`via-data` does not download or refresh the archive. It reads the supplied zip
+in place and writes the normalized network, an empty BikeShare artifact, and a
+manifest. The current development archive is `server/data/dev/gtfs.zip`.
 
-## Credentials
+## Build and validate
 
 From the repository root:
 
 ```bash
-cp .env.example .env
-```
-
-Fill in:
-
-```env
-TDX_CLIENT_ID=your_client_id
-TDX_CLIENT_SECRET=your_client_secret
-```
-
-`dotenvy` is initialized by `via-data`, `via-route`, and the server. Shell
-environment values retain dotenvy's normal precedence. Credentials are loaded
-through the shared `TdxCredentials` and `TdxClient` types; OAuth tokens are
-cached only in the current process and never written to snapshots, artifacts,
-manifests, or traces.
-
-`via-data fetch` and `via-route --service-conditions live` require these credentials.
-Build additionally requires a healthy local Valhalla graph; validate, inspect,
-and `via-route --service-conditions fixture` remain offline after an artifact exists.
-
-## CLI hierarchy
-
-```text
-via-data
-├── fetch
-├── build
-├── validate
-└── inspect
-    ├── stop
-    ├── service
-    ├── nearby-stops
-    └── stats
-
-via-route
-└── --service-conditions fixture|live
-```
-
-## Fetch and build
-
-```bash
-cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch \
-  --scope taipei-new-taipei \
-  --date 2026-09-15 \
-  --output ./data/dev/taipei
-
 cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
-  --input ./data/dev/taipei/raw/2026-09-15 \
-  --output ./data/dev/taipei
+  --input ./server/data/dev/gtfs.zip \
+  --output ./server/data/dev/normalized
 
 cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
-  --artifact ./data/dev/taipei/transit-network.json
+  --artifact ./server/data/dev/normalized/transit-network.json
 ```
 
-Fetch preserves provider response bodies under `raw/<date>/`, writes source
-hashes and retrieval metadata to `raw/<date>/manifest.json`, uses bounded
-concurrency and timeouts, and fails without writing an incomplete manifest.
-
-Before the build, start the repository Valhalla service and configure
-`VIA_VALHALLA_URL`. In the current development environment, the URL is
-`http://valhalla:8002/`; the local Compose service downloads the OSM PBF from
-`VALHALLA_TILE_URL` and manages its own cached graph files. The normal build
-discovers bounded,
-provider-validated walking transfers between public-transit BoardingPoints and
-merges them into `TransitNetwork.transfer_edges`. No second transfer artifact
-is created.
-The default transit-transfer policy uses a 500 m geometric radius, an 8-minute
-/ 800 m walking bound, at most 16 matrix candidates, and at most 12 inferred
-outgoing transfers per source. Discovery uses bounded matrix batches. The build
-prints candidate, matrix, reachability, fan-out, and elapsed time diagnostics.
+The builder reads `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`,
+`shapes.txt`, `frequencies.txt`, `calendar.txt`, and `calendar_dates.txt` when
+present. It also reads `transfers.txt` when the archive contains it. Bus
+stop-time rows with incomplete intermediate times are not turned into
+`ScheduledTrip` records. When terminal anchors provide a full runtime, the
+builder distributes that runtime across adjacent stops using GTFS shape
+distance, then geographic distance as a fallback. The per-segment median is a
+Phase 1 ranking estimate; it is not an exact timetable. Services without usable
+static timing use the planner's geometric estimate.
 
 The build output is:
 
 ```text
 transit-network.json
+bikeshare-network.json
 manifest.json
 ```
 
-The network is canonicalized and validated before it is published. Revisions
-are SHA-256 hashes of canonical normalized content, not wall-clock identities.
-The manifest records source hashes, entity counts including `transfer_edges`,
-and revisions. `built_at` is diagnostic metadata and may vary.
-
-The current static sources are the following TDX Basic API datasets. Every
-source is requested with the required `$format=JSON` query parameter; optional
-OData parameters such as `$select`, `$filter`, `$orderby`, `$top`, and `$skip`
-are not used by the snapshot fetcher.
-
-```text
-v2/Bus/Route/City/Taipei
-v2/Bus/Stop/City/Taipei
-v2/Bus/StopOfRoute/City/Taipei
-v2/Bus/Schedule/City/Taipei
-v2/Bus/Route/City/NewTaipei
-v2/Bus/Stop/City/NewTaipei
-v2/Bus/StopOfRoute/City/NewTaipei
-v2/Bus/Schedule/City/NewTaipei
-v2/Rail/Metro/Station/TRTC
-v2/Rail/Metro/StationOfLine/TRTC
-v2/Rail/Metro/LineTransfer/TRTC
-v2/Rail/Metro/StationTimeTable/TRTC
-v2/Rail/Metro/S2STravelTime/TRTC
-v2/Rail/Metro/Frequency/TRTC
-v3/Rail/TRA/Station
-v3/Rail/TRA/GeneralTrainTimetable
-v2/Rail/THSR/Station
-v2/Rail/THSR/GeneralTimetable
-```
-
-TRA uses the current Rail v3 station and general train timetable contracts.
-THSR remains a Rail v2 dataset: its date-specific DailyTimetable endpoint is
-still documented, but route planning ingests GeneralTimetable because it
-contains regular train stop times and ServiceDay data without binding the
-static source URL to one operating date. The requested snapshot date remains
-manifest metadata and does not alter the TRA or THSR source URLs.
-Provider payload parsing remains inside `via_server::data`; routing consumes
-only the provider-neutral artifact.
+Revisions are hashes of canonical normalized content. The manifest includes
+the local archive hash and counts. GTFS has no BikeShare station catalog, so
+the generated BikeShare artifact is empty; BikeShare variants are unavailable
+until a static station source is added outside this transit GTFS import.
 
 ## Inspect
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stop \
-  --artifact ./data/dev/taipei/transit-network.json \
-  --query "台北101"
+  --artifact ./server/data/dev/normalized/transit-network.json \
+  --query "台北車站"
 
 cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect service \
-  --artifact ./data/dev/taipei/transit-network.json \
+  --artifact ./server/data/dev/normalized/transit-network.json \
   --query "307"
 
 cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect nearby-stops \
-  --artifact ./data/dev/taipei/transit-network.json \
+  --artifact ./server/data/dev/normalized/transit-network.json \
   --lat 25.0339 --lon 121.5645 --limit 20
 
 cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stats \
-  --artifact ./data/dev/taipei/transit-network.json
+  --artifact ./server/data/dev/normalized/transit-network.json
 ```
-
-Nearby queries use the same `TransitNetwork` spatial index as production
-routing.
 
 ## Route debugging
 
-The fixture route uses the actual `RoutingService → TransitPlanner → static
-Top-K corridors → TimingSnapshot → temporal search → reconstruct → rank`
-path with deterministic fixture street
-and deterministic service-condition providers:
+`via-route` uses the production
+`RoutingService → TransitPlanner → static Top-K corridors → TimingSnapshot →
+temporal search → reconstruct → rank` path. For a deterministic offline route,
+use the provider-neutral fixture network:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
-  --network ./data/dev/taipei/transit-network.json \
-  --from-lat 25.0478 --from-lon 121.5170 \
-  --to-lat 25.0339 --to-lon 121.5645 \
-  --depart-at 2026-09-15T07:55:00+08:00 \
+  --network ./server/fixtures/routing/network.json \
+  --from-lat 25.1000 --from-lon 121.5000 \
+  --to-lat 25.1030 --to-lon 121.5030 \
+  --depart-at 2026-08-31T10:00:00+08:00 \
   --modes bus,metro,tra,thsr \
   --service-conditions fixture \
   --trace
 ```
 
-For an integration smoke test against TDX realtime, keep the same static
-artifact and switch only the service-condition provider. Live Bus departure
-timing uses the same shared `TdxClient` directly from `BusDepartureSource`:
+For live realtime, build the local GTFS artifact and switch the service
+condition source to `live`. Bus ETA, service conditions, and BikeShare
+availability are realtime provider inputs; TDX is not used to build static
+transit stops, services, calendars, patterns, transfers, or timing metadata.
+Only the live route requires `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` in the
+environment or `.env` file.
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
-  --network ./data/dev/taipei/transit-network.json \
+  --network ./server/data/dev/normalized/transit-network.json \
   --from-lat 25.0478 --from-lon 121.5170 \
   --to-lat 25.0339 --to-lon 121.5645 \
   --depart-now \
@@ -189,28 +103,14 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 ```
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
-`--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, and `thsr`
-transport systems. The offline CLI rejects `bike_share` explicitly; the
-production HTTP server supports adjacent BikeShare segment alternatives when
-its required artifact and availability source are configured. BikeShare does
-not create new transit connectivity or replace origin/destination access.
-It never accepts credential flags.
+`--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, and `thsr`.
+The offline CLI rejects `bike_share` explicitly. BikeShare may replace an
+existing adjacent transit stop movement when a station network and realtime
+availability snapshot are configured; it does not create transit connectivity
+or origin/destination access alternatives.
 
-Recommended smoke routes are Taipei Main Station → Taipei 101, Banqiao →
-Taipei 101 for transfer structure, and an origin/destination away from MRT
-for a Bus + Metro check. Live arrival times are not brittle
-test assertions; verify route existence, leg structure, transfers, and
-positive realistic durations.
-
-`TransferShortcutIndex` is an in-memory index projected directly from the
-validated `TransitNetwork.transfer_edges` at server or CLI startup. Public-
-transit transfer reconstruction does not call Valhalla. There is no separate
-transfer preprocessing flag or persisted
-transfer artifact. The shared TDX fixture set is under
-`server/fixtures/tdx/raw` and uses simplified current-contract payloads for
-both Taipei and New Taipei, plus TRA, THSR, and TRTC.
-
-The TRTC LineTransfer feed also includes inter-operator records. The normalizer
-keeps those records only when both canonical boarding points are present in the
-selected static station scope. The build-stage walking enrichment considers
-only the public-transit BoardingPoints present in that normalized network.
+`TransferShortcutIndex` is projected directly from validated
+`TransitNetwork.transfer_edges` at server or CLI startup. Public-transit
+transfer reconstruction does not call Valhalla. GTFS transfer rows are loaded
+when present; no walking-transfer enrichment or separate transfer artifact is
+created by `via-data`.

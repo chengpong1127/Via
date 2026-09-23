@@ -2,7 +2,7 @@
 
 mod client;
 
-pub use client::{TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError, TdxRawResponse};
+pub use client::{TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError};
 
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 
@@ -11,10 +11,7 @@ pub fn boarding_point_id(stop_uid: impl Into<String>) -> crate::domain::ids::Boa
     crate::domain::ids::BoardingPointId::new(stop_uid)
 }
 
-/// Construct a collision-safe static bike station ID from the TDX city scope
-/// and the provider's station UID. Station UIDs are authority-scoped in the
-/// TDX payloads, but retaining the city scope keeps locally unique IDs from
-/// colliding if a source changes its authority prefix.
+/// Construct the station ID used to match TDX realtime availability values.
 pub fn bike_station_id(
     city: impl Into<String>,
     station_uid: impl Into<String>,

@@ -35,9 +35,18 @@ iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `DemoJourneyPlanner` for previews and offline tests. Navigation under
 `Features/Navigation` is not part of the current implementation.
 
-TDX is the current authoritative source for Taiwan transit static and realtime
-data. Static artifacts and realtime normalization use the same pure TDX-derived
-ID constructors; the server has no database or provider identity-reconciliation layer.
+GTFS is the only static transit source. `via-data` reads the supplied local
+archive; it does not download or refresh it. TDX APIs are used for realtime
+timing, service conditions, and BikeShare availability. Normalize GTFS IDs to
+existing TDX-derived Via IDs when their formats map directly, and report IDs
+that do not map. The server has no database or identity-reconciliation layer.
+
+Sparse Bus stop times do not become fabricated `ScheduledTrip` values. Derive
+separate per-segment Bus costs for Phase 1 from terminal runtime and stop/shape
+distances, using geometric Phase 1 costs when the runtime is insufficient.
+These derived costs are not timetable data. GTFS does not supply a BikeShare
+station catalog, so the GTFS build's BikeShare artifact is empty until another
+static station source is selected.
 
 The retained ADRs in `docs/adr/` record only non-obvious current constraints.
 `CONTEXT.md` is the quick current-state reference; completed issue research and

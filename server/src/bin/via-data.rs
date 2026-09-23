@@ -1,28 +1,22 @@
-use std::{error::Error, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{error::Error, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
-use time::Date;
 use via_server::{
     config::load_dotenv,
     data::{
-        ArtifactCounts, BuildDiagnostics, DataError, DataScope, FetchProgress,
-        StaticTransferPolicy, build_from_raw_with_street, fetch_raw_snapshot_with_progress,
-        load_bikeshare_artifact, load_manifest, load_network_artifact,
+        ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive, load_bikeshare_artifact,
+        load_manifest, load_network_artifact,
     },
     domain::{
         ids::BoardingPointId,
         transit::{TransitMode, TransitNetwork},
     },
-    health::DependencyHealth,
-    providers::{ValhallaConfig, ValhallaProvider},
-    street::StreetRouter,
-    tdx::TdxCredentials,
 };
 
 #[derive(Parser, Debug)]
 #[command(
     name = "via-data",
-    about = "Fetch, build, validate, and inspect Via data artifacts"
+    about = "Build, validate, and inspect Via GTFS data artifacts"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -31,34 +25,18 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    Fetch(FetchArgs),
     Build(BuildArgs),
     Validate(ValidateArgs),
     Inspect(InspectArgs),
 }
 
 #[derive(Args, Debug)]
-struct FetchArgs {
-    #[arg(long, default_value = "taipei-new-taipei")]
-    scope: String,
-    #[arg(long)]
-    date: String,
-    #[arg(long)]
-    output: PathBuf,
-}
-
-#[derive(Args, Debug)]
 struct BuildArgs {
+    /// Local GTFS .zip archive. No network requests are made.
     #[arg(long)]
     input: PathBuf,
     #[arg(long)]
     output: PathBuf,
-    #[arg(long)]
-    scope: Option<String>,
-    #[arg(long)]
-    date: Option<String>,
-    #[arg(long)]
-    geometric_radius_metres: Option<u32>,
 }
 
 #[derive(Args, Debug)]
@@ -121,88 +99,25 @@ struct StatsArgs {
     artifact: ArtifactArgs,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
     let cli = Cli::parse();
     match cli.command {
-        Command::Fetch(args) => fetch(args).await?,
-        Command::Build(args) => build(args).await?,
+        Command::Build(args) => build(args)?,
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
     Ok(())
 }
 
-async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
-    let scope = DataScope::from_str(&args.scope)?;
-    let date = parse_date(&args.date)?;
-    let credentials = TdxCredentials::from_env()?;
-    let report = fetch_raw_snapshot_with_progress(
-        scope,
-        date,
-        &args.output,
-        credentials,
-        print_fetch_progress,
-    )
-    .await?;
-    let snapshot = args.output.join("raw").join(&report.manifest.date);
-    println!(
-        "reused={} downloaded={} total={}",
-        report.reused_count,
-        report.downloaded_count,
-        report.manifest.sources.len()
-    );
-    println!("snapshot: {}", snapshot.display());
-    Ok(())
-}
-
-fn print_fetch_progress(progress: FetchProgress) {
-    match progress {
-        FetchProgress::Reuse {
-            source_key,
-            relative_path,
-        } => println!("REUSE  {source_key}        {relative_path}"),
-        FetchProgress::Fetch { source_key } => println!("FETCH  {source_key}"),
-        FetchProgress::Wait { duration } => {
-            println!("WAIT   {} for TDX rate limit", duration_text(duration))
-        }
-        FetchProgress::Retry {
-            source_key,
-            duration,
-        } => println!(
-            "RETRY  {source_key} after {} (429)",
-            duration_text(duration)
-        ),
-    }
-}
-
-fn duration_text(duration: std::time::Duration) -> String {
-    if duration.subsec_millis() == 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}.{:03}s", duration.as_secs(), duration.subsec_millis())
-    }
-}
-
-async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
-    let scope = args.scope.as_deref().map(DataScope::from_str).transpose()?;
-    let street = build_street_router().await?;
-    let mut policy = StaticTransferPolicy::default();
-    if let Some(radius) = args.geometric_radius_metres {
-        policy.max_geometric_radius_metres = radius;
-    }
-    let result = build_from_raw_with_street(
-        &args.input,
-        &args.output,
-        scope,
-        args.date,
-        street.as_ref(),
-        policy,
-    )
-    .await?;
+fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
+    let result = build_from_gtfs_archive(&args.input, &args.output)?;
     print_build_diagnostics(&result.diagnostics);
-    print_counts("built", &result.manifest.counts, &result.manifest.revisions);
+    print_counts(
+        "built",
+        &result.build.manifest.counts,
+        &result.build.manifest.revisions,
+    );
     println!(
         "network artifact: {}",
         args.output.join("transit-network.json").display()
@@ -213,22 +128,6 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     );
     println!("manifest: {}", args.output.join("manifest.json").display());
     Ok(())
-}
-
-async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    let mut config = ValhallaConfig::local();
-    if let Ok(base_url) = std::env::var("VIA_VALHALLA_URL") {
-        config.base_url = url::Url::parse(&base_url)?;
-    }
-    // Static discovery evaluates many bounded matrices. Keep the request
-    // concurrency bounded and allow a slower matrix to finish publication;
-    // runtime routing retains the stricter provider default.
-    config.request_timeout = Duration::from_secs(5);
-    let provider = ValhallaProvider::new(config)?;
-    if !provider.healthy().await {
-        return Err("Valhalla is not healthy".into());
-    }
-    Ok(Arc::new(provider))
 }
 
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
@@ -340,6 +239,14 @@ fn inspect_service(args: ServiceArgs) -> Result<(), Box<dyn Error>> {
                 .filter(|trip| trip.service_id == service.id)
                 .count()
         );
+        println!(
+            "  GTFS frequencies: {}",
+            network
+                .frequencies
+                .iter()
+                .filter(|frequency| frequency.service_id == service.id)
+                .count()
+        );
     }
     Ok(())
 }
@@ -395,6 +302,11 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     println!("stop count: {}", counts.stops);
     println!("service count: {}", counts.services);
     println!("scheduled trip count: {}", counts.scheduled_trips);
+    println!("frequency count: {}", network.frequencies.len());
+    println!(
+        "derived Bus Phase 1 profiles: {}",
+        network.derived_bus_travel_times.len()
+    );
     for mode in [
         TransitMode::Bus,
         TransitMode::Metro,
@@ -444,83 +356,87 @@ fn print_counts(
     );
 }
 
-fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
-    for skipped in &diagnostics.skipped_services {
+fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
+    println!("GTFS stops loaded: {}", diagnostics.stops_loaded);
+    println!("GTFS trips loaded: {}", diagnostics.trips_loaded);
+    println!(
+        "exact scheduled trips loaded: {}",
+        diagnostics.scheduled_trips_loaded
+    );
+    println!(
+        "GTFS frequencies loaded: {}",
+        diagnostics.frequencies_loaded
+    );
+    println!(
+        "GTFS transfer edges loaded: {}",
+        diagnostics.transfer_edges_loaded
+    );
+    println!("GTFS shape rows loaded: {}", diagnostics.shape_rows_loaded);
+    println!(
+        "GTFS trips skipped for invalid exact timing: {}",
+        diagnostics.invalid_timing_trips
+    );
+    for id in &diagnostics.invalid_timing_trip_examples {
+        println!("  trip: {id}");
+    }
+    for mode in ["bus", "metro", "rail", "high_speed_rail"] {
         println!(
-            "SKIP service={} reason={} stops={}",
-            skipped.service_id, skipped.reason, skipped.stops
+            "{mode}: routes={} services={}",
+            diagnostics
+                .routes_loaded_by_mode
+                .get(mode)
+                .copied()
+                .unwrap_or(0),
+            diagnostics
+                .services_loaded_by_mode
+                .get(mode)
+                .copied()
+                .unwrap_or(0),
         );
     }
     println!(
-        "skipped malformed/degenerate services: {}",
-        diagnostics.skipped_services.len()
+        "timing services: exact/static={} derived_bus={} geometric_fallback={}",
+        diagnostics.exact_static_timing_services,
+        diagnostics.derived_bus_timing_services,
+        diagnostics.geometric_fallback_services
     );
-    if diagnostics.malformed_bus_records > 0
-        || diagnostics.unresolved_bus_stop_references > 0
-        || diagnostics.duplicate_bus_stop_artifacts_removed > 0
-    {
-        println!(
-            "normalization diagnostics: malformed_bus_records={} unresolved_bus_stop_references={} duplicate_bus_stop_artifacts_removed={}",
-            diagnostics.malformed_bus_records,
-            diagnostics.unresolved_bus_stop_references,
-            diagnostics.duplicate_bus_stop_artifacts_removed
-        );
+    println!(
+        "Bus services without a TDX realtime scope: {}",
+        diagnostics.unresolved_bus_realtime_scope_services
+    );
+    for id in &diagnostics.unresolved_bus_realtime_scope_examples {
+        println!("  service: {id}");
     }
-    if let Some(transfer) = &diagnostics.transfer_discovery {
-        println!(
-            "static transfer discovery: boarding_points={} source_points_processed={} geometric_candidate_pairs={} matrix_requests={} reachable_walking_pairs={} inferred_edges_kept={} explicit_edges_kept={} total_transfer_edges={} wall_clock_ms={}",
-            transfer.boarding_points,
-            transfer.source_points_processed,
-            transfer.geometric_candidate_pairs,
-            transfer.matrix_requests,
-            transfer.reachable_walking_pairs,
-            transfer.inferred_edges_kept,
-            transfer.explicit_edges_kept,
-            transfer.total_transfer_edges,
-            transfer.build_wall_clock_milliseconds,
-        );
+    println!(
+        "GTFS stop IDs without current TDX ID mapping: {}",
+        diagnostics.gtfs_stop_ids_without_tdx_mapping
+    );
+    for id in &diagnostics.unmapped_stop_id_examples {
+        println!("  stop: {id}");
     }
-    if let Some(bike) = &diagnostics.bike_station_normalization {
-        println!(
-            "bike station normalization: records={} malformed={} duplicates_removed={} stations={}",
-            bike.station_records,
-            bike.malformed_records,
-            bike.duplicate_records_removed,
-            bike.stations_normalized,
-        );
+    println!(
+        "GTFS service IDs without current TDX realtime mapping: {}",
+        diagnostics.gtfs_service_ids_without_tdx_mapping
+    );
+    for id in &diagnostics.unmapped_service_id_examples {
+        println!("  service: {id}");
     }
-    if let Some(bike) = &diagnostics.bike_access {
-        println!(
-            "bike access discovery: boarding_points_processed={} geometric_candidate_pairs={} matrix_requests={} reachable_bp_to_station={} reachable_station_to_bp={} retained_links={} wall_clock_ms={}",
-            bike.boarding_points_processed,
-            bike.geometric_candidate_pairs,
-            bike.walking_matrix_requests,
-            bike.reachable_boarding_point_to_station_links,
-            bike.reachable_station_to_boarding_point_links,
-            bike.retained_access_links,
-            bike.build_wall_clock_milliseconds,
-        );
-    }
-}
-
-fn parse_date(value: &str) -> Result<Date, DataError> {
-    let format = time::format_description::parse("[year]-[month]-[day]")
-        .map_err(|_| DataError::InvalidDate(value.into()))?;
-    Date::parse(value, &format).map_err(|_| DataError::InvalidDate(value.into()))
 }
 
 fn coordinate(
     latitude: f64,
     longitude: f64,
-) -> Result<via_server::api::RequestCoordinate, DataError> {
+) -> Result<via_server::api::RequestCoordinate, Box<dyn Error>> {
     if !latitude.is_finite()
         || !(-90.0..=90.0).contains(&latitude)
         || !longitude.is_finite()
         || !(-180.0..=180.0).contains(&longitude)
     {
-        return Err(DataError::InvalidCoordinate(format!(
-            "invalid coordinate {latitude},{longitude}"
-        )));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid coordinate {latitude},{longitude}"),
+        )
+        .into());
     }
     Ok(via_server::api::RequestCoordinate {
         latitude,

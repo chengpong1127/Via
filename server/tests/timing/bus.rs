@@ -315,6 +315,32 @@ async fn empty_bus_realtime_falls_back_to_static_schedule() {
 }
 
 #[tokio::test]
+async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
+    let service_id = TransitServiceId::new("service-without-scope");
+    let (tdx, stats) = fixture_client(json!([]), StatusCode::OK).await;
+    let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
+    let source = BusDepartureSource::new(network.clone(), Some(tdx.clone()));
+
+    let realtime = source
+        .realtime_departures_batch(vec![query("service-without-scope", "stop-x", NOW)])
+        .await
+        .unwrap();
+    assert!(realtime[0].as_ref().is_ok_and(Vec::is_empty));
+    assert_eq!(stats.calls.load(Ordering::Relaxed), 0);
+
+    let resolver = bus_dispatcher(network, tdx);
+    let departures = resolver
+        .next_departures(query("service-without-scope", "stop-x", NOW))
+        .await
+        .unwrap();
+    assert_eq!(departures[0].timing_basis, TimingBasis::Schedule);
+    assert_eq!(
+        departures[0].timing_reliability,
+        TimingReliability::Fallback
+    );
+}
+
+#[tokio::test]
 async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
     let service_ids = [
         TransitServiceId::new("service-a"),

@@ -19,8 +19,8 @@ use crate::{
         realtime::FreshnessPolicy,
         transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
         transit_timing::{
-            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
-            TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
+            TimingBasis, TimingReliability,
         },
     },
     tdx::TdxClient,
@@ -30,13 +30,14 @@ const MAX_REALTIME_BATCH_PAIRS: usize = 64;
 
 /// Materializes Metro departures from station-level schedules or headways.
 ///
-/// Metro's static TDX data describes a station timetable/frequency and a
-/// separate inter-station travel-time table. Realtime LiveBoard observations
-/// only replace the boarding-station departure; the same static travel-time
-/// shape is retained for downstream stops.
+/// GTFS schedules and frequency templates provide static Metro timing.
+/// Realtime LiveBoard observations only replace the boarding-station
+/// departure; the same static travel-time shape is retained for downstream
+/// stops.
 #[derive(Clone)]
 pub struct MetroDepartureSource {
     network: Arc<TransitNetwork>,
+    schedule: ScheduleTiming,
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
@@ -59,6 +60,7 @@ struct MetroTimingMetadata {
 impl MetroDepartureSource {
     pub fn new(network: Arc<TransitNetwork>) -> Self {
         Self {
+            schedule: ScheduleTiming::new(network.clone()),
             network,
             tdx: None,
             realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
@@ -395,7 +397,7 @@ impl MetroDepartureSource {
             .collect()
     }
 
-    fn static_departures_for_query(
+    async fn static_departures_for_query(
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
@@ -403,15 +405,18 @@ impl MetroDepartureSource {
             return Ok(Vec::new());
         }
         self.validate_query(&query)?;
-        let Some(timing) = self
+        self.validate_query(&query)?;
+        let timing = self
             .network
             .metro_timings
             .iter()
-            .find(|timing| timing.service_id == query.service_id)
-        else {
-            return Ok(Vec::new());
-        };
+            .find(|timing| timing.service_id == query.service_id);
         let board_index = query.resolve_board_index(&self.network)?;
+        let mut departures = self.schedule.next_departures(query.clone()).await?;
+        departures.extend(self.schedule.next_frequency_departures(query.clone())?);
+        let Some(timing) = timing else {
+            return Ok(departures);
+        };
         let first_service_day = self.network.service_day(query.after);
         let last_service_day = query
             .before
@@ -443,23 +448,39 @@ impl MetroDepartureSource {
         });
         candidates.dedup_by(|left, right| left.0 == right.0);
         candidates.truncate(query.limit);
-        Ok(candidates
-            .into_iter()
-            .filter_map(|(departure_at, timing_basis)| {
-                self.effective_trip(
-                    &query.service_id,
-                    timing,
-                    departure_at,
-                    MetroTimingMetadata {
-                        basis: timing_basis,
-                        reliability: TimingReliability::Fallback,
-                        observed_at: None,
-                    },
-                    &query.board_stop_id,
-                    board_index,
-                )
-            })
-            .collect())
+        departures.extend(
+            candidates
+                .into_iter()
+                .filter_map(|(departure_at, timing_basis)| {
+                    self.effective_trip(
+                        &query.service_id,
+                        timing,
+                        departure_at,
+                        MetroTimingMetadata {
+                            basis: timing_basis,
+                            reliability: TimingReliability::Fallback,
+                            observed_at: None,
+                        },
+                        &query.board_stop_id,
+                        board_index,
+                    )
+                }),
+        );
+        departures.retain(|trip| {
+            let departure = trip.stop_times[board_index].departure_at;
+            departure >= query.after && query.before.is_none_or(|before| departure <= before)
+        });
+        departures.sort_by(|left, right| {
+            left.stop_times[board_index]
+                .departure_at
+                .cmp(&right.stop_times[board_index].departure_at)
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        departures.dedup_by(|left, right| {
+            left.stop_times[board_index].departure_at == right.stop_times[board_index].departure_at
+        });
+        departures.truncate(query.limit);
+        Ok(departures)
     }
 }
 
@@ -477,7 +498,7 @@ impl TransitDepartureSource for MetroDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        self.static_departures_for_query(query)
+        self.static_departures_for_query(query).await
     }
 
     async fn realtime_departures_batch(
@@ -495,7 +516,7 @@ fn metro_service_parts(service_id: &TransitServiceId) -> Option<(&str, u8)> {
     if line_id.is_empty() {
         return None;
     }
-    Some((line_id, direction.parse().ok()?))
+    Some((line_id, direction.split("::").next()?.parse().ok()?))
 }
 
 fn local_station_id(stop_id: &BoardingPointId) -> Option<&str> {

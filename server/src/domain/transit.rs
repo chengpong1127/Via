@@ -144,6 +144,10 @@ pub struct ScheduledTrip {
     pub service_id: TransitServiceId,
     pub active_weekdays: Vec<Weekday>,
     #[serde(default)]
+    pub start_date: Option<Date>,
+    #[serde(default)]
+    pub end_date: Option<Date>,
+    #[serde(default)]
     pub added_service_days: Vec<Date>,
     #[serde(default)]
     pub removed_service_days: Vec<Date>,
@@ -161,6 +165,8 @@ impl ScheduledTrip {
             id,
             service_id,
             active_weekdays,
+            start_date: None,
+            end_date: None,
             added_service_days: Vec::new(),
             removed_service_days: Vec::new(),
             stop_times,
@@ -177,13 +183,87 @@ impl ScheduledTrip {
         self
     }
 
-    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
-        if self.removed_service_days.contains(&service_day) {
-            return false;
-        }
-        self.added_service_days.contains(&service_day)
-            || self.active_weekdays.contains(&service_day.weekday())
+    pub fn with_service_date_range(mut self, start_date: Date, end_date: Date) -> Self {
+        self.start_date = Some(start_date);
+        self.end_date = Some(end_date);
+        self
     }
+
+    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
+        calendar_runs_on(
+            service_day,
+            &self.active_weekdays,
+            self.start_date,
+            self.end_date,
+            &self.added_service_days,
+            &self.removed_service_days,
+        )
+    }
+}
+
+/// GTFS frequency-based service. `template_stop_times` retains the complete
+/// GTFS trip template; it is not added to the scheduled-trip collection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitFrequency {
+    pub id: ScheduledTripId,
+    pub service_id: TransitServiceId,
+    pub start_seconds: u32,
+    pub end_seconds: u32,
+    pub headway_seconds: u32,
+    pub exact_times: bool,
+    pub active_weekdays: Vec<Weekday>,
+    #[serde(default)]
+    pub start_date: Option<Date>,
+    #[serde(default)]
+    pub end_date: Option<Date>,
+    #[serde(default)]
+    pub added_service_days: Vec<Date>,
+    #[serde(default)]
+    pub removed_service_days: Vec<Date>,
+    pub template_stop_times: Vec<ScheduledStopTime>,
+}
+
+impl TransitFrequency {
+    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
+        calendar_runs_on(
+            service_day,
+            &self.active_weekdays,
+            self.start_date,
+            self.end_date,
+            &self.added_service_days,
+            &self.removed_service_days,
+        )
+    }
+}
+
+fn calendar_runs_on(
+    service_day: Date,
+    active_weekdays: &[Weekday],
+    start_date: Option<Date>,
+    end_date: Option<Date>,
+    added_service_days: &[Date],
+    removed_service_days: &[Date],
+) -> bool {
+    if removed_service_days.contains(&service_day) {
+        return false;
+    }
+    if added_service_days.contains(&service_day) {
+        return true;
+    }
+    if start_date.is_some_and(|start| service_day < start)
+        || end_date.is_some_and(|end| service_day > end)
+    {
+        return false;
+    }
+    active_weekdays.contains(&service_day.weekday())
+}
+
+/// Derived Bus segment costs are used only for static Phase 1 ranking and
+/// pruning. They are not timetable stop times.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DerivedBusTravelTime {
+    pub service_id: TransitServiceId,
+    pub adjacent_seconds: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +343,10 @@ pub struct TransitNetwork {
     pub trips: Vec<ScheduledTrip>,
     #[serde(default)]
     pub metro_timings: Vec<MetroTiming>,
+    #[serde(default)]
+    pub frequencies: Vec<TransitFrequency>,
+    #[serde(default)]
+    pub derived_bus_travel_times: Vec<DerivedBusTravelTime>,
     /// Explicit movement time between distinct Boarding Points. Same-point
     /// transfers use `default_transfer_seconds`; distinct points must be listed.
     #[serde(default)]
@@ -290,6 +374,8 @@ impl PartialEq for TransitNetwork {
             && self.services == other.services
             && self.trips == other.trips
             && self.metro_timings == other.metro_timings
+            && self.frequencies == other.frequencies
+            && self.derived_bus_travel_times == other.derived_bus_travel_times
             && self.transfer_edges == other.transfer_edges
             && self.default_transfer_seconds == other.default_transfer_seconds
             && self.static_network_revision == other.static_network_revision
@@ -321,6 +407,8 @@ impl TransitNetwork {
             services,
             trips,
             metro_timings: Vec::new(),
+            frequencies: Vec::new(),
+            derived_bus_travel_times: Vec::new(),
             transfer_edges: Vec::new(),
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
@@ -341,6 +429,19 @@ impl TransitNetwork {
 
     pub fn with_metro_timings(mut self, metro_timings: Vec<MetroTiming>) -> Self {
         self.metro_timings = metro_timings;
+        self
+    }
+
+    pub fn with_frequencies(mut self, frequencies: Vec<TransitFrequency>) -> Self {
+        self.frequencies = frequencies;
+        self
+    }
+
+    pub fn with_derived_bus_travel_times(
+        mut self,
+        travel_times: Vec<DerivedBusTravelTime>,
+    ) -> Self {
+        self.derived_bus_travel_times = travel_times;
         self
     }
 
@@ -410,6 +511,10 @@ impl TransitNetwork {
                 ));
             };
             if (trip.active_weekdays.is_empty() && trip.added_service_days.is_empty())
+                || trip
+                    .start_date
+                    .zip(trip.end_date)
+                    .is_some_and(|(start, end)| start > end)
                 || trip.stop_times.len() != service.pattern.len()
             {
                 return Err(TransitNetworkValidationError::InvalidTripShape(
@@ -423,6 +528,53 @@ impl TransitNetwork {
                 return Err(TransitNetworkValidationError::NonChronologicalTrip(
                     trip.id.clone(),
                 ));
+            }
+        }
+        let mut frequency_ids = HashSet::new();
+        for frequency in &self.frequencies {
+            let Some(service) = self.service(&frequency.service_id) else {
+                return Err(TransitNetworkValidationError::UnknownFrequencyService(
+                    frequency.service_id.clone(),
+                ));
+            };
+            if !frequency_ids.insert(frequency.id.clone())
+                || frequency.start_seconds > frequency.end_seconds
+                || frequency.headway_seconds == 0
+                || frequency
+                    .start_date
+                    .zip(frequency.end_date)
+                    .is_some_and(|(start, end)| start > end)
+                || frequency.template_stop_times.len() != service.pattern.len()
+                || (frequency.active_weekdays.is_empty() && frequency.added_service_days.is_empty())
+                || frequency.template_stop_times.windows(2).any(|times| {
+                    times[0].arrival_seconds > times[0].departure_seconds
+                        || times[0].departure_seconds > times[1].arrival_seconds
+                })
+            {
+                return Err(TransitNetworkValidationError::InvalidFrequencyShape(
+                    frequency.id.clone(),
+                ));
+            }
+        }
+        let mut derived_services = HashSet::new();
+        for timing in &self.derived_bus_travel_times {
+            let Some(service) = self.service(&timing.service_id) else {
+                return Err(
+                    TransitNetworkValidationError::UnknownDerivedBusTravelTimeService(
+                        timing.service_id.clone(),
+                    ),
+                );
+            };
+            if service.transit_mode != TransitMode::Bus
+                || !derived_services.insert(timing.service_id.clone())
+                || timing.adjacent_seconds.len() != service.pattern.len().saturating_sub(1)
+                || timing.adjacent_seconds.contains(&0)
+            {
+                return Err(
+                    TransitNetworkValidationError::InvalidDerivedBusTravelTimeShape(
+                        timing.service_id.clone(),
+                    ),
+                );
             }
         }
         let mut metro_timing_services = HashSet::new();
@@ -518,6 +670,15 @@ impl TransitNetwork {
                 });
             }
         }
+        self.frequencies.sort_by(|left, right| {
+            left.service_id
+                .as_str()
+                .cmp(right.service_id.as_str())
+                .then(left.start_seconds.cmp(&right.start_seconds))
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        self.derived_bus_travel_times
+            .sort_by(|left, right| left.service_id.as_str().cmp(right.service_id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
                 .as_str()
@@ -1043,6 +1204,14 @@ pub enum TransitNetworkValidationError {
     InvalidTripShape(ScheduledTripId),
     #[error("Scheduled Trip {0:?} is not chronological")]
     NonChronologicalTrip(ScheduledTripId),
+    #[error("Transit frequency references unknown Transit Service {0:?}")]
+    UnknownFrequencyService(TransitServiceId),
+    #[error("Transit frequency template {0:?} has an invalid shape or calendar")]
+    InvalidFrequencyShape(ScheduledTripId),
+    #[error("derived Bus travel times reference unknown Transit Service {0:?}")]
+    UnknownDerivedBusTravelTimeService(TransitServiceId),
+    #[error("derived Bus travel times for Transit Service {0:?} have an invalid shape")]
+    InvalidDerivedBusTravelTimeShape(TransitServiceId),
     #[error("transfer edge references unknown endpoints {from:?} -> {to:?}")]
     UnknownTransferEndpoint {
         from: BoardingPointId,
