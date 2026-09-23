@@ -441,6 +441,7 @@ mod tests {
     use super::*;
     use crate::{
         api::RequestCoordinate,
+        data::static_transfers::enrich_network_with_static_transfers,
         domain::{
             ids::{EffectiveTripId, TransitServiceId},
             transit::{TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop},
@@ -451,6 +452,7 @@ mod tests {
             topology::TransitTopologyIndex,
             transfers::TransferShortcutIndex,
         },
+        street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode},
     };
 
     fn stop(value: &str) -> TransitStop {
@@ -623,8 +625,8 @@ mod tests {
     }
 
     #[test]
-    fn valid_walking_transfer_remains_searchable() {
-        let network = TransitNetwork::new(
+    fn generated_walking_transfer_reaches_phase_one_and_phase_two() {
+        let mut network = TransitNetwork::new(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![
                 stop("origin"),
@@ -637,14 +639,38 @@ mod tests {
                 service("second-service", &["second", "destination"]),
             ],
             Vec::new(),
-        )
-        .with_transfer_edges(vec![TransferEdge::new(
-            BoardingPointId::new("first"),
-            BoardingPointId::new("second"),
-            60,
-        )]);
-        let query = query("origin", "destination", 1);
+        );
+        network.services[1].transit_mode = TransitMode::Metro;
+        for (stop, latitude) in network.stops.iter_mut().zip([25.0, 25.01, 25.0105, 25.02]) {
+            stop.coordinate.latitude = latitude;
+        }
+        let first = Coordinate::try_new(25.01, 121.5).unwrap();
+        let second = Coordinate::try_new(25.0105, 121.5).unwrap();
+        let street = FakeStreetRouter::builder()
+            .matrix_leg(
+                StreetTravelMode::Walking,
+                first,
+                second,
+                Seconds(60),
+                Metres(65),
+            )
+            .build();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(enrich_network_with_static_transfers(&mut network, &street))
+            .unwrap();
+        let query = query("origin", "destination", 1)
+            .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro]);
         let (topology, transfers, corridor) = candidate_corridor(&network, &query);
+        assert_eq!(
+            corridor.retained()[0].service_sequence(),
+            vec![
+                TransitServiceId::new("first-service"),
+                TransitServiceId::new("second-service")
+            ]
+        );
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitServiceId::new("first-service"),

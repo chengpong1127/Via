@@ -33,10 +33,11 @@ duplicating service patterns.
 
 The static search starts at all origin access points and uses one global K
 across every selected transit mode. It ranks structurally deduplicated corridors
-with access/egress walking, GTFS transfer edges, exact static travel times
-where available, Phase 1-only derived Bus segment costs where available, and
-documented geometry/speed estimates otherwise. Derived Bus costs are not
-timetable data. BikeShare is not part of this phase. Geometry fallback assumes zero wait and optimistic
+with access/egress walking, GTFS and preprocessed walking transfer edges,
+exact static travel times where available, Phase 1-only derived Bus segment
+costs where available, and documented geometry/speed estimates otherwise.
+Derived Bus costs are not timetable data. BikeShare is not part of this phase.
+Geometry fallback assumes zero wait and optimistic
 speeds of 60 km/h for Bus, 100 km/h for Metro, 160 km/h for Rail, and 350 km/h
 for High Speed Rail. The retained corridor union defines the small set of
 boarding positions, services, and Bus stops used by Phase 2.
@@ -89,7 +90,10 @@ connectivity, replace access/egress, or create a direct BikeShare-only route.
 
 `via-data` reads the local GTFS zip and normalizes stops, routes, trips,
 patterns, calendars, frequencies, transfers, and static timing metadata. It
-does not download or refresh GTFS. TDX APIs supply realtime timing, service
+uses Valhalla walking matrices to derive directional transfers between nearby
+boarding points and stores them in `TransitNetwork.transfer_edges`. The build
+retains at most 12 outgoing transfers per boarding point. It does not download
+or refresh GTFS. TDX APIs supply realtime timing, service
 conditions, and BikeShare availability only. GTFS IDs are normalized to Via's
 existing TDX-derived IDs when their format maps directly; the build reports
 unmapped IDs. The server has no database or identity reconciliation layer.

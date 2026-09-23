@@ -1,16 +1,22 @@
-use std::{error::Error, path::PathBuf};
+use std::{
+    env,
+    error::Error,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use clap::{Args, Parser, Subcommand};
 use via_server::{
     config::load_dotenv,
     data::{
-        ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive, load_bikeshare_artifact,
-        load_manifest, load_network_artifact,
+        ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive_with_street,
+        load_bikeshare_artifact, load_manifest, load_network_artifact,
     },
     domain::{
         ids::BoardingPointId,
         transit::{TransitMode, TransitNetwork},
     },
+    providers::valhalla::{ValhallaConfig, ValhallaProvider},
 };
 
 #[derive(Parser, Debug)]
@@ -32,7 +38,7 @@ enum Command {
 
 #[derive(Args, Debug)]
 struct BuildArgs {
-    /// Local GTFS .zip archive. No network requests are made.
+    /// Local GTFS .zip archive. Valhalla is queried for walking transfers.
     #[arg(long)]
     input: PathBuf,
     #[arg(long)]
@@ -111,7 +117,22 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
-    let result = build_from_gtfs_archive(&args.input, &args.output)?;
+    let started = Instant::now();
+    let mut config = ValhallaConfig::local();
+    config.request_timeout = Duration::from_secs(15);
+    if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
+        config.base_url = url::Url::parse(&base_url)?;
+    }
+    let street = ValhallaProvider::new(config)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(build_from_gtfs_archive_with_street(
+        &args.input,
+        &args.output,
+        &street,
+    ))?;
+    println!("build latency: {} ms", started.elapsed().as_millis());
     print_build_diagnostics(&result.diagnostics);
     print_counts(
         "built",
@@ -357,6 +378,22 @@ fn print_counts(
 }
 
 fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
+    if let Some(stats) = &diagnostics.static_transfers {
+        println!(
+            "walking transfers: boarding_points={} candidates={} matrix_pairs={} reachable={} retained={} removed_by_limits={} removed_by_fanout={} latency_ms={}",
+            stats.boarding_points,
+            stats.geographic_candidate_pairs,
+            stats.matrix_pairs_queried,
+            stats.reachable_walking_pairs,
+            stats.retained_edges,
+            stats.removed_by_limits,
+            stats.removed_by_fanout,
+            stats.elapsed_milliseconds
+        );
+        for (modes, count) in &stats.by_mode {
+            println!("  {modes}: {count}");
+        }
+    }
     println!("GTFS stops loaded: {}", diagnostics.stops_loaded);
     println!("GTFS trips loaded: {}", diagnostics.trips_loaded);
     println!(

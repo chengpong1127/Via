@@ -17,7 +17,11 @@ use crate::domain::{
 
 pub mod bike_access;
 pub mod gtfs;
-pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput, build_from_gtfs_archive};
+pub mod static_transfers;
+pub use gtfs::{
+    GtfsBuildDiagnostics, GtfsBuildOutput, build_from_gtfs_archive,
+    build_from_gtfs_archive_with_street,
+};
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 6;
 
@@ -83,6 +87,8 @@ pub enum DataError {
     InvalidArtifact(#[from] TransitNetworkValidationError),
     #[error("bike-share artifact is invalid: {0}")]
     InvalidBikeShareArtifact(#[from] crate::domain::bikeshare::BikeShareNetworkValidationError),
+    #[error("walking transfer preprocessing failed: {0}")]
+    StreetRouting(#[from] crate::street::StreetRoutingError),
 }
 
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {

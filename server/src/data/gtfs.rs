@@ -20,7 +20,9 @@ use zip::{ZipArchive, read::ZipFile};
 use crate::{
     data::{
         ARTIFACT_SCHEMA_VERSION, ArtifactCounts, ArtifactManifest, ArtifactRevisions, BuildOutput,
-        DataError, write_bikeshare_artifact,
+        DataError,
+        static_transfers::{TransferStatistics, enrich_network_with_static_transfers},
+        write_bikeshare_artifact,
     },
     domain::{
         bikeshare::BikeShareNetwork,
@@ -31,11 +33,14 @@ use crate::{
             TransitMode, TransitNetwork, TransitService, TransitStop, default_service_day_boundary,
         },
     },
+    street::StreetRouter,
     tdx::transit_service_id_for_direction,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct GtfsBuildDiagnostics {
+    #[serde(skip)]
+    pub static_transfers: Option<TransferStatistics>,
     pub stops_loaded: usize,
     pub routes_loaded_by_mode: BTreeMap<String, usize>,
     pub services_loaded_by_mode: BTreeMap<String, usize>,
@@ -135,6 +140,15 @@ struct ServiceBuilder {
     has_exact_timing: bool,
 }
 
+type NormalizedPatterns = (
+    Vec<TransitService>,
+    Vec<ScheduledTrip>,
+    Vec<TransitFrequency>,
+    Vec<DerivedBusTravelTime>,
+    (usize, usize, usize),
+    (usize, Vec<String>),
+);
+
 impl ServiceBuilder {
     fn new(key: &ServicePatternKey) -> Self {
         Self {
@@ -166,6 +180,22 @@ impl ServiceBuilder {
 }
 
 pub fn build_from_gtfs_archive(input: &Path, output: &Path) -> Result<GtfsBuildOutput, DataError> {
+    let (network, diagnostics) = normalize_gtfs(input)?;
+    persist_gtfs(input, output, network, diagnostics)
+}
+
+pub async fn build_from_gtfs_archive_with_street(
+    input: &Path,
+    output: &Path,
+    street: &dyn StreetRouter,
+) -> Result<GtfsBuildOutput, DataError> {
+    let (mut network, mut diagnostics) = normalize_gtfs(input)?;
+    diagnostics.static_transfers =
+        Some(enrich_network_with_static_transfers(&mut network, street).await?);
+    persist_gtfs(input, output, network, diagnostics)
+}
+
+fn normalize_gtfs(input: &Path) -> Result<(TransitNetwork, GtfsBuildDiagnostics), DataError> {
     let file = File::open(input).map_err(|error| DataError::Io(input.into(), error))?;
     let mut archive = ZipArchive::new(file).map_err(|error| invalid_archive(input, error))?;
     let names = archive
@@ -276,7 +306,6 @@ pub fn build_from_gtfs_archive(input: &Path, output: &Path) -> Result<GtfsBuildO
     diagnostics.gtfs_service_ids_without_tdx_mapping = unmapped_services.len();
     diagnostics.unmapped_service_id_examples = unmapped_services.into_iter().take(20).collect();
 
-    let derived_bus_times = derived_bus_times;
     services.shrink_to_fit();
     frequencies_out.shrink_to_fit();
     let network = TransitNetwork::new(default_service_day_boundary(), stops, services, trips_out)
@@ -285,6 +314,15 @@ pub fn build_from_gtfs_archive(input: &Path, output: &Path) -> Result<GtfsBuildO
         .with_transfer_edges(transfers)
         .canonicalize();
 
+    Ok((network, diagnostics))
+}
+
+fn persist_gtfs(
+    input: &Path,
+    output: &Path,
+    network: TransitNetwork,
+    diagnostics: GtfsBuildDiagnostics,
+) -> Result<GtfsBuildOutput, DataError> {
     let bike_share_network = BikeShareNetwork::new(Vec::new());
     let static_revision = super::revision_for_network(&network, false)?;
     let schedule_revision = super::revision_for_network(&network, true)?;
@@ -850,14 +888,7 @@ fn normalize_patterns(
     frequency_rows: &HashMap<u32, Vec<FrequencyRow>>,
     stop_times: &[CompactStopTime],
     shapes: &HashMap<String, Vec<ShapePoint>>,
-) -> (
-    Vec<TransitService>,
-    Vec<ScheduledTrip>,
-    Vec<TransitFrequency>,
-    Vec<DerivedBusTravelTime>,
-    (usize, usize, usize),
-    (usize, Vec<String>),
-) {
+) -> NormalizedPatterns {
     let mut builders = Vec::<ServiceBuilder>::new();
     let mut service_indices = HashMap::<ServicePatternKey, usize>::new();
     let mut invalid_timing_trip_count = 0;
