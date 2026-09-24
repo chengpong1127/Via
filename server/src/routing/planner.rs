@@ -31,7 +31,7 @@ pub struct TransitPlanner {
     bike: Option<BikeSegmentPlanner>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransitPlannerStats {
     pub reachable_boarding_opportunities: usize,
     pub reachable_services: usize,
@@ -55,6 +55,7 @@ pub struct TransitPlannerStats {
     pub estimated_cost: usize,
     pub mixed_cost: usize,
     pub static_search_limit_reached: bool,
+    pub phase1: static_search::StaticSearchStats,
     pub bike_share_enabled: bool,
     pub relevant_bike_stations: usize,
     pub bike_candidate_segments: usize,
@@ -131,21 +132,53 @@ impl TransitPlanner {
             estimated_cost: static_stats.estimated_cost,
             mixed_cost: static_stats.mixed_cost,
             static_search_limit_reached: static_stats.static_search_limit_reached,
+            phase1: static_stats.clone(),
             ..TransitPlannerStats::default()
         };
 
         tracing::debug!(
             target: "via_server::routing",
             static_search_states_expanded = static_stats.static_search_states_expanded,
+            static_unattributed_states_expanded = static_stats.static_unattributed_states_expanded,
             static_service_scans = static_stats.static_service_scans,
             static_positions_scanned = static_stats.static_positions_scanned,
+            static_walking_transfer_expansions = static_stats.static_walking_transfer_expansions,
+            static_duplicate_states_rejected = static_stats.static_duplicate_states_rejected,
+            static_dominance_states_rejected = static_stats.static_dominance_states_rejected,
+            static_structurally_equivalent_states_rejected = static_stats.static_structurally_equivalent_states_rejected,
+            static_equivalent_service_occurrences_collapsed = static_stats.static_equivalent_service_occurrences_collapsed,
+            static_required_endpoint_mode_pairs = ?static_stats.static_required_endpoint_mode_pairs,
+            static_complete_endpoint_mode_pairs = ?static_stats.static_complete_endpoint_mode_pairs,
             static_complete_candidates_found = static_stats.static_complete_candidates_found,
+            static_unique_structural_corridors_found = static_stats.static_unique_structural_corridors_found,
             static_unique_corridors_found = static_stats.static_unique_corridors_found,
             static_corridors_retained = static_stats.static_corridors_retained,
             static_corridor_services = static_stats.static_corridor_services,
             static_corridor_positions = static_stats.static_corridor_positions,
             static_corridor_bus_stops = static_stats.static_corridor_bus_stops,
             static_search_latency_ms = static_stats.static_search_latency_ms,
+            static_pattern_index_build_latency_us = static_stats.static_pattern_index_build_latency_us,
+            static_pattern_index_service_edge_scans = static_stats.static_pattern_index_service_edge_scans,
+            static_pattern_index_positions_scanned = static_stats.static_pattern_index_positions_scanned,
+            static_ride_profile_build_latency_us = static_stats.static_ride_profile_build_latency_us,
+            static_ride_profile_services_scanned = static_stats.static_ride_profile_services_scanned,
+            static_ride_profile_positions_scanned = static_stats.static_ride_profile_positions_scanned,
+            static_lower_bound_latency_us = static_stats.static_lower_bound_latency_us,
+            static_lower_bound_nodes_settled = static_stats.static_lower_bound_nodes_settled,
+            static_lower_bound_pattern_edges_scanned = static_stats.static_lower_bound_pattern_edges_scanned,
+            static_lower_bound_transfer_edges_scanned = static_stats.static_lower_bound_transfer_edges_scanned,
+            static_forward_search_latency_us = static_stats.static_forward_search_latency_us,
+            static_retention_latency_us = static_stats.static_retention_latency_us,
+            static_mode_stats = ?static_stats.static_mode_stats,
+            static_expanded_stop_occurrence_samples = static_stats.static_expanded_stop_occurrence_samples,
+            static_expanded_stop_occurrences_average_milli = static_stats.static_expanded_stop_occurrences_average_milli,
+            static_expanded_stop_occurrences_max = static_stats.static_expanded_stop_occurrences_max,
+            static_expanded_stop_pattern_occurrences_average_milli = static_stats.static_expanded_stop_pattern_occurrences_average_milli,
+            static_expanded_stop_pattern_occurrences_max = static_stats.static_expanded_stop_pattern_occurrences_max,
+            static_expanded_egress_states = static_stats.static_expanded_egress_states,
+            static_expanded_terminal_transfer_source_states = static_stats.static_expanded_terminal_transfer_source_states,
+            static_expanded_states_by_leg_count = ?static_stats.static_expanded_states_by_leg_count,
+            static_most_expanded_stops = ?static_stats.static_most_expanded_stops,
             kth_static_duration_seconds = ?static_stats.kth_static_duration_seconds,
             exact_schedule_cost = static_stats.exact_schedule_cost,
             derived_bus_cost = static_stats.derived_bus_cost,
@@ -154,6 +187,17 @@ impl TransitPlanner {
             static_search_limit_reached = static_stats.static_search_limit_reached,
             max_legs,
             "static Top-K corridor search"
+        );
+        tracing::debug!(
+            target: "via_server::routing",
+            service_sequence_group_count = static_stats.static_retained_sequence_groups.len(),
+            retained_sequence_groups = ?static_stats.static_retained_sequence_groups,
+            "retained static corridor sequence groups"
+        );
+        tracing::debug!(
+            target: "via_server::routing",
+            retained_mode_sequence_groups = ?static_stats.static_retained_mode_sequence_groups,
+            "retained static corridor mode-sequence groups"
         );
         for (index, retained) in corridor.retained().iter().enumerate() {
             tracing::debug!(
@@ -451,7 +495,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timing_queries_include_only_positions_in_retained_corridors() {
+    async fn timing_queries_include_all_services_in_a_retained_pattern_family() {
         let loader = Arc::new(RecordingTimingLoader {
             trips: HashMap::from([
                 (
@@ -470,9 +514,19 @@ mod tests {
         let (_, stats) = planner.plan_with_stats(query(1)).await.unwrap();
 
         let queries = loader.queries.lock().unwrap();
-        assert_eq!(queries.len(), 1);
-        assert_eq!(queries[0].service_id, TransitServiceId::new("static-fast"));
-        assert_eq!(stats.static_corridor_positions, 1);
+        assert_eq!(queries.len(), 2);
+        assert!(
+            queries
+                .iter()
+                .any(|query| query.service_id == TransitServiceId::new("static-fast"))
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|query| query.service_id == TransitServiceId::new("realtime-fast"))
+        );
+        assert_eq!(stats.static_corridor_positions, 2);
+        assert_eq!(stats.static_corridors_retained, 1);
     }
 
     #[tokio::test]
@@ -494,7 +548,7 @@ mod tests {
 
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
-        assert_eq!(stats.static_corridors_retained, 2);
+        assert_eq!(stats.static_corridors_retained, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].transit_service_sequence(),

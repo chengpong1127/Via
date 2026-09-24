@@ -44,6 +44,15 @@ speeds of 60 km/h for Bus, 100 km/h for Metro, 160 km/h for Rail, and 350 km/h
 for High Speed Rail. The retained corridor union defines the small set of
 boarding positions, services, and Bus stops used by Phase 2.
 
+Phase 1 groups services by exact mode and full stop pattern, then reuses
+zero-wait ride profiles and minimum adjacent costs across equivalent services.
+Retention seeds the best corridor for each distinct mode-transition sequence,
+then fills the same global K budget in duration order. A redundant single-mode
+family therefore cannot remove every useful multimodal alternative. This is
+structural diversity, not a per-mode quota; the search safety limit is unchanged.
+Services exposing the same mode and board/alight segment as a retained corridor
+remain in the Phase 2 candidate union, including overlapping pattern variants.
+
 `TransitPlanner` creates timing queries only for that retained union and awaits
 `TimingSnapshotLoader` before calling temporal search. `DepartureDispatcher`
 groups these queries by mode;
