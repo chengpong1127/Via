@@ -155,7 +155,7 @@ impl TransitPlanner {
             max_legs,
             "static Top-K corridor search"
         );
-        for (index, retained) in corridor.retained().iter().take(10).enumerate() {
+        for (index, retained) in corridor.retained().iter().enumerate() {
             tracing::debug!(
                 target: "via_server::routing",
                 corridor_rank = index + 1,
@@ -209,6 +209,7 @@ impl TransitPlanner {
                 )
             })
             .collect::<Vec<_>>();
+        let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
         let bike_enabled = query.allow_bike_share && self.bike.is_some();
         let max_variants = query.max_candidates;
@@ -235,6 +236,8 @@ impl TransitPlanner {
         };
         tracing::debug!(
             target: "via_server::routing",
+            positions_requested = timing_positions_requested,
+            snapshot_summary = ?snapshot.trace_summary(),
             relevant_bus_stops = corridor.bus_stops().len(),
             bike_share_enabled = bike_enabled,
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,

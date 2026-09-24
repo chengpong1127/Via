@@ -31,7 +31,8 @@ stop-time rows with incomplete intermediate times are not turned into
 `ScheduledTrip` records. When terminal anchors provide a full runtime, the
 builder distributes that runtime across adjacent stops using GTFS shape
 distance, then geographic distance as a fallback. The per-segment median is a
-Phase 1 ranking estimate; it is not an exact timetable. Services without usable
+Phase 1 ranking estimate and can time downstream segments after a realtime Bus
+boarding prediction; it is not an exact timetable. Services without usable
 static timing use the planner's geometric estimate.
 
 The build output is:

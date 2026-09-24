@@ -59,6 +59,8 @@ struct Cli {
     modes: String,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
+    #[arg(long)]
+    valhalla_timeout_ms: Option<u64>,
     #[arg(long = "service-conditions", value_enum, default_value_t = ServiceConditionMode::Fixture)]
     service_conditions: ServiceConditionMode,
     #[arg(long)]
@@ -104,7 +106,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let cached = Arc::new(CachedServiceConditionProvider::new(service_conditions));
     let bus_timing_metrics = BusTimingMetrics::default();
-    let street = build_street_router(cli.service_conditions).await?;
+    let street = build_street_router(cli.service_conditions, cli.valhalla_timeout_ms).await?;
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), tdx.clone())
             .with_metrics(bus_timing_metrics.clone()),
@@ -124,6 +126,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut limits = RoutingLimits::default();
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;
+    }
+    if let Some(timeout_ms) = cli.valhalla_timeout_ms {
+        limits.request_timeout = std::time::Duration::from_millis(timeout_ms.saturating_mul(5));
     }
     let request = request_from_cli(&cli)?;
     if request.selected_modes.contains(&TransportMode::BikeShare) {
@@ -199,11 +204,15 @@ async fn build_live_service_conditions()
 
 async fn build_street_router(
     service_conditions: ServiceConditionMode,
+    timeout_ms: Option<u64>,
 ) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
     if matches!(service_conditions, ServiceConditionMode::Fixture) {
         return Ok(Arc::new(StraightLineStreetRouter::default()));
     }
     let mut config = ValhallaConfig::local();
+    if let Some(timeout_ms) = timeout_ms {
+        config.request_timeout = std::time::Duration::from_millis(timeout_ms);
+    }
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
         config.base_url = url::Url::parse(&base_url)?;
     }

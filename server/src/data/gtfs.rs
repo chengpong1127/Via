@@ -2,7 +2,8 @@
 //!
 //! The archive is read in place. Realtime providers remain responsible for
 //! live timing and service conditions; the Bus costs here are Phase 1 ranking
-//! inputs and are never written into scheduled stop times.
+//! inputs and Phase 2 downstream estimates after a realtime boarding. They are
+//! never written into scheduled stop times.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

@@ -258,8 +258,9 @@ fn calendar_runs_on(
     active_weekdays.contains(&service_day.weekday())
 }
 
-/// Derived Bus segment costs are used only for static Phase 1 ranking and
-/// pruning. They are not timetable stop times.
+/// Derived Bus segment costs are estimates for Phase 1 ranking and for
+/// downstream travel after a realtime boarding prediction. They are not
+/// timetable stop times.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedBusTravelTime {
     pub service_id: TransitServiceId,
@@ -956,6 +957,11 @@ impl TransitIndexes {
                 });
             }
         }
+        let derived_bus = network
+            .derived_bus_travel_times
+            .iter()
+            .map(|timing| (&timing.service_id, &timing.adjacent_seconds))
+            .collect::<HashMap<_, _>>();
         for service in &network.services {
             let durations = indexes
                 .representative_trip_by_service
@@ -970,6 +976,16 @@ impl TransitIndexes {
                                 .saturating_sub(times[0].departure_seconds)
                         })
                         .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    (service.transit_mode == TransitMode::Bus)
+                        .then(|| derived_bus.get(&service.id).copied())
+                        .flatten()
+                        .filter(|durations| {
+                            durations.len() == service.pattern.len().saturating_sub(1)
+                                && durations.iter().all(|duration| *duration > 0)
+                        })
+                        .cloned()
                 })
                 .unwrap_or_else(|| vec![120; service.pattern.len().saturating_sub(1)]);
             indexes

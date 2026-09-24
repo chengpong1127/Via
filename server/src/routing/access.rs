@@ -222,17 +222,26 @@ fn nearby_stops(
         .collect::<Vec<_>>();
     let limit = limit.max(1);
     let mut selected = Vec::with_capacity(limit.min(candidates.len()));
-    for mode in allowed_transit_modes {
-        if let Some(candidate) = candidates
-            .iter()
-            .find(|(stop_id, _)| network.modes_at_stop(stop_id).contains(mode))
-            && !selected.iter().any(
-                |(stop_id, _): &(crate::domain::ids::BoardingPointId, Coordinate)| {
-                    stop_id == &candidate.0
-                },
-            )
-        {
-            selected.push(candidate.clone());
+    loop {
+        let mut added = false;
+        for mode in allowed_transit_modes {
+            if selected.len() >= limit {
+                break;
+            }
+            if let Some(candidate) = candidates.iter().find(|(stop_id, _)| {
+                network.modes_at_stop(stop_id).contains(mode)
+                    && !selected.iter().any(
+                        |(selected_id, _): &(crate::domain::ids::BoardingPointId, Coordinate)| {
+                            selected_id == stop_id
+                        },
+                    )
+            }) {
+                selected.push(candidate.clone());
+                added = true;
+            }
+        }
+        if !added || selected.len() >= limit {
+            break;
         }
     }
     for candidate in candidates {
@@ -333,6 +342,13 @@ mod tests {
             .map(|index| stop_at(&format!("bus-stop-{index}"), origin))
             .collect::<Vec<_>>();
         stops.push(stop_at("metro-stop", metro_coordinate));
+        stops.push(stop_at(
+            "other-metro-stop",
+            RequestCoordinate {
+                latitude: 25.0005,
+                longitude: 121.5,
+            },
+        ));
         let mut services = Vec::new();
         for index in 0..24 {
             services.push(TransitService::new(
@@ -362,6 +378,16 @@ mod tests {
             "red",
             vec![
                 BoardingPointId::new("metro-stop"),
+                BoardingPointId::new("metro-end"),
+            ],
+        ));
+        services.push(TransitService::new(
+            crate::domain::ids::TransitServiceId::new("blue-line"),
+            TransitMode::Metro,
+            "blue",
+            "blue",
+            vec![
+                BoardingPointId::new("other-metro-stop"),
                 BoardingPointId::new("metro-end"),
             ],
         ));
@@ -397,6 +423,11 @@ mod tests {
             nearby
                 .iter()
                 .any(|(stop_id, _)| stop_id.as_str() == "metro-stop")
+        );
+        assert!(
+            nearby
+                .iter()
+                .any(|(stop_id, _)| stop_id.as_str() == "other-metro-stop")
         );
     }
 

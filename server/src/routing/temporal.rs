@@ -91,6 +91,11 @@ pub struct TemporalSearchStats {
     pub effective_trips: usize,
     pub transfer_expansions: usize,
     pub final_candidates: usize,
+    pub positions_outside_corridor: usize,
+    pub positions_over_leg_budget: usize,
+    pub positions_without_departures: usize,
+    pub candidates_before_pareto: usize,
+    pub expansion_limit_reached: bool,
 }
 
 pub fn search(
@@ -162,6 +167,7 @@ pub fn search_with_stats(
         let mut next_frontier = Vec::new();
         for state in frontier {
             if stats.states_expanded >= query.max_expansions {
+                stats.expansion_limit_reached = true;
                 break;
             }
             stats.states_expanded += 1;
@@ -169,18 +175,24 @@ pub fn search_with_stats(
                 let Some(remaining_legs) =
                     corridor.remaining_legs(&position.service_id, position.stop_index)
                 else {
+                    stats.positions_outside_corridor += 1;
                     continue;
                 };
                 if state.legs_used.saturating_add(remaining_legs) > max_legs {
+                    stats.positions_over_leg_budget += 1;
                     continue;
                 }
                 stats.departure_lookups += 1;
-                for trip in snapshot.departures(
+                let departures = snapshot.departures(
                     &position.service_id,
                     position.stop_index,
                     state.ready_at,
                     query.max_departures_per_query,
-                ) {
+                );
+                if departures.is_empty() {
+                    stats.positions_without_departures += 1;
+                }
+                for trip in departures {
                     stats.effective_trips += 1;
                     scan_trip(
                         network,
@@ -203,6 +215,7 @@ pub fn search_with_stats(
         frontier = next_frontier;
     }
 
+    stats.candidates_before_pareto = candidates.len();
     let candidates = pareto_candidates(candidates, query.max_candidates);
     stats.final_candidates = candidates.len();
     tracing::debug!(
@@ -213,6 +226,11 @@ pub fn search_with_stats(
         effective_trips = stats.effective_trips,
         transfer_expansions = stats.transfer_expansions,
         final_candidates = stats.final_candidates,
+        positions_outside_corridor = stats.positions_outside_corridor,
+        positions_over_leg_budget = stats.positions_over_leg_budget,
+        positions_without_departures = stats.positions_without_departures,
+        candidates_before_pareto = stats.candidates_before_pareto,
+        expansion_limit_reached = stats.expansion_limit_reached,
         latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         "temporal search"
     );

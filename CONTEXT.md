@@ -34,9 +34,11 @@ duplicating service patterns.
 The static search starts at all origin access points and uses one global K
 across every selected transit mode. It ranks structurally deduplicated corridors
 with access/egress walking, GTFS and preprocessed walking transfer edges,
-exact static travel times where available, Phase 1-only derived Bus segment
+exact static travel times where available, derived Bus segment
 costs where available, and documented geometry/speed estimates otherwise.
-Derived Bus costs are not timetable data. BikeShare is not part of this phase.
+Derived Bus costs are not timetable data. Phase 2 may use them downstream of a
+TDX boarding prediction when a Bus service has no complete GTFS trip. BikeShare
+is not part of this phase.
 Geometry fallback assumes zero wait and optimistic
 speeds of 60 km/h for Bus, 100 km/h for Metro, 160 km/h for Rail, and 350 km/h
 for High Speed Rail. The retained corridor union defines the small set of

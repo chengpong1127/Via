@@ -16,7 +16,7 @@ use super::{
     transit::TransitNetwork,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimingBasis {
     RealtimePrediction,
     DelayAdjustedSchedule,
@@ -127,6 +127,30 @@ struct StoredDepartures {
 }
 
 impl TimingSnapshot {
+    pub(crate) fn trace_summary(&self) -> (usize, usize, usize, Vec<(TimingBasis, usize)>) {
+        let mut successful = 0;
+        let mut empty = 0;
+        let mut failed = 0;
+        let mut bases = HashMap::<TimingBasis, usize>::new();
+        for departures in self.departures.values() {
+            if departures.preferred.is_empty() && departures.fallback.is_empty() {
+                if departures.failure.is_some() {
+                    failed += 1;
+                } else {
+                    empty += 1;
+                }
+            } else {
+                successful += 1;
+                for trip in departures.preferred.iter().chain(&departures.fallback) {
+                    *bases.entry(trip.timing_basis).or_default() += 1;
+                }
+            }
+        }
+        let mut bases = bases.into_iter().collect::<Vec<_>>();
+        bases.sort_by_key(|(basis, _)| format!("{basis:?}"));
+        (successful, empty, failed, bases)
+    }
+
     pub fn insert(
         &mut self,
         service_id: TransitServiceId,

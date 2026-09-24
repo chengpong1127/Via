@@ -265,6 +265,20 @@ impl RoutingService {
                 }
             };
             stage_metrics.transit_candidate_stops = access.len() + egress.len();
+            tracing::debug!(
+                target: "via_server::routing",
+                access = ?access.iter().map(|point| (
+                    point.stop_id.as_str(),
+                    self.transit_network.modes_at_stop(&point.stop_id),
+                    point.walking_seconds,
+                )).collect::<Vec<_>>(),
+                egress = ?egress.iter().map(|point| (
+                    point.stop_id.as_str(),
+                    self.transit_network.modes_at_stop(&point.stop_id),
+                    point.walking_seconds,
+                )).collect::<Vec<_>>(),
+                "discovered transit access and egress"
+            );
 
             if !access.is_empty() && !egress.is_empty() {
                 let query = TransitQuery {

@@ -15,7 +15,10 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339, ma
 use via_server::{
     domain::{
         ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
-        transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
+        transit::{
+            DerivedBusTravelTime, ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork,
+            TransitService,
+        },
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{BusDepartureSource, DepartureDispatcher, TransitDepartureSource},
@@ -461,6 +464,35 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
     assert_eq!(
         trip.stop_times[1].arrival_at - trip.stop_times[0].departure_at,
         Duration::seconds(120)
+    );
+}
+
+#[tokio::test]
+async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_schedule() {
+    let service_id = TransitServiceId::new("service-a");
+    let update = recent_update();
+    let (tdx, _) = fixture_client(
+        json!([arrival("service-a", "stop-x", 60, &update)]),
+        StatusCode::OK,
+    )
+    .await;
+    let mut network = network_for(std::slice::from_ref(&service_id));
+    network.trips.clear();
+    let network = network.with_derived_bus_travel_times(vec![DerivedBusTravelTime {
+        service_id,
+        adjacent_seconds: vec![347],
+    }]);
+    let resolver = bus_dispatcher(Arc::new(network), tdx);
+
+    let trip = &resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await
+        .unwrap()[0];
+    assert_eq!(trip.scheduled_trip_id, None);
+    assert_eq!(trip.timing_basis, TimingBasis::RealtimePrediction);
+    assert_eq!(
+        trip.stop_times[1].arrival_at - trip.stop_times[0].departure_at,
+        Duration::seconds(347)
     );
 }
 
