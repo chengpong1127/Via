@@ -8,7 +8,7 @@ use futures_util::future::join_all;
 use time::OffsetDateTime;
 use via_server::{
     domain::{
-        ids::TransitServiceId,
+        ids::TransitPatternId,
         realtime::{
             Freshness, FreshnessState, NormalizedRealtimeValue, RealtimeValue, ServiceCondition,
             ServiceConditionState,
@@ -30,7 +30,7 @@ struct CountingProvider {
 impl ServiceConditionProvider for CountingProvider {
     async fn service_conditions(
         &self,
-        _service_ids: &[TransitServiceId],
+        _service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
@@ -57,8 +57,8 @@ fn condition_value(freshness: Freshness) -> NormalizedRealtimeValue {
     }
 }
 
-fn services() -> Vec<TransitServiceId> {
-    vec![TransitServiceId::new("service-1")]
+fn services() -> Vec<TransitPatternId> {
+    vec![TransitPatternId::new("service-1")]
 }
 
 fn fresh_value() -> NormalizedRealtimeValue {

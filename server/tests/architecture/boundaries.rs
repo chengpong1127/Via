@@ -104,7 +104,7 @@ fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions()
     let journey = source("src/domain/journey.rs");
     assert_eq!(journey.matches("enum JourneyMode").count(), 1);
     assert!(journey.contains("pub enum JourneyMode"));
-    assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitServiceId)"));
+    assert!(source("src/domain/ids.rs").contains("opaque_id!(TransitPatternId)"));
     let planner = source("src/routing/planner.rs");
     assert!(planner.contains("pub struct TransitPlanner"));
     assert!(planner.contains("static_search::generate"));

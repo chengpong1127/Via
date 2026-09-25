@@ -31,6 +31,7 @@ use crate::{
     health::DependencyHealth,
     observability::OperationalMetrics,
     providers::bikeshare::BikeAvailabilitySource,
+    providers::bindings::TdxProviderBindings,
     providers::service_conditions::{
         CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
         ServiceConditionMetrics, ServiceConditionProvider,
@@ -62,6 +63,7 @@ pub struct RouterDependencies {
     service_condition_cache_ttl: Duration,
     bike_share_network: Arc<BikeShareNetwork>,
     bike_availability_source: Arc<dyn BikeAvailabilitySource>,
+    provider_bindings: Arc<TdxProviderBindings>,
 }
 
 impl RouterDependencies {
@@ -76,11 +78,17 @@ impl RouterDependencies {
             service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
             bike_share_network,
             bike_availability_source,
+            provider_bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
 
     pub fn with_tdx(mut self, tdx: Arc<TdxClient>) -> Self {
         self.tdx = Some(tdx);
+        self
+    }
+
+    pub fn with_provider_bindings(mut self, bindings: TdxProviderBindings) -> Self {
+        self.provider_bindings = Arc::new(bindings);
         self
     }
 
@@ -108,12 +116,19 @@ where
     let transit_network = Arc::new(transit_network);
     let bus = Arc::new(
         BusDepartureSource::new(transit_network.clone(), dependencies.tdx.clone())
+            .with_bindings(dependencies.provider_bindings.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(
-        MetroDepartureSource::new(transit_network.clone()).with_tdx(dependencies.tdx.clone()),
+        MetroDepartureSource::new(transit_network.clone())
+            .with_bindings(dependencies.provider_bindings.clone())
+            .with_tdx(dependencies.tdx.clone()),
     );
-    let tra = Arc::new(TraDepartureSource::new(transit_network.clone()).with_tdx(dependencies.tdx));
+    let tra = Arc::new(
+        TraDepartureSource::new(transit_network.clone())
+            .with_bindings(dependencies.provider_bindings)
+            .with_tdx(dependencies.tdx),
+    );
     let thsr = Arc::new(ThsrDepartureSource::new(transit_network.clone()));
     let departure_resolver = Arc::new(DepartureDispatcher::new(
         transit_network.clone(),

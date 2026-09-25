@@ -173,7 +173,7 @@ pub fn search_with_stats(
             stats.states_expanded += 1;
             for position in topology.occurrences_at(&state.stop_id) {
                 let Some(remaining_legs) =
-                    corridor.remaining_legs(&position.service_id, position.stop_index)
+                    corridor.remaining_legs(&position.pattern_id, position.stop_index)
                 else {
                     stats.positions_outside_corridor += 1;
                     continue;
@@ -184,7 +184,7 @@ pub fn search_with_stats(
                 }
                 stats.departure_lookups += 1;
                 let departures = snapshot.departures(
-                    &position.service_id,
+                    &position.pattern_id,
                     position.stop_index,
                     state.ready_at,
                     query.max_departures_per_query,
@@ -461,12 +461,12 @@ mod tests {
         api::RequestCoordinate,
         data::static_transfers::enrich_network_with_static_transfers,
         domain::{
-            ids::{EffectiveTripId, TransitServiceId},
-            transit::{TransferEdge, TransitMode, TransitNetwork, TransitService, TransitStop},
+            ids::{EffectiveTripId, TransitPatternId},
+            transit::{TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop},
             transit_timing::EffectiveStopTime,
         },
         routing::{
-            static_search::{CandidateCorridor, StaticTravelTimeIndex, generate as static_search},
+            static_search::{CandidateCorridor, generate as static_search},
             topology::TransitTopologyIndex,
             transfers::TransferShortcutIndex,
         },
@@ -484,9 +484,9 @@ mod tests {
         )
     }
 
-    fn service(value: &str, pattern: &[&str]) -> TransitService {
-        TransitService::new(
-            TransitServiceId::new(value),
+    fn service(value: &str, pattern: &[&str]) -> TransitPattern {
+        TransitPattern::fixture(
+            TransitPatternId::new(value),
             TransitMode::Bus,
             value,
             pattern.last().copied().unwrap_or_default(),
@@ -499,7 +499,7 @@ mod tests {
 
     fn trip(
         value: &str,
-        service_id: &str,
+        pattern_id: &str,
         stops: &[&str],
         minute_offsets: &[i64],
     ) -> EffectiveTrip {
@@ -507,7 +507,7 @@ mod tests {
         let departure_time = datetime!(2026-08-31 10:00 UTC);
         EffectiveTrip {
             id: EffectiveTripId::new(value),
-            service_id: TransitServiceId::new(service_id),
+            pattern_id: TransitPatternId::new(pattern_id),
             scheduled_trip_id: None,
             stop_times: stops
                 .iter()
@@ -552,14 +552,13 @@ mod tests {
     ) {
         let topology = TransitTopologyIndex::new(network);
         let transfers = TransferShortcutIndex::from_network(network);
-        let travel_times = StaticTravelTimeIndex::new(network);
-        let corridor = static_search(network, &topology, &transfers, &travel_times, query).0;
+        let corridor = static_search(network, &topology, &transfers, query).0;
         (topology, transfers, corridor)
     }
 
     #[test]
     fn later_arrival_to_same_stop_and_leg_count_is_rejected_before_push() {
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("origin"), stop("mid"), stop("destination")],
             vec![
@@ -572,7 +571,7 @@ mod tests {
         let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
-            TransitServiceId::new("early"),
+            TransitPatternId::new("early"),
             0,
             vec![trip(
                 "early-trip",
@@ -582,7 +581,7 @@ mod tests {
             )],
         );
         snapshot.insert(
-            TransitServiceId::new("late"),
+            TransitPatternId::new("late"),
             0,
             vec![trip(
                 "late-trip",
@@ -603,7 +602,7 @@ mod tests {
 
     #[test]
     fn transfer_to_structurally_dead_stop_is_never_pushed() {
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![
                 stop("origin"),
@@ -623,7 +622,7 @@ mod tests {
         let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
-            TransitServiceId::new("main"),
+            TransitPatternId::new("main"),
             0,
             vec![trip(
                 "main-trip",
@@ -644,7 +643,7 @@ mod tests {
 
     #[test]
     fn generated_walking_transfer_reaches_phase_one_and_phase_two() {
-        let mut network = TransitNetwork::new(
+        let mut network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![
                 stop("origin"),
@@ -658,7 +657,13 @@ mod tests {
             ],
             Vec::new(),
         );
-        network.services[1].transit_mode = TransitMode::Metro;
+        let route_id = network.patterns[1].route_id.clone();
+        network
+            .routes
+            .iter_mut()
+            .find(|route| route.id == route_id)
+            .unwrap()
+            .mode = TransitMode::Metro;
         for (stop, latitude) in network.stops.iter_mut().zip([25.0, 25.01, 25.0105, 25.02]) {
             stop.coordinate.latitude = latitude;
         }
@@ -685,13 +690,13 @@ mod tests {
         assert_eq!(
             corridor.retained()[0].service_sequence(),
             vec![
-                TransitServiceId::new("first-service"),
-                TransitServiceId::new("second-service")
+                TransitPatternId::new("first-service"),
+                TransitPatternId::new("second-service")
             ]
         );
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
-            TransitServiceId::new("first-service"),
+            TransitPatternId::new("first-service"),
             0,
             vec![trip(
                 "first-trip",
@@ -701,7 +706,7 @@ mod tests {
             )],
         );
         snapshot.insert(
-            TransitServiceId::new("second-service"),
+            TransitPatternId::new("second-service"),
             0,
             vec![trip(
                 "second-trip",
@@ -720,8 +725,8 @@ mod tests {
         assert_eq!(
             candidates[0].transit_service_sequence(),
             vec![
-                TransitServiceId::new("first-service"),
-                TransitServiceId::new("second-service")
+                TransitPatternId::new("first-service"),
+                TransitPatternId::new("second-service")
             ]
         );
         assert_eq!(candidates[0].transfer_count, 1);
@@ -729,7 +734,7 @@ mod tests {
 
     #[test]
     fn final_walking_transfer_to_egress_remains_searchable() {
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("origin"), stop("alight"), stop("destination")],
             vec![service("main", &["origin", "alight"])],
@@ -744,7 +749,7 @@ mod tests {
         let (topology, transfers, corridor) = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
-            TransitServiceId::new("main"),
+            TransitPatternId::new("main"),
             0,
             vec![trip("main-trip", "main", &["origin", "alight"], &[1, 5])],
         );
@@ -776,8 +781,8 @@ mod tests {
             )
         };
         let service = |value: &str, destination: &str| {
-            TransitService::new(
-                TransitServiceId::new(value),
+            TransitPattern::fixture(
+                TransitPatternId::new(value),
                 TransitMode::Bus,
                 value,
                 destination,
@@ -787,7 +792,7 @@ mod tests {
                 ],
             )
         };
-        let network = Arc::new(TransitNetwork::new(
+        let network = Arc::new(TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("origin"), stop("destination"), stop("elsewhere")],
             vec![
@@ -810,11 +815,10 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
             datetime!(2026-08-31 10:00 UTC),
         );
-        let travel_times = StaticTravelTimeIndex::new(&network);
-        let corridor = static_search(&network, &topology, &transfers, &travel_times, &query).0;
+        let corridor = static_search(&network, &topology, &transfers, &query).0;
         let trip = EffectiveTrip {
             id: EffectiveTripId::new("trip"),
-            service_id: TransitServiceId::new("useful"),
+            pattern_id: TransitPatternId::new("useful"),
             scheduled_trip_id: None,
             stop_times: vec![
                 EffectiveStopTime {
@@ -835,7 +839,7 @@ mod tests {
             evidence: Vec::new(),
         };
         let mut snapshot = TimingSnapshot::default();
-        snapshot.insert(TransitServiceId::new("useful"), 0, vec![trip]);
+        snapshot.insert(TransitPatternId::new("useful"), 0, vec![trip]);
 
         let (candidates, stats) =
             search_with_stats(&network, &topology, &transfers, &corridor, &snapshot, query)

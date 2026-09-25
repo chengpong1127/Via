@@ -4,6 +4,7 @@
 //! modules are the only stable public entry points for concrete adapters.
 
 pub mod bikeshare;
+pub mod bindings;
 pub mod service_conditions;
 pub mod timing;
 

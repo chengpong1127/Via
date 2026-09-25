@@ -27,12 +27,18 @@ use crate::{
     },
     domain::{
         bikeshare::BikeShareNetwork,
-        ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
         location::RequestCoordinate,
         transit::{
-            DerivedBusTravelTime, ScheduledStopTime, ScheduledTrip, TransferEdge, TransitFrequency,
-            TransitMode, TransitNetwork, TransitService, TransitStop, default_service_day_boundary,
+            ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
+            ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork, TransitPattern,
+            TransitRoute, TransitStop, TransitTrip, default_service_day_boundary,
         },
+    },
+    providers::bindings::{
+        BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,
     },
     street::StreetRouter,
     tdx::transit_service_id_for_direction,
@@ -44,23 +50,22 @@ pub struct GtfsBuildDiagnostics {
     pub static_transfers: Option<TransferStatistics>,
     pub stops_loaded: usize,
     pub routes_loaded_by_mode: BTreeMap<String, usize>,
-    pub services_loaded_by_mode: BTreeMap<String, usize>,
+    pub patterns_loaded_by_mode: BTreeMap<String, usize>,
     pub trips_loaded: usize,
     pub scheduled_trips_loaded: usize,
     pub frequencies_loaded: usize,
-    pub transfer_edges_loaded: usize,
     pub shape_rows_loaded: usize,
     pub invalid_timing_trips: usize,
     pub invalid_timing_trip_examples: Vec<String>,
-    pub exact_static_timing_services: usize,
-    pub derived_bus_timing_services: usize,
-    pub geometric_fallback_services: usize,
-    pub unresolved_bus_realtime_scope_services: usize,
+    pub exact_static_timing_patterns: usize,
+    pub derived_bus_timing_patterns: usize,
+    pub geometric_fallback_patterns: usize,
+    pub unresolved_bus_realtime_scope_patterns: usize,
     pub unresolved_bus_realtime_scope_examples: Vec<String>,
     pub gtfs_stop_ids_without_tdx_mapping: usize,
     pub unmapped_stop_id_examples: Vec<String>,
-    pub gtfs_service_ids_without_tdx_mapping: usize,
-    pub unmapped_service_id_examples: Vec<String>,
+    pub gtfs_pattern_ids_without_tdx_mapping: usize,
+    pub unmapped_pattern_id_examples: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,7 +94,7 @@ struct TripMeta {
 }
 
 #[derive(Clone, Debug, Default)]
-struct ServiceCalendar {
+struct GtfsCalendar {
     weekdays: Vec<Weekday>,
     start_date: Option<Date>,
     end_date: Option<Date>,
@@ -124,7 +129,7 @@ struct ShapePoint {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct ServicePatternKey {
-    route_index: usize,
+    route_id: String,
     direction: Option<u8>,
     pattern: Vec<u32>,
 }
@@ -132,35 +137,34 @@ struct ServicePatternKey {
 #[derive(Clone, Debug)]
 struct ServiceBuilder {
     route_index: usize,
+    route_id: String,
     direction: Option<u8>,
     pattern: Vec<u32>,
     headsigns: BTreeMap<String, usize>,
-    scheduled_trips: Vec<ScheduledTrip>,
+    scheduled_trips: Vec<TransitTrip>,
     frequencies: Vec<TransitFrequency>,
     bus_segment_samples: Vec<Vec<u32>>,
-    has_exact_timing: bool,
 }
 
 type NormalizedPatterns = (
-    Vec<TransitService>,
-    Vec<ScheduledTrip>,
+    Vec<TransitPattern>,
+    Vec<TransitTrip>,
     Vec<TransitFrequency>,
-    Vec<DerivedBusTravelTime>,
     (usize, usize, usize),
     (usize, Vec<String>),
 );
 
 impl ServiceBuilder {
-    fn new(key: &ServicePatternKey) -> Self {
+    fn new(key: &ServicePatternKey, route_index: usize) -> Self {
         Self {
-            route_index: key.route_index,
+            route_index,
+            route_id: key.route_id.clone(),
             direction: key.direction,
             pattern: key.pattern.clone(),
             headsigns: BTreeMap::new(),
             scheduled_trips: Vec::new(),
             frequencies: Vec::new(),
             bus_segment_samples: vec![Vec::new(); key.pattern.len().saturating_sub(1)],
-            has_exact_timing: false,
         }
     }
 
@@ -180,23 +184,20 @@ impl ServiceBuilder {
     }
 }
 
-pub fn build_from_gtfs_archive(input: &Path, output: &Path) -> Result<GtfsBuildOutput, DataError> {
-    let (network, diagnostics) = normalize_gtfs(input)?;
-    persist_gtfs(input, output, network, diagnostics)
-}
-
 pub async fn build_from_gtfs_archive_with_street(
     input: &Path,
     output: &Path,
     street: &dyn StreetRouter,
 ) -> Result<GtfsBuildOutput, DataError> {
-    let (mut network, mut diagnostics) = normalize_gtfs(input)?;
+    let (mut network, bindings, mut diagnostics) = normalize_gtfs(input)?;
     diagnostics.static_transfers =
         Some(enrich_network_with_static_transfers(&mut network, street).await?);
-    persist_gtfs(input, output, network, diagnostics)
+    persist_gtfs(input, output, network, bindings, diagnostics)
 }
 
-fn normalize_gtfs(input: &Path) -> Result<(TransitNetwork, GtfsBuildDiagnostics), DataError> {
+fn normalize_gtfs(
+    input: &Path,
+) -> Result<(TransitNetwork, TdxProviderBindings, GtfsBuildDiagnostics), DataError> {
     let file = File::open(input).map_err(|error| DataError::Io(input.into(), error))?;
     let mut archive = ZipArchive::new(file).map_err(|error| invalid_archive(input, error))?;
     let names = archive
@@ -222,35 +223,102 @@ fn normalize_gtfs(input: &Path) -> Result<(TransitNetwork, GtfsBuildDiagnostics)
     let frequencies = load_frequencies(&mut archive, input, &trip_indices)?;
     diagnostics.frequencies_loaded = frequencies.values().map(Vec::len).sum();
     let stop_times = load_stop_times(&mut archive, input, &trip_indices, &stop_indices)?;
-    let transfers = load_transfers(
-        &mut archive,
-        input,
-        &stop_indices,
-        &stops,
-        names.contains("transfers.txt"),
-    )?;
-
-    let (
-        mut services,
-        trips_out,
-        mut frequencies_out,
-        derived_bus_times,
-        timing_classes,
-        invalid_timing_trips,
-    ) = normalize_patterns(
-        &stops,
-        &routes,
-        &trips,
-        &calendars,
-        &frequencies,
-        &stop_times,
-        &shapes,
-    );
+    let (mut services, trips_out, mut frequencies_out, timing_classes, invalid_timing_trips) =
+        normalize_patterns(
+            &stops,
+            &routes,
+            &trips,
+            &calendars,
+            &frequencies,
+            &stop_times,
+            &shapes,
+        );
     diagnostics.invalid_timing_trips = invalid_timing_trips.0;
     diagnostics.invalid_timing_trip_examples = invalid_timing_trips.1;
+    let route_by_via_id = routes
+        .iter()
+        .enumerate()
+        .map(|(index, route)| (via_route_id(route), index))
+        .collect::<HashMap<_, _>>();
+    let route_by_via_direction = routes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, route)| {
+            direction_from_route_id(&route.id)
+                .map(|direction| ((via_route_id(route), direction), index))
+        })
+        .collect::<HashMap<_, _>>();
+    let stop_position_by_id = stops
+        .iter()
+        .enumerate()
+        .map(|(index, stop)| (stop.id.clone(), index as u32))
+        .collect::<HashMap<_, _>>();
+    let mut bindings = TdxProviderBindings::default();
+    for pattern in &services {
+        let route_index = pattern
+            .direction
+            .and_then(|direction| {
+                route_by_via_direction.get(&(pattern.route_id.as_str().to_owned(), direction))
+            })
+            .or_else(|| route_by_via_id.get(pattern.route_id.as_str()));
+        let Some(route) = route_index.map(|index| &routes[*index]) else {
+            continue;
+        };
+        match route.mode {
+            TransitMode::Bus => {
+                let positions = pattern
+                    .stops
+                    .iter()
+                    .filter_map(|id| stop_position_by_id.get(id).copied())
+                    .collect::<Vec<_>>();
+                if let Some(realtime_scope) = bus_realtime_scope(route, &positions, &stops) {
+                    bindings.bus_patterns.insert(
+                        pattern.id.clone(),
+                        BusPatternBinding {
+                            tdx_service_id: canonical_service_id(route, pattern.direction)
+                                .as_str()
+                                .to_owned(),
+                            realtime_scope,
+                        },
+                    );
+                }
+            }
+            TransitMode::Metro => {
+                let (line_id, direction, _) = metro_route_parts(&route.id, pattern.direction);
+                bindings.metro_patterns.insert(
+                    pattern.id.clone(),
+                    MetroPatternBinding { line_id, direction },
+                );
+            }
+            TransitMode::Rail | TransitMode::HighSpeedRail => {}
+        }
+    }
+    let scheduled_ids = trips_out
+        .iter()
+        .map(|trip| trip.id.as_str())
+        .collect::<HashSet<_>>();
+    for trip in &trips {
+        if !scheduled_ids.contains(trip.id.as_str()) {
+            continue;
+        }
+        let route = &routes[trip.route_index];
+        if route.mode == TransitMode::Rail
+            && let Some(train_number) = route
+                .id
+                .strip_prefix("TRA_")
+                .and_then(|suffix| suffix.split('_').next())
+            && !train_number.is_empty()
+        {
+            bindings.tra_trips.insert(
+                TransitTripId::new(trip.id.clone()),
+                TraTripBinding {
+                    train_number: train_number.to_owned(),
+                },
+            );
+        }
+    }
     drop(archive);
     drop(stop_indices);
-    drop(calendars);
     drop(trip_indices);
     drop(trips);
     drop(shapes);
@@ -258,34 +326,45 @@ fn normalize_gtfs(input: &Path) -> Result<(TransitNetwork, GtfsBuildDiagnostics)
     drop(stop_times);
     diagnostics.scheduled_trips_loaded = trips_out.len();
     diagnostics.frequencies_loaded = frequencies_out.len();
-    diagnostics.transfer_edges_loaded = transfers.len();
-    diagnostics.exact_static_timing_services = timing_classes.0;
-    diagnostics.derived_bus_timing_services = timing_classes.1;
-    diagnostics.geometric_fallback_services = timing_classes.2;
+    diagnostics.exact_static_timing_patterns = timing_classes.0;
+    diagnostics.derived_bus_timing_patterns = timing_classes.1;
+    diagnostics.geometric_fallback_patterns = timing_classes.2;
     for service in &services {
+        let mode = routes[*route_by_via_id
+            .get(service.route_id.as_str())
+            .expect("normalized route")]
+        .mode;
         *diagnostics
-            .services_loaded_by_mode
-            .entry(mode_name(service.transit_mode).to_owned())
+            .patterns_loaded_by_mode
+            .entry(mode_name(mode).to_owned())
             .or_default() += 1;
     }
     let unresolved_bus_scopes = services
         .iter()
         .filter(|service| {
-            service.transit_mode == TransitMode::Bus && service.realtime_scope.is_none()
+            let route = &routes[*route_by_via_id
+                .get(service.route_id.as_str())
+                .expect("normalized route")];
+            route.mode == TransitMode::Bus
+                && bus_realtime_scope(
+                    route,
+                    &service
+                        .stops
+                        .iter()
+                        .filter_map(|id| stop_position_by_id.get(id).copied())
+                        .collect::<Vec<_>>(),
+                    &stops,
+                )
+                .is_none()
         })
         .map(|service| service.id.as_str().to_owned())
         .collect::<Vec<_>>();
-    diagnostics.unresolved_bus_realtime_scope_services = unresolved_bus_scopes.len();
+    diagnostics.unresolved_bus_realtime_scope_patterns = unresolved_bus_scopes.len();
     diagnostics.unresolved_bus_realtime_scope_examples =
         unresolved_bus_scopes.into_iter().take(20).collect();
     let used_stop_ids = services
         .iter()
-        .flat_map(|service| service.pattern.iter().cloned())
-        .chain(
-            transfers
-                .iter()
-                .flat_map(|edge| [edge.from.clone(), edge.to.clone()]),
-        )
+        .flat_map(|service| service.stops.iter().cloned())
         .collect::<HashSet<_>>();
     let stops = stops
         .into_iter()
@@ -301,27 +380,79 @@ fn normalize_gtfs(input: &Path) -> Result<(TransitNetwork, GtfsBuildDiagnostics)
     diagnostics.unmapped_stop_id_examples = unmapped_stops.into_iter().take(20).collect();
     let unmapped_services = services
         .iter()
-        .filter(|service| !is_tdx_service_id(service, &routes))
+        .filter(|service| {
+            !bindings.bus_patterns.contains_key(&service.id)
+                && !bindings.metro_patterns.contains_key(&service.id)
+                && !matches!(
+                    route_by_via_id
+                        .get(service.route_id.as_str())
+                        .map(|index| routes[*index].mode),
+                    Some(TransitMode::Rail | TransitMode::HighSpeedRail)
+                )
+        })
         .map(|service| service.id.as_str().to_owned())
         .collect::<Vec<_>>();
-    diagnostics.gtfs_service_ids_without_tdx_mapping = unmapped_services.len();
-    diagnostics.unmapped_service_id_examples = unmapped_services.into_iter().take(20).collect();
+    diagnostics.gtfs_pattern_ids_without_tdx_mapping = unmapped_services.len();
+    diagnostics.unmapped_pattern_id_examples = unmapped_services.into_iter().take(20).collect();
 
     services.shrink_to_fit();
     frequencies_out.shrink_to_fit();
+    let used_calendars = trips_out
+        .iter()
+        .map(|trip| trip.calendar_id.as_str().to_owned())
+        .chain(
+            frequencies_out
+                .iter()
+                .map(|frequency| frequency.calendar_id.as_str().to_owned()),
+        )
+        .collect::<HashSet<_>>();
     let network = TransitNetwork::new(default_service_day_boundary(), stops, services, trips_out)
+        .with_calendars(
+            calendars
+                .into_iter()
+                .filter(|(id, _)| used_calendars.contains(id.as_str()))
+                .map(|(id, calendar)| ServiceCalendar {
+                    id: ServiceCalendarId::new(id),
+                    weekdays: calendar.weekdays,
+                    start_date: calendar.start_date,
+                    end_date: calendar.end_date,
+                    added_dates: calendar.added,
+                    removed_dates: calendar.removed,
+                })
+                .collect(),
+        )
+        .with_routes(
+            routes
+                .into_iter()
+                .map(|route| (via_route_id(&route), route))
+                .collect::<BTreeMap<_, _>>()
+                .into_iter()
+                .map(|(id, route)| {
+                    let label = match route.mode {
+                        TransitMode::Bus => route.label,
+                        TransitMode::Metro => id.strip_prefix("metro:").unwrap_or(&id).to_owned(),
+                        TransitMode::Rail => "TRA".to_owned(),
+                        TransitMode::HighSpeedRail => "THSR".to_owned(),
+                    };
+                    TransitRoute {
+                        id: TransitRouteId::new(id),
+                        mode: route.mode,
+                        label,
+                    }
+                })
+                .collect(),
+        )
         .with_frequencies(frequencies_out)
-        .with_derived_bus_travel_times(derived_bus_times)
-        .with_transfer_edges(transfers)
         .canonicalize();
 
-    Ok((network, diagnostics))
+    Ok((network, bindings, diagnostics))
 }
 
 fn persist_gtfs(
     input: &Path,
     output: &Path,
     network: TransitNetwork,
+    provider_bindings: TdxProviderBindings,
     diagnostics: GtfsBuildDiagnostics,
 ) -> Result<GtfsBuildOutput, DataError> {
     let bike_share_network = BikeShareNetwork::new(Vec::new());
@@ -329,6 +460,9 @@ fn persist_gtfs(
     let schedule_revision = super::revision_for_network(&network, true)?;
     let network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
     network.validate()?;
+    provider_bindings
+        .validate(&network)
+        .map_err(DataError::InvalidProviderBindings)?;
     let bike_share_revision = super::revision_for_bike_share_network(&bike_share_network)?;
     let bike_share_network = bike_share_network.with_revision(bike_share_revision.clone());
     bike_share_network.validate()?;
@@ -350,8 +484,11 @@ fn persist_gtfs(
         )]),
         counts: ArtifactCounts {
             stops: network.stops.len(),
-            services: network.services.len(),
-            scheduled_trips: network.trips.len(),
+            routes: network.routes.len(),
+            patterns: network.patterns.len(),
+            trips: network.trips.len(),
+            calendars: network.calendars.len(),
+            frequencies: network.frequencies.len(),
             transfer_edges: network.transfer_edges.len(),
             bike_stations: bike_share_network.stations.len(),
             bike_access_links: bike_share_network.access_links.len(),
@@ -363,11 +500,13 @@ fn persist_gtfs(
         },
     };
     super::write_network_artifact(output, &network)?;
+    super::write_json_atomic(&output.join("provider-bindings.json"), &provider_bindings)?;
     write_bikeshare_artifact(output, &bike_share_network)?;
     super::write_json_atomic(&output.join("manifest.json"), &manifest)?;
     Ok(GtfsBuildOutput {
         build: BuildOutput {
             network,
+            provider_bindings,
             bike_share_network,
             manifest,
             diagnostics: Default::default(),
@@ -491,7 +630,7 @@ fn load_routes(
 fn load_calendars(
     archive: &mut ZipArchive<File>,
     path: &Path,
-) -> Result<HashMap<String, ServiceCalendar>, DataError> {
+) -> Result<HashMap<String, GtfsCalendar>, DataError> {
     let mut calendars = HashMap::new();
     if archive.file_names().any(|name| name == "calendar.txt") {
         let mut reader = csv_reader(archive, path, "calendar.txt")?;
@@ -543,11 +682,11 @@ fn load_calendars(
                     detail: format!("start_date is after end_date for service {service_id}"),
                 });
             }
-            let calendar = ServiceCalendar {
+            let calendar = GtfsCalendar {
                 weekdays,
                 start_date: Some(start_date),
                 end_date: Some(end_date),
-                ..ServiceCalendar::default()
+                ..GtfsCalendar::default()
             };
             calendars.insert(service_id, calendar);
         }
@@ -822,70 +961,11 @@ fn load_stop_times(
     Ok(stop_times)
 }
 
-fn load_transfers(
-    archive: &mut ZipArchive<File>,
-    path: &Path,
-    stop_indices: &HashMap<String, u32>,
-    stops: &[TransitStop],
-    present: bool,
-) -> Result<Vec<TransferEdge>, DataError> {
-    if !present {
-        return Ok(Vec::new());
-    }
-    let mut reader = csv_reader(archive, path, "transfers.txt")?;
-    let headers = reader
-        .headers()
-        .map_err(|error| csv_error(path, "transfers.txt", error))?
-        .clone();
-    let from = column(&headers, "from_stop_id", path, "transfers.txt")?;
-    let to = column(&headers, "to_stop_id", path, "transfers.txt")?;
-    let kind = headers.iter().position(|field| field == "transfer_type");
-    let duration = headers
-        .iter()
-        .position(|field| field == "min_transfer_time");
-    let mut edges = BTreeMap::<(u32, u32), u32>::new();
-    for row in reader.records() {
-        let row = row.map_err(|error| csv_error(path, "transfers.txt", error))?;
-        let Some(from_index) = stop_indices.get(required(&row, from)).copied() else {
-            continue;
-        };
-        let Some(to_index) = stop_indices.get(required(&row, to)).copied() else {
-            continue;
-        };
-        if from_index == to_index {
-            continue;
-        }
-        let transfer_type = optional(&row, kind).parse::<u8>().unwrap_or(0);
-        if !matches!(transfer_type, 0..=2) {
-            continue;
-        }
-        let seconds = optional(&row, duration)
-            .parse::<u32>()
-            .ok()
-            .filter(|seconds| *seconds > 0)
-            .unwrap_or(120);
-        edges
-            .entry((from_index, to_index))
-            .and_modify(|current| *current = (*current).min(seconds))
-            .or_insert(seconds);
-    }
-    Ok(edges
-        .into_iter()
-        .map(|((from, to), seconds)| {
-            TransferEdge::new(
-                stops[from as usize].id.clone(),
-                stops[to as usize].id.clone(),
-                seconds,
-            )
-        })
-        .collect())
-}
-
 fn normalize_patterns(
     stops: &[TransitStop],
     routes: &[Route],
     trips: &[TripMeta],
-    calendars: &HashMap<String, ServiceCalendar>,
+    calendars: &HashMap<String, GtfsCalendar>,
     frequency_rows: &HashMap<u32, Vec<FrequencyRow>>,
     stop_times: &[CompactStopTime],
     shapes: &HashMap<String, Vec<ShapePoint>>,
@@ -909,12 +989,12 @@ fn normalize_patterns(
         pattern.dedup();
         if pattern.len() >= 2 && pattern.len() == ordered.len() {
             let key = ServicePatternKey {
-                route_index: trip.route_index,
+                route_id: via_route_id(&routes[trip.route_index]),
                 direction: trip.direction,
                 pattern: pattern.clone(),
             };
             let service_index = *service_indices.entry(key.clone()).or_insert_with(|| {
-                builders.push(ServiceBuilder::new(&key));
+                builders.push(ServiceBuilder::new(&key, trip.route_index));
                 builders.len() - 1
             });
             let builder = &mut builders[service_index];
@@ -946,43 +1026,31 @@ fn normalize_patterns(
                 .get(&trip_index)
                 .is_some_and(|frequency_rows| !frequency_rows.is_empty());
             if chronological && !has_frequencies && calendar_is_usable(&calendar) {
-                let mut scheduled = ScheduledTrip::weekdays(
-                    ScheduledTripId::new(trip.id.clone()),
-                    TransitServiceId::new("pending"),
-                    calendar.weekdays.clone(),
+                let scheduled = TransitTrip::new(
+                    TransitTripId::new(trip.id.clone()),
+                    TransitPatternId::new("pending"),
+                    ServiceCalendarId::new(trip.gtfs_service_id.clone()),
                     template.clone(),
-                )
-                .with_service_day_exceptions(calendar.added.clone(), calendar.removed.clone());
-                if let (Some(start), Some(end)) = (calendar.start_date, calendar.end_date) {
-                    scheduled = scheduled.with_service_date_range(start, end);
-                }
+                );
                 builder.scheduled_trips.push(scheduled);
-                builder.has_exact_timing = true;
             }
             if let Some(rows) = frequency_rows.get(&trip_index) {
                 if chronological && calendar_is_usable(&calendar) {
                     for (frequency_index, frequency) in rows.iter().enumerate() {
-                        let mut normalized = TransitFrequency {
-                            id: ScheduledTripId::new(format!(
+                        let normalized = TransitFrequency {
+                            id: TransitTripId::new(format!(
                                 "{}::frequency={frequency_index}",
                                 trip.id
                             )),
-                            service_id: TransitServiceId::new("pending"),
+                            pattern_id: TransitPatternId::new("pending"),
+                            calendar_id: ServiceCalendarId::new(trip.gtfs_service_id.clone()),
                             start_seconds: frequency.start_seconds,
                             end_seconds: frequency.end_seconds,
                             headway_seconds: frequency.headway_seconds,
                             exact_times: frequency.exact_times,
-                            active_weekdays: calendar.weekdays.clone(),
-                            start_date: calendar.start_date,
-                            end_date: calendar.end_date,
-                            added_service_days: calendar.added.clone(),
-                            removed_service_days: calendar.removed.clone(),
                             template_stop_times: template.clone(),
                         };
-                        normalized.service_id =
-                            TransitServiceId::new(format!("pending:{service_index}"));
                         builder.frequencies.push(normalized);
-                        builder.has_exact_timing = true;
                     }
                 }
             }
@@ -1009,95 +1077,164 @@ fn normalize_patterns(
         start = end;
     }
 
-    let mut groups = BTreeMap::<(usize, Option<u8>), Vec<usize>>::new();
+    let mut groups = BTreeMap::<(String, Option<u8>), Vec<usize>>::new();
     for (index, builder) in builders.iter().enumerate() {
         groups
-            .entry((builder.route_index, builder.direction))
+            .entry((builder.route_id.clone(), builder.direction))
             .or_default()
             .push(index);
     }
-    let mut service_ids = vec![TransitServiceId::new(""); builders.len()];
+    let mut service_ids = vec![TransitPatternId::new(""); builders.len()];
     let mut services = Vec::with_capacity(builders.len());
-    for ((route_index, direction), indices) in groups {
-        let route = &routes[route_index];
+    for ((route_id, direction), indices) in groups {
+        let route = &routes[builders[indices[0]].route_index];
         let mut indices = indices;
         indices.sort_by(|left, right| builders[*left].pattern.cmp(&builders[*right].pattern));
-        let base = canonical_service_id(route, direction);
         for (position, builder_index) in indices.iter().enumerate() {
             let builder = &builders[*builder_index];
-            let id = if position == 0 {
-                base.clone()
-            } else {
-                TransitServiceId::new(format!("{}::pattern={position}", base.as_str()))
-            };
+            let id = TransitPatternId::new(format!(
+                "pattern:{route_id}::direction={}::variant={position}",
+                direction.map_or("unknown".to_owned(), |value| value.to_string())
+            ));
             service_ids[*builder_index] = id.clone();
             let pattern = builder
                 .pattern
                 .iter()
                 .map(|index| stops[*index as usize].id.clone())
                 .collect();
-            let scope = bus_realtime_scope(route, &builder.pattern, stops);
-            let mut service = TransitService::new(
+            let service = TransitPattern::new(
                 id,
-                route.mode,
-                route.label.clone(),
+                TransitRouteId::new(route_id.clone()),
+                direction,
                 builder.headsign(route),
                 pattern,
+                profile_for_builder(builder, route.mode, stops),
             );
-            if let Some(scope) = scope {
-                service = service.with_realtime_scope(scope);
-            }
             services.push(service);
         }
     }
 
     let mut scheduled_trips = Vec::new();
     let mut normalized_frequencies = Vec::new();
-    let mut derived_bus_times = Vec::new();
-    let mut exact_count = 0;
-    let mut derived_count = 0;
-    let mut geometric_count = 0;
+    let exact_count = services
+        .iter()
+        .filter(|pattern| {
+            pattern
+                .static_profile
+                .segments
+                .iter()
+                .all(|segment| segment.source == SegmentTimeSource::Schedule)
+        })
+        .count();
+    let derived_count = services
+        .iter()
+        .filter(|pattern| {
+            pattern
+                .static_profile
+                .segments
+                .iter()
+                .all(|segment| segment.source == SegmentTimeSource::Derived)
+        })
+        .count();
+    let geometric_count = services.len() - exact_count - derived_count;
     for (index, builder) in builders.into_iter().enumerate() {
         let service_id = service_ids[index].clone();
         for mut trip in builder.scheduled_trips {
-            trip.service_id = service_id.clone();
+            trip.pattern_id = service_id.clone();
             scheduled_trips.push(trip);
         }
         for mut frequency in builder.frequencies {
-            frequency.service_id = service_id.clone();
+            frequency.pattern_id = service_id.clone();
             normalized_frequencies.push(frequency);
-        }
-        if builder.has_exact_timing {
-            exact_count += 1;
-        } else if routes[builder.route_index].mode == TransitMode::Bus {
-            let medians = builder
-                .bus_segment_samples
-                .into_iter()
-                .map(median)
-                .collect::<Option<Vec<_>>>();
-            if let Some(adjacent_seconds) = medians {
-                if !adjacent_seconds.is_empty() && adjacent_seconds.iter().all(|n| *n > 0) {
-                    derived_bus_times.push(DerivedBusTravelTime {
-                        service_id,
-                        adjacent_seconds,
-                    });
-                    derived_count += 1;
-                    continue;
-                }
-            }
-            geometric_count += 1;
-        } else {
-            geometric_count += 1;
         }
     }
     (
         services,
         scheduled_trips,
         normalized_frequencies,
-        derived_bus_times,
         (exact_count, derived_count, geometric_count),
         (invalid_timing_trip_count, invalid_timing_trip_examples),
     )
+}
+
+fn profile_for_builder(
+    builder: &ServiceBuilder,
+    mode: TransitMode,
+    stops: &[TransitStop],
+) -> SegmentProfile {
+    let segment_count = builder.pattern.len().saturating_sub(1);
+    let mut minimums = vec![u32::MAX; segment_count];
+    for times in builder
+        .scheduled_trips
+        .iter()
+        .map(|trip| trip.stop_times.as_slice())
+        .chain(
+            builder
+                .frequencies
+                .iter()
+                .map(|frequency| frequency.template_stop_times.as_slice()),
+        )
+    {
+        for (minimum, pair) in minimums.iter_mut().zip(times.windows(2)) {
+            let duration = pair[1]
+                .arrival_seconds
+                .saturating_sub(pair[0].departure_seconds);
+            if duration > 0 {
+                *minimum = (*minimum).min(duration);
+            }
+        }
+    }
+    let estimated = estimated_segments(builder, mode, stops);
+    let segments = minimums
+        .into_iter()
+        .enumerate()
+        .map(|(index, scheduled)| {
+            if scheduled != u32::MAX {
+                SegmentTravelTime {
+                    seconds: scheduled,
+                    source: SegmentTimeSource::Schedule,
+                }
+            } else if mode == TransitMode::Bus
+                && let Some(derived) = median(builder.bus_segment_samples[index].clone())
+                && derived > 0
+            {
+                SegmentTravelTime {
+                    seconds: derived,
+                    source: SegmentTimeSource::Derived,
+                }
+            } else {
+                SegmentTravelTime {
+                    seconds: estimated[index],
+                    source: SegmentTimeSource::Estimated,
+                }
+            }
+        })
+        .collect();
+    SegmentProfile { segments }
+}
+
+fn estimated_segments(
+    builder: &ServiceBuilder,
+    mode: TransitMode,
+    stops: &[TransitStop],
+) -> Vec<u32> {
+    let kmh = match mode {
+        TransitMode::Bus => 60.0,
+        TransitMode::Metro => 100.0,
+        TransitMode::Rail => 160.0,
+        TransitMode::HighSpeedRail => 350.0,
+    };
+    builder
+        .pattern
+        .windows(2)
+        .map(|pair| {
+            let from = stops[pair[0] as usize].coordinate;
+            let to = stops[pair[1] as usize].coordinate;
+            (from.haversine_distance_metres(to) / (kmh / 3.6))
+                .ceil()
+                .max(1.0) as u32
+        })
+        .collect()
 }
 
 fn trip_segment_distances(
@@ -1235,7 +1372,7 @@ fn valid_distances(distances: &[f64]) -> bool {
             .all(|distance| distance.is_finite() && *distance > 0.0)
 }
 
-fn canonical_service_id(route: &Route, direction: Option<u8>) -> TransitServiceId {
+fn canonical_service_id(route: &Route, direction: Option<u8>) -> TransitPatternId {
     if route.mode == TransitMode::Bus {
         if let Some(direction) = direction {
             let (base_id, encoded_direction) =
@@ -1247,11 +1384,11 @@ fn canonical_service_id(route: &Route, direction: Option<u8>) -> TransitServiceI
             };
             return transit_service_id_for_direction(route_id, direction);
         }
-        return TransitServiceId::new(route.id.clone());
+        return TransitPatternId::new(route.id.clone());
     }
     if route.mode == TransitMode::Metro {
         let (line, route_direction, subroute) = metro_route_parts(&route.id, direction);
-        return TransitServiceId::new(format!(
+        return TransitPatternId::new(format!(
             "metro:{line}::direction={route_direction}::route={subroute}"
         ));
     }
@@ -1261,7 +1398,20 @@ fn canonical_service_id(route: &Route, direction: Option<u8>) -> TransitServiceI
     {
         return transit_service_id_for_direction(&route.id, direction);
     }
-    TransitServiceId::new(route.id.clone())
+    TransitPatternId::new(route.id.clone())
+}
+
+fn via_route_id(route: &Route) -> String {
+    match route.mode {
+        TransitMode::Bus => directional_route_suffix(&route.id)
+            .map_or_else(|| route.id.clone(), |(base, _)| base.to_owned()),
+        TransitMode::Metro => {
+            let (line, _, _) = metro_route_parts(&route.id, None);
+            format!("metro:{line}")
+        }
+        TransitMode::Rail => "tra".to_owned(),
+        TransitMode::HighSpeedRail => "thsr".to_owned(),
+    }
 }
 
 fn direction_from_route_id(route_id: &str) -> Option<u8> {
@@ -1363,19 +1513,6 @@ fn is_tdx_stop_id(id: &str) -> bool {
     .any(|prefix| id.starts_with(prefix))
 }
 
-fn is_tdx_service_id(service: &TransitService, _routes: &[Route]) -> bool {
-    match service.transit_mode {
-        TransitMode::Bus => !service.id.as_str().contains("::pattern="),
-        TransitMode::Metro => service
-            .id
-            .as_str()
-            .strip_prefix("metro:")
-            .and_then(|id| id.split_once("::direction=").map(|(line, _)| line))
-            .is_some_and(|line| matches!(line, "BL" | "BR" | "G" | "O" | "R")),
-        TransitMode::Rail | TransitMode::HighSpeedRail => false,
-    }
-}
-
 fn tdx_stop_id(id: &str) -> String {
     for prefix in [
         "TRTC", "TRA", "THSR", "NTMC", "TYMC", "TMRT", "KRTC", "KLRT",
@@ -1406,7 +1543,7 @@ fn mode_name(mode: TransitMode) -> &'static str {
     }
 }
 
-fn calendar_is_usable(calendar: &ServiceCalendar) -> bool {
+fn calendar_is_usable(calendar: &GtfsCalendar) -> bool {
     !calendar.weekdays.is_empty() || !calendar.added.is_empty()
 }
 
@@ -1537,10 +1674,11 @@ mod tests {
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     use super::{
-        build_from_gtfs_archive, distribute_runtime, is_chronological_times, parse_gtfs_date,
-        parse_gtfs_time, parse_route_mode, tdx_stop_id,
+        build_from_gtfs_archive_with_street, distribute_runtime, is_chronological_times,
+        parse_gtfs_date, parse_gtfs_time, parse_route_mode, tdx_stop_id,
     };
     use crate::domain::transit::{ScheduledStopTime, TransitMode};
+    use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
 
     fn temporary_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1563,11 +1701,11 @@ mod tests {
             ),
             (
                 "trips.txt",
-                "\u{feff}route_id,service_id,trip_id,direction_id,trip_headsign,shape_id\nTHB123_0,weekdays,bus-1,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-2,0,Bus end,bus-shape\nTRTC_BL_BL-1_0,weekdays,metro-frequency,0,Blue end,\n",
+                "\u{feff}route_id,service_id,trip_id,direction_id,trip_headsign,shape_id\nTHB123_0,weekdays,bus-1,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-2,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-branch,0,Bus end,bus-shape\nTRTC_BL_BL-1_0,weekdays,metro-frequency,0,Blue end,\n",
             ),
             (
                 "stop_times.txt",
-                "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\n",
+                "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nbus-branch,,08:10:00,TPE001,1,0\nbus-branch,08:35:00,,TPE003,2,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\n",
             ),
             (
                 "calendar.txt",
@@ -1640,48 +1778,117 @@ mod tests {
         ]));
     }
 
-    #[test]
-    fn builds_network_timing_calendars_frequencies_and_transfers_from_gtfs() {
+    #[tokio::test]
+    async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         let input = temporary_path("input.zip");
         let output = temporary_path("output");
         write_gtfs_fixture(&input);
 
-        let built = build_from_gtfs_archive(&input, &output).unwrap();
+        let first = Coordinate::try_new(25.0478, 121.5170).unwrap();
+        let street = FakeStreetRouter::builder()
+            .matrix_leg(
+                StreetTravelMode::Walking,
+                first,
+                first,
+                Seconds(75),
+                Metres(50),
+            )
+            .build();
+        let built = build_from_gtfs_archive_with_street(&input, &output, &street)
+            .await
+            .unwrap();
         let network = &built.build.network;
         assert_eq!(built.diagnostics.stops_loaded, 6);
-        assert_eq!(built.diagnostics.trips_loaded, 3);
+        assert_eq!(built.diagnostics.trips_loaded, 4);
         assert_eq!(built.diagnostics.frequencies_loaded, 1);
-        assert_eq!(built.diagnostics.transfer_edges_loaded, 1);
+        assert!(built.diagnostics.static_transfers.is_some());
         assert_eq!(built.diagnostics.invalid_timing_trips, 0);
-        assert_eq!(built.diagnostics.exact_static_timing_services, 1);
-        assert_eq!(built.diagnostics.derived_bus_timing_services, 1);
-        assert_eq!(built.diagnostics.geometric_fallback_services, 0);
-        assert_eq!(built.diagnostics.unresolved_bus_realtime_scope_services, 0);
-        assert_eq!(built.diagnostics.gtfs_service_ids_without_tdx_mapping, 0);
+        assert_eq!(built.diagnostics.exact_static_timing_patterns, 1);
+        assert_eq!(built.diagnostics.derived_bus_timing_patterns, 2);
+        assert_eq!(built.diagnostics.geometric_fallback_patterns, 0);
+        assert_eq!(built.diagnostics.unresolved_bus_realtime_scope_patterns, 0);
+        assert_eq!(built.diagnostics.gtfs_pattern_ids_without_tdx_mapping, 0);
         assert!(
             network.trips.is_empty(),
             "sparse Bus stop times are not exact trips"
         );
         assert_eq!(network.frequencies.len(), 1);
+        let bus_patterns = network
+            .patterns
+            .iter()
+            .filter(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
+            .collect::<Vec<_>>();
         assert_eq!(
-            network.derived_bus_travel_times[0].adjacent_seconds,
+            bus_patterns.len(),
+            2,
+            "two identical trip stop sequences share one Pattern; a branch has its own"
+        );
+        let bus = bus_patterns
+            .iter()
+            .find(|pattern| pattern.stops.len() == 3)
+            .unwrap();
+        assert_eq!(bus.route_id, bus_patterns[1].route_id);
+        assert_eq!(network.route_of(bus).label, "1");
+        assert_eq!(
+            network
+                .routes
+                .iter()
+                .find(|route| route.mode == TransitMode::Metro)
+                .unwrap()
+                .label,
+            "BL"
+        );
+        assert_eq!(
+            bus.static_profile
+                .segments
+                .iter()
+                .map(|segment| segment.seconds)
+                .collect::<Vec<_>>(),
             vec![420, 1680]
         );
-        assert_eq!(network.transfer_edges[0].duration_seconds, 240);
-        assert!(network.frequencies[0].runs_on(date!(2026 - 09 - 22)));
-        assert!(!network.frequencies[0].runs_on(date!(2026 - 09 - 23)));
-        assert!(network.frequencies[0].runs_on(date!(2026 - 09 - 24)));
+        assert!(bus.static_profile.segments.iter().all(|segment| segment.source == crate::domain::transit::SegmentTimeSource::Derived));
+        let persisted =
+            crate::data::load_network_artifact(&output.join("transit-network.json")).unwrap();
+        assert_eq!(
+            persisted
+                .patterns
+                .iter()
+                .find(|pattern| pattern.id == bus.id)
+                .unwrap()
+                .static_profile,
+            bus.static_profile
+        );
+        assert_eq!(built.build.provider_bindings.bus_patterns.len(), 2);
+        assert_eq!(built.build.provider_bindings.metro_patterns.len(), 1);
         assert!(
             network
-                .service(&crate::domain::ids::TransitServiceId::new(
-                    "metro:BL::direction=0::route=BL_BL-1"
+                .transfer_edges
+                .iter()
+                .any(|edge| edge.duration_seconds == 75)
+        );
+        assert!(
+            !network
+                .transfer_edges
+                .iter()
+                .any(|edge| edge.duration_seconds == 240)
+        );
+        let calendar = network
+            .calendar(&network.frequencies[0].calendar_id)
+            .unwrap();
+        assert!(calendar.runs_on(date!(2026 - 09 - 22)));
+        assert!(!calendar.runs_on(date!(2026 - 09 - 23)));
+        assert!(calendar.runs_on(date!(2026 - 09 - 24)));
+        assert!(
+            network
+                .pattern(&crate::domain::ids::TransitPatternId::new(
+                    "pattern:metro:BL::direction=0::variant=0"
                 ))
                 .is_some()
         );
         assert!(
             network
-                .service(&crate::domain::ids::TransitServiceId::new(
-                    "THB123::direction=0"
+                .pattern(&crate::domain::ids::TransitPatternId::new(
+                    "pattern:THB123::direction=0::variant=0"
                 ))
                 .is_some()
         );

@@ -481,13 +481,13 @@ impl JourneyVariant {
         })
     }
 
-    pub fn transit_service_sequence(&self) -> Vec<crate::domain::ids::TransitServiceId> {
+    pub fn transit_service_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
         self.path
             .iter()
             .filter_map(|step| match &step.movement {
                 JourneyPathMovement::Baseline { movement_index } => {
                     match &self.skeleton.movements().get(*movement_index)?.kind {
-                        JourneyMovementKind::Transit { trip, .. } => Some(trip.service_id.clone()),
+                        JourneyMovementKind::Transit { trip, .. } => Some(trip.pattern_id.clone()),
                         JourneyMovementKind::Walking { .. } => None,
                     }
                 }
@@ -539,7 +539,7 @@ impl JourneySkeleton {
                 format!(
                     "transit:{}:{}:{}:{}:{}:{}:{}:{}",
                     trip.id.as_str(),
-                    trip.service_id.as_str(),
+                    trip.pattern_id.as_str(),
                     board.stop_id.as_str(),
                     alight.stop_id.as_str(),
                     board.departure_at.unix_timestamp_nanos(),

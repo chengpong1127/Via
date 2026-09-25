@@ -215,8 +215,9 @@ pub(crate) async fn assemble(
                         }
                         let service_data = service
                             .transit_network
-                            .service(&trip.service_id)
+                            .pattern(&trip.pattern_id)
                             .ok_or(PlanningError::Internal)?;
+                        let route_data = service.transit_network.route_of(service_data);
                         let boarding = service
                             .transit_network
                             .stop(&board.stop_id)
@@ -238,6 +239,7 @@ pub(crate) async fn assemble(
                         result.legs.push(transit_leg(
                             leg_id.clone(),
                             service_data,
+                            route_data,
                             boarding,
                             alighting,
                             &EffectiveRide {
@@ -254,7 +256,7 @@ pub(crate) async fn assemble(
                                 &mut result,
                                 pending,
                                 leg_id,
-                                service_data.transit_mode,
+                                route_data.mode,
                                 board.departure_at,
                             );
                         }
@@ -706,13 +708,14 @@ fn walking_leg(
 
 fn transit_leg(
     id: String,
-    service: &crate::domain::transit::TransitService,
+    service: &crate::domain::transit::TransitPattern,
+    route: &crate::domain::transit::TransitRoute,
     boarding: &crate::domain::transit::TransitStop,
     alighting: &crate::domain::transit::TransitStop,
     effective: &EffectiveRide,
     timing_basis: TimingBasis,
 ) -> Leg {
-    let guidance_code = match service.transit_mode {
+    let guidance_code = match route.mode {
         TransitMode::Bus => "board_bus",
         TransitMode::Metro => "board_metro",
         TransitMode::Rail => "board_rail",
@@ -738,7 +741,7 @@ fn transit_leg(
             code: guidance_code,
             required: true,
             parameters: std::collections::BTreeMap::from([
-                ("service_label".into(), serde_json::json!(service.label)),
+                ("service_label".into(), serde_json::json!(route.label)),
                 (
                     "boarding_point_name".into(),
                     serde_json::json!(boarding.name),
@@ -746,11 +749,11 @@ fn transit_leg(
             ]),
         }],
         details: LegDetails::Transit {
-            transit_mode: service.transit_mode,
-            via_service_id: service.id.as_str().into(),
+            transit_mode: route.mode,
+            via_pattern_id: service.id.as_str().into(),
             via_boarding_point_id: boarding.id.as_str().into(),
             via_alighting_point_id: alighting.id.as_str().into(),
-            service_label: service.label.clone(),
+            service_label: route.label.clone(),
             headsign: service.headsign.clone(),
             stop_count: None,
         },

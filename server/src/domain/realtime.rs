@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time};
 
-use super::ids::{BoardingPointId, TransitServiceId};
+use super::ids::{BoardingPointId, TransitPatternId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -125,7 +125,7 @@ pub enum ArrivalState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArrivalEstimate {
-    pub transit_service_id: TransitServiceId,
+    pub transit_pattern_id: TransitPatternId,
     pub boarding_point_id: BoardingPointId,
     pub predicted_arrival_at: Option<OffsetDateTime>,
     pub state: ArrivalState,

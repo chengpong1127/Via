@@ -5,14 +5,17 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 
 use crate::{
     domain::{
-        ids::TransitServiceId,
+        ids::TransitPatternId,
         realtime::{
             FreshnessPolicy, LiveStatusTimes, LocalizedSourceText, NormalizedRealtimeValue,
             RealtimeValue, ServiceCondition, ServiceConditionState,
         },
     },
-    providers::service_conditions::{ServiceConditionError, ServiceConditionProvider},
-    tdx::{TdxClient, TdxClientError, tdx_sub_route_uid, transit_service_id_for_direction},
+    providers::{
+        bindings::TdxProviderBindings,
+        service_conditions::{ServiceConditionError, ServiceConditionProvider},
+    },
+    tdx::{TdxClient, TdxClientError, tdx_sub_route_uid},
 };
 
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
@@ -24,6 +27,7 @@ pub struct TdxServiceConditionProvider {
     condition_path: Option<String>,
     tdx_client: Arc<TdxClient>,
     policy: FreshnessPolicy,
+    bindings: Arc<TdxProviderBindings>,
 }
 
 impl TdxServiceConditionProvider {
@@ -32,7 +36,13 @@ impl TdxServiceConditionProvider {
             condition_path: None,
             tdx_client,
             policy: FreshnessPolicy::tdx_one_minute("1"),
+            bindings: Arc::new(TdxProviderBindings::default()),
         }
+    }
+
+    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
+        self.bindings = bindings;
+        self
     }
 
     pub fn with_service_condition_path(mut self, path: impl Into<String>) -> Self {
@@ -58,7 +68,7 @@ impl TdxServiceConditionProvider {
     fn normalize_payload(
         &self,
         payload: &serde_json::Value,
-        requested_services: &[TransitServiceId],
+        requested_services: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         let records = records(payload);
         if records.is_empty() {
@@ -110,12 +120,19 @@ impl TdxServiceConditionProvider {
         &self,
         record: &serde_json::Value,
         published_at: OffsetDateTime,
-        requested_services: &[TransitServiceId],
+        requested_services: &[TransitPatternId],
     ) -> Option<(String, RealtimeValue)> {
         let service_uid =
             string_field(record, "SubRouteUID").or_else(|| string_field(record, "ServiceUID"))?;
-        let service_ids =
-            condition_service_ids(service_uid, direction_field(record), requested_services);
+        let service_ids = condition_service_ids(
+            service_uid,
+            direction_field(record),
+            requested_services,
+            &self.bindings,
+        );
+        if service_ids.is_empty() {
+            return None;
+        }
         let status = string_field(record, "Status")
             .or_else(|| string_field(record, "Condition"))
             .unwrap_or("disrupted")
@@ -155,7 +172,7 @@ impl TdxServiceConditionProvider {
 impl ServiceConditionProvider for TdxServiceConditionProvider {
     async fn service_conditions(
         &self,
-        service_ids: &[TransitServiceId],
+        service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         if service_ids.is_empty() {
             return Ok(Vec::new());
@@ -163,11 +180,18 @@ impl ServiceConditionProvider for TdxServiceConditionProvider {
         let Some(path) = &self.condition_path else {
             return Ok(Vec::new());
         };
-        let service_uids = service_ids
+        let mut service_uids = service_ids
             .iter()
-            .map(tdx_sub_route_uid)
-            .map(str::to_owned)
+            .filter_map(|id| self.bindings.bus_patterns.get(id))
+            .map(|binding| {
+                tdx_sub_route_uid(&TransitPatternId::new(binding.tdx_service_id.clone())).to_owned()
+            })
             .collect::<Vec<_>>();
+        service_uids.sort();
+        service_uids.dedup();
+        if service_uids.is_empty() {
+            return Ok(Vec::new());
+        }
         let filter = odata_in_filter("SubRouteUID", &service_uids);
         let query_params = vec![("$filter".into(), filter)];
         let payload = self.get_json(path, &query_params).await?;
@@ -241,23 +265,30 @@ fn direction_field(record: &serde_json::Value) -> Option<u8> {
 fn condition_service_ids(
     sub_route_uid: &str,
     direction: Option<u8>,
-    requested_services: &[TransitServiceId],
+    requested_services: &[TransitPatternId],
+    bindings: &TdxProviderBindings,
 ) -> Vec<String> {
-    if let Some(direction) = direction {
-        let directional_id = transit_service_id_for_direction(sub_route_uid, direction);
-        if requested_services.contains(&directional_id) {
-            return vec![directional_id.as_str().into()];
-        }
-    }
-
     let mut service_ids = requested_services
         .iter()
-        .filter(|service_id| tdx_sub_route_uid(service_id) == sub_route_uid)
+        .filter(|pattern_id| {
+            bindings
+                .bus_patterns
+                .get(*pattern_id)
+                .is_some_and(|binding| {
+                    let native = TransitPatternId::new(binding.tdx_service_id.clone());
+                    tdx_sub_route_uid(&native) == sub_route_uid
+                        && direction.is_none_or(|direction| {
+                            binding
+                                .tdx_service_id
+                                .split_once("::direction=")
+                                .is_none_or(|(_, native_direction)| {
+                                    native_direction.parse::<u8>() == Ok(direction)
+                                })
+                        })
+                })
+        })
         .map(|service_id| service_id.as_str().to_owned())
         .collect::<Vec<_>>();
-    if service_ids.is_empty() {
-        service_ids.push(sub_route_uid.into());
-    }
     service_ids.sort();
     service_ids.dedup();
     service_ids

@@ -1,8 +1,9 @@
 use via_server::domain::{
-    ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
+    ids::{BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
     location::RequestCoordinate,
     transit::{
-        ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService, TransitStop,
+        ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
+        TransitMode, TransitNetwork, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
 };
 
@@ -44,23 +45,28 @@ fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
 #[test]
 fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
     let point = BoardingPointId::new("point");
-    let service = TransitService::new(
-        TransitServiceId::new("service"),
-        TransitMode::Metro,
-        "line",
+    let service = TransitPattern::new(
+        TransitPatternId::new("service"),
+        TransitRouteId::new("line"),
+        None,
         "headsign",
         vec![point.clone(), point.clone()],
+        SegmentProfile {
+            segments: vec![SegmentTravelTime {
+                seconds: 600,
+                source: SegmentTimeSource::Schedule,
+            }],
+        },
     );
-    let trip = ScheduledTrip::weekdays(
-        ScheduledTripId::new("trip"),
+    let trip = TransitTrip::new(
+        TransitTripId::new("trip"),
         service.id.clone(),
-        Vec::new(),
+        ServiceCalendarId::new("special"),
         vec![
             ScheduledStopTime::new(90_000, 90_000),
             ScheduledStopTime::new(90_600, 90_600),
         ],
-    )
-    .with_service_day_exceptions(vec![time::macros::date!(2026 - 09 - 01)], Vec::new());
+    );
     let network = TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).expect("valid fixture time"),
         vec![stop("point", 25.0, 121.5)],
@@ -68,6 +74,20 @@ fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
         vec![trip],
     );
     assert!(network.validate().is_err());
-    let network = network.with_revisions("static-1", "schedule-1");
+    let network = network
+        .with_routes(vec![TransitRoute {
+            id: TransitRouteId::new("line"),
+            mode: TransitMode::Metro,
+            label: "line".into(),
+        }])
+        .with_calendars(vec![ServiceCalendar {
+            id: ServiceCalendarId::new("special"),
+            weekdays: Vec::new(),
+            start_date: None,
+            end_date: None,
+            added_dates: vec![time::macros::date!(2026 - 09 - 01)],
+            removed_dates: Vec::new(),
+        }])
+        .with_revisions("static-1", "schedule-1");
     assert!(network.validate().is_ok());
 }

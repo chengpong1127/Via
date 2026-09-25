@@ -237,7 +237,10 @@ impl RoutingService {
             let access_started = Instant::now();
             let access = access::discover_access_points(
                 self.street_routing.as_ref(),
-                &self.transit_network,
+                access::AccessNetwork {
+                    network: &self.transit_network,
+                    topology: self.transit_planner.topology(),
+                },
                 request.origin.coordinate,
                 context.search_start,
                 context.access_constraints(),
@@ -247,7 +250,10 @@ impl RoutingService {
             .await;
             let egress = access::discover_egress_points(
                 self.street_routing.as_ref(),
-                &self.transit_network,
+                access::AccessNetwork {
+                    network: &self.transit_network,
+                    topology: self.transit_planner.topology(),
+                },
                 request.destination.coordinate,
                 context.direct_constraints(),
                 &allowed_transit_modes,

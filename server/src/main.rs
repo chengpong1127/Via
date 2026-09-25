@@ -4,7 +4,7 @@ use url::Url;
 use via_server::{
     app::{RouterDependencies, build_router},
     config::load_dotenv,
-    data::{load_bikeshare_artifact, load_network_artifact},
+    data::{load_bikeshare_artifact, load_network_artifact, load_provider_bindings_artifact},
     health::DependencyHealth,
     providers::{
         TdxBikeAvailabilitySource, TdxServiceConditionProvider, TracingOperationalEventObserver,
@@ -52,6 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|_| "VIA_TRANSIT_NETWORK must point to the immutable transit network JSON")?;
     let transit_network = load_network_artifact(Path::new(&transit_network_path))
         .map_err(|error| format!("VIA_TRANSIT_NETWORK is invalid: {error}"))?;
+    let provider_bindings = load_provider_bindings_artifact(
+        &Path::new(&transit_network_path).with_file_name("provider-bindings.json"),
+    )?;
+    provider_bindings.validate(&transit_network)?;
     let bike_share_network_path = env::var("VIA_BIKESHARE_NETWORK")
         .map_err(|_| "VIA_BIKESHARE_NETWORK must point to the immutable bike-share network JSON")?;
     let bike_share_network = Arc::new(
@@ -72,7 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bike_share_network.clone(),
         tdx_client.clone(),
     ));
-    let mut service_conditions = TdxServiceConditionProvider::new(tdx_client.clone());
+    let mut service_conditions = TdxServiceConditionProvider::new(tdx_client.clone())
+        .with_bindings(Arc::new(provider_bindings.clone()));
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         service_conditions = service_conditions.with_service_condition_path(path);
     }
@@ -88,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bike_availability_source,
     )
     .with_tdx(tdx_client)
+    .with_provider_bindings(provider_bindings)
     .with_service_condition_cache_ttl(cache_ttl);
     let router = build_router(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")

@@ -17,11 +17,20 @@ use time::{
 };
 use via_server::{
     domain::{
-        ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
-        transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
+        transit::{
+            ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
+            ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
+            TransitTrip,
+        },
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
-    providers::timing::{DepartureDispatcher, TraDepartureSource, TransitDepartureSource},
+    providers::timing::{
+        DepartureDispatcher, TdxProviderBindings, TraDepartureSource, TraTripBinding,
+        TransitDepartureSource,
+    },
     tdx::TdxClient,
 };
 
@@ -110,51 +119,73 @@ fn payload(trains: Vec<Value>, update_time: &str) -> Value {
 fn network_for(train_numbers: &[&str]) -> Arc<TransitNetwork> {
     let board = BoardingPointId::new("stop-a");
     let alight = BoardingPointId::new("stop-b");
-    let services = train_numbers
+    let patterns = train_numbers
         .iter()
         .map(|train_no| {
-            TransitService::new(
-                TransitServiceId::new(format!("tra:{train_no}")),
-                TransitMode::Rail,
-                format!("TRA {train_no}"),
+            TransitPattern::new(
+                TransitPatternId::new(format!("tra:{train_no}")),
+                TransitRouteId::new("tra"),
+                None,
                 "Taipei",
                 vec![board.clone(), alight.clone()],
+                SegmentProfile {
+                    segments: vec![SegmentTravelTime {
+                        seconds: 600,
+                        source: SegmentTimeSource::Schedule,
+                    }],
+                },
             )
         })
-        .collect::<Vec<_>>();
+        .collect();
     let trips = train_numbers
         .iter()
         .map(|train_no| {
-            ScheduledTrip::weekdays(
-                ScheduledTripId::new(format!("scheduled-{train_no}")),
-                TransitServiceId::new(format!("tra:{train_no}")),
-                vec![
-                    Weekday::Monday,
-                    Weekday::Tuesday,
-                    Weekday::Wednesday,
-                    Weekday::Thursday,
-                    Weekday::Friday,
-                    Weekday::Saturday,
-                    Weekday::Sunday,
-                ],
+            TransitTrip::new(
+                TransitTripId::new(format!("scheduled-{train_no}")),
+                TransitPatternId::new(format!("tra:{train_no}")),
+                ServiceCalendarId::new("daily"),
                 vec![
                     ScheduledStopTime::new(36_000, 36_000),
                     ScheduledStopTime::new(36_600, 36_600),
                 ],
             )
         })
-        .collect::<Vec<_>>();
-    Arc::new(TransitNetwork::new(
-        Time::from_hms(4, 0, 0).unwrap(),
-        Vec::new(),
-        services,
-        trips,
-    ))
+        .collect();
+    Arc::new(
+        TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            patterns,
+            trips,
+        )
+        .with_routes(vec![TransitRoute {
+            id: TransitRouteId::new("tra"),
+            mode: TransitMode::Rail,
+            label: "TRA".into(),
+        }])
+        .with_calendars(vec![ServiceCalendar {
+            id: ServiceCalendarId::new("daily"),
+            weekdays: vec![
+                Weekday::Monday,
+                Weekday::Tuesday,
+                Weekday::Wednesday,
+                Weekday::Thursday,
+                Weekday::Friday,
+                Weekday::Saturday,
+                Weekday::Sunday,
+            ],
+            start_date: None,
+            end_date: None,
+            added_dates: Vec::new(),
+            removed_dates: Vec::new(),
+        }])
+        .with_revisions("static", "schedule"),
+    )
 }
 
 fn query(train_no: &str) -> DepartureQuery {
     DepartureQuery::new(
-        TransitServiceId::new(format!("tra:{train_no}")),
+        TransitPatternId::new(format!("tra:{train_no}")),
         BoardingPointId::new("stop-a"),
         after(),
         1,
@@ -165,6 +196,25 @@ fn dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> DepartureDis
     let tra = Arc::new(
         TraDepartureSource::new(network.clone())
             .with_tdx(Some(tdx))
+            .with_bindings(Arc::new(TdxProviderBindings {
+                tra_trips: network
+                    .trips
+                    .iter()
+                    .map(|trip| {
+                        (
+                            trip.id.clone(),
+                            TraTripBinding {
+                                train_number: trip
+                                    .id
+                                    .as_str()
+                                    .trim_start_matches("scheduled-")
+                                    .into(),
+                            },
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            }))
             .with_realtime_endpoint("v3/Rail/TRA/TrainLiveBoard"),
     );
     DepartureDispatcher::new(network, vec![tra as Arc<dyn TransitDepartureSource>])
@@ -189,7 +239,7 @@ async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule
     assert_eq!(trip.stop_times[1].arrival_at, expected_departure(17));
     assert_eq!(
         trip.scheduled_trip_id,
-        Some(ScheduledTripId::new("scheduled-100"))
+        Some(TransitTripId::new("scheduled-100"))
     );
     assert!(trip.observed_at.is_some());
 }

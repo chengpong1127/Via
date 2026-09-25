@@ -14,7 +14,7 @@ use futures_util::future::try_join_all;
 use moka::future::Cache;
 
 use crate::domain::{
-    ids::TransitServiceId,
+    ids::TransitPatternId,
     realtime::{FreshnessReason, FreshnessState, NormalizedRealtimeValue},
 };
 
@@ -136,14 +136,14 @@ impl ServiceConditionError {
 pub trait ServiceConditionProvider: Send + Sync {
     async fn service_conditions(
         &self,
-        service_ids: &[TransitServiceId],
+        service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError>;
 }
 
 #[derive(Clone)]
 pub struct CachedServiceConditionProvider {
     inner: Arc<dyn ServiceConditionProvider>,
-    condition_cache: Cache<TransitServiceId, Arc<Vec<NormalizedRealtimeValue>>>,
+    condition_cache: Cache<TransitPatternId, Arc<Vec<NormalizedRealtimeValue>>>,
     ttl: Duration,
     metrics: ServiceConditionMetrics,
 }
@@ -177,10 +177,10 @@ impl CachedServiceConditionProvider {
 
     async fn service_condition(
         &self,
-        service_id: TransitServiceId,
+        pattern_id: TransitPatternId,
     ) -> Result<Arc<Vec<NormalizedRealtimeValue>>, ServiceConditionError> {
         let inner = self.inner.clone();
-        let key = service_id.clone();
+        let key = pattern_id.clone();
         if self.condition_cache.get(&key).await.is_some() {
             self.metrics.cache_hit();
         } else {
@@ -191,7 +191,7 @@ impl CachedServiceConditionProvider {
             .try_get_with(key, async move {
                 metrics.upstream_request();
                 let result = inner
-                    .service_conditions(std::slice::from_ref(&service_id))
+                    .service_conditions(std::slice::from_ref(&pattern_id))
                     .await
                     .map(Arc::new);
                 if let Ok(values) = &result {
@@ -209,15 +209,15 @@ impl CachedServiceConditionProvider {
 impl ServiceConditionProvider for CachedServiceConditionProvider {
     async fn service_conditions(
         &self,
-        service_ids: &[TransitServiceId],
+        service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         let mut unique = HashSet::new();
         let results = try_join_all(
             service_ids
                 .iter()
-                .filter(|service_id| unique.insert((*service_id).clone()))
+                .filter(|pattern_id| unique.insert((*pattern_id).clone()))
                 .cloned()
-                .map(|service_id| self.service_condition(service_id)),
+                .map(|pattern_id| self.service_condition(pattern_id)),
         )
         .await?;
         Ok(results
@@ -234,7 +234,7 @@ pub struct NullServiceConditionProvider;
 impl ServiceConditionProvider for NullServiceConditionProvider {
     async fn service_conditions(
         &self,
-        _service_ids: &[TransitServiceId],
+        _service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         Ok(Vec::new())
     }

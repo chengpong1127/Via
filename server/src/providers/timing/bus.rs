@@ -12,9 +12,10 @@ use super::bus_realtime::{
 };
 use super::metrics::BusTimingMetrics;
 use super::source::TransitDepartureSource;
+use crate::providers::bindings::TdxProviderBindings;
 use crate::{
     domain::{
-        ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
+        ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
         realtime::{
             ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
         },
@@ -36,6 +37,7 @@ pub struct BusDepartureSource {
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
     metrics: BusTimingMetrics,
+    bindings: Arc<TdxProviderBindings>,
 }
 
 impl BusDepartureSource {
@@ -47,7 +49,13 @@ impl BusDepartureSource {
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_one_minute("1"),
             metrics: BusTimingMetrics::default(),
+            bindings: Arc::new(TdxProviderBindings::default()),
         }
+    }
+
+    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
+        self.bindings = bindings;
+        self
     }
 
     /// Override the bus endpoint for a fixture or a TDX deployment variant.
@@ -74,64 +82,19 @@ impl BusDepartureSource {
         observed_at: OffsetDateTime,
         evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
-        let service = self.network.service(&query.service_id)?;
+        let service = self.network.pattern(&query.pattern_id)?;
         let board_index = query.resolve_board_index(&self.network).ok()?;
-        let shape = self.network.representative_trip(&query.service_id);
-        let frequency_shape = self
-            .network
-            .frequencies
-            .iter()
-            .find(|frequency| frequency.service_id == query.service_id);
-        let template = shape
-            .map(|trip| trip.stop_times.as_slice())
-            .or_else(|| frequency_shape.map(|frequency| frequency.template_stop_times.as_slice()));
-        if template.is_none() && self.network.has_invalid_timing_shape(&query.service_id) {
-            return None;
-        }
-        let board_departure = template.map(|times| times[board_index].departure_seconds);
-        let service_day = self.network.service_day(departure_at);
-        let service_day_start = self.network.service_day_start(service_day);
-        let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(service.pattern.len());
+        let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(service.stops.len());
         let mut previous_departure = None;
-        for (index, stop_id) in service.pattern.iter().enumerate() {
-            let stop_time = if index < board_index {
-                template
-                    .map(|times| EffectiveStopTime {
-                        stop_id: stop_id.clone(),
-                        arrival_at: service_day_start
-                            + TimeDuration::seconds(i64::from(times[index].arrival_seconds)),
-                        departure_at: service_day_start
-                            + TimeDuration::seconds(i64::from(times[index].departure_seconds)),
-                    })
-                    .unwrap_or_else(|| EffectiveStopTime {
-                        stop_id: stop_id.clone(),
-                        arrival_at: departure_at,
-                        departure_at,
-                    })
-            } else if let Some(template) = template {
-                let board_departure = board_departure?;
-                let arrival_offset = template[index]
-                    .arrival_seconds
-                    .checked_sub(board_departure)?;
-                let departure_offset = template[index]
-                    .departure_seconds
-                    .checked_sub(board_departure)?;
-                EffectiveStopTime {
-                    stop_id: stop_id.clone(),
-                    arrival_at: departure_at + TimeDuration::seconds(i64::from(arrival_offset)),
-                    departure_at: departure_at + TimeDuration::seconds(i64::from(departure_offset)),
-                }
-            } else if index == board_index {
+        for (index, stop_id) in service.stops.iter().enumerate() {
+            let stop_time = if index <= board_index {
                 EffectiveStopTime {
                     stop_id: stop_id.clone(),
                     arrival_at: departure_at,
                     departure_at,
                 }
             } else {
-                let from = &service.pattern[index - 1];
-                let duration =
-                    self.network
-                        .estimated_segment_seconds(&query.service_id, from, stop_id)?;
+                let duration = service.static_profile.segments.get(index - 1)?.seconds;
                 let previous = previous_departure
                     .or_else(|| stop_times.last().map(|time| time.departure_at))?;
                 let arrival_at = previous + TimeDuration::seconds(i64::from(duration));
@@ -152,11 +115,11 @@ impl BusDepartureSource {
         Some(EffectiveTrip {
             id: EffectiveTripId::new(format!(
                 "runtime:{}:{}:{}",
-                query.service_id.as_str(),
+                query.pattern_id.as_str(),
                 query.board_stop_id.as_str(),
                 departure_at.unix_timestamp_nanos()
             )),
-            service_id: query.service_id.clone(),
+            pattern_id: query.pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
             timing_basis: crate::domain::transit_timing::TimingBasis::RealtimePrediction,
@@ -181,7 +144,7 @@ impl BusDepartureSource {
                 let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
                     return None;
                 };
-                if arrival.transit_service_id != query.service_id
+                if arrival.transit_pattern_id != query.pattern_id
                     || arrival.boarding_point_id != query.board_stop_id
                     || !matches!(
                         arrival.state,
@@ -235,19 +198,21 @@ impl BusDepartureSource {
         }
 
         let mut stops_by_scope = BTreeMap::<String, HashSet<BoardingPointId>>::new();
-        let mut services_by_scope = BTreeMap::<String, HashSet<TransitServiceId>>::new();
+        let mut services_by_scope = BTreeMap::<String, HashSet<TransitPatternId>>::new();
         let mut pairs_by_scope =
-            BTreeMap::<String, HashSet<(TransitServiceId, BoardingPointId)>>::new();
+            BTreeMap::<String, HashSet<(TransitPatternId, BoardingPointId)>>::new();
         let mut unscoped_queries = 0;
         for query in &active_queries {
-            let pair = (query.service_id.clone(), query.board_stop_id.clone());
-            let Some(service) = self.network.service(&query.service_id) else {
+            let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
+            let Some(service) = self.network.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
                 continue;
             };
-            let scope = service
-                .realtime_scope
-                .clone()
+            let scope = self
+                .bindings
+                .bus_patterns
+                .get(&service.id)
+                .map(|binding| binding.realtime_scope.clone())
                 .or_else(|| (self.realtime_path != DEFAULT_ARRIVAL_PATH).then(String::new));
             let Some(scope) = scope else {
                 unscoped_queries += 1;
@@ -260,7 +225,7 @@ impl BusDepartureSource {
             services_by_scope
                 .entry(scope.clone())
                 .or_default()
-                .insert(query.service_id.clone());
+                .insert(query.pattern_id.clone());
             pairs_by_scope.entry(scope).or_default().insert(pair);
         }
         let relevant_stop_count = stops_by_scope.values().map(HashSet::len).sum();
@@ -272,9 +237,9 @@ impl BusDepartureSource {
             .record_departure_batch(active_queries.len(), relevant_stop_count, batch_count);
 
         let mut values_by_pair =
-            HashMap::<(TransitServiceId, BoardingPointId), Vec<NormalizedRealtimeValue>>::new();
+            HashMap::<(TransitPatternId, BoardingPointId), Vec<NormalizedRealtimeValue>>::new();
         let mut errors_by_pair =
-            HashMap::<(TransitServiceId, BoardingPointId), DepartureError>::new();
+            HashMap::<(TransitPatternId, BoardingPointId), DepartureError>::new();
         let mut http_requests = 0usize;
         let mut rows_received = 0usize;
         let mut rows_relevant = 0usize;
@@ -282,12 +247,15 @@ impl BusDepartureSource {
         for (scope, unique_stops) in stops_by_scope {
             let mut unique_stops = unique_stops.into_iter().collect::<Vec<_>>();
             unique_stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-            let requested_services = services_by_scope
-                .get(&scope)
-                .into_iter()
-                .flatten()
-                .cloned()
-                .collect::<Vec<_>>();
+            let mut requested_services = HashMap::<String, Vec<TransitPatternId>>::new();
+            for pattern_id in services_by_scope.get(&scope).into_iter().flatten() {
+                if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
+                    requested_services
+                        .entry(binding.tdx_service_id.clone())
+                        .or_default()
+                        .push(pattern_id.clone());
+                }
+            }
             let scope_pairs = pairs_by_scope.get(&scope).cloned().unwrap_or_default();
             let mut completed_stops = HashSet::new();
             let mut rate_limited = false;
@@ -353,7 +321,7 @@ impl BusDepartureSource {
                         continue;
                     };
                     let pair = (
-                        arrival.transit_service_id.clone(),
+                        arrival.transit_pattern_id.clone(),
                         arrival.boarding_point_id.clone(),
                     );
                     if requested_stops.contains(&arrival.boarding_point_id)
@@ -407,7 +375,7 @@ impl BusDepartureSource {
                 if query.limit == 0 {
                     Ok(Vec::new())
                 } else {
-                    let pair = (query.service_id.clone(), query.board_stop_id.clone());
+                    let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
                     errors_by_pair.get(&pair).cloned().map_or_else(
                         || {
                             Ok(self.resolve_query(
@@ -455,11 +423,11 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if service.transit_mode != TransitMode::Bus
-            || !service.pattern.contains(&query.board_stop_id)
+        if self.network.route_of(service).mode != TransitMode::Bus
+            || !service.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }

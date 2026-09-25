@@ -14,22 +14,23 @@ use crate::domain::{
     bikeshare::BikeShareNetwork,
     transit::{TransitNetwork, TransitNetworkValidationError},
 };
+use crate::providers::bindings::TdxProviderBindings;
 
 pub mod bike_access;
 pub mod gtfs;
 pub mod static_transfers;
-pub use gtfs::{
-    GtfsBuildDiagnostics, GtfsBuildOutput, build_from_gtfs_archive,
-    build_from_gtfs_archive_with_street,
-};
+pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput, build_from_gtfs_archive_with_street};
 
-pub const ARTIFACT_SCHEMA_VERSION: u32 = 6;
+pub const ARTIFACT_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactCounts {
     pub stops: usize,
-    pub services: usize,
-    pub scheduled_trips: usize,
+    pub routes: usize,
+    pub patterns: usize,
+    pub trips: usize,
+    pub calendars: usize,
+    pub frequencies: usize,
     pub transfer_edges: usize,
     #[serde(default)]
     pub bike_stations: usize,
@@ -62,6 +63,7 @@ pub struct BuildDiagnostics;
 #[derive(Clone, Debug)]
 pub struct BuildOutput {
     pub network: TransitNetwork,
+    pub provider_bindings: TdxProviderBindings,
     pub bike_share_network: BikeShareNetwork,
     pub manifest: ArtifactManifest,
     pub diagnostics: BuildDiagnostics,
@@ -83,6 +85,8 @@ pub enum DataError {
     EmptyNetwork,
     #[error("artifact JSON is invalid: {0}")]
     InvalidArtifactJson(String),
+    #[error("provider bindings are invalid: {0}")]
+    InvalidProviderBindings(String),
     #[error("normalized network failed validation: {0}")]
     InvalidArtifact(#[from] TransitNetworkValidationError),
     #[error("bike-share artifact is invalid: {0}")]
@@ -95,6 +99,11 @@ pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {
     let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
     TransitNetwork::from_artifact_json(&body)
         .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))
+}
+
+pub fn load_provider_bindings_artifact(path: &Path) -> Result<TdxProviderBindings, DataError> {
+    let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
+    serde_json::from_str(&body).map_err(|error| DataError::InvalidArtifactJson(error.to_string()))
 }
 
 pub fn load_bikeshare_artifact(path: &Path) -> Result<BikeShareNetwork, DataError> {
@@ -125,13 +134,13 @@ fn revision_for_network(network: &TransitNetwork, schedule: bool) -> Result<Stri
     network.schedule_revision.clear();
     if schedule {
         network.stops.clear();
-        network.services.clear();
+        network.routes.clear();
+        network.patterns.clear();
         network.transfer_edges.clear();
     } else {
         network.trips.clear();
+        network.calendars.clear();
         network.frequencies.clear();
-        network.metro_timings.clear();
-        network.derived_bus_travel_times.clear();
     }
     let bytes = serde_json::to_vec(&network.canonicalize())
         .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;

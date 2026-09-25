@@ -365,7 +365,7 @@ mod tests {
     }
 
     fn transit() -> TransitNetwork {
-        TransitNetwork::new(
+        TransitNetwork::fixture(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![TransitStop::new(
                 BoardingPointId::new("bp"),

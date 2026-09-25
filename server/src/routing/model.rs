@@ -3,7 +3,7 @@
 use time::OffsetDateTime;
 
 use crate::domain::{
-    ids::{BoardingPointId, TransitServiceId},
+    ids::{BoardingPointId, TransitPatternId},
     realtime::NormalizedRealtimeValue,
     transit::TransitMode,
     transit_timing::{DepartureError, EffectiveTrip, TimingBasis, TimingReliability},
@@ -157,9 +157,9 @@ pub enum JourneySegment {
 }
 
 impl JourneySegment {
-    pub fn service_id(&self) -> Option<&TransitServiceId> {
+    pub fn service_id(&self) -> Option<&TransitPatternId> {
         match self {
-            Self::Transit { trip, .. } => Some(&trip.service_id),
+            Self::Transit { trip, .. } => Some(&trip.pattern_id),
             Self::WalkingTransfer { .. } => None,
         }
     }
@@ -181,7 +181,7 @@ pub struct JourneyCandidate {
 }
 
 impl JourneyCandidate {
-    pub fn transit_service_sequence(&self) -> Vec<TransitServiceId> {
+    pub fn transit_service_sequence(&self) -> Vec<TransitPatternId> {
         self.segments
             .iter()
             .filter_map(JourneySegment::service_id)

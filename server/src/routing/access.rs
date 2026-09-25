@@ -14,6 +14,7 @@ use crate::{
 use super::{
     model::{AccessPoint, EgressPoint},
     service::RoutingLimits,
+    topology::TransitTopologyIndex,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,15 +23,22 @@ pub(crate) struct StreetMetric {
     pub distance_metres: u32,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct AccessNetwork<'a> {
+    pub network: &'a TransitNetwork,
+    pub topology: &'a TransitTopologyIndex,
+}
+
 pub(crate) async fn discover_access_points(
     street: &dyn StreetRouter,
-    network: &TransitNetwork,
+    data: AccessNetwork<'_>,
     origin: RequestCoordinate,
     departure_time: OffsetDateTime,
     constraints: RoutingConstraints,
     allowed_transit_modes: &[TransitMode],
     limits: &RoutingLimits,
 ) -> Result<Vec<AccessPoint>, StreetRoutingError> {
+    let AccessNetwork { network, topology } = data;
     let origin = Coordinate::try_new(origin.latitude, origin.longitude)?;
     let stops = nearby_stops(
         network,
@@ -79,6 +87,7 @@ pub(crate) async fn discover_access_points(
     });
     Ok(prune_access_coverage(
         network,
+        topology,
         result,
         limits.max_transit_access_stops,
     ))
@@ -86,12 +95,13 @@ pub(crate) async fn discover_access_points(
 
 pub(crate) async fn discover_egress_points(
     street: &dyn StreetRouter,
-    network: &TransitNetwork,
+    data: AccessNetwork<'_>,
     destination: RequestCoordinate,
     constraints: RoutingConstraints,
     allowed_transit_modes: &[TransitMode],
     limits: &RoutingLimits,
 ) -> Result<Vec<EgressPoint>, StreetRoutingError> {
+    let AccessNetwork { network, topology } = data;
     let destination = Coordinate::try_new(destination.latitude, destination.longitude)?;
     let stops = nearby_stops(
         network,
@@ -136,6 +146,7 @@ pub(crate) async fn discover_egress_points(
     });
     Ok(prune_egress_coverage(
         network,
+        topology,
         result,
         limits.max_transit_egress_stops,
     ))
@@ -143,6 +154,7 @@ pub(crate) async fn discover_egress_points(
 
 fn prune_access_coverage(
     network: &TransitNetwork,
+    topology: &TransitTopologyIndex,
     points: Vec<AccessPoint>,
     limit: usize,
 ) -> Vec<AccessPoint> {
@@ -150,7 +162,7 @@ fn prune_access_coverage(
     for point in points {
         if retained.iter().any(|existing: &AccessPoint| {
             existing.walking_seconds <= point.walking_seconds
-                && stop_coverage_dominates(network, &existing.stop_id, &point.stop_id)
+                && stop_coverage_dominates(network, topology, &existing.stop_id, &point.stop_id)
         }) {
             continue;
         }
@@ -162,6 +174,7 @@ fn prune_access_coverage(
 
 fn prune_egress_coverage(
     network: &TransitNetwork,
+    topology: &TransitTopologyIndex,
     points: Vec<EgressPoint>,
     limit: usize,
 ) -> Vec<EgressPoint> {
@@ -169,7 +182,7 @@ fn prune_egress_coverage(
     for point in points {
         if retained.iter().any(|existing: &EgressPoint| {
             existing.walking_seconds <= point.walking_seconds
-                && stop_coverage_dominates(network, &existing.stop_id, &point.stop_id)
+                && stop_coverage_dominates(network, topology, &existing.stop_id, &point.stop_id)
         }) {
             continue;
         }
@@ -181,13 +194,19 @@ fn prune_egress_coverage(
 
 fn stop_coverage_dominates(
     network: &TransitNetwork,
+    topology: &TransitTopologyIndex,
     dominant_stop: &crate::domain::ids::BoardingPointId,
     candidate_stop: &crate::domain::ids::BoardingPointId,
 ) -> bool {
-    network
-        .services_at_stop(candidate_stop)
+    topology
+        .occurrences_at(candidate_stop)
         .iter()
-        .all(|service_id| network.services_at_stop(dominant_stop).contains(service_id))
+        .all(|position| {
+            topology
+                .occurrences_at(dominant_stop)
+                .iter()
+                .any(|dominant| dominant.pattern_id == position.pattern_id)
+        })
         && network
             .modes_at_stop(candidate_stop)
             .iter()
@@ -268,11 +287,12 @@ pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
 #[cfg(test)]
 mod tests {
     use super::{RoutingLimits, nearby_stops, stop_coverage_dominates};
+    use crate::routing::topology::TransitTopologyIndex;
     use crate::{
         api::RequestCoordinate,
         domain::{
             ids::BoardingPointId,
-            transit::{TransitMode, TransitNetwork, TransitService, TransitStop},
+            transit::{TransitMode, TransitNetwork, TransitPattern, TransitStop},
         },
         street::Coordinate,
     };
@@ -294,19 +314,19 @@ mod tests {
 
     #[test]
     fn coverage_dominance_keeps_unique_service_and_mode_stops() {
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("a"), stop("b"), stop("c"), stop("d")],
             vec![
-                TransitService::new(
-                    crate::domain::ids::TransitServiceId::new("bus"),
+                TransitPattern::fixture(
+                    crate::domain::ids::TransitPatternId::new("bus"),
                     TransitMode::Bus,
                     "bus",
                     "b",
                     vec![BoardingPointId::new("a"), BoardingPointId::new("b")],
                 ),
-                TransitService::new(
-                    crate::domain::ids::TransitServiceId::new("metro"),
+                TransitPattern::fixture(
+                    crate::domain::ids::TransitPatternId::new("metro"),
                     TransitMode::Metro,
                     "metro",
                     "d",
@@ -318,11 +338,13 @@ mod tests {
 
         assert!(stop_coverage_dominates(
             &network,
+            &TransitTopologyIndex::new(&network),
             &BoardingPointId::new("a"),
             &BoardingPointId::new("b")
         ));
         assert!(!stop_coverage_dominates(
             &network,
+            &TransitTopologyIndex::new(&network),
             &BoardingPointId::new("a"),
             &BoardingPointId::new("c")
         ));
@@ -351,8 +373,8 @@ mod tests {
         ));
         let mut services = Vec::new();
         for index in 0..24 {
-            services.push(TransitService::new(
-                crate::domain::ids::TransitServiceId::new(format!("bus-{index}")),
+            services.push(TransitPattern::fixture(
+                crate::domain::ids::TransitPatternId::new(format!("bus-{index}")),
                 TransitMode::Bus,
                 "bus",
                 "bus",
@@ -371,8 +393,8 @@ mod tests {
                 },
             )
         }));
-        services.push(TransitService::new(
-            crate::domain::ids::TransitServiceId::new("red-line"),
+        services.push(TransitPattern::fixture(
+            crate::domain::ids::TransitPatternId::new("red-line"),
             TransitMode::Metro,
             "red",
             "red",
@@ -381,8 +403,8 @@ mod tests {
                 BoardingPointId::new("metro-end"),
             ],
         ));
-        services.push(TransitService::new(
-            crate::domain::ids::TransitServiceId::new("blue-line"),
+        services.push(TransitPattern::fixture(
+            crate::domain::ids::TransitPatternId::new("blue-line"),
             TransitMode::Metro,
             "blue",
             "blue",
@@ -398,7 +420,7 @@ mod tests {
                 longitude: 121.5,
             },
         ));
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             time::Time::from_hms(4, 0, 0).unwrap(),
             stops,
             services,
@@ -441,7 +463,7 @@ mod tests {
             latitude: 25.1,
             longitude: 121.5,
         };
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![
                 stop_at("bus", origin),
@@ -450,15 +472,15 @@ mod tests {
                 stop_at("metro-end", far_away),
             ],
             vec![
-                TransitService::new(
-                    crate::domain::ids::TransitServiceId::new("bus"),
+                TransitPattern::fixture(
+                    crate::domain::ids::TransitPatternId::new("bus"),
                     TransitMode::Bus,
                     "bus",
                     "bus",
                     vec![BoardingPointId::new("bus"), BoardingPointId::new("bus-end")],
                 ),
-                TransitService::new(
-                    crate::domain::ids::TransitServiceId::new("metro"),
+                TransitPattern::fixture(
+                    crate::domain::ids::TransitPatternId::new("metro"),
                     TransitMode::Metro,
                     "metro",
                     "metro",

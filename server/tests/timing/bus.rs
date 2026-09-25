@@ -14,14 +14,20 @@ use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339, macros::datetime};
 use via_server::{
     domain::{
-        ids::{BoardingPointId, ScheduledTripId, TransitServiceId},
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
         transit::{
-            DerivedBusTravelTime, ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork,
-            TransitService,
+            ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
+            ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
+            TransitTrip,
         },
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
-    providers::timing::{BusDepartureSource, DepartureDispatcher, TransitDepartureSource},
+    providers::timing::{
+        BusDepartureSource, BusPatternBinding, DepartureDispatcher, TdxProviderBindings,
+        TransitDepartureSource,
+    },
     tdx::TdxClient,
 };
 
@@ -140,117 +146,156 @@ fn recent_update() -> String {
 }
 
 fn arrival(
-    service_id: &str,
+    pattern_id: &str,
     board_stop_id: &str,
     estimate_seconds: i64,
     update_time: &str,
 ) -> Value {
     json!({
         "StopUID": board_stop_id,
-        "SubRouteUID": service_id.split_once("::direction=").map_or(service_id, |(id, _)| id),
-        "Direction": service_id.split_once("::direction=").and_then(|(_, direction)| direction.parse::<u8>().ok()),
+        "SubRouteUID": pattern_id.split_once("::direction=").map_or(pattern_id, |(id, _)| id),
+        "Direction": pattern_id.split_once("::direction=").and_then(|(_, direction)| direction.parse::<u8>().ok()),
         "StopStatus": 0,
         "EstimateTime": estimate_seconds,
         "UpdateTime": update_time
     })
 }
 
-fn network_for(service_ids: &[TransitServiceId]) -> TransitNetwork {
+fn calendar() -> ServiceCalendar {
+    ServiceCalendar {
+        id: ServiceCalendarId::new("daily"),
+        weekdays: vec![time::Weekday::Monday],
+        start_date: None,
+        end_date: None,
+        added_dates: Vec::new(),
+        removed_dates: Vec::new(),
+    }
+}
+
+fn bus_pattern(
+    id: TransitPatternId,
+    board: BoardingPointId,
+    downstream: BoardingPointId,
+) -> TransitPattern {
+    TransitPattern::new(
+        id,
+        TransitRouteId::new("bus"),
+        None,
+        "Downstream",
+        vec![board, downstream],
+        SegmentProfile {
+            segments: vec![SegmentTravelTime {
+                seconds: 120,
+                source: SegmentTimeSource::Estimated,
+            }],
+        },
+    )
+}
+
+fn trip(id: TransitTripId, pattern_id: TransitPatternId) -> TransitTrip {
+    TransitTrip::new(
+        id,
+        pattern_id,
+        ServiceCalendarId::new("daily"),
+        vec![
+            ScheduledStopTime::new(10 * 3600, 10 * 3600),
+            ScheduledStopTime::new(10 * 3600 + 600, 10 * 3600 + 600),
+        ],
+    )
+}
+
+fn network_for(service_ids: &[TransitPatternId]) -> TransitNetwork {
     network_for_with_scopes(service_ids, &[])
 }
 
 fn network_for_with_scopes(
-    service_ids: &[TransitServiceId],
-    scopes: &[(&str, &str)],
+    service_ids: &[TransitPatternId],
+    _scopes: &[(&str, &str)],
 ) -> TransitNetwork {
     let board = BoardingPointId::new("stop-x");
     let downstream = BoardingPointId::new("stop-y");
-    let services = service_ids
-        .iter()
-        .map(|service_id| {
-            let service = TransitService::new(
-                service_id.clone(),
-                TransitMode::Bus,
-                "Bus",
-                "Downstream",
-                vec![board.clone(), downstream.clone()],
-            )
-            .with_timing_source("bus_n1");
-            scopes
-                .iter()
-                .find_map(|(id, scope)| (*id == service_id.as_str()).then_some(*scope))
-                .map_or(service.clone(), |scope| service.with_realtime_scope(scope))
-        })
-        .collect::<Vec<_>>();
-    let trips = service_ids
-        .iter()
-        .enumerate()
-        .map(|(index, service_id)| {
-            ScheduledTrip::weekdays(
-                ScheduledTripId::new(format!("run-{index}")),
-                service_id.clone(),
-                vec![time::Weekday::Monday],
-                vec![
-                    ScheduledStopTime::new(10 * 3600, 10 * 3600),
-                    ScheduledStopTime::new(10 * 3600 + 600, 10 * 3600 + 600),
-                ],
-            )
-        })
-        .collect::<Vec<_>>();
     TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).unwrap(),
         Vec::new(),
-        services,
-        trips,
+        service_ids
+            .iter()
+            .map(|id| bus_pattern(id.clone(), board.clone(), downstream.clone()))
+            .collect(),
+        service_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| trip(TransitTripId::new(format!("run-{index}")), id.clone()))
+            .collect(),
     )
+    .with_routes(vec![TransitRoute {
+        id: TransitRouteId::new("bus"),
+        mode: TransitMode::Bus,
+        label: "Bus".into(),
+    }])
+    .with_calendars(vec![calendar()])
     .with_revisions("static", "schedule")
 }
 
 fn network_for_unique_stops(count: usize) -> (TransitNetwork, Vec<DepartureQuery>) {
-    let mut services = Vec::with_capacity(count);
+    let mut patterns = Vec::with_capacity(count);
     let mut trips = Vec::with_capacity(count);
     let mut queries = Vec::with_capacity(count);
     for index in 0..count {
-        let service_id = TransitServiceId::new(format!("service-{index}"));
+        let id = TransitPatternId::new(format!("service-{index}"));
         let board = BoardingPointId::new(format!("stop-{index}"));
-        let downstream = BoardingPointId::new(format!("downstream-{index}"));
-        services.push(
-            TransitService::new(
-                service_id.clone(),
-                TransitMode::Bus,
-                "Bus",
-                "Downstream",
-                vec![board.clone(), downstream],
-            )
-            .with_timing_source("bus_n1")
-            .with_realtime_scope("Taipei"),
-        );
-        trips.push(ScheduledTrip::weekdays(
-            ScheduledTripId::new(format!("run-{index}")),
-            service_id.clone(),
-            vec![time::Weekday::Monday],
-            vec![
-                ScheduledStopTime::new(10 * 3600, 10 * 3600),
-                ScheduledStopTime::new(10 * 3600 + 600, 10 * 3600 + 600),
-            ],
+        patterns.push(bus_pattern(
+            id.clone(),
+            board.clone(),
+            BoardingPointId::new(format!("downstream-{index}")),
         ));
-        queries.push(DepartureQuery::new(service_id, board, NOW, 1));
+        trips.push(trip(TransitTripId::new(format!("run-{index}")), id.clone()));
+        queries.push(DepartureQuery::new(id, board, NOW, 1));
     }
     (
         TransitNetwork::new(
             time::Time::from_hms(4, 0, 0).unwrap(),
             Vec::new(),
-            services,
+            patterns,
             trips,
         )
+        .with_routes(vec![TransitRoute {
+            id: TransitRouteId::new("bus"),
+            mode: TransitMode::Bus,
+            label: "Bus".into(),
+        }])
+        .with_calendars(vec![calendar()])
         .with_revisions("static", "schedule"),
         queries,
     )
 }
 
-fn query(service_id: &str, board_stop_id: &str, after: OffsetDateTime) -> DepartureQuery {
+fn bindings(network: &TransitNetwork, scopes: &[(&str, &str)]) -> Arc<TdxProviderBindings> {
+    let bus_patterns = network
+        .patterns
+        .iter()
+        .map(|pattern| {
+            let scope = scopes
+                .iter()
+                .find(|(id, _)| *id == pattern.id.as_str())
+                .map_or("Taipei", |(_, scope)| *scope);
+            (
+                pattern.id.clone(),
+                BusPatternBinding {
+                    tdx_service_id: pattern.id.as_str().into(),
+                    realtime_scope: scope.into(),
+                },
+            )
+        })
+        .collect();
+    Arc::new(TdxProviderBindings {
+        bus_patterns,
+        ..Default::default()
+    })
+}
+
+fn query(pattern_id: &str, board_stop_id: &str, after: OffsetDateTime) -> DepartureQuery {
     DepartureQuery::new(
-        TransitServiceId::new(service_id),
+        TransitPatternId::new(pattern_id),
         BoardingPointId::new(board_stop_id),
         after,
         3,
@@ -259,7 +304,9 @@ fn query(service_id: &str, board_stop_id: &str, after: OffsetDateTime) -> Depart
 
 fn bus_dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), Some(tdx)).with_realtime_endpoint("feed"),
+        BusDepartureSource::new(network.clone(), Some(tdx))
+            .with_bindings(bindings(&network, &[]))
+            .with_realtime_endpoint("feed"),
     );
     DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }
@@ -267,7 +314,7 @@ fn bus_dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> Departur
 #[tokio::test]
 async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
     let service_ids = (0..20)
-        .map(|index| TransitServiceId::new(format!("service-{index}")))
+        .map(|index| TransitPatternId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
     let update = recent_update();
     let payload = Value::Array(
@@ -303,7 +350,7 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
 
 #[tokio::test]
 async fn empty_bus_realtime_falls_back_to_static_schedule() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::OK).await;
     let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
     let resolver = bus_dispatcher(network, tdx);
@@ -319,7 +366,7 @@ async fn empty_bus_realtime_falls_back_to_static_schedule() {
 
 #[tokio::test]
 async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
-    let service_id = TransitServiceId::new("service-without-scope");
+    let service_id = TransitPatternId::new("service-without-scope");
     let (tdx, stats) = fixture_client(json!([]), StatusCode::OK).await;
     let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
     let source = BusDepartureSource::new(network.clone(), Some(tdx.clone()));
@@ -346,8 +393,8 @@ async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
 #[tokio::test]
 async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
     let service_ids = [
-        TransitServiceId::new("service-a"),
-        TransitServiceId::new("service-b"),
+        TransitPatternId::new("service-a"),
+        TransitPatternId::new("service-b"),
     ];
     let update = recent_update();
     let (tdx, _) = fixture_client(
@@ -377,8 +424,8 @@ async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
 #[tokio::test]
 async fn failed_bus_batch_only_falls_back_for_its_scope() {
     let service_ids = [
-        TransitServiceId::new("service-taipei"),
-        TransitServiceId::new("service-new-taipei"),
+        TransitPatternId::new("service-taipei"),
+        TransitPatternId::new("service-new-taipei"),
     ];
     let scopes = [
         ("service-taipei", "Taipei"),
@@ -394,7 +441,10 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
     )
     .await;
     let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
-    let bus = Arc::new(BusDepartureSource::new(network.clone(), Some(tdx)));
+    let bus = Arc::new(
+        BusDepartureSource::new(network.clone(), Some(tdx))
+            .with_bindings(bindings(&network, &scopes)),
+    );
     let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
 
     let results = resolver
@@ -417,7 +467,7 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
 
 #[tokio::test]
 async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
@@ -445,7 +495,7 @@ async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
 
 #[tokio::test]
 async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
@@ -469,7 +519,7 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
 
 #[tokio::test]
 async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_schedule() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
@@ -478,10 +528,10 @@ async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_sched
     .await;
     let mut network = network_for(std::slice::from_ref(&service_id));
     network.trips.clear();
-    let network = network.with_derived_bus_travel_times(vec![DerivedBusTravelTime {
-        service_id,
-        adjacent_seconds: vec![347],
-    }]);
+    network.patterns[0].static_profile.segments[0] = SegmentTravelTime {
+        seconds: 347,
+        source: SegmentTimeSource::Derived,
+    };
     let resolver = bus_dispatcher(Arc::new(network), tdx);
 
     let trip = &resolver
@@ -497,8 +547,44 @@ async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_sched
 }
 
 #[tokio::test]
+async fn realtime_bus_uses_position_aligned_profile_on_a_loop() {
+    let service_id = TransitPatternId::new("service-a");
+    let update = recent_update();
+    let (tdx, _) = fixture_client(
+        json!([arrival("service-a", "stop-x", 60, &update)]),
+        StatusCode::OK,
+    )
+    .await;
+    let mut network = network_for(std::slice::from_ref(&service_id));
+    network.trips.clear();
+    network.patterns[0].stops = vec![
+        BoardingPointId::new("stop-x"),
+        BoardingPointId::new("stop-y"),
+        BoardingPointId::new("stop-x"),
+        BoardingPointId::new("stop-z"),
+    ];
+    network.patterns[0].static_profile.segments = [120, 180, 347]
+        .into_iter()
+        .map(|seconds| SegmentTravelTime {
+            seconds,
+            source: SegmentTimeSource::Derived,
+        })
+        .collect();
+    let resolver = bus_dispatcher(Arc::new(network), tdx);
+
+    let trip = &resolver
+        .next_departures(query("service-a", "stop-x", NOW))
+        .await
+        .unwrap()[0];
+    assert_eq!(
+        trip.stop_times[3].arrival_at - trip.stop_times[0].departure_at,
+        Duration::seconds(647)
+    );
+}
+
+#[tokio::test]
 async fn malformed_or_stale_realtime_falls_back_safely() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let stale = (OffsetDateTime::now_utc() - Duration::seconds(400))
         .format(&Rfc3339)
         .unwrap();
@@ -527,7 +613,7 @@ async fn malformed_or_stale_realtime_falls_back_safely() {
 #[tokio::test]
 async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
     let service_ids = (0..97)
-        .map(|index| TransitServiceId::new(format!("service-{index}")))
+        .map(|index| TransitPatternId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
     let scopes = service_ids
         .iter()
@@ -548,7 +634,10 @@ async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
     );
     let (tdx, stats) = fixture_client(payload, StatusCode::OK).await;
     let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
-    let bus = Arc::new(BusDepartureSource::new(network.clone(), Some(tdx)));
+    let bus = Arc::new(
+        BusDepartureSource::new(network.clone(), Some(tdx))
+            .with_bindings(bindings(&network, &scopes)),
+    );
     let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
     let needs = service_ids
         .iter()
@@ -585,8 +674,8 @@ async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
 #[tokio::test]
 async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() {
     let service_ids = [
-        TransitServiceId::new("service-a"),
-        TransitServiceId::new("service-b"),
+        TransitPatternId::new("service-a"),
+        TransitPatternId::new("service-b"),
     ];
     let update = recent_update();
     let (tdx, stats) = fixture_client(
@@ -613,7 +702,7 @@ async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() 
     assert_eq!(results[0].as_ref().unwrap().len(), 1);
     assert!(results[1].as_ref().unwrap().is_empty());
     assert_eq!(results[2].as_ref().unwrap().len(), 1);
-    assert_eq!(results[2].as_ref().unwrap()[0].service_id, service_ids[1]);
+    assert_eq!(results[2].as_ref().unwrap()[0].pattern_id, service_ids[1]);
 }
 
 #[tokio::test]
@@ -621,8 +710,8 @@ async fn directional_service_ids_do_not_cross_satisfy_each_other() {
     let direction_zero = "route::direction=0";
     let direction_one = "route::direction=1";
     let service_ids = [
-        TransitServiceId::new(direction_zero),
-        TransitServiceId::new(direction_one),
+        TransitPatternId::new(direction_zero),
+        TransitPatternId::new(direction_one),
     ];
     let update = recent_update();
     let (tdx, _) = fixture_client(
@@ -642,18 +731,18 @@ async fn directional_service_ids_do_not_cross_satisfy_each_other() {
         .await;
 
     assert_eq!(
-        results[0].as_ref().unwrap()[0].service_id.as_str(),
+        results[0].as_ref().unwrap()[0].pattern_id.as_str(),
         direction_zero
     );
     assert_eq!(
-        results[1].as_ref().unwrap()[0].service_id.as_str(),
+        results[1].as_ref().unwrap()[0].pattern_id.as_str(),
         direction_one
     );
 }
 
 #[tokio::test]
 async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
-    let service_id = TransitServiceId::new("service-a");
+    let service_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
     let resolver = bus_dispatcher(
         Arc::new(network_for(std::slice::from_ref(&service_id))),

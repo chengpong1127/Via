@@ -174,7 +174,7 @@ async fn bike_replaces_an_adjacent_transit_segment_and_keeps_the_baseline() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|leg| leg["details"]["via_service_id"].is_null())
+            .all(|leg| leg["details"]["via_pattern_id"].is_null())
     );
 }
 
@@ -308,7 +308,7 @@ async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter_map(|leg| leg["details"]["via_service_id"].as_str())
+                .filter_map(|leg| leg["details"]["via_pattern_id"].as_str())
                 .eq(["fixture-mrt-red", "fixture-mrt-blue"])
     }));
     let bike = options
@@ -321,7 +321,7 @@ async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|leg| leg["details"]["via_service_id"].as_str())
+            .filter_map(|leg| leg["details"]["via_pattern_id"].as_str())
             .collect::<Vec<_>>(),
         vec!["fixture-mrt-red", "fixture-mrt-blue"]
     );

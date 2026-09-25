@@ -11,7 +11,9 @@ use std::{
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
 
-use super::ids::{BoardingPointId, ScheduledTripId, TransitServiceId};
+use super::ids::{
+    BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+};
 use super::{
     location::{METRES_PER_DEGREE, RequestCoordinate},
     normalize_to_taipei, taipei_offset,
@@ -66,58 +68,82 @@ impl TransitStop {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TransitService {
-    pub id: TransitServiceId,
-    pub transit_mode: TransitMode,
-    /// Opaque adapter key used by timing composition. It is intentionally not
-    /// an endpoint name or a mode-derived routing rule.
-    #[serde(default)]
-    pub timing_source: Option<String>,
-    /// Provider-neutral partition metadata used when resolving live arrivals.
-    #[serde(default)]
-    pub realtime_scope: Option<String>,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransitRoute {
+    pub id: TransitRouteId,
+    pub mode: TransitMode,
     pub label: String,
-    pub headsign: String,
-    pub pattern: Vec<BoardingPointId>,
-    /// True when this operator/capability must provide a fresh Service Condition
-    /// before a Journey Option can be displayed.
-    pub service_condition_required: bool,
 }
 
-impl TransitService {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentTimeSource {
+    Schedule,
+    Derived,
+    Estimated,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SegmentTravelTime {
+    pub seconds: u32,
+    pub source: SegmentTimeSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SegmentProfile {
+    pub segments: Vec<SegmentTravelTime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceCalendar {
+    pub id: ServiceCalendarId,
+    pub weekdays: Vec<Weekday>,
+    pub start_date: Option<Date>,
+    pub end_date: Option<Date>,
+    pub added_dates: Vec<Date>,
+    pub removed_dates: Vec<Date>,
+}
+
+impl ServiceCalendar {
+    pub fn runs_on(&self, service_day: Date) -> bool {
+        calendar_runs_on(
+            service_day,
+            &self.weekdays,
+            self.start_date,
+            self.end_date,
+            &self.added_dates,
+            &self.removed_dates,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TransitPattern {
+    pub id: TransitPatternId,
+    pub route_id: TransitRouteId,
+    pub direction: Option<u8>,
+    pub headsign: String,
+    pub stops: Vec<BoardingPointId>,
+    pub static_profile: SegmentProfile,
+}
+
+impl TransitPattern {
     pub fn new(
-        id: TransitServiceId,
-        transit_mode: TransitMode,
-        label: impl Into<String>,
+        id: TransitPatternId,
+        route_id: TransitRouteId,
+        direction: Option<u8>,
         headsign: impl Into<String>,
-        pattern: Vec<BoardingPointId>,
+        stops: Vec<BoardingPointId>,
+        static_profile: SegmentProfile,
     ) -> Self {
         Self {
             id,
-            transit_mode,
-            timing_source: None,
-            realtime_scope: None,
-            label: label.into(),
+            route_id,
+            direction,
             headsign: headsign.into(),
-            pattern,
-            service_condition_required: false,
+            stops,
+            static_profile,
         }
-    }
-
-    pub fn requiring_service_conditions(mut self) -> Self {
-        self.service_condition_required = true;
-        self
-    }
-
-    pub fn with_timing_source(mut self, source: impl Into<String>) -> Self {
-        self.timing_source = Some(source.into());
-        self
-    }
-
-    pub fn with_realtime_scope(mut self, scope: impl Into<String>) -> Self {
-        self.realtime_scope = Some(scope.into());
-        self
     }
 }
 
@@ -139,65 +165,26 @@ impl ScheduledStopTime {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduledTrip {
-    pub id: ScheduledTripId,
-    pub service_id: TransitServiceId,
-    pub active_weekdays: Vec<Weekday>,
-    #[serde(default)]
-    pub start_date: Option<Date>,
-    #[serde(default)]
-    pub end_date: Option<Date>,
-    #[serde(default)]
-    pub added_service_days: Vec<Date>,
-    #[serde(default)]
-    pub removed_service_days: Vec<Date>,
+pub struct TransitTrip {
+    pub id: TransitTripId,
+    pub pattern_id: TransitPatternId,
+    pub calendar_id: ServiceCalendarId,
     pub stop_times: Vec<ScheduledStopTime>,
 }
 
-impl ScheduledTrip {
-    pub fn weekdays(
-        id: ScheduledTripId,
-        service_id: TransitServiceId,
-        active_weekdays: Vec<Weekday>,
+impl TransitTrip {
+    pub fn new(
+        id: TransitTripId,
+        pattern_id: TransitPatternId,
+        calendar_id: ServiceCalendarId,
         stop_times: Vec<ScheduledStopTime>,
     ) -> Self {
         Self {
             id,
-            service_id,
-            active_weekdays,
-            start_date: None,
-            end_date: None,
-            added_service_days: Vec::new(),
-            removed_service_days: Vec::new(),
+            pattern_id,
+            calendar_id,
             stop_times,
         }
-    }
-
-    pub fn with_service_day_exceptions(
-        mut self,
-        added_service_days: Vec<Date>,
-        removed_service_days: Vec<Date>,
-    ) -> Self {
-        self.added_service_days = added_service_days;
-        self.removed_service_days = removed_service_days;
-        self
-    }
-
-    pub fn with_service_date_range(mut self, start_date: Date, end_date: Date) -> Self {
-        self.start_date = Some(start_date);
-        self.end_date = Some(end_date);
-        self
-    }
-
-    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
-        calendar_runs_on(
-            service_day,
-            &self.active_weekdays,
-            self.start_date,
-            self.end_date,
-            &self.added_service_days,
-            &self.removed_service_days,
-        )
     }
 }
 
@@ -205,35 +192,14 @@ impl ScheduledTrip {
 /// GTFS trip template; it is not added to the scheduled-trip collection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitFrequency {
-    pub id: ScheduledTripId,
-    pub service_id: TransitServiceId,
+    pub id: TransitTripId,
+    pub pattern_id: TransitPatternId,
+    pub calendar_id: ServiceCalendarId,
     pub start_seconds: u32,
     pub end_seconds: u32,
     pub headway_seconds: u32,
     pub exact_times: bool,
-    pub active_weekdays: Vec<Weekday>,
-    #[serde(default)]
-    pub start_date: Option<Date>,
-    #[serde(default)]
-    pub end_date: Option<Date>,
-    #[serde(default)]
-    pub added_service_days: Vec<Date>,
-    #[serde(default)]
-    pub removed_service_days: Vec<Date>,
     pub template_stop_times: Vec<ScheduledStopTime>,
-}
-
-impl TransitFrequency {
-    pub(crate) fn runs_on(&self, service_day: Date) -> bool {
-        calendar_runs_on(
-            service_day,
-            &self.active_weekdays,
-            self.start_date,
-            self.end_date,
-            &self.added_service_days,
-            &self.removed_service_days,
-        )
-    }
 }
 
 fn calendar_runs_on(
@@ -258,15 +224,6 @@ fn calendar_runs_on(
     active_weekdays.contains(&service_day.weekday())
 }
 
-/// Derived Bus segment costs are estimates for Phase 1 ranking and for
-/// downstream travel after a realtime boarding prediction. They are not
-/// timetable stop times.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DerivedBusTravelTime {
-    pub service_id: TransitServiceId,
-    pub adjacent_seconds: Vec<u32>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferEdge {
     pub from: BoardingPointId,
@@ -284,70 +241,17 @@ impl TransferEdge {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetroFrequency {
-    /// Seconds from the beginning of the service day.
-    pub start_seconds: u32,
-    /// Seconds from the beginning of the service day.
-    pub end_seconds: u32,
-    pub headway_seconds: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetroStationTiming {
-    pub stop_id: BoardingPointId,
-    #[serde(default)]
-    pub departures_seconds: Vec<u32>,
-    #[serde(default)]
-    pub frequencies: Vec<MetroFrequency>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MetroTiming {
-    pub service_id: TransitServiceId,
-    pub station_timings: Vec<MetroStationTiming>,
-    /// One positive duration for every adjacent pair in the service pattern.
-    #[serde(default)]
-    pub inter_station_travel_seconds: Vec<u32>,
-    /// The ordered pattern used when the timing was normalized. Older
-    /// artifacts may omit this field; newly built artifacts use it to keep
-    /// directional timing from being attached to the opposite service.
-    #[serde(default)]
-    pub pattern: Vec<BoardingPointId>,
-}
-
-impl MetroTiming {
-    pub fn new(
-        service_id: TransitServiceId,
-        station_timings: Vec<MetroStationTiming>,
-        inter_station_travel_seconds: Vec<u32>,
-    ) -> Self {
-        Self {
-            service_id,
-            station_timings,
-            inter_station_travel_seconds,
-            pattern: Vec::new(),
-        }
-    }
-
-    pub fn with_pattern(mut self, pattern: Vec<BoardingPointId>) -> Self {
-        self.pattern = pattern;
-        self
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitNetwork {
     pub service_day_boundary: Time,
     pub stops: Vec<TransitStop>,
-    pub services: Vec<TransitService>,
-    pub trips: Vec<ScheduledTrip>,
-    #[serde(default)]
-    pub metro_timings: Vec<MetroTiming>,
+    pub routes: Vec<TransitRoute>,
+    pub patterns: Vec<TransitPattern>,
+    pub calendars: Vec<ServiceCalendar>,
+    pub trips: Vec<TransitTrip>,
     #[serde(default)]
     pub frequencies: Vec<TransitFrequency>,
-    #[serde(default)]
-    pub derived_bus_travel_times: Vec<DerivedBusTravelTime>,
     /// Explicit movement time between distinct Boarding Points. Same-point
     /// transfers use `default_transfer_seconds`; distinct points must be listed.
     #[serde(default)]
@@ -372,11 +276,11 @@ impl PartialEq for TransitNetwork {
     fn eq(&self, other: &Self) -> bool {
         self.service_day_boundary == other.service_day_boundary
             && self.stops == other.stops
-            && self.services == other.services
+            && self.routes == other.routes
+            && self.patterns == other.patterns
+            && self.calendars == other.calendars
             && self.trips == other.trips
-            && self.metro_timings == other.metro_timings
             && self.frequencies == other.frequencies
-            && self.derived_bus_travel_times == other.derived_bus_travel_times
             && self.transfer_edges == other.transfer_edges
             && self.default_transfer_seconds == other.default_transfer_seconds
             && self.static_network_revision == other.static_network_revision
@@ -399,17 +303,17 @@ impl TransitNetwork {
     pub fn new(
         service_day_boundary: Time,
         stops: Vec<TransitStop>,
-        services: Vec<TransitService>,
-        trips: Vec<ScheduledTrip>,
+        patterns: Vec<TransitPattern>,
+        trips: Vec<TransitTrip>,
     ) -> Self {
         Self {
             service_day_boundary,
             stops,
-            services,
+            routes: Vec::new(),
+            patterns,
+            calendars: Vec::new(),
             trips,
-            metro_timings: Vec::new(),
             frequencies: Vec::new(),
-            derived_bus_travel_times: Vec::new(),
             transfer_edges: Vec::new(),
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
@@ -423,26 +327,23 @@ impl TransitNetwork {
         self
     }
 
+    pub fn with_routes(mut self, routes: Vec<TransitRoute>) -> Self {
+        self.routes = routes;
+        self
+    }
+
+    pub fn with_calendars(mut self, calendars: Vec<ServiceCalendar>) -> Self {
+        self.calendars = calendars;
+        self
+    }
+
     pub fn with_transfer_edges(mut self, transfer_edges: Vec<TransferEdge>) -> Self {
         self.transfer_edges = transfer_edges;
         self
     }
 
-    pub fn with_metro_timings(mut self, metro_timings: Vec<MetroTiming>) -> Self {
-        self.metro_timings = metro_timings;
-        self
-    }
-
     pub fn with_frequencies(mut self, frequencies: Vec<TransitFrequency>) -> Self {
         self.frequencies = frequencies;
-        self
-    }
-
-    pub fn with_derived_bus_travel_times(
-        mut self,
-        travel_times: Vec<DerivedBusTravelTime>,
-    ) -> Self {
-        self.derived_bus_travel_times = travel_times;
         self
     }
 
@@ -483,20 +384,54 @@ impl TransitNetwork {
                 ));
             }
         }
+        let mut route_ids = HashSet::new();
+        for route in &self.routes {
+            if !route_ids.insert(route.id.clone()) {
+                return Err(TransitNetworkValidationError::DuplicateRoute(
+                    route.id.clone(),
+                ));
+            }
+        }
         let mut service_ids = HashSet::new();
-        for service in &self.services {
+        let mut pattern_topologies = HashSet::new();
+        for service in &self.patterns {
             if !service_ids.insert(service.id.clone()) {
                 return Err(TransitNetworkValidationError::DuplicateService(
                     service.id.clone(),
                 ));
             }
-            if service.pattern.len() < 2 {
+            if service.stops.len() < 2 {
                 return Err(TransitNetworkValidationError::PatternTooShort(
                     service.id.clone(),
                 ));
             }
+            if !route_ids.contains(&service.route_id) {
+                return Err(TransitNetworkValidationError::UnknownPatternRoute(
+                    service.id.clone(),
+                ));
+            }
+            if !pattern_topologies.insert((
+                service.route_id.clone(),
+                service.direction,
+                service.stops.clone(),
+            )) {
+                return Err(TransitNetworkValidationError::DuplicatePatternTopology(
+                    service.id.clone(),
+                ));
+            }
+            if service.static_profile.segments.len() != service.stops.len() - 1
+                || service
+                    .static_profile
+                    .segments
+                    .iter()
+                    .any(|segment| segment.seconds == 0)
+            {
+                return Err(TransitNetworkValidationError::InvalidPatternProfile(
+                    service.id.clone(),
+                ));
+            }
             if service
-                .pattern
+                .stops
                 .iter()
                 .any(|stop_id| !stop_ids.contains(stop_id))
             {
@@ -505,27 +440,51 @@ impl TransitNetwork {
                 ));
             }
         }
+        let mut calendar_ids = HashSet::new();
+        for calendar in &self.calendars {
+            if !calendar_ids.insert(calendar.id.clone()) {
+                return Err(TransitNetworkValidationError::DuplicateCalendar(
+                    calendar.id.clone(),
+                ));
+            }
+            if (calendar.weekdays.is_empty() && calendar.added_dates.is_empty())
+                || calendar
+                    .start_date
+                    .zip(calendar.end_date)
+                    .is_some_and(|(start, end)| start > end)
+            {
+                return Err(TransitNetworkValidationError::InvalidCalendar(
+                    calendar.id.clone(),
+                ));
+            }
+        }
+        let pattern_by_id = self
+            .patterns
+            .iter()
+            .map(|pattern| (&pattern.id, pattern))
+            .collect::<HashMap<_, _>>();
         for trip in &self.trips {
-            let Some(service) = self.service(&trip.service_id) else {
+            let Some(service) = pattern_by_id.get(&trip.pattern_id).copied() else {
                 return Err(TransitNetworkValidationError::UnknownTripService(
-                    trip.service_id.clone(),
+                    trip.pattern_id.clone(),
                 ));
             };
-            if (trip.active_weekdays.is_empty() && trip.added_service_days.is_empty())
-                || trip
-                    .start_date
-                    .zip(trip.end_date)
-                    .is_some_and(|(start, end)| start > end)
-                || trip.stop_times.len() != service.pattern.len()
+            if !calendar_ids.contains(&trip.calendar_id)
+                || trip.stop_times.len() != service.stops.len()
             {
                 return Err(TransitNetworkValidationError::InvalidTripShape(
                     trip.id.clone(),
                 ));
             }
-            if trip.stop_times.windows(2).any(|times| {
-                times[0].arrival_seconds > times[0].departure_seconds
-                    || times[0].departure_seconds > times[1].arrival_seconds
-            }) {
+            if trip
+                .stop_times
+                .last()
+                .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
+                || trip.stop_times.windows(2).any(|times| {
+                    times[0].arrival_seconds > times[0].departure_seconds
+                        || times[0].departure_seconds > times[1].arrival_seconds
+                })
+            {
                 return Err(TransitNetworkValidationError::NonChronologicalTrip(
                     trip.id.clone(),
                 ));
@@ -533,20 +492,20 @@ impl TransitNetwork {
         }
         let mut frequency_ids = HashSet::new();
         for frequency in &self.frequencies {
-            let Some(service) = self.service(&frequency.service_id) else {
+            let Some(service) = pattern_by_id.get(&frequency.pattern_id).copied() else {
                 return Err(TransitNetworkValidationError::UnknownFrequencyService(
-                    frequency.service_id.clone(),
+                    frequency.pattern_id.clone(),
                 ));
             };
             if !frequency_ids.insert(frequency.id.clone())
-                || frequency.start_seconds > frequency.end_seconds
+                || frequency.start_seconds >= frequency.end_seconds
                 || frequency.headway_seconds == 0
+                || frequency.template_stop_times.len() != service.stops.len()
+                || !calendar_ids.contains(&frequency.calendar_id)
                 || frequency
-                    .start_date
-                    .zip(frequency.end_date)
-                    .is_some_and(|(start, end)| start > end)
-                || frequency.template_stop_times.len() != service.pattern.len()
-                || (frequency.active_weekdays.is_empty() && frequency.added_service_days.is_empty())
+                    .template_stop_times
+                    .last()
+                    .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
                 || frequency.template_stop_times.windows(2).any(|times| {
                     times[0].arrival_seconds > times[0].departure_seconds
                         || times[0].departure_seconds > times[1].arrival_seconds
@@ -557,68 +516,9 @@ impl TransitNetwork {
                 ));
             }
         }
-        let mut derived_services = HashSet::new();
-        for timing in &self.derived_bus_travel_times {
-            let Some(service) = self.service(&timing.service_id) else {
-                return Err(
-                    TransitNetworkValidationError::UnknownDerivedBusTravelTimeService(
-                        timing.service_id.clone(),
-                    ),
-                );
-            };
-            if service.transit_mode != TransitMode::Bus
-                || !derived_services.insert(timing.service_id.clone())
-                || timing.adjacent_seconds.len() != service.pattern.len().saturating_sub(1)
-                || timing.adjacent_seconds.contains(&0)
-            {
-                return Err(
-                    TransitNetworkValidationError::InvalidDerivedBusTravelTimeShape(
-                        timing.service_id.clone(),
-                    ),
-                );
-            }
-        }
-        let mut metro_timing_services = HashSet::new();
-        for timing in &self.metro_timings {
-            if !metro_timing_services.insert(timing.service_id.clone()) {
-                return Err(TransitNetworkValidationError::DuplicateMetroTiming(
-                    timing.service_id.clone(),
-                ));
-            }
-            let Some(service) = self.service(&timing.service_id) else {
-                return Err(TransitNetworkValidationError::UnknownMetroTimingService(
-                    timing.service_id.clone(),
-                ));
-            };
-            if service.transit_mode != TransitMode::Metro
-                || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
-                || timing.inter_station_travel_seconds.contains(&0)
-                || (!timing.pattern.is_empty() && timing.pattern != service.pattern)
-            {
-                return Err(TransitNetworkValidationError::InvalidMetroTimingShape(
-                    timing.service_id.clone(),
-                ));
-            }
-            for station_timing in &timing.station_timings {
-                if !service.pattern.contains(&station_timing.stop_id)
-                    || station_timing
-                        .departures_seconds
-                        .windows(2)
-                        .any(|times| times[0] >= times[1])
-                    || station_timing.frequencies.iter().any(|frequency| {
-                        frequency.start_seconds > frequency.end_seconds
-                            || frequency.headway_seconds == 0
-                    })
-                {
-                    return Err(TransitNetworkValidationError::InvalidMetroTimingShape(
-                        timing.service_id.clone(),
-                    ));
-                }
-            }
-        }
         let mut trip_ids = HashSet::new();
         for trip in &self.trips {
-            if !trip_ids.insert(trip.id.clone()) {
+            if !trip_ids.insert(trip.id.clone()) || frequency_ids.contains(&trip.id) {
                 return Err(TransitNetworkValidationError::DuplicateTrip(
                     trip.id.clone(),
                 ));
@@ -651,35 +551,21 @@ impl TransitNetwork {
     pub fn canonicalize(mut self) -> Self {
         self.stops
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
-        self.services
+        self.routes
+            .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        self.calendars
+            .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
+        self.patterns
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
         self.trips
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
-        self.metro_timings
-            .sort_by(|left, right| left.service_id.as_str().cmp(right.service_id.as_str()));
-        for timing in &mut self.metro_timings {
-            timing
-                .station_timings
-                .sort_by(|left, right| left.stop_id.as_str().cmp(right.stop_id.as_str()));
-            for station_timing in &mut timing.station_timings {
-                station_timing.departures_seconds.sort_unstable();
-                station_timing.frequencies.sort_by(|left, right| {
-                    left.start_seconds
-                        .cmp(&right.start_seconds)
-                        .then(left.end_seconds.cmp(&right.end_seconds))
-                        .then(left.headway_seconds.cmp(&right.headway_seconds))
-                });
-            }
-        }
         self.frequencies.sort_by(|left, right| {
-            left.service_id
+            left.pattern_id
                 .as_str()
-                .cmp(right.service_id.as_str())
+                .cmp(right.pattern_id.as_str())
                 .then(left.start_seconds.cmp(&right.start_seconds))
                 .then(left.id.as_str().cmp(right.id.as_str()))
         });
-        self.derived_bus_travel_times
-            .sort_by(|left, right| left.service_id.as_str().cmp(right.service_id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
                 .as_str()
@@ -722,7 +608,12 @@ impl TransitNetwork {
     /// The grid avoids scanning all of Taipei for the normal bounded query;
     /// the bounded fallback preserves correctness for sparse fixtures.
     pub fn nearest_stops(&self, coordinate: RequestCoordinate, limit: usize) -> Vec<&TransitStop> {
-        nearest_from_grid(&self.indexes().stop_grid, &self.stops, coordinate, limit)
+        nearest_from_grid(
+            &self.indexes().spatial.stop_grid,
+            &self.stops,
+            coordinate,
+            limit,
+        )
     }
 
     /// Return all stops inside a bounded radius in deterministic distance/id order.
@@ -734,7 +625,7 @@ impl TransitNetwork {
         radius_metres: u32,
     ) -> Vec<&TransitStop> {
         points_within_radius_from_grid(
-            &self.indexes().stop_grid,
+            &self.indexes().spatial.stop_grid,
             &self.stops,
             coordinate,
             radius_metres,
@@ -752,68 +643,74 @@ impl TransitNetwork {
     }
 
     pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
-        self.stops.iter().find(|stop| &stop.id == id)
+        let index = self.indexes().lookup.stop_by_id.get(id).copied()?;
+        self.stops.get(index)
     }
 
-    pub fn service(&self, id: &TransitServiceId) -> Option<&TransitService> {
-        let index = self.indexes().service_by_id.get(id).copied()?;
-        self.services.get(index)
+    pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
+        let index = self.indexes().lookup.pattern_by_id.get(id).copied()?;
+        self.patterns.get(index)
     }
 
-    pub fn services_at_stop(&self, stop_id: &BoardingPointId) -> &[TransitServiceId] {
-        self.indexes()
-            .services_by_stop
-            .get(stop_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+    pub fn route_for_pattern(&self, pattern: &TransitPattern) -> Option<&TransitRoute> {
+        let index = self
+            .indexes()
+            .lookup
+            .route_by_id
+            .get(&pattern.route_id)
+            .copied()?;
+        self.routes.get(index)
+    }
+
+    pub fn route_of(&self, pattern: &TransitPattern) -> &TransitRoute {
+        self.route_for_pattern(pattern)
+            .expect("validated pattern route")
+    }
+
+    pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
+        let index = self.indexes().lookup.calendar_by_id.get(id).copied()?;
+        self.calendars.get(index)
     }
 
     pub fn modes_at_stop(&self, stop_id: &BoardingPointId) -> &[TransitMode] {
         self.indexes()
+            .lookup
             .modes_by_stop
             .get(stop_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    pub fn scheduled_trip(&self, id: &ScheduledTripId) -> Option<&ScheduledTrip> {
-        let index = self.indexes().scheduled_trip_by_id.get(id).copied()?;
+    pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
+        let index = self.indexes().lookup.trip_by_id.get(id).copied()?;
         self.trips.get(index)
     }
 
-    pub(crate) fn scheduled_trip_at(&self, index: usize) -> Option<&ScheduledTrip> {
+    pub(crate) fn scheduled_trip_at(&self, index: usize) -> Option<&TransitTrip> {
         self.trips.get(index)
     }
 
     pub(crate) fn scheduled_trip_indices(
         &self,
-        service_id: &TransitServiceId,
+        pattern_id: &TransitPatternId,
         board_index: usize,
     ) -> &[usize] {
         self.indexes()
-            .scheduled_trip_indices_by_service_stop
-            .get(service_id)
+            .schedule
+            .trip_indices_by_pattern_stop
+            .get(pattern_id)
             .and_then(|by_stop| by_stop.get(board_index))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
-    pub(crate) fn representative_trip(
-        &self,
-        service_id: &TransitServiceId,
-    ) -> Option<&ScheduledTrip> {
-        let index = self
-            .indexes()
-            .representative_trip_by_service
-            .get(service_id)
-            .copied()?;
-        self.trips.get(index)
-    }
-
-    pub(crate) fn has_invalid_timing_shape(&self, service_id: &TransitServiceId) -> bool {
+    pub(crate) fn frequency_indices(&self, pattern_id: &TransitPatternId) -> &[usize] {
         self.indexes()
-            .invalid_timing_shape_by_service
-            .contains(service_id)
+            .schedule
+            .frequency_indices_by_pattern
+            .get(pattern_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn service_day(&self, instant: OffsetDateTime) -> Date {
@@ -830,122 +727,261 @@ impl TransitNetwork {
         PrimitiveDateTime::new(service_day, Time::MIDNIGHT).assume_offset(taipei_offset())
     }
 
-    /// Return a representative duration for one adjacent service segment.
-    ///
-    /// Realtime bus departures may not have a scheduled trip for the current
-    /// service day, so the timing adapter needs a static shape without
-    /// fabricating a departure identity.
-    pub fn estimated_segment_seconds(
-        &self,
-        service_id: &TransitServiceId,
-        from_stop_id: &BoardingPointId,
-        to_stop_id: &BoardingPointId,
-    ) -> Option<u32> {
-        let service = self.service(service_id)?;
-        let board_index = service.pattern.iter().position(|id| id == from_stop_id)?;
-        let alight_index = service
-            .pattern
-            .iter()
-            .enumerate()
-            .skip(board_index + 1)
-            .find_map(|(index, id)| (id == to_stop_id).then_some(index))?;
-
-        let durations = self
-            .indexes()
-            .segment_durations_by_service
-            .get(service_id)?;
-        let duration = durations
-            .get(board_index..alight_index)?
-            .iter()
-            .try_fold(0_u32, |total, duration| total.checked_add(*duration))?;
-        (duration > 0).then_some(duration)
-    }
-
     fn indexes(&self) -> &TransitIndexes {
         self.indexes.get_or_init(|| TransitIndexes::build(self))
     }
 }
 
+#[cfg(test)]
+impl TransitPattern {
+    pub(crate) fn fixture(
+        id: TransitPatternId,
+        mode: TransitMode,
+        label: impl Into<String>,
+        headsign: impl Into<String>,
+        stops: Vec<BoardingPointId>,
+    ) -> Self {
+        let label = label.into();
+        let route_id = TransitRouteId::new(format!("fixture:{mode:?}:{label}"));
+        let static_profile = SegmentProfile {
+            segments: vec![
+                SegmentTravelTime {
+                    seconds: 120,
+                    source: SegmentTimeSource::Estimated
+                };
+                stops.len().saturating_sub(1)
+            ],
+        };
+        Self::new(id, route_id, None, headsign, stops, static_profile)
+    }
+}
+
+#[cfg(test)]
+impl TransitTrip {
+    pub(crate) fn fixture_weekdays(
+        id: TransitTripId,
+        pattern_id: TransitPatternId,
+        weekdays: Vec<Weekday>,
+        stop_times: Vec<ScheduledStopTime>,
+    ) -> Self {
+        let encoded = weekdays
+            .iter()
+            .map(|day| day.number_from_monday().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        Self::new(
+            id,
+            pattern_id,
+            ServiceCalendarId::new(format!("fixture-weekdays:{encoded}")),
+            stop_times,
+        )
+    }
+}
+
+#[cfg(test)]
+impl TransitNetwork {
+    pub(crate) fn fixture(
+        boundary: Time,
+        stops: Vec<TransitStop>,
+        mut patterns: Vec<TransitPattern>,
+        trips: Vec<TransitTrip>,
+    ) -> Self {
+        let mut routes = HashMap::new();
+        let coordinates = stops
+            .iter()
+            .map(|stop| (stop.id.clone(), stop.coordinate))
+            .collect::<HashMap<_, _>>();
+        for pattern in &mut patterns {
+            let raw = pattern
+                .route_id
+                .as_str()
+                .strip_prefix("fixture:")
+                .expect("fixture route ID");
+            let (mode, label) = raw.split_once(':').expect("fixture route fields");
+            let mode = match mode {
+                "Bus" => TransitMode::Bus,
+                "Metro" => TransitMode::Metro,
+                "Rail" => TransitMode::Rail,
+                "HighSpeedRail" => TransitMode::HighSpeedRail,
+                _ => panic!("unknown fixture mode"),
+            };
+            routes
+                .entry(pattern.route_id.clone())
+                .or_insert_with(|| TransitRoute {
+                    id: pattern.route_id.clone(),
+                    mode,
+                    label: label.to_owned(),
+                });
+            let mut minimums = vec![u32::MAX; pattern.stops.len().saturating_sub(1)];
+            for trip in trips.iter().filter(|trip| trip.pattern_id == pattern.id) {
+                for (minimum, pair) in minimums.iter_mut().zip(trip.stop_times.windows(2)) {
+                    let seconds = pair[1]
+                        .arrival_seconds
+                        .saturating_sub(pair[0].departure_seconds);
+                    if seconds > 0 {
+                        *minimum = (*minimum).min(seconds);
+                    }
+                }
+            }
+            let kmh = match mode {
+                TransitMode::Bus => 60.0,
+                TransitMode::Metro => 100.0,
+                TransitMode::Rail => 160.0,
+                TransitMode::HighSpeedRail => 350.0,
+            };
+            pattern.static_profile.segments = pattern
+                .stops
+                .windows(2)
+                .enumerate()
+                .map(|(index, pair)| {
+                    if minimums[index] != u32::MAX {
+                        SegmentTravelTime {
+                            seconds: minimums[index],
+                            source: SegmentTimeSource::Schedule,
+                        }
+                    } else {
+                        let distance = coordinates
+                            .get(&pair[0])
+                            .zip(coordinates.get(&pair[1]))
+                            .map_or(0.0, |(from, to)| from.haversine_distance_metres(*to));
+                        SegmentTravelTime {
+                            seconds: (distance / (kmh / 3.6)).ceil().max(1.0) as u32,
+                            source: SegmentTimeSource::Estimated,
+                        }
+                    }
+                })
+                .collect();
+        }
+        let calendars = trips
+            .iter()
+            .map(|trip| trip.calendar_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .map(|id| {
+                let weekdays = id
+                    .as_str()
+                    .strip_prefix("fixture-weekdays:")
+                    .unwrap_or("")
+                    .split(',')
+                    .filter_map(|value| value.parse::<u8>().ok())
+                    .filter_map(|number| match number {
+                        1 => Some(Weekday::Monday),
+                        2 => Some(Weekday::Tuesday),
+                        3 => Some(Weekday::Wednesday),
+                        4 => Some(Weekday::Thursday),
+                        5 => Some(Weekday::Friday),
+                        6 => Some(Weekday::Saturday),
+                        7 => Some(Weekday::Sunday),
+                        _ => None,
+                    })
+                    .collect();
+                ServiceCalendar {
+                    id,
+                    weekdays,
+                    start_date: None,
+                    end_date: None,
+                    added_dates: Vec::new(),
+                    removed_dates: Vec::new(),
+                }
+            })
+            .collect();
+        Self::new(boundary, stops, patterns, trips)
+            .with_routes(routes.into_values().collect())
+            .with_calendars(calendars)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TransitIndexes {
+    spatial: SpatialStopIndex,
+    lookup: TransitLookupIndex,
+    schedule: ScheduleIndex,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SpatialStopIndex {
     stop_grid: SpatialGrid,
-    service_by_id: HashMap<TransitServiceId, usize>,
-    services_by_stop: HashMap<BoardingPointId, Vec<TransitServiceId>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TransitLookupIndex {
+    stop_by_id: HashMap<BoardingPointId, usize>,
+    route_by_id: HashMap<TransitRouteId, usize>,
+    pattern_by_id: HashMap<TransitPatternId, usize>,
     modes_by_stop: HashMap<BoardingPointId, Vec<TransitMode>>,
-    scheduled_trip_indices_by_service_stop: HashMap<TransitServiceId, Vec<Vec<usize>>>,
-    scheduled_trip_by_id: HashMap<ScheduledTripId, usize>,
-    representative_trip_by_service: HashMap<TransitServiceId, usize>,
-    segment_durations_by_service: HashMap<TransitServiceId, Vec<u32>>,
-    invalid_timing_shape_by_service: HashSet<TransitServiceId>,
+    trip_by_id: HashMap<TransitTripId, usize>,
+    calendar_by_id: HashMap<ServiceCalendarId, usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ScheduleIndex {
+    trip_indices_by_pattern_stop: HashMap<TransitPatternId, Vec<Vec<usize>>>,
+    frequency_indices_by_pattern: HashMap<TransitPatternId, Vec<usize>>,
 }
 
 impl TransitIndexes {
     fn build(network: &TransitNetwork) -> Self {
         let mut indexes = Self::default();
         for (index, stop) in network.stops.iter().enumerate() {
-            indexes.stop_grid.insert(stop.coordinate, index);
+            indexes.spatial.stop_grid.insert(stop.coordinate, index);
+            indexes.lookup.stop_by_id.insert(stop.id.clone(), index);
         }
-        for (index, service) in network.services.iter().enumerate() {
-            indexes.service_by_id.insert(service.id.clone(), index);
-            for stop_id in &service.pattern {
+        for (index, route) in network.routes.iter().enumerate() {
+            indexes.lookup.route_by_id.insert(route.id.clone(), index);
+        }
+        for (index, calendar) in network.calendars.iter().enumerate() {
+            indexes
+                .lookup
+                .calendar_by_id
+                .insert(calendar.id.clone(), index);
+        }
+        for (index, service) in network.patterns.iter().enumerate() {
+            indexes
+                .lookup
+                .pattern_by_id
+                .insert(service.id.clone(), index);
+            let mode = network.routes[*indexes
+                .lookup
+                .route_by_id
+                .get(&service.route_id)
+                .expect("validated pattern route")]
+            .mode;
+            for stop_id in &service.stops {
                 indexes
-                    .services_by_stop
-                    .entry(stop_id.clone())
-                    .or_default()
-                    .push(service.id.clone());
-                indexes
+                    .lookup
                     .modes_by_stop
                     .entry(stop_id.clone())
                     .or_default()
-                    .push(service.transit_mode);
+                    .push(mode);
             }
         }
-        for service_ids in indexes.services_by_stop.values_mut() {
-            service_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-            service_ids.dedup();
-        }
-        for modes in indexes.modes_by_stop.values_mut() {
+        for modes in indexes.lookup.modes_by_stop.values_mut() {
             modes.sort_by_key(|mode| *mode as u8);
             modes.dedup();
         }
         for (trip_index, trip) in network.trips.iter().enumerate() {
             indexes
-                .scheduled_trip_by_id
+                .lookup
+                .trip_by_id
                 .insert(trip.id.clone(), trip_index);
-            let Some(service_index) = indexes.service_by_id.get(&trip.service_id).copied() else {
+            let Some(service_index) = indexes.lookup.pattern_by_id.get(&trip.pattern_id).copied()
+            else {
                 continue;
             };
-            let service = &network.services[service_index];
-            if trip.stop_times.len() != service.pattern.len() {
+            let service = &network.patterns[service_index];
+            if trip.stop_times.len() != service.stops.len() {
                 continue;
             }
             let trip_indices = indexes
-                .scheduled_trip_indices_by_service_stop
-                .entry(trip.service_id.clone())
-                .or_insert_with(|| vec![Vec::new(); service.pattern.len()]);
+                .schedule
+                .trip_indices_by_pattern_stop
+                .entry(trip.pattern_id.clone())
+                .or_insert_with(|| vec![Vec::new(); service.stops.len()]);
             for trip_indices_at_stop in trip_indices.iter_mut().take(trip.stop_times.len()) {
                 trip_indices_at_stop.push(trip_index);
             }
-            if trip.stop_times.windows(2).any(|times| {
-                times[0].arrival_seconds > times[0].departure_seconds
-                    || times[0].departure_seconds > times[1].arrival_seconds
-            }) {
-                indexes
-                    .invalid_timing_shape_by_service
-                    .insert(trip.service_id.clone());
-                continue;
-            }
-            let replace_representative = indexes
-                .representative_trip_by_service
-                .get(&trip.service_id)
-                .is_none_or(|current| network.trips[*current].id.as_str() > trip.id.as_str());
-            if replace_representative {
-                indexes
-                    .representative_trip_by_service
-                    .insert(trip.service_id.clone(), trip_index);
-            }
         }
-        for trip_indices_by_stop in indexes.scheduled_trip_indices_by_service_stop.values_mut() {
+        for trip_indices_by_stop in indexes.schedule.trip_indices_by_pattern_stop.values_mut() {
             for (board_index, trip_indices) in trip_indices_by_stop.iter_mut().enumerate() {
                 trip_indices.sort_by(|left, right| {
                     let left_trip = &network.trips[*left];
@@ -957,40 +993,13 @@ impl TransitIndexes {
                 });
             }
         }
-        let derived_bus = network
-            .derived_bus_travel_times
-            .iter()
-            .map(|timing| (&timing.service_id, &timing.adjacent_seconds))
-            .collect::<HashMap<_, _>>();
-        for service in &network.services {
-            let durations = indexes
-                .representative_trip_by_service
-                .get(&service.id)
-                .map(|trip_index| {
-                    let trip = &network.trips[*trip_index];
-                    trip.stop_times
-                        .windows(2)
-                        .map(|times| {
-                            times[1]
-                                .arrival_seconds
-                                .saturating_sub(times[0].departure_seconds)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .or_else(|| {
-                    (service.transit_mode == TransitMode::Bus)
-                        .then(|| derived_bus.get(&service.id).copied())
-                        .flatten()
-                        .filter(|durations| {
-                            durations.len() == service.pattern.len().saturating_sub(1)
-                                && durations.iter().all(|duration| *duration > 0)
-                        })
-                        .cloned()
-                })
-                .unwrap_or_else(|| vec![120; service.pattern.len().saturating_sub(1)]);
+        for (index, frequency) in network.frequencies.iter().enumerate() {
             indexes
-                .segment_durations_by_service
-                .insert(service.id.clone(), durations);
+                .schedule
+                .frequency_indices_by_pattern
+                .entry(frequency.pattern_id.clone())
+                .or_default()
+                .push(index);
         }
         indexes
     }
@@ -1200,34 +1209,36 @@ pub enum TransitNetworkValidationError {
     DuplicateStop(BoardingPointId),
     #[error("invalid coordinate for Boarding Point {0:?}")]
     InvalidStopCoordinate(BoardingPointId),
+    #[error("duplicate Transit Route {0:?}")]
+    DuplicateRoute(TransitRouteId),
+    #[error("Transit Pattern {0:?} references an unknown Route")]
+    UnknownPatternRoute(TransitPatternId),
+    #[error("Transit Pattern {0:?} has an invalid static profile")]
+    InvalidPatternProfile(TransitPatternId),
+    #[error("Transit Pattern {0:?} duplicates another route/direction/stop sequence")]
+    DuplicatePatternTopology(TransitPatternId),
+    #[error("duplicate Service Calendar {0:?}")]
+    DuplicateCalendar(ServiceCalendarId),
+    #[error("Service Calendar {0:?} has invalid dates")]
+    InvalidCalendar(ServiceCalendarId),
     #[error("duplicate Transit Service {0:?}")]
-    DuplicateService(TransitServiceId),
+    DuplicateService(TransitPatternId),
     #[error("duplicate Scheduled Trip {0:?}")]
-    DuplicateTrip(ScheduledTripId),
+    DuplicateTrip(TransitTripId),
     #[error("Transit Service {0:?} has fewer than two Boarding Points")]
-    PatternTooShort(TransitServiceId),
+    PatternTooShort(TransitPatternId),
     #[error("Transit Service {0:?} references an unknown Boarding Point")]
-    UnknownPatternStop(TransitServiceId),
+    UnknownPatternStop(TransitPatternId),
     #[error("Scheduled Trip references unknown Transit Service {0:?}")]
-    UnknownTripService(TransitServiceId),
-    #[error("duplicate Metro timing for Transit Service {0:?}")]
-    DuplicateMetroTiming(TransitServiceId),
-    #[error("Metro timing references unknown Transit Service {0:?}")]
-    UnknownMetroTimingService(TransitServiceId),
-    #[error("Metro timing for Transit Service {0:?} has an invalid shape")]
-    InvalidMetroTimingShape(TransitServiceId),
+    UnknownTripService(TransitPatternId),
     #[error("Scheduled Trip {0:?} has an invalid shape or calendar")]
-    InvalidTripShape(ScheduledTripId),
+    InvalidTripShape(TransitTripId),
     #[error("Scheduled Trip {0:?} is not chronological")]
-    NonChronologicalTrip(ScheduledTripId),
+    NonChronologicalTrip(TransitTripId),
     #[error("Transit frequency references unknown Transit Service {0:?}")]
-    UnknownFrequencyService(TransitServiceId),
+    UnknownFrequencyService(TransitPatternId),
     #[error("Transit frequency template {0:?} has an invalid shape or calendar")]
-    InvalidFrequencyShape(ScheduledTripId),
-    #[error("derived Bus travel times reference unknown Transit Service {0:?}")]
-    UnknownDerivedBusTravelTimeService(TransitServiceId),
-    #[error("derived Bus travel times for Transit Service {0:?} have an invalid shape")]
-    InvalidDerivedBusTravelTimeShape(TransitServiceId),
+    InvalidFrequencyShape(TransitTripId),
     #[error("transfer edge references unknown endpoints {from:?} -> {to:?}")]
     UnknownTransferEndpoint {
         from: BoardingPointId,

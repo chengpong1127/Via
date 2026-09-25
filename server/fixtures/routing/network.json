@@ -1,67 +1,722 @@
 {
-  "service_day_boundary": [4, 0, 0, 0],
+  "service_day_boundary": [
+    4,
+    0,
+    0,
+    0
+  ],
   "stops": [
-    {"id": "F-M1", "name": "Fixture MRT 1", "coordinate": {"latitude": 25.100000, "longitude": 121.500000}},
-    {"id": "F-M2-RED", "name": "Fixture MRT Interchange Red", "coordinate": {"latitude": 25.101000, "longitude": 121.501000}},
-    {"id": "F-M2-BLUE", "name": "Fixture MRT Interchange Blue", "coordinate": {"latitude": 25.101100, "longitude": 121.501100}},
-    {"id": "F-M2-BUS", "name": "Fixture MRT Interchange Bus", "coordinate": {"latitude": 25.101200, "longitude": 121.501200}},
-    {"id": "F-M3-BLUE", "name": "Fixture MRT 3 Blue", "coordinate": {"latitude": 25.102000, "longitude": 121.502000}},
-    {"id": "F-M3-GREEN", "name": "Fixture MRT 3 Green", "coordinate": {"latitude": 25.102100, "longitude": 121.502100}},
-    {"id": "F-M3-BUS", "name": "Fixture MRT 3 Bus", "coordinate": {"latitude": 25.102200, "longitude": 121.502200}},
-    {"id": "F-M4", "name": "Fixture MRT 4", "coordinate": {"latitude": 25.103000, "longitude": 121.503000}},
-    {"id": "F-BUS-A", "name": "Fixture Bus Origin", "coordinate": {"latitude": 25.110000, "longitude": 121.510000}},
-    {"id": "F-BUS-B", "name": "Fixture Bus Terminal", "coordinate": {"latitude": 25.111000, "longitude": 121.511000}},
-    {"id": "F-TRA-A", "name": "Fixture TRA Origin", "coordinate": {"latitude": 25.120000, "longitude": 121.520000}},
-    {"id": "F-TRA-B", "name": "Fixture TRA Station", "coordinate": {"latitude": 25.121000, "longitude": 121.521000}},
-    {"id": "F-HSR-A", "name": "Fixture THSR Origin", "coordinate": {"latitude": 25.130000, "longitude": 121.530000}},
-    {"id": "F-HSR-B", "name": "Fixture THSR Station", "coordinate": {"latitude": 25.131000, "longitude": 121.531000}},
-    {"id": "F-MISS-A", "name": "Fixture Missed Origin", "coordinate": {"latitude": 25.140000, "longitude": 121.540000}},
-    {"id": "F-MISS-M-IN", "name": "Fixture Missed Interchange In", "coordinate": {"latitude": 25.141000, "longitude": 121.541000}},
-    {"id": "F-MISS-M-OUT", "name": "Fixture Missed Interchange Out", "coordinate": {"latitude": 25.141100, "longitude": 121.541100}},
-    {"id": "F-MISS-B", "name": "Fixture Missed Terminal", "coordinate": {"latitude": 25.142000, "longitude": 121.542000}}
-  ],
-  "services": [
-    {"id": "fixture-mrt-red", "transit_mode": "metro", "timing_source": "metro_schedule", "realtime_scope": null, "label": "R", "headsign": "Fixture MRT 2", "pattern": ["F-M1", "F-M2-RED"], "service_condition_required": false},
-    {"id": "fixture-mrt-blue", "transit_mode": "metro", "timing_source": "metro_schedule", "realtime_scope": null, "label": "B", "headsign": "Fixture MRT 3", "pattern": ["F-M2-BLUE", "F-M3-BLUE"], "service_condition_required": false},
-    {"id": "fixture-mrt-green", "transit_mode": "metro", "timing_source": "metro_schedule", "realtime_scope": null, "label": "G", "headsign": "Fixture MRT 4", "pattern": ["F-M3-GREEN", "F-M4"], "service_condition_required": false},
-    {"id": "fixture-bus-main", "transit_mode": "bus", "timing_source": "bus_n1", "realtime_scope": "fixture", "label": "F1", "headsign": "Fixture Bus Terminal", "pattern": ["F-BUS-A", "F-BUS-B"], "service_condition_required": false},
-    {"id": "fixture-bus-in", "transit_mode": "bus", "timing_source": "bus_n1", "realtime_scope": "fixture", "label": "F-IN", "headsign": "Fixture MRT Interchange", "pattern": ["F-BUS-A", "F-M2-BUS"], "service_condition_required": false},
-    {"id": "fixture-bus-out", "transit_mode": "bus", "timing_source": "bus_n1", "realtime_scope": "fixture", "label": "F-OUT", "headsign": "Fixture Bus Terminal", "pattern": ["F-M3-BUS", "F-BUS-B"], "service_condition_required": false},
-    {"id": "fixture-tra-local", "transit_mode": "rail", "timing_source": null, "realtime_scope": null, "label": "TRA", "headsign": "Fixture TRA Station", "pattern": ["F-TRA-A", "F-TRA-B"], "service_condition_required": false},
-    {"id": "fixture-thsr", "transit_mode": "high_speed_rail", "timing_source": null, "realtime_scope": null, "label": "THSR", "headsign": "Fixture THSR Station", "pattern": ["F-HSR-A", "F-HSR-B"], "service_condition_required": false},
-    {"id": "fixture-missed-in", "transit_mode": "bus", "timing_source": "bus_n1", "realtime_scope": "fixture", "label": "F-MISS-IN", "headsign": "Fixture Missed Interchange", "pattern": ["F-MISS-A", "F-MISS-M-IN"], "service_condition_required": false},
-    {"id": "fixture-missed-out", "transit_mode": "bus", "timing_source": "bus_n1", "realtime_scope": "fixture", "label": "F-MISS-OUT", "headsign": "Fixture Missed Terminal", "pattern": ["F-MISS-M-OUT", "F-MISS-B"], "service_condition_required": false}
-  ],
-  "trips": [
-    {"id": "fixture-bus-main-early", "service_id": "fixture-bus-main", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36060, "departure_seconds": 36060}, {"arrival_seconds": 36660, "departure_seconds": 36660}]},
-    {"id": "fixture-bus-main-late", "service_id": "fixture-bus-main", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36720, "departure_seconds": 36720}, {"arrival_seconds": 37320, "departure_seconds": 37320}]},
-    {"id": "fixture-bus-in-run", "service_id": "fixture-bus-in", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36060, "departure_seconds": 36060}, {"arrival_seconds": 36360, "departure_seconds": 36360}]},
-    {"id": "fixture-bus-out-run", "service_id": "fixture-bus-out", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 37020, "departure_seconds": 37020}, {"arrival_seconds": 37500, "departure_seconds": 37500}]},
-    {"id": "fixture-tra-run", "service_id": "fixture-tra-local", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36180, "departure_seconds": 36180}, {"arrival_seconds": 37080, "departure_seconds": 37080}]},
-    {"id": "fixture-thsr-run", "service_id": "fixture-thsr", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36240, "departure_seconds": 36240}, {"arrival_seconds": 36720, "departure_seconds": 36720}]},
-    {"id": "fixture-missed-in-run", "service_id": "fixture-missed-in", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36060, "departure_seconds": 36060}, {"arrival_seconds": 36300, "departure_seconds": 36300}]},
-    {"id": "fixture-missed-out-run", "service_id": "fixture-missed-out", "active_weekdays": [1], "added_service_days": [], "removed_service_days": [], "stop_times": [{"arrival_seconds": 36300, "departure_seconds": 36300}, {"arrival_seconds": 36660, "departure_seconds": 36660}]}
-  ],
-  "metro_timings": [
-    {"service_id": "fixture-mrt-red", "station_timings": [{"stop_id": "F-M1", "departures_seconds": [36120, 36480, 37320], "frequencies": []}, {"stop_id": "F-M2-RED", "departures_seconds": [36540, 36900, 37320], "frequencies": []}], "inter_station_travel_seconds": [300], "pattern": ["F-M1", "F-M2-RED"]},
-    {"service_id": "fixture-mrt-blue", "station_timings": [{"stop_id": "F-M2-BLUE", "departures_seconds": [36540, 36900, 37260], "frequencies": []}, {"stop_id": "F-M3-BLUE", "departures_seconds": [36900, 37260, 37620], "frequencies": []}], "inter_station_travel_seconds": [360], "pattern": ["F-M2-BLUE", "F-M3-BLUE"]},
-    {"service_id": "fixture-mrt-green", "station_timings": [{"stop_id": "F-M3-GREEN", "departures_seconds": [37020, 37380, 37740], "frequencies": []}, {"stop_id": "F-M4", "departures_seconds": [37320, 37680, 38040], "frequencies": []}], "inter_station_travel_seconds": [300], "pattern": ["F-M3-GREEN", "F-M4"]}
+    {
+      "id": "F-M1",
+      "name": "Fixture MRT 1",
+      "coordinate": {
+        "latitude": 25.1,
+        "longitude": 121.5
+      }
+    },
+    {
+      "id": "F-M2-RED",
+      "name": "Fixture MRT Interchange Red",
+      "coordinate": {
+        "latitude": 25.101,
+        "longitude": 121.501
+      }
+    },
+    {
+      "id": "F-M2-BLUE",
+      "name": "Fixture MRT Interchange Blue",
+      "coordinate": {
+        "latitude": 25.1011,
+        "longitude": 121.5011
+      }
+    },
+    {
+      "id": "F-M2-BUS",
+      "name": "Fixture MRT Interchange Bus",
+      "coordinate": {
+        "latitude": 25.1012,
+        "longitude": 121.5012
+      }
+    },
+    {
+      "id": "F-M3-BLUE",
+      "name": "Fixture MRT 3 Blue",
+      "coordinate": {
+        "latitude": 25.102,
+        "longitude": 121.502
+      }
+    },
+    {
+      "id": "F-M3-GREEN",
+      "name": "Fixture MRT 3 Green",
+      "coordinate": {
+        "latitude": 25.1021,
+        "longitude": 121.5021
+      }
+    },
+    {
+      "id": "F-M3-BUS",
+      "name": "Fixture MRT 3 Bus",
+      "coordinate": {
+        "latitude": 25.1022,
+        "longitude": 121.5022
+      }
+    },
+    {
+      "id": "F-M4",
+      "name": "Fixture MRT 4",
+      "coordinate": {
+        "latitude": 25.103,
+        "longitude": 121.503
+      }
+    },
+    {
+      "id": "F-BUS-A",
+      "name": "Fixture Bus Origin",
+      "coordinate": {
+        "latitude": 25.11,
+        "longitude": 121.51
+      }
+    },
+    {
+      "id": "F-BUS-B",
+      "name": "Fixture Bus Terminal",
+      "coordinate": {
+        "latitude": 25.111,
+        "longitude": 121.511
+      }
+    },
+    {
+      "id": "F-TRA-A",
+      "name": "Fixture TRA Origin",
+      "coordinate": {
+        "latitude": 25.12,
+        "longitude": 121.52
+      }
+    },
+    {
+      "id": "F-TRA-B",
+      "name": "Fixture TRA Station",
+      "coordinate": {
+        "latitude": 25.121,
+        "longitude": 121.521
+      }
+    },
+    {
+      "id": "F-HSR-A",
+      "name": "Fixture THSR Origin",
+      "coordinate": {
+        "latitude": 25.13,
+        "longitude": 121.53
+      }
+    },
+    {
+      "id": "F-HSR-B",
+      "name": "Fixture THSR Station",
+      "coordinate": {
+        "latitude": 25.131,
+        "longitude": 121.531
+      }
+    },
+    {
+      "id": "F-MISS-A",
+      "name": "Fixture Missed Origin",
+      "coordinate": {
+        "latitude": 25.14,
+        "longitude": 121.54
+      }
+    },
+    {
+      "id": "F-MISS-M-IN",
+      "name": "Fixture Missed Interchange In",
+      "coordinate": {
+        "latitude": 25.141,
+        "longitude": 121.541
+      }
+    },
+    {
+      "id": "F-MISS-M-OUT",
+      "name": "Fixture Missed Interchange Out",
+      "coordinate": {
+        "latitude": 25.1411,
+        "longitude": 121.5411
+      }
+    },
+    {
+      "id": "F-MISS-B",
+      "name": "Fixture Missed Terminal",
+      "coordinate": {
+        "latitude": 25.142,
+        "longitude": 121.542
+      }
+    }
   ],
   "transfer_edges": [
-    {"from": "F-M1", "to": "F-TRA-B", "duration_seconds": 120},
-    {"from": "F-M2-BLUE", "to": "F-M2-BUS", "duration_seconds": 120},
-    {"from": "F-M2-BLUE", "to": "F-M2-RED", "duration_seconds": 120},
-    {"from": "F-M2-BUS", "to": "F-M2-BLUE", "duration_seconds": 120},
-    {"from": "F-M2-RED", "to": "F-M2-BLUE", "duration_seconds": 120},
-    {"from": "F-M3-BLUE", "to": "F-M3-BUS", "duration_seconds": 120},
-    {"from": "F-M3-BLUE", "to": "F-M3-GREEN", "duration_seconds": 120},
-    {"from": "F-M3-BUS", "to": "F-M3-BLUE", "duration_seconds": 120},
-    {"from": "F-M3-GREEN", "to": "F-M3-BLUE", "duration_seconds": 120},
-    {"from": "F-TRA-B", "to": "F-M1", "duration_seconds": 120},
-    {"from": "F-MISS-M-IN", "to": "F-MISS-M-OUT", "duration_seconds": 120},
-    {"from": "F-MISS-M-OUT", "to": "F-MISS-M-IN", "duration_seconds": 120}
+    {
+      "from": "F-M1",
+      "to": "F-TRA-B",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M2-BLUE",
+      "to": "F-M2-BUS",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M2-BLUE",
+      "to": "F-M2-RED",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M2-BUS",
+      "to": "F-M2-BLUE",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M2-RED",
+      "to": "F-M2-BLUE",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M3-BLUE",
+      "to": "F-M3-BUS",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M3-BLUE",
+      "to": "F-M3-GREEN",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M3-BUS",
+      "to": "F-M3-BLUE",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-M3-GREEN",
+      "to": "F-M3-BLUE",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-TRA-B",
+      "to": "F-M1",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-MISS-M-IN",
+      "to": "F-MISS-M-OUT",
+      "duration_seconds": 120
+    },
+    {
+      "from": "F-MISS-M-OUT",
+      "to": "F-MISS-M-IN",
+      "duration_seconds": 120
+    }
   ],
   "default_transfer_seconds": 120,
   "static_network_revision": "routing-fixture-static",
-  "schedule_revision": "routing-fixture-schedule"
+  "schedule_revision": "routing-fixture-schedule",
+  "routes": [
+    {
+      "id": "fixture-mrt-red",
+      "mode": "metro",
+      "label": "R"
+    },
+    {
+      "id": "fixture-mrt-blue",
+      "mode": "metro",
+      "label": "B"
+    },
+    {
+      "id": "fixture-mrt-green",
+      "mode": "metro",
+      "label": "G"
+    },
+    {
+      "id": "fixture-bus-main",
+      "mode": "bus",
+      "label": "F1"
+    },
+    {
+      "id": "fixture-bus-in",
+      "mode": "bus",
+      "label": "F-IN"
+    },
+    {
+      "id": "fixture-bus-out",
+      "mode": "bus",
+      "label": "F-OUT"
+    },
+    {
+      "id": "fixture-tra-local",
+      "mode": "rail",
+      "label": "TRA"
+    },
+    {
+      "id": "fixture-thsr",
+      "mode": "high_speed_rail",
+      "label": "THSR"
+    },
+    {
+      "id": "fixture-missed-in",
+      "mode": "bus",
+      "label": "F-MISS-IN"
+    },
+    {
+      "id": "fixture-missed-out",
+      "mode": "bus",
+      "label": "F-MISS-OUT"
+    }
+  ],
+  "patterns": [
+    {
+      "id": "fixture-mrt-red",
+      "route_id": "fixture-mrt-red",
+      "direction": null,
+      "headsign": "Fixture MRT 2",
+      "stops": [
+        "F-M1",
+        "F-M2-RED"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 300,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-mrt-blue",
+      "route_id": "fixture-mrt-blue",
+      "direction": null,
+      "headsign": "Fixture MRT 3",
+      "stops": [
+        "F-M2-BLUE",
+        "F-M3-BLUE"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 360,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-mrt-green",
+      "route_id": "fixture-mrt-green",
+      "direction": null,
+      "headsign": "Fixture MRT 4",
+      "stops": [
+        "F-M3-GREEN",
+        "F-M4"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 300,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-bus-main",
+      "route_id": "fixture-bus-main",
+      "direction": null,
+      "headsign": "Fixture Bus Terminal",
+      "stops": [
+        "F-BUS-A",
+        "F-BUS-B"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 600,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-bus-in",
+      "route_id": "fixture-bus-in",
+      "direction": null,
+      "headsign": "Fixture MRT Interchange",
+      "stops": [
+        "F-BUS-A",
+        "F-M2-BUS"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 300,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-bus-out",
+      "route_id": "fixture-bus-out",
+      "direction": null,
+      "headsign": "Fixture Bus Terminal",
+      "stops": [
+        "F-M3-BUS",
+        "F-BUS-B"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 480,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-tra-local",
+      "route_id": "fixture-tra-local",
+      "direction": null,
+      "headsign": "Fixture TRA Station",
+      "stops": [
+        "F-TRA-A",
+        "F-TRA-B"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 900,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-thsr",
+      "route_id": "fixture-thsr",
+      "direction": null,
+      "headsign": "Fixture THSR Station",
+      "stops": [
+        "F-HSR-A",
+        "F-HSR-B"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 480,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-missed-in",
+      "route_id": "fixture-missed-in",
+      "direction": null,
+      "headsign": "Fixture Missed Interchange",
+      "stops": [
+        "F-MISS-A",
+        "F-MISS-M-IN"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 240,
+            "source": "schedule"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixture-missed-out",
+      "route_id": "fixture-missed-out",
+      "direction": null,
+      "headsign": "Fixture Missed Terminal",
+      "stops": [
+        "F-MISS-M-OUT",
+        "F-MISS-B"
+      ],
+      "static_profile": {
+        "segments": [
+          {
+            "seconds": 360,
+            "source": "schedule"
+          }
+        ]
+      }
+    }
+  ],
+  "trips": [
+    {
+      "id": "fixture-bus-main-early",
+      "pattern_id": "fixture-bus-main",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36060,
+          "departure_seconds": 36060
+        },
+        {
+          "arrival_seconds": 36660,
+          "departure_seconds": 36660
+        }
+      ]
+    },
+    {
+      "id": "fixture-bus-main-late",
+      "pattern_id": "fixture-bus-main",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36720,
+          "departure_seconds": 36720
+        },
+        {
+          "arrival_seconds": 37320,
+          "departure_seconds": 37320
+        }
+      ]
+    },
+    {
+      "id": "fixture-bus-in-run",
+      "pattern_id": "fixture-bus-in",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36060,
+          "departure_seconds": 36060
+        },
+        {
+          "arrival_seconds": 36360,
+          "departure_seconds": 36360
+        }
+      ]
+    },
+    {
+      "id": "fixture-bus-out-run",
+      "pattern_id": "fixture-bus-out",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37020,
+          "departure_seconds": 37020
+        },
+        {
+          "arrival_seconds": 37500,
+          "departure_seconds": 37500
+        }
+      ]
+    },
+    {
+      "id": "fixture-tra-run",
+      "pattern_id": "fixture-tra-local",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36180,
+          "departure_seconds": 36180
+        },
+        {
+          "arrival_seconds": 37080,
+          "departure_seconds": 37080
+        }
+      ]
+    },
+    {
+      "id": "fixture-thsr-run",
+      "pattern_id": "fixture-thsr",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36240,
+          "departure_seconds": 36240
+        },
+        {
+          "arrival_seconds": 36720,
+          "departure_seconds": 36720
+        }
+      ]
+    },
+    {
+      "id": "fixture-missed-in-run",
+      "pattern_id": "fixture-missed-in",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36060,
+          "departure_seconds": 36060
+        },
+        {
+          "arrival_seconds": 36300,
+          "departure_seconds": 36300
+        }
+      ]
+    },
+    {
+      "id": "fixture-missed-out-run",
+      "pattern_id": "fixture-missed-out",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36300,
+          "departure_seconds": 36300
+        },
+        {
+          "arrival_seconds": 36660,
+          "departure_seconds": 36660
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-red-fixture-0",
+      "pattern_id": "fixture-mrt-red",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36120,
+          "departure_seconds": 36120
+        },
+        {
+          "arrival_seconds": 36420,
+          "departure_seconds": 36420
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-red-fixture-1",
+      "pattern_id": "fixture-mrt-red",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36480,
+          "departure_seconds": 36480
+        },
+        {
+          "arrival_seconds": 36780,
+          "departure_seconds": 36780
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-red-fixture-2",
+      "pattern_id": "fixture-mrt-red",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37320,
+          "departure_seconds": 37320
+        },
+        {
+          "arrival_seconds": 37620,
+          "departure_seconds": 37620
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-blue-fixture-0",
+      "pattern_id": "fixture-mrt-blue",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36540,
+          "departure_seconds": 36540
+        },
+        {
+          "arrival_seconds": 36900,
+          "departure_seconds": 36900
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-blue-fixture-1",
+      "pattern_id": "fixture-mrt-blue",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 36900,
+          "departure_seconds": 36900
+        },
+        {
+          "arrival_seconds": 37260,
+          "departure_seconds": 37260
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-blue-fixture-2",
+      "pattern_id": "fixture-mrt-blue",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37260,
+          "departure_seconds": 37260
+        },
+        {
+          "arrival_seconds": 37620,
+          "departure_seconds": 37620
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-green-fixture-0",
+      "pattern_id": "fixture-mrt-green",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37020,
+          "departure_seconds": 37020
+        },
+        {
+          "arrival_seconds": 37320,
+          "departure_seconds": 37320
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-green-fixture-1",
+      "pattern_id": "fixture-mrt-green",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37380,
+          "departure_seconds": 37380
+        },
+        {
+          "arrival_seconds": 37680,
+          "departure_seconds": 37680
+        }
+      ]
+    },
+    {
+      "id": "fixture-mrt-green-fixture-2",
+      "pattern_id": "fixture-mrt-green",
+      "calendar_id": "fixture-monday",
+      "stop_times": [
+        {
+          "arrival_seconds": 37740,
+          "departure_seconds": 37740
+        },
+        {
+          "arrival_seconds": 38040,
+          "departure_seconds": 38040
+        }
+      ]
+    }
+  ],
+  "calendars": [
+    {
+      "id": "fixture-monday",
+      "weekdays": [
+        1
+      ],
+      "start_date": null,
+      "end_date": null,
+      "added_dates": [],
+      "removed_dates": []
+    }
+  ]
 }

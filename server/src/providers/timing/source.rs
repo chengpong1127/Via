@@ -214,12 +214,12 @@ impl DepartureDispatcher {
         let mut results = vec![None; queries.len()];
         let mut grouped = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
         for (index, query) in queries.into_iter().enumerate() {
-            let Some(service) = self.network.service(&query.service_id) else {
+            let Some(service) = self.network.pattern(&query.pattern_id) else {
                 results[index] = Some(Err(DepartureError::InvalidQuery));
                 continue;
             };
             grouped
-                .entry(service.transit_mode)
+                .entry(self.network.route_of(service).mode)
                 .or_default()
                 .push((index, query));
         }
@@ -260,11 +260,14 @@ impl TimingSnapshotLoader for DepartureDispatcher {
         let mut snapshot = TimingSnapshot::default();
         let mut grouped = HashMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
-            let Some(service) = self.network.service(&query.service_id) else {
+            let Some(service) = self.network.pattern(&query.pattern_id) else {
                 snapshot.record_failure(DepartureError::InvalidQuery);
                 continue;
             };
-            grouped.entry(service.transit_mode).or_default().push(query);
+            grouped
+                .entry(self.network.route_of(service).mode)
+                .or_default()
+                .push(query);
         }
         for (mode, source_queries) in grouped {
             let Some(source) = self.sources.get(&mode) else {
@@ -280,7 +283,7 @@ impl TimingSnapshotLoader for DepartureDispatcher {
                     snapshot.record_failure(DepartureError::InvalidQuery);
                     continue;
                 };
-                snapshot.insert_entry(query.service_id, board_index, departures);
+                snapshot.insert_entry(query.pattern_id, board_index, departures);
             }
         }
         snapshot

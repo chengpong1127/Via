@@ -3,8 +3,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use time::{Time, Weekday, macros::datetime};
 use via_server::domain::{
-    ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
-    transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitNetwork, TransitService},
+    ids::{
+        BoardingPointId, EffectiveTripId, ServiceCalendarId, TransitPatternId, TransitRouteId,
+        TransitTripId,
+    },
+    transit::{
+        ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
+        TransitMode, TransitNetwork, TransitPattern, TransitRoute, TransitTrip,
+    },
     transit_timing::{
         DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
         TimingReliability,
@@ -17,7 +23,7 @@ use via_server::providers::timing::{
 #[derive(Clone)]
 struct RecordingSource {
     mode: TransitMode,
-    calls: Arc<Mutex<Vec<TransitServiceId>>>,
+    calls: Arc<Mutex<Vec<TransitPatternId>>>,
 }
 
 #[async_trait]
@@ -34,10 +40,10 @@ impl TransitDepartureSource for RecordingSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        self.calls.lock().unwrap().push(query.service_id.clone());
+        self.calls.lock().unwrap().push(query.pattern_id.clone());
         Ok(vec![EffectiveTrip {
-            id: EffectiveTripId::new(format!("fixture:{}", query.service_id.as_str())),
-            service_id: query.service_id,
+            id: EffectiveTripId::new(format!("fixture:{}", query.pattern_id.as_str())),
+            pattern_id: query.pattern_id,
             scheduled_trip_id: None,
             stop_times: vec![
                 EffectiveStopTime {
@@ -60,17 +66,50 @@ impl TransitDepartureSource for RecordingSource {
     }
 }
 
-fn service(id: &str, mode: TransitMode) -> TransitService {
-    TransitService::new(
-        TransitServiceId::new(id),
-        mode,
-        id,
+fn service(id: &str, _mode: TransitMode) -> TransitPattern {
+    TransitPattern::new(
+        TransitPatternId::new(id),
+        TransitRouteId::new(id),
+        None,
         "alight",
         vec![
             BoardingPointId::new("board"),
             BoardingPointId::new("alight"),
         ],
+        SegmentProfile {
+            segments: vec![SegmentTravelTime {
+                seconds: 300,
+                source: SegmentTimeSource::Schedule,
+            }],
+        },
     )
+}
+
+fn routes() -> Vec<TransitRoute> {
+    [
+        ("bus", TransitMode::Bus),
+        ("metro", TransitMode::Metro),
+        ("tra", TransitMode::Rail),
+        ("thsr", TransitMode::HighSpeedRail),
+    ]
+    .into_iter()
+    .map(|(id, mode)| TransitRoute {
+        id: TransitRouteId::new(id),
+        mode,
+        label: id.into(),
+    })
+    .collect()
+}
+
+fn calendar() -> ServiceCalendar {
+    ServiceCalendar {
+        id: ServiceCalendarId::new("monday"),
+        weekdays: vec![Weekday::Monday],
+        start_date: None,
+        end_date: None,
+        added_dates: Vec::new(),
+        removed_dates: Vec::new(),
+    }
 }
 
 #[tokio::test]
@@ -81,12 +120,15 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
         service("tra", TransitMode::Rail),
         service("thsr", TransitMode::HighSpeedRail),
     ];
-    let network = Arc::new(TransitNetwork::new(
-        Time::from_hms(4, 0, 0).unwrap(),
-        Vec::new(),
-        services,
-        Vec::new(),
-    ));
+    let network = Arc::new(
+        TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            services,
+            Vec::new(),
+        )
+        .with_routes(routes()),
+    );
     let bus_calls = Arc::new(Mutex::new(Vec::new()));
     let metro_calls = Arc::new(Mutex::new(Vec::new()));
     let tra_calls = Arc::new(Mutex::new(Vec::new()));
@@ -117,7 +159,7 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
         .into_iter()
         .map(|id| {
             DepartureQuery::new(
-                TransitServiceId::new(id),
+                TransitPatternId::new(id),
                 BoardingPointId::new("board"),
                 after,
                 1,
@@ -129,58 +171,68 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
 
     let ids = results
         .into_iter()
-        .map(|result| result.unwrap()[0].service_id.clone())
+        .map(|result| result.unwrap()[0].pattern_id.clone())
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
         ["thsr", "bus", "metro", "tra"]
             .into_iter()
-            .map(TransitServiceId::new)
+            .map(TransitPatternId::new)
             .collect::<Vec<_>>()
     );
     assert_eq!(
         bus_calls.lock().unwrap().as_slice(),
-        &[TransitServiceId::new("bus")]
+        &[TransitPatternId::new("bus")]
     );
     assert_eq!(
         metro_calls.lock().unwrap().as_slice(),
-        &[TransitServiceId::new("metro")]
+        &[TransitPatternId::new("metro")]
     );
     assert_eq!(
         tra_calls.lock().unwrap().as_slice(),
-        &[TransitServiceId::new("tra")]
+        &[TransitPatternId::new("tra")]
     );
     assert_eq!(
         thsr_calls.lock().unwrap().as_slice(),
-        &[TransitServiceId::new("thsr")]
+        &[TransitPatternId::new("thsr")]
     );
 }
 
 #[tokio::test]
 async fn thsr_static_timetable_is_reliable() {
-    let service_id = TransitServiceId::new("thsr-service");
+    let service_id = TransitPatternId::new("thsr-service");
     let board = BoardingPointId::new("board");
     let alight = BoardingPointId::new("alight");
-    let network = Arc::new(TransitNetwork::new(
-        Time::from_hms(4, 0, 0).unwrap(),
-        Vec::new(),
-        vec![TransitService::new(
-            service_id.clone(),
-            TransitMode::HighSpeedRail,
-            "THSR",
-            "alight",
-            vec![board.clone(), alight.clone()],
-        )],
-        vec![ScheduledTrip::weekdays(
-            ScheduledTripId::new("thsr-trip"),
-            service_id.clone(),
-            vec![Weekday::Monday],
-            vec![
-                ScheduledStopTime::new(36_000, 36_000),
-                ScheduledStopTime::new(36_600, 36_600),
-            ],
-        )],
-    ));
+    let network = Arc::new(
+        TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            vec![TransitPattern::new(
+                service_id.clone(),
+                TransitRouteId::new("thsr"),
+                None,
+                "alight",
+                vec![board.clone(), alight.clone()],
+                SegmentProfile {
+                    segments: vec![SegmentTravelTime {
+                        seconds: 600,
+                        source: SegmentTimeSource::Schedule,
+                    }],
+                },
+            )],
+            vec![TransitTrip::new(
+                TransitTripId::new("thsr-trip"),
+                service_id.clone(),
+                ServiceCalendarId::new("monday"),
+                vec![
+                    ScheduledStopTime::new(36_000, 36_000),
+                    ScheduledStopTime::new(36_600, 36_600),
+                ],
+            )],
+        )
+        .with_routes(routes())
+        .with_calendars(vec![calendar()]),
+    );
     let source = Arc::new(ThsrDepartureSource::new(network.clone()));
     let dispatcher =
         DepartureDispatcher::new(network, vec![source as Arc<dyn TransitDepartureSource>]);

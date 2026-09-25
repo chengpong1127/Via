@@ -1,0 +1,26 @@
+{
+  "bus_patterns": {
+    "fixture-bus-main": {
+      "tdx_service_id": "fixture-bus-main",
+      "realtime_scope": "fixture"
+    },
+    "fixture-bus-in": {
+      "tdx_service_id": "fixture-bus-in",
+      "realtime_scope": "fixture"
+    },
+    "fixture-bus-out": {
+      "tdx_service_id": "fixture-bus-out",
+      "realtime_scope": "fixture"
+    },
+    "fixture-missed-in": {
+      "tdx_service_id": "fixture-missed-in",
+      "realtime_scope": "fixture"
+    },
+    "fixture-missed-out": {
+      "tdx_service_id": "fixture-missed-out",
+      "realtime_scope": "fixture"
+    }
+  },
+  "metro_patterns": {},
+  "tra_trips": {}
+}

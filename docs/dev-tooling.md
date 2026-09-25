@@ -26,19 +26,20 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
 
 The builder reads `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`,
 `shapes.txt`, `frequencies.txt`, `calendar.txt`, and `calendar_dates.txt` when
-present. It also reads `transfers.txt` when the archive contains it. Bus
+present. It ignores `transfers.txt`. Bus
 stop-time rows with incomplete intermediate times are not turned into
-`ScheduledTrip` records. When terminal anchors provide a full runtime, the
+`TransitTrip` records. When terminal anchors provide a full runtime, the
 builder distributes that runtime across adjacent stops using GTFS shape
 distance, then geographic distance as a fallback. The per-segment median is a
-Phase 1 ranking estimate and can time downstream segments after a realtime Bus
-boarding prediction; it is not an exact timetable. Services without usable
-static timing use the planner's geometric estimate.
+persisted Pattern static profile and can time downstream segments after a realtime Bus
+boarding prediction; it is not an exact timetable. Patterns without usable
+static timing receive an optimistic geometric profile during preprocessing.
 
 The build output is:
 
 ```text
 transit-network.json
+provider-bindings.json
 bikeshare-network.json
 manifest.json
 ```
@@ -55,7 +56,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stop \
   --artifact ./server/data/dev/normalized/transit-network.json \
   --query "台北車站"
 
-cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect service \
+cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect pattern \
   --artifact ./server/data/dev/normalized/transit-network.json \
   --query "307"
 
@@ -88,7 +89,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 For live realtime, build the local GTFS artifact and switch the service
 condition source to `live`. Bus ETA, service conditions, and BikeShare
 availability are realtime provider inputs; TDX is not used to build static
-transit stops, services, calendars, patterns, transfers, or timing metadata.
+transit stops, routes, patterns, trips, calendars, frequencies, transfers, or timing metadata.
 Only the live route requires `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` in the
 environment or `.env` file.
 
@@ -112,6 +113,7 @@ or origin/destination access alternatives.
 
 `TransferShortcutIndex` is projected directly from validated
 `TransitNetwork.transfer_edges` at server or CLI startup. Public-transit
-transfer reconstruction does not call Valhalla. GTFS transfer rows are loaded
-when present; no walking-transfer enrichment or separate transfer artifact is
-created by `via-data`.
+transfer reconstruction does not call Valhalla. During `via-data build`, Via
+generates directional walking transfers from boarding-point coordinates and
+Valhalla, then stores them in `TransitNetwork.transfer_edges`. GTFS
+`transfers.txt` is ignored.

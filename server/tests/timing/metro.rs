@@ -1,87 +1,115 @@
 use std::sync::Arc;
 
-use time::macros::datetime;
+use time::{Weekday, macros::datetime};
 use via_server::{
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
         transit::{
-            MetroFrequency, MetroStationTiming, MetroTiming, TransitMode, TransitNetwork,
-            TransitNetworkValidationError, TransitService, TransitStop,
+            ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
+            ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork,
+            TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
         },
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
 };
 
+fn network(id: &str, first: &str, second: &str) -> TransitNetwork {
+    let route_id = TransitRouteId::new("metro:line");
+    TransitNetwork::new(
+        time::macros::time!(4:00),
+        [first, second]
+            .into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                TransitStop::new(
+                    BoardingPointId::new(id),
+                    id,
+                    via_server::api::RequestCoordinate {
+                        latitude: 25.0 + index as f64 * 0.001,
+                        longitude: 121.5,
+                    },
+                )
+            })
+            .collect(),
+        vec![TransitPattern::new(
+            TransitPatternId::new(id),
+            route_id.clone(),
+            Some(0),
+            second,
+            vec![BoardingPointId::new(first), BoardingPointId::new(second)],
+            SegmentProfile {
+                segments: vec![SegmentTravelTime {
+                    seconds: 240,
+                    source: SegmentTimeSource::Schedule,
+                }],
+            },
+        )],
+        Vec::new(),
+    )
+    .with_routes(vec![TransitRoute {
+        id: route_id,
+        mode: TransitMode::Metro,
+        label: "Metro".into(),
+    }])
+    .with_calendars(vec![ServiceCalendar {
+        id: ServiceCalendarId::new("daily"),
+        weekdays: vec![
+            Weekday::Monday,
+            Weekday::Tuesday,
+            Weekday::Wednesday,
+            Weekday::Thursday,
+            Weekday::Friday,
+            Weekday::Saturday,
+            Weekday::Sunday,
+        ],
+        start_date: None,
+        end_date: None,
+        added_dates: Vec::new(),
+        removed_dates: Vec::new(),
+    }])
+    .with_revisions("static", "schedule")
+}
+
+fn trip(id: &str, pattern_id: &str, departure: u32) -> TransitTrip {
+    TransitTrip::new(
+        TransitTripId::new(id),
+        TransitPatternId::new(pattern_id),
+        ServiceCalendarId::new("daily"),
+        vec![
+            ScheduledStopTime::new(departure, departure),
+            ScheduledStopTime::new(departure + 240, departure + 240),
+        ],
+    )
+}
+
+fn resolver(network: TransitNetwork) -> DepartureDispatcher {
+    let network = Arc::new(network);
+    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>])
+}
+
 #[tokio::test]
 async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
-    let main_station = BoardingPointId::new("TRTC-BL12");
-    let taipei_101 = BoardingPointId::new("TRTC-R03");
-    let service_id = TransitServiceId::new("metro:example");
-    let network = Arc::new(
-        TransitNetwork::new(
-            time::Time::from_hms(4, 0, 0).unwrap(),
-            vec![
-                TransitStop::new(
-                    main_station.clone(),
-                    "Taipei Main Station",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.0478,
-                        longitude: 121.5170,
-                    },
-                ),
-                TransitStop::new(
-                    taipei_101.clone(),
-                    "Taipei 101/World Trade Center",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.0339,
-                        longitude: 121.5645,
-                    },
-                ),
-            ],
-            vec![
-                TransitService::new(
-                    service_id.clone(),
-                    TransitMode::Metro,
-                    "Example Metro",
-                    "Taipei 101/World Trade Center",
-                    vec![main_station.clone(), taipei_101.clone()],
-                )
-                .with_timing_source("metro_schedule"),
-            ],
-            Vec::new(),
-        )
-        .with_metro_timings(vec![MetroTiming::new(
-            service_id.clone(),
-            vec![MetroStationTiming {
-                stop_id: main_station.clone(),
-                departures_seconds: vec![28_800, 29_100],
-                frequencies: Vec::new(),
-            }],
-            vec![240],
-        )])
-        .with_revisions("static", "schedule"),
-    );
+    let mut network = network("metro:example", "TRTC-BL12", "TRTC-R03");
+    network.trips = vec![
+        trip("first", "metro:example", 28_800),
+        trip("second", "metro:example", 29_100),
+    ];
     network.validate().unwrap();
-
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    let resolver = DepartureDispatcher::new(
-        network.clone(),
-        vec![metro as Arc<dyn TransitDepartureSource>],
-    );
-    let departures = resolver
+    let departures = resolver(network)
         .next_departures(DepartureQuery::new(
-            service_id,
-            main_station,
+            TransitPatternId::new("metro:example"),
+            BoardingPointId::new("TRTC-BL12"),
             datetime!(2026-09-15 07:55 +08:00),
             2,
         ))
         .await
         .unwrap();
-
     assert_eq!(departures.len(), 2);
-    assert!(matches!(departures[0].timing_basis, TimingBasis::Schedule));
-    assert_eq!(departures[0].stop_times.len(), 2);
+    assert_eq!(departures[0].timing_basis, TimingBasis::Schedule);
     assert_eq!(
         departures[0].stop_times[0].departure_at,
         datetime!(2026-09-15 08:00 +08:00)
@@ -90,7 +118,6 @@ async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
         departures[0].stop_times[1].arrival_at,
         datetime!(2026-09-15 08:04 +08:00)
     );
-    assert!(departures[0].stop_times[1].arrival_at > departures[0].stop_times[0].departure_at);
     assert_eq!(
         departures[1].stop_times[0].departure_at,
         datetime!(2026-09-15 08:05 +08:00)
@@ -99,136 +126,50 @@ async fn metro_static_timing_materializes_taipei_main_to_taipei_101() {
 
 #[tokio::test]
 async fn metro_frequency_timing_remains_static_fallback() {
-    let first = BoardingPointId::new("TRTC-BL12");
-    let second = BoardingPointId::new("TRTC-BL23");
-    let service_id = TransitServiceId::new("metro:BL::direction=0");
-    let network = Arc::new(
-        TransitNetwork::new(
-            time::Time::from_hms(4, 0, 0).unwrap(),
-            vec![
-                TransitStop::new(
-                    first.clone(),
-                    "Taipei Main Station",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.0478,
-                        longitude: 121.5170,
-                    },
-                ),
-                TransitStop::new(
-                    second.clone(),
-                    "Longshan Temple",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.0354,
-                        longitude: 121.4998,
-                    },
-                ),
-            ],
-            vec![TransitService::new(
-                service_id.clone(),
-                TransitMode::Metro,
-                "板南線",
-                "南港展覽館",
-                vec![first.clone(), second],
-            )],
-            Vec::new(),
-        )
-        .with_metro_timings(vec![MetroTiming::new(
-            service_id,
-            vec![MetroStationTiming {
-                stop_id: first,
-                departures_seconds: Vec::new(),
-                frequencies: vec![MetroFrequency {
-                    start_seconds: 28_800,
-                    end_seconds: 29_400,
-                    headway_seconds: 300,
-                }],
-            }],
-            vec![240],
-        )])
-        .with_revisions("static", "schedule"),
-    );
-
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    let resolver =
-        DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>]);
-    let departures = resolver
+    let mut network = network("metro:BL::direction=0", "TRTC-BL12", "TRTC-BL23");
+    network.frequencies = vec![TransitFrequency {
+        id: TransitTripId::new("frequency"),
+        pattern_id: TransitPatternId::new("metro:BL::direction=0"),
+        calendar_id: ServiceCalendarId::new("daily"),
+        start_seconds: 28_800,
+        end_seconds: 29_400,
+        headway_seconds: 300,
+        exact_times: false,
+        template_stop_times: vec![
+            ScheduledStopTime::new(28_800, 28_800),
+            ScheduledStopTime::new(29_040, 29_040),
+        ],
+    }];
+    let departures = resolver(network)
         .next_departures(DepartureQuery::new(
-            TransitServiceId::new("metro:BL::direction=0"),
+            TransitPatternId::new("metro:BL::direction=0"),
             BoardingPointId::new("TRTC-BL12"),
             datetime!(2026-09-15 07:55 +08:00),
             2,
         ))
         .await
         .unwrap();
-
     assert_eq!(departures.len(), 2);
     assert!(
         departures
             .iter()
-            .all(|departure| departure.timing_basis == TimingBasis::FrequencyEstimate)
-    );
-    assert!(
-        departures
-            .iter()
-            .all(|departure| departure.timing_reliability == TimingReliability::Fallback)
+            .all(|d| d.timing_basis == TimingBasis::FrequencyEstimate
+                && d.timing_reliability == TimingReliability::Fallback)
     );
 }
 
 #[tokio::test]
 async fn metro_static_snapshot_window_crosses_the_service_day_boundary() {
-    let first = BoardingPointId::new("TRTC-A");
-    let second = BoardingPointId::new("TRTC-B");
-    let service_id = TransitServiceId::new("metro:boundary");
-    let network = Arc::new(
-        TransitNetwork::new(
-            time::macros::time!(4:00),
-            vec![
-                TransitStop::new(
-                    first.clone(),
-                    "A",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.0,
-                        longitude: 121.5,
-                    },
-                ),
-                TransitStop::new(
-                    second.clone(),
-                    "B",
-                    via_server::api::RequestCoordinate {
-                        latitude: 25.1,
-                        longitude: 121.6,
-                    },
-                ),
-            ],
-            vec![TransitService::new(
-                service_id.clone(),
-                TransitMode::Metro,
-                "Boundary",
-                "B",
-                vec![first.clone(), second],
-            )],
-            Vec::new(),
-        )
-        .with_metro_timings(vec![MetroTiming::new(
-            service_id.clone(),
-            vec![MetroStationTiming {
-                stop_id: first.clone(),
-                departures_seconds: vec![27 * 3600 + 55 * 60, 4 * 3600 + 10 * 60],
-                frequencies: Vec::new(),
-            }],
-            vec![240],
-        )])
-        .with_revisions("static", "schedule"),
-    );
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    let resolver =
-        DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>]);
-
-    let departures = resolver
+    let mut network = network("metro:boundary", "TRTC-A", "TRTC-B");
+    network.trips = vec![
+        trip("before-boundary", "metro:boundary", 27 * 3600 + 55 * 60),
+        trip("after-boundary", "metro:boundary", 4 * 3600 + 10 * 60),
+    ];
+    let departures = resolver(network)
         .next_departures(
             DepartureQuery::at_position(
-                service_id,
-                first,
+                TransitPatternId::new("metro:boundary"),
+                BoardingPointId::new("TRTC-A"),
                 0,
                 datetime!(2026-08-31 03:50 +08:00),
                 10,
@@ -237,7 +178,6 @@ async fn metro_static_snapshot_window_crosses_the_service_day_boundary() {
         )
         .await
         .unwrap();
-
     assert_eq!(departures.len(), 2);
     assert_eq!(
         departures[0].stop_times[0].departure_at,
@@ -250,55 +190,11 @@ async fn metro_static_snapshot_window_crosses_the_service_day_boundary() {
 }
 
 #[test]
-fn metro_timing_rejects_a_pattern_from_the_opposite_direction() {
-    let first = BoardingPointId::new("TRTC-R03");
-    let second = BoardingPointId::new("TRTC-R10");
-    let service_id = TransitServiceId::new("metro:R::direction=0");
-    let network = TransitNetwork::new(
-        time::Time::from_hms(4, 0, 0).unwrap(),
-        vec![
-            TransitStop::new(
-                first.clone(),
-                "Taipei 101/World Trade Center",
-                via_server::api::RequestCoordinate {
-                    latitude: 25.0339,
-                    longitude: 121.5645,
-                },
-            ),
-            TransitStop::new(
-                second.clone(),
-                "Taipei Main Station",
-                via_server::api::RequestCoordinate {
-                    latitude: 25.0478,
-                    longitude: 121.5170,
-                },
-            ),
-        ],
-        vec![TransitService::new(
-            service_id.clone(),
-            TransitMode::Metro,
-            "Red Line",
-            "Taipei Main Station",
-            vec![first.clone(), second.clone()],
-        )],
-        Vec::new(),
-    )
-    .with_metro_timings(vec![
-        MetroTiming::new(
-            service_id.clone(),
-            vec![MetroStationTiming {
-                stop_id: first,
-                departures_seconds: vec![28_800],
-                frequencies: Vec::new(),
-            }],
-            vec![240],
-        )
-        .with_pattern(vec![second, BoardingPointId::new("TRTC-R03")]),
-    ])
-    .with_revisions("static", "schedule");
-
+fn metro_rejects_a_profile_with_the_wrong_shape() {
+    let mut network = network("metro:R::direction=0", "TRTC-R03", "TRTC-R10");
+    network.patterns[0].static_profile.segments.clear();
     assert!(matches!(
         network.validate(),
-        Err(TransitNetworkValidationError::InvalidMetroTimingShape(id)) if id == service_id
+        Err(TransitNetworkValidationError::InvalidPatternProfile(_))
     ));
 }

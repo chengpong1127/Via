@@ -60,7 +60,7 @@ struct InspectArgs {
 #[derive(Subcommand, Debug)]
 enum InspectCommand {
     Stop(StopArgs),
-    Service(ServiceArgs),
+    Pattern(PatternArgs),
     NearbyStops(NearbyArgs),
     Stats(StatsArgs),
 }
@@ -80,7 +80,7 @@ struct StopArgs {
 }
 
 #[derive(Args, Debug)]
-struct ServiceArgs {
+struct PatternArgs {
     #[command(flatten)]
     artifact: ArtifactArgs,
     #[arg(long)]
@@ -144,6 +144,10 @@ fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
         args.output.join("transit-network.json").display()
     );
     println!(
+        "TDX bindings artifact: {}",
+        args.output.join("provider-bindings.json").display()
+    );
+    println!(
         "bike-share artifact: {}",
         args.output.join("bikeshare-network.json").display()
     );
@@ -157,8 +161,11 @@ fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
         load_bikeshare_artifact(&args.artifact.with_file_name("bikeshare-network.json"))?;
     let counts = ArtifactCounts {
         stops: network.stops.len(),
-        services: network.services.len(),
-        scheduled_trips: network.trips.len(),
+        routes: network.routes.len(),
+        patterns: network.patterns.len(),
+        trips: network.trips.len(),
+        calendars: network.calendars.len(),
+        frequencies: network.frequencies.len(),
         transfer_edges: network.transfer_edges.len(),
         bike_stations: bike_share_network.stations.len(),
         bike_access_links: bike_share_network.access_links.len(),
@@ -178,7 +185,7 @@ fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
 fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
     match args.command {
         InspectCommand::Stop(args) => inspect_stop(args),
-        InspectCommand::Service(args) => inspect_service(args),
+        InspectCommand::Pattern(args) => inspect_pattern(args),
         InspectCommand::NearbyStops(args) => inspect_nearby_stops(args),
         InspectCommand::Stats(args) => inspect_stats(args),
     }
@@ -205,12 +212,12 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
             stop.coordinate.latitude,
             stop.coordinate.longitude
         );
-        for service in &network.services {
-            if let Some(position) = service.pattern.iter().position(|id| id == &stop.id) {
+        for service in &network.patterns {
+            if let Some(position) = service.stops.iter().position(|id| id == &stop.id) {
                 println!(
-                    "  service={} label={:?} position={}",
+                    "  pattern={} label={:?} position={}",
                     service.id.as_str(),
-                    service.label,
+                    network.route_of(service).label,
                     position + 1
                 );
             }
@@ -219,34 +226,38 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn inspect_service(args: ServiceArgs) -> Result<(), Box<dyn Error>> {
+fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
     let network = load_network_artifact(&args.artifact.artifact)?;
     let query = args.query.to_lowercase();
     let mut matches = network
-        .services
+        .patterns
         .iter()
         .filter(|service| {
-            service.id.as_str() == args.query || service.label.to_lowercase().contains(&query)
+            service.id.as_str() == args.query
+                || network
+                    .route_of(service)
+                    .label
+                    .to_lowercase()
+                    .contains(&query)
         })
         .collect::<Vec<_>>();
     matches.sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
     if matches.is_empty() {
-        println!("no services matched {:?}", args.query);
+        println!("no patterns matched {:?}", args.query);
         return Ok(());
     }
     for service in matches {
         println!(
-            "service={} label={:?} mode={} timing_source={:?} headsign={:?}",
+            "pattern={} label={:?} mode={} headsign={:?}",
             service.id.as_str(),
-            service.label,
-            mode_name(service.transit_mode),
-            service.timing_source,
+            network.route_of(service).label,
+            mode_name(network.route_of(service).mode),
             service.headsign
         );
         println!(
             "  stops: {}",
             service
-                .pattern
+                .stops
                 .iter()
                 .map(|id| id.as_str())
                 .collect::<Vec<_>>()
@@ -257,7 +268,7 @@ fn inspect_service(args: ServiceArgs) -> Result<(), Box<dyn Error>> {
             network
                 .trips
                 .iter()
-                .filter(|trip| trip.service_id == service.id)
+                .filter(|trip| trip.pattern_id == service.id)
                 .count()
         );
         println!(
@@ -265,7 +276,7 @@ fn inspect_service(args: ServiceArgs) -> Result<(), Box<dyn Error>> {
             network
                 .frequencies
                 .iter()
-                .filter(|frequency| frequency.service_id == service.id)
+                .filter(|frequency| frequency.pattern_id == service.id)
                 .count()
         );
     }
@@ -302,8 +313,11 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         .map(|manifest| manifest.counts)
         .unwrap_or_else(|| ArtifactCounts {
             stops: network.stops.len(),
-            services: network.services.len(),
-            scheduled_trips: network.trips.len(),
+            routes: network.routes.len(),
+            patterns: network.patterns.len(),
+            trips: network.trips.len(),
+            calendars: network.calendars.len(),
+            frequencies: network.frequencies.len(),
             transfer_edges: network.transfer_edges.len(),
             bike_stations: bike_share_network
                 .as_ref()
@@ -321,12 +335,23 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         );
     }
     println!("stop count: {}", counts.stops);
-    println!("service count: {}", counts.services);
-    println!("scheduled trip count: {}", counts.scheduled_trips);
-    println!("frequency count: {}", network.frequencies.len());
+    println!("route count: {}", counts.routes);
+    println!("pattern count: {}", counts.patterns);
+    println!("trip count: {}", counts.trips);
+    println!("calendar count: {}", counts.calendars);
+    println!("frequency count: {}", counts.frequencies);
     println!(
         "derived Bus Phase 1 profiles: {}",
-        network.derived_bus_travel_times.len()
+        network
+            .patterns
+            .iter()
+            .filter(|pattern| pattern
+                .static_profile
+                .segments
+                .iter()
+                .all(|segment| segment.source
+                    == via_server::domain::transit::SegmentTimeSource::Derived))
+            .count()
     );
     for mode in [
         TransitMode::Bus,
@@ -335,12 +360,12 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         TransitMode::HighSpeedRail,
     ] {
         println!(
-            "{} service count: {}",
+            "{} pattern count: {}",
             mode_name(mode),
             network
-                .services
+                .patterns
                 .iter()
-                .filter(|service| service.transit_mode == mode)
+                .filter(|service| network.route_of(service).mode == mode)
                 .count()
         );
     }
@@ -367,10 +392,13 @@ fn print_counts(
         revisions.bike_share_network_revision
     );
     println!(
-        "  stops={} services={} scheduled_trips={} transfer_edges={} bike_stations={} bike_access_links={}",
+        "  stops={} routes={} patterns={} trips={} calendars={} frequencies={} transfer_edges={} bike_stations={} bike_access_links={}",
         counts.stops,
-        counts.services,
-        counts.scheduled_trips,
+        counts.routes,
+        counts.patterns,
+        counts.trips,
+        counts.calendars,
+        counts.frequencies,
         counts.transfer_edges,
         counts.bike_stations,
         counts.bike_access_links
@@ -404,10 +432,6 @@ fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
         "GTFS frequencies loaded: {}",
         diagnostics.frequencies_loaded
     );
-    println!(
-        "GTFS transfer edges loaded: {}",
-        diagnostics.transfer_edges_loaded
-    );
     println!("GTFS shape rows loaded: {}", diagnostics.shape_rows_loaded);
     println!(
         "GTFS trips skipped for invalid exact timing: {}",
@@ -418,31 +442,31 @@ fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
     }
     for mode in ["bus", "metro", "rail", "high_speed_rail"] {
         println!(
-            "{mode}: routes={} services={}",
+            "{mode}: routes={} patterns={}",
             diagnostics
                 .routes_loaded_by_mode
                 .get(mode)
                 .copied()
                 .unwrap_or(0),
             diagnostics
-                .services_loaded_by_mode
+                .patterns_loaded_by_mode
                 .get(mode)
                 .copied()
                 .unwrap_or(0),
         );
     }
     println!(
-        "timing services: exact/static={} derived_bus={} geometric_fallback={}",
-        diagnostics.exact_static_timing_services,
-        diagnostics.derived_bus_timing_services,
-        diagnostics.geometric_fallback_services
+        "static Pattern profiles: exact={} derived_bus={} geometric_fallback_or_mixed={}",
+        diagnostics.exact_static_timing_patterns,
+        diagnostics.derived_bus_timing_patterns,
+        diagnostics.geometric_fallback_patterns
     );
     println!(
-        "Bus services without a TDX realtime scope: {}",
-        diagnostics.unresolved_bus_realtime_scope_services
+        "Bus Patterns without a TDX realtime scope: {}",
+        diagnostics.unresolved_bus_realtime_scope_patterns
     );
     for id in &diagnostics.unresolved_bus_realtime_scope_examples {
-        println!("  service: {id}");
+        println!("  pattern: {id}");
     }
     println!(
         "GTFS stop IDs without current TDX ID mapping: {}",
@@ -452,11 +476,11 @@ fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
         println!("  stop: {id}");
     }
     println!(
-        "GTFS service IDs without current TDX realtime mapping: {}",
-        diagnostics.gtfs_service_ids_without_tdx_mapping
+        "Via Pattern IDs without current TDX realtime mapping: {}",
+        diagnostics.gtfs_pattern_ids_without_tdx_mapping
     );
-    for id in &diagnostics.unmapped_service_id_examples {
-        println!("  service: {id}");
+    for id in &diagnostics.unmapped_pattern_id_examples {
+        println!("  pattern: {id}");
     }
 }
 
@@ -483,10 +507,10 @@ fn coordinate(
 
 fn service_labels(network: &TransitNetwork, stop_id: &BoardingPointId) -> String {
     network
-        .services
+        .patterns
         .iter()
-        .filter(|service| service.pattern.iter().any(|id| id == stop_id))
-        .map(|service| service.label.as_str())
+        .filter(|service| service.stops.iter().any(|id| id == stop_id))
+        .map(|service| network.route_of(service).label.as_str())
         .collect::<Vec<_>>()
         .join(", ")
 }

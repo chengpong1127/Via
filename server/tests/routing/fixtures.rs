@@ -15,8 +15,8 @@ use via_server::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
         service_conditions::{CachedServiceConditionProvider, NullServiceConditionProvider},
         timing::{
-            BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
-            TraDepartureSource, TransitDepartureSource,
+            BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxProviderBindings,
+            ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         },
     },
     routing::{RoutingLimits, RoutingService, transfers::TransferShortcutIndex},
@@ -28,6 +28,7 @@ pub(crate) use crate::support::routing::{near_stop, transit_street};
 use crate::support::tdx::spawn_tdx_fixture;
 
 const NETWORK_JSON: &str = include_str!("../../fixtures/routing/network.json");
+const BINDINGS_JSON: &str = include_str!("../../fixtures/routing/provider-bindings.json");
 
 pub(crate) fn network() -> TransitNetwork {
     TransitNetwork::from_artifact_json(NETWORK_JSON).unwrap()
@@ -107,6 +108,7 @@ async fn route_body_inner(
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
     let network = Arc::new(network());
+    let bindings: TdxProviderBindings = serde_json::from_str(BINDINGS_JSON).unwrap();
     let tdx = if realtime.arrivals_available {
         Some(fixture_tdx_client(bus_tdx_payload()).await)
     } else {
@@ -114,6 +116,7 @@ async fn route_body_inner(
     };
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), tdx)
+            .with_bindings(Arc::new(bindings))
             .with_realtime_endpoint("feed")
             .with_freshness_policy(FreshnessPolicy {
                 version: "fixture-1".into(),
@@ -165,7 +168,7 @@ pub(crate) fn option_for_services<'a>(body: &'a Value, services: &[&str]) -> &'a
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter_map(|leg| leg["details"]["via_service_id"].as_str())
+                .filter_map(|leg| leg["details"]["via_pattern_id"].as_str())
                 .eq(services.iter().copied())
         })
         .unwrap_or_else(|| panic!("missing service sequence {services:?}: {body}"))
@@ -186,9 +189,17 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     let transfers = TransferShortcutIndex::from_network(&network);
 
     assert_eq!(network.stops.len(), 18);
-    assert_eq!(network.services.len(), 10);
-    assert_eq!(network.trips.len(), 8);
-    assert_eq!(network.metro_timings.len(), 3);
+    assert_eq!(network.patterns.len(), 10);
+    assert_eq!(network.trips.len(), 17);
+    assert_eq!(
+        network
+            .patterns
+            .iter()
+            .filter(|pattern| network.route_of(pattern).mode
+                == via_server::domain::transit::TransitMode::Metro)
+            .count(),
+        3
+    );
     assert_eq!(transfers.len(), 12);
     assert!(network.validate().is_ok());
     assert!(

@@ -15,8 +15,7 @@ use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
     model::{RoutingError, TransitQuery},
     path::{JourneySkeleton, JourneyVariant},
-    static_search::{self, StaticTravelTimeIndex},
-    temporal,
+    static_search, temporal,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -26,7 +25,6 @@ pub struct TransitPlanner {
     network: Arc<TransitNetwork>,
     topology: Arc<TransitTopologyIndex>,
     transfers: Arc<TransferShortcutIndex>,
-    static_travel_times: Arc<StaticTravelTimeIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
     bike: Option<BikeSegmentPlanner>,
 }
@@ -66,11 +64,14 @@ pub struct TransitPlannerStats {
 }
 
 impl TransitPlanner {
+    pub(crate) fn topology(&self) -> &TransitTopologyIndex {
+        &self.topology
+    }
+
     pub fn new(network: Arc<TransitNetwork>, timing: Arc<dyn TimingSnapshotLoader>) -> Self {
         Self {
             topology: Arc::new(TransitTopologyIndex::new(&network)),
             transfers: Arc::new(TransferShortcutIndex::from_network(&network)),
-            static_travel_times: Arc::new(StaticTravelTimeIndex::new(&network)),
             network,
             timing,
             bike: None,
@@ -105,13 +106,8 @@ impl TransitPlanner {
             return Err(RoutingError::InvalidQuery);
         }
         let max_legs = query.max_transfers.saturating_add(1);
-        let (corridor, static_stats) = static_search::generate(
-            &self.network,
-            &self.topology,
-            &self.transfers,
-            &self.static_travel_times,
-            &query,
-        );
+        let (corridor, static_stats) =
+            static_search::generate(&self.network, &self.topology, &self.transfers, &query);
         let mut planner_stats = TransitPlannerStats {
             reachable_boarding_opportunities: corridor.len(),
             reachable_services: corridor.service_count(),
@@ -224,9 +220,9 @@ impl TransitPlanner {
 
         let mut positions = corridor.positions().collect::<Vec<_>>();
         positions.sort_by(|left, right| {
-            left.service_id
+            left.pattern_id
                 .as_str()
-                .cmp(right.service_id.as_str())
+                .cmp(right.pattern_id.as_str())
                 .then(left.stop_index.cmp(&right.stop_index))
         });
         let snapshot_limit = usize::try_from(query.max_journey_duration_seconds)
@@ -236,11 +232,11 @@ impl TransitPlanner {
         let timing_queries = positions
             .into_iter()
             .filter_map(|position| {
-                let service = self.network.service(&position.service_id)?;
-                let stop_id = service.pattern.get(position.stop_index)?.clone();
+                let service = self.network.pattern(&position.pattern_id)?;
+                let stop_id = service.stops.get(position.stop_index)?.clone();
                 Some(
                     DepartureQuery::at_position(
-                        position.service_id,
+                        position.pattern_id,
                         stop_id,
                         position.stop_index,
                         query.departure_time,
@@ -369,8 +365,8 @@ mod tests {
     use crate::{
         api::RequestCoordinate,
         domain::{
-            ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
-            transit::{ScheduledStopTime, ScheduledTrip, TransitMode, TransitService, TransitStop},
+            ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
+            transit::{ScheduledStopTime, TransitMode, TransitPattern, TransitStop, TransitTrip},
             transit_timing::{
                 EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot,
             },
@@ -381,7 +377,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingTimingLoader {
         queries: Mutex<Vec<DepartureQuery>>,
-        trips: HashMap<TransitServiceId, Vec<EffectiveTrip>>,
+        trips: HashMap<TransitPatternId, Vec<EffectiveTrip>>,
     }
 
     #[async_trait::async_trait]
@@ -391,10 +387,10 @@ mod tests {
             let mut snapshot = TimingSnapshot::default();
             for query in queries {
                 snapshot.insert(
-                    query.service_id.clone(),
+                    query.pattern_id.clone(),
                     query.board_index.unwrap(),
                     self.trips
-                        .get(&query.service_id)
+                        .get(&query.pattern_id)
                         .cloned()
                         .unwrap_or_default(),
                 );
@@ -414,9 +410,9 @@ mod tests {
         )
     }
 
-    fn service(value: &str) -> TransitService {
-        TransitService::new(
-            TransitServiceId::new(value),
+    fn service(value: &str) -> TransitPattern {
+        TransitPattern::fixture(
+            TransitPatternId::new(value),
             TransitMode::Bus,
             value,
             "destination",
@@ -427,10 +423,10 @@ mod tests {
         )
     }
 
-    fn scheduled_trip(value: &str, service_id: &str, duration: u32) -> ScheduledTrip {
-        ScheduledTrip::weekdays(
-            ScheduledTripId::new(value),
-            TransitServiceId::new(service_id),
+    fn scheduled_trip(value: &str, pattern_id: &str, duration: u32) -> TransitTrip {
+        TransitTrip::fixture_weekdays(
+            TransitTripId::new(value),
+            TransitPatternId::new(pattern_id),
             vec![Weekday::Monday],
             vec![
                 ScheduledStopTime::new(0, 0),
@@ -439,10 +435,10 @@ mod tests {
         )
     }
 
-    fn effective_trip(value: &str, service_id: &str, arrival_minute: i64) -> EffectiveTrip {
+    fn effective_trip(value: &str, pattern_id: &str, arrival_minute: i64) -> EffectiveTrip {
         EffectiveTrip {
             id: EffectiveTripId::new(value),
-            service_id: TransitServiceId::new(service_id),
+            pattern_id: TransitPatternId::new(pattern_id),
             scheduled_trip_id: None,
             stop_times: vec![
                 EffectiveStopTime {
@@ -466,7 +462,7 @@ mod tests {
     }
 
     fn network() -> Arc<TransitNetwork> {
-        Arc::new(TransitNetwork::new(
+        Arc::new(TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("origin"), stop("destination")],
             vec![service("static-fast"), service("realtime-fast")],
@@ -499,11 +495,11 @@ mod tests {
         let loader = Arc::new(RecordingTimingLoader {
             trips: HashMap::from([
                 (
-                    TransitServiceId::new("static-fast"),
+                    TransitPatternId::new("static-fast"),
                     vec![effective_trip("static-fast-live", "static-fast", 20)],
                 ),
                 (
-                    TransitServiceId::new("realtime-fast"),
+                    TransitPatternId::new("realtime-fast"),
                     vec![effective_trip("realtime-fast-live", "realtime-fast", 10)],
                 ),
             ]),
@@ -518,12 +514,12 @@ mod tests {
         assert!(
             queries
                 .iter()
-                .any(|query| query.service_id == TransitServiceId::new("static-fast"))
+                .any(|query| query.pattern_id == TransitPatternId::new("static-fast"))
         );
         assert!(
             queries
                 .iter()
-                .any(|query| query.service_id == TransitServiceId::new("realtime-fast"))
+                .any(|query| query.pattern_id == TransitPatternId::new("realtime-fast"))
         );
         assert_eq!(stats.static_corridor_positions, 2);
         assert_eq!(stats.static_corridors_retained, 1);
@@ -534,11 +530,11 @@ mod tests {
         let loader = Arc::new(RecordingTimingLoader {
             trips: HashMap::from([
                 (
-                    TransitServiceId::new("static-fast"),
+                    TransitPatternId::new("static-fast"),
                     vec![effective_trip("static-fast-live", "static-fast", 20)],
                 ),
                 (
-                    TransitServiceId::new("realtime-fast"),
+                    TransitPatternId::new("realtime-fast"),
                     vec![effective_trip("realtime-fast-live", "realtime-fast", 10)],
                 ),
             ]),
@@ -552,7 +548,7 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].transit_service_sequence(),
-            vec![TransitServiceId::new("realtime-fast")]
+            vec![TransitPatternId::new("realtime-fast")]
         );
     }
 }

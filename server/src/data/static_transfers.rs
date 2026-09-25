@@ -59,17 +59,16 @@ fn mode_name(mode: TransitMode) -> &'static str {
     }
 }
 
-/// The existing GTFS edges are minimum transfer allowances. A measured walk
-/// cannot reduce that minimum, even when it finds a faster pedestrian path.
+/// Replace transfer edges with directional walks measured by the street router.
 pub async fn enrich_network_with_static_transfers(
     network: &mut TransitNetwork,
     street: &dyn StreetRouter,
 ) -> Result<TransferStatistics, StreetRoutingError> {
     let started = Instant::now();
     let used = network
-        .services
+        .patterns
         .iter()
-        .flat_map(|service| service.pattern.iter())
+        .flat_map(|service| service.stops.iter())
         .collect::<HashSet<_>>();
     let indices = network
         .stops
@@ -96,14 +95,6 @@ pub async fn enrich_network_with_static_transfers(
         });
     }
     let mut best = HashMap::<(BoardingPointId, BoardingPointId), u32>::new();
-    for edge in &network.transfer_edges {
-        if edge.from != edge.to && edge.duration_seconds > 0 {
-            best.entry((edge.from.clone(), edge.to.clone()))
-                .and_modify(|duration| *duration = (*duration).min(edge.duration_seconds))
-                .or_insert(edge.duration_seconds);
-        }
-    }
-    let explicit = best.clone();
 
     // Only a small group of sources is in flight at once; nationwide builds
     // never materialize the full candidate or matrix workload in memory.
@@ -180,10 +171,7 @@ pub async fn enrich_network_with_static_transfers(
                         network.stops[source].id.clone(),
                         network.stops[target].id.clone(),
                     );
-                    let duration = duration.0.max(explicit.get(&key).copied().unwrap_or(0));
-                    best.entry(key)
-                        .and_modify(|current| *current = duration)
-                        .or_insert(duration);
+                    best.insert(key, duration.0);
                 }
             }
         }
@@ -211,13 +199,11 @@ pub async fn enrich_network_with_static_transfers(
     });
     stats.retained_edges = network.transfer_edges.len();
     let modes = network
-        .services
+        .patterns
         .iter()
         .flat_map(|service| {
-            service
-                .pattern
-                .iter()
-                .map(move |id| (id, service.transit_mode))
+            let mode = network.route_of(service).mode;
+            service.stops.iter().map(move |id| (id, mode))
         })
         .fold(HashMap::<_, HashSet<_>>::new(), |mut modes, (id, mode)| {
             modes.entry(id).or_default().insert(mode);
@@ -244,9 +230,9 @@ mod tests {
     use super::*;
     use crate::{
         domain::{
-            ids::TransitServiceId,
+            ids::TransitPatternId,
             location::RequestCoordinate,
-            transit::{TransitService, TransitStop, default_service_day_boundary},
+            transit::{TransitPattern, TransitStop, default_service_day_boundary},
         },
         routing::transfers::TransferShortcutIndex,
         street::{FakeStreetRouter, Seconds},
@@ -265,11 +251,11 @@ mod tests {
 
     fn network(stops: Vec<TransitStop>) -> TransitNetwork {
         let pattern = stops.iter().map(|stop| stop.id.clone()).collect();
-        TransitNetwork::new(
+        TransitNetwork::fixture(
             default_service_day_boundary(),
             stops,
-            vec![TransitService::new(
-                TransitServiceId::new("service"),
+            vec![TransitPattern::fixture(
+                TransitPatternId::new("service"),
                 TransitMode::Bus,
                 "bus",
                 "end",
@@ -329,7 +315,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duration_and_distance_limits_and_gtfs_minimum_are_respected() {
+    async fn duration_and_distance_limits_apply_to_via_generated_transfers() {
         let mut network = network(vec![
             point("a", 25.0),
             point("b", 25.0005),
@@ -376,7 +362,7 @@ mod tests {
         assert_eq!(
             network.transfer_edges,
             vec![
-                TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 150),
+                TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 75),
                 TransferEdge::new(BoardingPointId::new("b"), BoardingPointId::new("a"), 200),
             ]
         );

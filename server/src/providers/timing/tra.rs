@@ -20,6 +20,7 @@ use crate::{
 };
 
 use super::source::TransitDepartureSource;
+use crate::providers::bindings::TdxProviderBindings;
 
 const DEFAULT_TRAIN_LIVE_BOARD_PATH: &str = "v3/Rail/TRA/TrainLiveBoard";
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
@@ -57,6 +58,7 @@ pub struct TraDepartureSource {
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
+    bindings: Arc<TdxProviderBindings>,
 }
 
 impl TraDepartureSource {
@@ -67,7 +69,13 @@ impl TraDepartureSource {
             tdx: None,
             realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_one_minute("tra_train_live_board_v1"),
+            bindings: Arc::new(TdxProviderBindings::default()),
         }
+    }
+
+    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
+        self.bindings = bindings;
+        self
     }
 
     pub fn with_tdx(mut self, tdx: Option<Arc<TdxClient>>) -> Self {
@@ -87,22 +95,25 @@ impl TraDepartureSource {
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if service.transit_mode != TransitMode::Rail
-            || !service.pattern.contains(&query.board_stop_id)
+        if self.network.route_of(service).mode != TransitMode::Rail
+            || !service.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }
         Ok(())
     }
 
-    fn train_number(service_id: &crate::domain::ids::TransitServiceId) -> Option<&str> {
-        service_id
-            .as_str()
-            .strip_prefix("tra:")
-            .filter(|train_no| !train_no.is_empty())
+    fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
+        self.network
+            .trips
+            .iter()
+            .filter(|trip| &trip.pattern_id == pattern_id)
+            .filter_map(|trip| self.bindings.tra_trips.get(&trip.id))
+            .map(|binding| binding.train_number.clone())
+            .collect()
     }
 
     async fn realtime_departures(
@@ -119,9 +130,7 @@ impl TraDepartureSource {
                 invalid_queries.insert(index);
                 continue;
             }
-            if let Some(train_no) = Self::train_number(&query.service_id) {
-                requested_train_numbers.insert(train_no.to_owned());
-            }
+            requested_train_numbers.extend(self.train_numbers(&query.pattern_id));
         }
 
         if requested_train_numbers.is_empty() {
@@ -165,15 +174,7 @@ impl TraDepartureSource {
                         results.push(Ok(Vec::new()));
                         continue;
                     }
-                    let Some(train_no) = Self::train_number(&query.service_id) else {
-                        results.push(Ok(Vec::new()));
-                        continue;
-                    };
-                    let Some(observation) = observations.get(train_no).copied() else {
-                        results.push(Ok(Vec::new()));
-                        continue;
-                    };
-                    results.push(self.resolve_query(&query, observation).await);
+                    results.push(self.resolve_query(&query, &observations).await);
                 }
                 results
             }
@@ -183,7 +184,7 @@ impl TraDepartureSource {
                 .map(|(index, query)| {
                     if invalid_queries.contains(&index) {
                         Err(DepartureError::InvalidQuery)
-                    } else if query.limit == 0 || Self::train_number(&query.service_id).is_none() {
+                    } else if query.limit == 0 || self.train_numbers(&query.pattern_id).is_empty() {
                         Ok(Vec::new())
                     } else {
                         Err(error.clone())
@@ -196,26 +197,40 @@ impl TraDepartureSource {
     async fn resolve_query(
         &self,
         query: &DepartureQuery,
-        observation: TraDelayObservation,
+        observations: &BTreeMap<String, TraDelayObservation>,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        if self.network.service_day(query.after)
-            != self.network.service_day(observation.observed_at)
-        {
+        if observations.is_empty() {
             return Ok(Vec::new());
         }
-        let adjusted_after = query
-            .after
-            .checked_sub(observation.delay)
-            .unwrap_or(query.after);
+        let max_delay = observations
+            .values()
+            .map(|observation| observation.delay)
+            .max()
+            .unwrap_or(TimeDuration::ZERO);
+        let adjusted_after = query.after.checked_sub(max_delay).unwrap_or(query.after);
         let static_query = DepartureQuery {
             after: adjusted_after,
-            limit: query.limit.saturating_add(1),
+            limit: self
+                .network
+                .trips
+                .iter()
+                .filter(|trip| trip.pattern_id == query.pattern_id)
+                .count()
+                .max(query.limit),
             ..query.clone()
         };
         let scheduled = self.schedule.next_departures(static_query).await?;
         let mut departures = scheduled
             .into_iter()
-            .filter_map(|trip| self.delay_adjusted_trip(trip, query, observation))
+            .filter_map(|trip| {
+                let trip_id = trip.scheduled_trip_id.as_ref()?;
+                let train_number = &self.bindings.tra_trips.get(trip_id)?.train_number;
+                let observation = *observations.get(train_number)?;
+                (self.network.service_day(query.after)
+                    == self.network.service_day(observation.observed_at))
+                .then(|| self.delay_adjusted_trip(trip, query, observation))
+                .flatten()
+            })
             .collect::<Vec<_>>();
         let board_index = query.resolve_board_index(&self.network)?;
         departures.sort_by(|left, right| {

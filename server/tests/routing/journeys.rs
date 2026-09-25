@@ -59,7 +59,7 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
     assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
     assert_eq!(option["legs"][1]["details"]["transit_mode"], "bus");
     assert_eq!(
-        option["legs"][1]["details"]["via_service_id"],
+        option["legs"][1]["details"]["via_pattern_id"],
         "fixture-bus-main"
     );
     assert_eq!(
@@ -186,15 +186,15 @@ async fn three_transit_services_reconstruct_with_two_transfers() {
         .collect::<Vec<_>>();
     assert_eq!(transit_legs.len(), 3);
     assert_eq!(
-        transit_legs[0]["details"]["via_service_id"],
+        transit_legs[0]["details"]["via_pattern_id"],
         "fixture-mrt-red"
     );
     assert_eq!(
-        transit_legs[1]["details"]["via_service_id"],
+        transit_legs[1]["details"]["via_pattern_id"],
         "fixture-mrt-blue"
     );
     assert_eq!(
-        transit_legs[2]["details"]["via_service_id"],
+        transit_legs[2]["details"]["via_pattern_id"],
         "fixture-mrt-green"
     );
 }
@@ -321,7 +321,7 @@ async fn high_speed_rail_route_uses_the_generic_transit_model() {
         "high_speed_rail"
     );
     assert_eq!(
-        option["legs"][1]["details"]["via_service_id"],
+        option["legs"][1]["details"]["via_pattern_id"],
         "fixture-thsr"
     );
     assert_eq!(

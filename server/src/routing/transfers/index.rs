@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn from_network_projects_only_static_transit_edges() {
-        let network = TransitNetwork::new(
+        let network = TransitNetwork::fixture(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("a"), stop("b")],
             Vec::new(),

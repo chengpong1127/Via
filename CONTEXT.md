@@ -27,30 +27,35 @@ Trip-Based implementation, route graph, or wrapper planning service.
 
 ## Transit search
 
-`TransitTopologyIndex` stores only `(service_id, stop_index)` occurrences by
-boarding point. Using a position index keeps loop routes unambiguous without
-duplicating service patterns.
+`TransitNetwork` stores Via Routes, ordered Patterns, Trips, Service Calendars,
+Frequencies, and directional Transfers. Every Pattern contains a persisted
+adjacent static segment profile. `TransitTopologyIndex` stores
+`PatternPosition(pattern_id, stop_index)` occurrences by boarding point, so
+loop routes remain unambiguous. Spatial, lookup, and schedule indexes have
+separate ownership.
 
 The static search starts at all origin access points and uses one global K
 across every selected transit mode. It ranks structurally deduplicated corridors
-with access/egress walking, GTFS and preprocessed walking transfer edges,
+with access/egress walking and Via-preprocessed walking transfer edges,
 exact static travel times where available, derived Bus segment
 costs where available, and documented geometry/speed estimates otherwise.
 Derived Bus costs are not timetable data. Phase 2 may use them downstream of a
-TDX boarding prediction when a Bus service has no complete GTFS trip. BikeShare
+TDX boarding prediction when a Bus Pattern has no complete GTFS Trip. BikeShare
 is not part of this phase.
 Geometry fallback assumes zero wait and optimistic
 speeds of 60 km/h for Bus, 100 km/h for Metro, 160 km/h for Rail, and 350 km/h
 for High Speed Rail. The retained corridor union defines the small set of
-boarding positions, services, and Bus stops used by Phase 2.
+boarding positions, Patterns, and Bus stops used by Phase 2.
 
-Phase 1 groups services by exact mode and full stop pattern, then reuses
-zero-wait ride profiles and minimum adjacent costs across equivalent services.
+GTFS preprocessing deduplicates exact route/direction/ordered-stop sequences
+into Patterns. Phase 1 scans those Patterns directly and reads their persisted
+segment profiles; it does not group timetable services or derive costs at
+startup.
 Retention seeds the best corridor for each distinct mode-transition sequence,
 then fills the same global K budget in duration order. A redundant single-mode
 family therefore cannot remove every useful multimodal alternative. This is
 structural diversity, not a per-mode quota; the search safety limit is unchanged.
-Services exposing the same mode and board/alight segment as a retained corridor
+Patterns exposing the same mode and board/alight segment as a retained corridor
 remain in the Phase 2 candidate union, including overlapping pattern variants.
 
 `TransitPlanner` creates timing queries only for that retained union and awaits
@@ -58,8 +63,9 @@ remain in the Phase 2 candidate union, including overlapping pattern variants.
 groups these queries by mode;
 each mode source owns provider-native batching and static fallback. Bus queries
 are collapsed to unique `StopUID` values per realtime scope and chunked at the
-provider boundary. Returned rows are normalized with direction-sensitive TDX
-service IDs and filtered locally. The first rate limit for a Bus scope prevents
+provider boundary. TDX identity and scope live in a separate
+`provider-bindings.json` artifact, keyed by Via Pattern or Trip ID. Returned
+rows are mapped to Via Pattern IDs and filtered locally. The first rate limit for a Bus scope prevents
 additional chunks for that scope; unresolved values fall back to static timing.
 
 Temporal search is a synchronous forward round search over `TransitNetwork`,
@@ -99,15 +105,17 @@ connectivity, replace access/egress, or create a direct BikeShare-only route.
 
 ## Static data and boundaries
 
-`via-data` reads the local GTFS zip and normalizes stops, routes, trips,
-patterns, calendars, frequencies, transfers, and static timing metadata. It
-uses Valhalla walking matrices to derive directional transfers between nearby
+`via-data` reads the local GTFS zip and normalizes Routes, Patterns, Trips,
+Calendars, Frequencies, and persisted static segment profiles. It ignores
+GTFS `transfers.txt`. The single deployable build path always uses Valhalla
+walking matrices to derive directional transfers between nearby
 boarding points and stores them in `TransitNetwork.transfer_edges`. The build
 retains at most 12 outgoing transfers per boarding point. It does not download
 or refresh GTFS. TDX APIs supply realtime timing, service
 conditions, and BikeShare availability only. GTFS IDs are normalized to Via's
 existing TDX-derived IDs when their format maps directly; the build reports
-unmapped IDs. The server has no database or identity reconciliation layer.
+unmapped IDs. TDX bindings remain outside `TransitNetwork`. The server has no
+database or identity reconciliation layer.
 
 GTFS does not contain the BikeShare station catalog, so `via-data` writes an
 empty BikeShare artifact. BikeShare alternatives require a station network

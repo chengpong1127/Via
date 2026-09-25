@@ -1,9 +1,11 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
+        ids::{BoardingPointId, TransitPatternId},
         realtime::{
             ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes,
             NormalizedRealtimeValue, RealtimeValue,
@@ -17,7 +19,6 @@ use crate::{
 
 pub(super) const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
-const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 
 #[derive(Debug, Deserialize)]
@@ -38,7 +39,7 @@ struct TdxBusEstimatedArrival {
 
 pub(super) fn parse_bus_realtime_payload(
     payload: &serde_json::Value,
-    requested_services: &[TransitServiceId],
+    requested_services: &HashMap<String, Vec<TransitPatternId>>,
     freshness_policy: &FreshnessPolicy,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
     let records = payload
@@ -67,38 +68,32 @@ pub(super) fn parse_bus_realtime_payload(
             received_at,
             None,
         );
-        let service_id = match record.direction {
-            Some(direction)
-                if requested_services.iter().any(|requested| {
-                    tdx_sub_route_uid(requested) == record.sub_route_uid
-                        && requested.as_str()
-                            == transit_service_id_for_direction(&record.sub_route_uid, direction)
-                                .as_str()
-                }) =>
-            {
-                transit_service_id_for_direction(&record.sub_route_uid, direction)
-            }
-            _ => transit_service_id(&record.sub_route_uid),
-        };
-        let arrival = normalize_n1(
-            service_id,
-            boarding_point_id(record.stop_uid.clone()),
-            record.stop_status.unwrap_or(u8::MAX),
-            record.estimate_seconds,
-            published_at,
-        );
-        normalized.push(NormalizedRealtimeValue {
-            id: observation_id(&record.stop_uid, &record.sub_route_uid, published_at),
-            received_at,
-            normalized_at: received_at,
-            provider_published_at: Some(published_at),
-            source_change_at: None,
-            freshness,
-            value: RealtimeValue::ArrivalEstimate(arrival),
-        });
-    }
-    if !records.is_empty() && normalized.is_empty() {
-        return Err(DepartureError::InvalidResponse);
+        let directional_id = record
+            .direction
+            .map(|direction| transit_service_id_for_direction(&record.sub_route_uid, direction));
+        let base_id = transit_service_id(&record.sub_route_uid);
+        let ids = directional_id
+            .as_ref()
+            .and_then(|id| requested_services.get(id.as_str()))
+            .or_else(|| requested_services.get(base_id.as_str()));
+        for pattern_id in ids.into_iter().flatten() {
+            let arrival = normalize_n1(
+                pattern_id.clone(),
+                boarding_point_id(record.stop_uid.clone()),
+                record.stop_status.unwrap_or(u8::MAX),
+                record.estimate_seconds,
+                published_at,
+            );
+            normalized.push(NormalizedRealtimeValue {
+                id: observation_id(&record.stop_uid, &record.sub_route_uid, published_at),
+                received_at,
+                normalized_at: received_at,
+                provider_published_at: Some(published_at),
+                source_change_at: None,
+                freshness: freshness.clone(),
+                value: RealtimeValue::ArrivalEstimate(arrival),
+            });
+        }
     }
     Ok(normalized)
 }
@@ -124,13 +119,6 @@ pub(super) fn map_tdx_error(error: TdxClientError) -> DepartureError {
     }
 }
 
-pub(super) fn tdx_sub_route_uid(service_id: &TransitServiceId) -> &str {
-    service_id
-        .as_str()
-        .split_once(DIRECTIONAL_SERVICE_SEPARATOR)
-        .map_or_else(|| service_id.as_str(), |(sub_route_uid, _)| sub_route_uid)
-}
-
 pub(super) fn odata_in_filter(field: &str, values: &[String]) -> String {
     let values = values
         .iter()
@@ -152,7 +140,7 @@ fn observation_id(primary_key: &str, secondary_key: &str, published_at: OffsetDa
 }
 
 pub fn normalize_n1(
-    transit_service_id: TransitServiceId,
+    transit_pattern_id: TransitPatternId,
     boarding_point_id: BoardingPointId,
     stop_status: u8,
     estimate_seconds: Option<i64>,
@@ -174,7 +162,7 @@ pub fn normalize_n1(
         _ => (ArrivalState::Unknown, None),
     };
     ArrivalEstimate {
-        transit_service_id,
+        transit_pattern_id,
         boarding_point_id,
         predicted_arrival_at,
         state,

@@ -1,20 +1,20 @@
 use via_server::domain::{
-    ids::{EffectiveTripId, ScheduledTripId, TransitServiceId},
-    transit::{ScheduledStopTime, ScheduledTrip},
+    ids::{EffectiveTripId, ServiceCalendarId, TransitPatternId, TransitTripId},
+    transit::{ScheduledStopTime, TransitTrip},
     transit_timing::{EffectiveTrip, TimingBasis, TimingReliability},
 };
 
 #[test]
 fn effective_trip_keeps_an_optional_scheduled_trip_origin() {
-    let scheduled = ScheduledTrip::weekdays(
-        ScheduledTripId::new("scheduled"),
-        TransitServiceId::new("service"),
-        vec![time::Weekday::Monday],
+    let scheduled = TransitTrip::new(
+        TransitTripId::new("scheduled"),
+        TransitPatternId::new("service"),
+        ServiceCalendarId::new("monday"),
         vec![ScheduledStopTime::new(36_000, 36_000)],
     );
     let effective = EffectiveTrip {
         id: EffectiveTripId::new("effective"),
-        service_id: scheduled.service_id.clone(),
+        pattern_id: scheduled.pattern_id.clone(),
         scheduled_trip_id: Some(scheduled.id.clone()),
         stop_times: Vec::new(),
         timing_basis: TimingBasis::Schedule,
@@ -25,7 +25,7 @@ fn effective_trip_keeps_an_optional_scheduled_trip_origin() {
     };
     let dynamic = EffectiveTrip {
         id: EffectiveTripId::new("dynamic"),
-        service_id: scheduled.service_id,
+        pattern_id: scheduled.pattern_id,
         scheduled_trip_id: None,
         stop_times: Vec::new(),
         timing_basis: TimingBasis::FrequencyEstimate,

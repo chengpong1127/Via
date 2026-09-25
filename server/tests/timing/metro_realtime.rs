@@ -14,14 +14,20 @@ use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     domain::{
-        ids::{BoardingPointId, TransitServiceId},
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
         transit::{
-            MetroStationTiming, MetroTiming, TransitMode, TransitNetwork, TransitService,
-            TransitStop,
+            ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
+            ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
+            TransitStop, TransitTrip,
         },
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
-    providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
+    providers::timing::{
+        DepartureDispatcher, MetroDepartureSource, MetroPatternBinding, TdxProviderBindings,
+        TransitDepartureSource,
+    },
     tdx::TdxClient,
 };
 
@@ -85,7 +91,7 @@ fn live_board(line: &str, station: &str, destination: &str, update: &str) -> Val
 fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
     let first = BoardingPointId::new("TRTC-BL12");
     let second = BoardingPointId::new("TRTC-BL23");
-    let service_id = TransitServiceId::new("metro:BL::direction=0");
+    let service_id = TransitPatternId::new("metro:BL::direction=0");
     let seed = TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).unwrap(),
         Vec::new(),
@@ -116,31 +122,57 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
                     },
                 ),
             ],
-            vec![TransitService::new(
+            vec![TransitPattern::new(
                 service_id.clone(),
-                TransitMode::Metro,
-                "板南線",
+                TransitRouteId::new("metro:BL"),
+                Some(0),
                 "南港展覽館",
-                vec![first.clone(), second.clone()],
+                vec![first, second],
+                SegmentProfile {
+                    segments: vec![SegmentTravelTime {
+                        seconds: 240,
+                        source: SegmentTimeSource::Schedule,
+                    }],
+                },
             )],
-            Vec::new(),
+            vec![TransitTrip::new(
+                TransitTripId::new("metro-trip"),
+                service_id,
+                ServiceCalendarId::new("daily"),
+                vec![
+                    ScheduledStopTime::new(static_seconds, static_seconds),
+                    ScheduledStopTime::new(static_seconds + 240, static_seconds + 240),
+                ],
+            )],
         )
-        .with_metro_timings(vec![MetroTiming::new(
-            service_id,
-            vec![MetroStationTiming {
-                stop_id: first,
-                departures_seconds: vec![static_seconds],
-                frequencies: Vec::new(),
-            }],
-            vec![240],
-        )])
+        .with_routes(vec![TransitRoute {
+            id: TransitRouteId::new("metro:BL"),
+            mode: TransitMode::Metro,
+            label: "板南線".into(),
+        }])
+        .with_calendars(vec![ServiceCalendar {
+            id: ServiceCalendarId::new("daily"),
+            weekdays: vec![
+                time::Weekday::Monday,
+                time::Weekday::Tuesday,
+                time::Weekday::Wednesday,
+                time::Weekday::Thursday,
+                time::Weekday::Friday,
+                time::Weekday::Saturday,
+                time::Weekday::Sunday,
+            ],
+            start_date: None,
+            end_date: None,
+            added_dates: Vec::new(),
+            removed_dates: Vec::new(),
+        }])
         .with_revisions("static", "schedule"),
     )
 }
 
 fn query(after: OffsetDateTime) -> DepartureQuery {
     DepartureQuery::new(
-        TransitServiceId::new("metro:BL::direction=0"),
+        TransitPatternId::new("metro:BL::direction=0"),
         BoardingPointId::new("TRTC-BL12"),
         after,
         2,
@@ -156,6 +188,17 @@ async fn resolver(
     let metro = Arc::new(
         MetroDepartureSource::new(network.clone())
             .with_tdx(Some(tdx))
+            .with_bindings(Arc::new(TdxProviderBindings {
+                metro_patterns: [(
+                    TransitPatternId::new("metro:BL::direction=0"),
+                    MetroPatternBinding {
+                        line_id: "BL".into(),
+                        direction: 0,
+                    },
+                )]
+                .into(),
+                ..Default::default()
+            }))
             .with_realtime_endpoint("v2/Rail/Metro/LiveBoard/TRTC"),
     );
     (

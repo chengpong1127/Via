@@ -8,6 +8,9 @@ mod metro_realtime;
 mod thsr;
 mod tra;
 
+pub use crate::providers::bindings::{
+    BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,
+};
 pub use bus::BusDepartureSource;
 pub use bus_realtime::normalize_n1;
 pub use metrics::BusTimingMetrics;

@@ -13,11 +13,12 @@ use super::{
     },
     source::TransitDepartureSource,
 };
+use crate::providers::bindings::TdxProviderBindings;
 use crate::{
     domain::{
-        ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
+        ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
         realtime::FreshnessPolicy,
-        transit::{MetroFrequency, MetroTiming, TransitMode, TransitNetwork},
+        transit::{TransitMode, TransitNetwork},
         transit_timing::{
             DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
             TimingBasis, TimingReliability,
@@ -41,6 +42,7 @@ pub struct MetroDepartureSource {
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
+    bindings: Arc<TdxProviderBindings>,
 }
 
 #[derive(Clone)]
@@ -48,13 +50,6 @@ struct MetroRealtimeMatch {
     line_id: String,
     station_id: String,
     destination_station_id: String,
-}
-
-#[derive(Clone, Copy)]
-struct MetroTimingMetadata {
-    basis: TimingBasis,
-    reliability: TimingReliability,
-    observed_at: Option<OffsetDateTime>,
 }
 
 impl MetroDepartureSource {
@@ -65,7 +60,13 @@ impl MetroDepartureSource {
             tdx: None,
             realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_one_minute("metro_live_board_v1"),
+            bindings: Arc::new(TdxProviderBindings::default()),
         }
+    }
+
+    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
+        self.bindings = bindings;
+        self
     }
 
     pub fn with_tdx(mut self, tdx: Option<Arc<TdxClient>>) -> Self {
@@ -85,11 +86,11 @@ impl MetroDepartureSource {
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if service.transit_mode != TransitMode::Metro
-            || !service.pattern.contains(&query.board_stop_id)
+        if self.network.route_of(service).mode != TransitMode::Metro
+            || !service.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }
@@ -97,112 +98,43 @@ impl MetroDepartureSource {
     }
 
     fn realtime_match(&self, query: &DepartureQuery) -> Option<MetroRealtimeMatch> {
-        let service = self.network.service(&query.service_id)?;
-        let (line_id, direction) = metro_service_parts(&query.service_id)?;
-        if direction > 1 {
+        let service = self.network.pattern(&query.pattern_id)?;
+        let binding = self.bindings.metro_patterns.get(&query.pattern_id)?;
+        if binding.direction > 1 {
             return None;
         }
-        let destination_station_id = service.pattern.last()?;
+        let destination_station_id = service.stops.last()?;
         Some(MetroRealtimeMatch {
-            line_id: line_id.to_owned(),
+            line_id: binding.line_id.clone(),
             station_id: local_station_id(&query.board_stop_id)?.to_owned(),
             destination_station_id: local_station_id(destination_station_id)?.to_owned(),
         })
     }
 
-    fn candidates(
-        &self,
-        timing: &MetroTiming,
-        board_stop_id: &BoardingPointId,
-        service_day_start: OffsetDateTime,
-        after: OffsetDateTime,
-        before: Option<OffsetDateTime>,
-        limit: usize,
-    ) -> Vec<(OffsetDateTime, TimingBasis)> {
-        let Some(station_timing) = timing
-            .station_timings
-            .iter()
-            .find(|station| &station.stop_id == board_stop_id)
-        else {
-            return Vec::new();
-        };
-        let after_seconds =
-            u32::try_from((after - service_day_start).whole_seconds().max(0)).unwrap_or(u32::MAX);
-        let before_seconds = before
-            .map(|before| {
-                u32::try_from((before - service_day_start).whole_seconds().max(0))
-                    .unwrap_or(u32::MAX)
-            })
-            .unwrap_or(u32::MAX);
-        let mut candidates = station_timing
-            .departures_seconds
-            .iter()
-            .copied()
-            .map(|seconds| {
-                (
-                    service_day_start + TimeDuration::seconds(i64::from(seconds)),
-                    TimingBasis::Schedule,
-                )
-            })
-            .chain(
-                station_timing
-                    .frequencies
-                    .iter()
-                    .flat_map(|frequency| {
-                        expand_frequency(frequency, after_seconds, before_seconds, limit)
-                    })
-                    .map(|seconds| {
-                        (
-                            service_day_start + TimeDuration::seconds(i64::from(seconds)),
-                            TimingBasis::FrequencyEstimate,
-                        )
-                    }),
-            )
-            .filter(|(departure_at, _)| {
-                *departure_at >= after && before.is_none_or(|before| *departure_at <= before)
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(timing_basis_order(left.1).cmp(&timing_basis_order(right.1)))
-        });
-        candidates.dedup_by(|left, right| left.0 == right.0);
-        candidates.truncate(limit);
-        candidates
-    }
-
     fn effective_trip(
         &self,
-        service_id: &TransitServiceId,
-        timing: &MetroTiming,
+        pattern_id: &TransitPatternId,
         departure_at: OffsetDateTime,
-        metadata: MetroTimingMetadata,
+        observed_at: OffsetDateTime,
         board_stop_id: &BoardingPointId,
         board_index: usize,
     ) -> Option<EffectiveTrip> {
-        let service = self.network.service(service_id)?;
-        if service.pattern.get(board_index) != Some(board_stop_id) {
+        let pattern = self.network.pattern(pattern_id)?;
+        if pattern.stops.get(board_index) != Some(board_stop_id) {
             return None;
         }
-        if (!timing.pattern.is_empty() && timing.pattern != service.pattern)
-            || timing.inter_station_travel_seconds.len() != service.pattern.len() - 1
-            || timing.inter_station_travel_seconds.contains(&0)
-        {
-            return None;
-        }
-
-        let mut offsets = vec![0i64; service.pattern.len()];
-        for index in (board_index + 1)..service.pattern.len() {
-            offsets[index] = offsets[index - 1]
-                .checked_add(i64::from(timing.inter_station_travel_seconds[index - 1]))?;
+        let mut offsets = vec![0_i64; pattern.stops.len()];
+        for index in (board_index + 1)..pattern.stops.len() {
+            offsets[index] = offsets[index - 1].checked_add(i64::from(
+                pattern.static_profile.segments[index - 1].seconds,
+            ))?;
         }
         for index in (0..board_index).rev() {
             offsets[index] = offsets[index + 1]
-                .checked_sub(i64::from(timing.inter_station_travel_seconds[index]))?;
+                .checked_sub(i64::from(pattern.static_profile.segments[index].seconds))?;
         }
-        let stop_times = service
-            .pattern
+        let stop_times = pattern
+            .stops
             .iter()
             .zip(offsets)
             .map(|(stop_id, offset)| {
@@ -213,32 +145,20 @@ impl MetroDepartureSource {
                     departure_at: at,
                 }
             })
-            .collect::<Vec<_>>();
-        if stop_times.windows(2).any(|times| {
-            times[0].departure_at >= times[1].arrival_at
-                || times[0].arrival_at > times[0].departure_at
-                || times[1].arrival_at > times[1].departure_at
-        }) {
-            return None;
-        }
-        let id_prefix = if metadata.basis == TimingBasis::RealtimePrediction {
-            "metro:realtime"
-        } else {
-            "metro"
-        };
+            .collect();
         Some(EffectiveTrip {
             id: EffectiveTripId::new(format!(
-                "{id_prefix}:{}:{}:{}",
-                service_id.as_str(),
+                "metro:realtime:{}:{}:{}",
+                pattern_id.as_str(),
                 board_stop_id.as_str(),
                 departure_at.unix_timestamp_nanos()
             )),
-            service_id: service_id.clone(),
+            pattern_id: pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
-            timing_basis: metadata.basis,
-            timing_reliability: metadata.reliability,
-            observed_at: metadata.observed_at,
+            timing_basis: TimingBasis::RealtimePrediction,
+            timing_reliability: TimingReliability::Reliable,
+            observed_at: Some(observed_at),
             uncertainty_seconds: None,
             evidence: Vec::new(),
         })
@@ -250,14 +170,6 @@ impl MetroDepartureSource {
         realtime_match: &MetroRealtimeMatch,
         observations: &[MetroObservation],
     ) -> Vec<EffectiveTrip> {
-        let Some(timing) = self
-            .network
-            .metro_timings
-            .iter()
-            .find(|timing| timing.service_id == query.service_id)
-        else {
-            return Vec::new();
-        };
         let Ok(board_index) = query.resolve_board_index(&self.network) else {
             return Vec::new();
         };
@@ -274,14 +186,9 @@ impl MetroDepartureSource {
             })
             .filter_map(|observation| {
                 self.effective_trip(
-                    &query.service_id,
-                    timing,
+                    &query.pattern_id,
                     observation.departure_at,
-                    MetroTimingMetadata {
-                        basis: TimingBasis::RealtimePrediction,
-                        reliability: TimingReliability::Reliable,
-                        observed_at: Some(observation.observed_at),
-                    },
+                    observation.observed_at,
                     &query.board_stop_id,
                     board_index,
                 )
@@ -405,71 +312,9 @@ impl MetroDepartureSource {
             return Ok(Vec::new());
         }
         self.validate_query(&query)?;
-        self.validate_query(&query)?;
-        let timing = self
-            .network
-            .metro_timings
-            .iter()
-            .find(|timing| timing.service_id == query.service_id);
         let board_index = query.resolve_board_index(&self.network)?;
         let mut departures = self.schedule.next_departures(query.clone()).await?;
         departures.extend(self.schedule.next_frequency_departures(query.clone())?);
-        let Some(timing) = timing else {
-            return Ok(departures);
-        };
-        let first_service_day = self.network.service_day(query.after);
-        let last_service_day = query
-            .before
-            .map(|before| self.network.service_day(before))
-            .unwrap_or(first_service_day);
-        let mut service_day = first_service_day;
-        let mut candidates = Vec::new();
-        loop {
-            candidates.extend(self.candidates(
-                timing,
-                &query.board_stop_id,
-                self.network.service_day_start(service_day),
-                query.after,
-                query.before,
-                query.limit,
-            ));
-            if service_day >= last_service_day {
-                break;
-            }
-            let Some(next_day) = service_day.next_day() else {
-                break;
-            };
-            service_day = next_day;
-        }
-        candidates.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(timing_basis_order(left.1).cmp(&timing_basis_order(right.1)))
-        });
-        candidates.dedup_by(|left, right| left.0 == right.0);
-        candidates.truncate(query.limit);
-        departures.extend(
-            candidates
-                .into_iter()
-                .filter_map(|(departure_at, timing_basis)| {
-                    self.effective_trip(
-                        &query.service_id,
-                        timing,
-                        departure_at,
-                        MetroTimingMetadata {
-                            basis: timing_basis,
-                            reliability: TimingReliability::Fallback,
-                            observed_at: None,
-                        },
-                        &query.board_stop_id,
-                        board_index,
-                    )
-                }),
-        );
-        departures.retain(|trip| {
-            let departure = trip.stop_times[board_index].departure_at;
-            departure >= query.after && query.before.is_none_or(|before| departure <= before)
-        });
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at
@@ -510,15 +355,6 @@ impl TransitDepartureSource for MetroDepartureSource {
     }
 }
 
-fn metro_service_parts(service_id: &TransitServiceId) -> Option<(&str, u8)> {
-    let service = service_id.as_str().strip_prefix("metro:")?;
-    let (line_id, direction) = service.rsplit_once("::direction=")?;
-    if line_id.is_empty() {
-        return None;
-    }
-    Some((line_id, direction.split("::").next()?.parse().ok()?))
-}
-
 fn local_station_id(stop_id: &BoardingPointId) -> Option<&str> {
     let station_id = stop_id.as_str();
     let local = station_id
@@ -544,53 +380,4 @@ fn metro_filter(pairs: &[(String, String)]) -> String {
 
 fn escape_odata_literal(value: &str) -> String {
     value.replace('\'', "''")
-}
-
-fn expand_frequency(
-    frequency: &MetroFrequency,
-    after_seconds: u32,
-    before_seconds: u32,
-    limit: usize,
-) -> Vec<u32> {
-    if frequency.headway_seconds == 0 || frequency.start_seconds > frequency.end_seconds {
-        return Vec::new();
-    }
-    let mut result = Vec::new();
-    let mut seconds = if after_seconds <= frequency.start_seconds {
-        frequency.start_seconds
-    } else {
-        let elapsed = after_seconds.saturating_sub(frequency.start_seconds);
-        let steps =
-            elapsed.saturating_add(frequency.headway_seconds - 1) / frequency.headway_seconds;
-        frequency
-            .start_seconds
-            .saturating_add(steps.saturating_mul(frequency.headway_seconds))
-    };
-    let end_seconds = frequency.end_seconds.min(before_seconds);
-    if seconds > end_seconds {
-        return result;
-    }
-    loop {
-        result.push(seconds);
-        if result.len() >= limit {
-            break;
-        }
-        let Some(next) = seconds.checked_add(frequency.headway_seconds) else {
-            break;
-        };
-        if next > end_seconds {
-            break;
-        }
-        seconds = next;
-    }
-    result
-}
-
-fn timing_basis_order(basis: TimingBasis) -> u8 {
-    match basis {
-        TimingBasis::Schedule => 0,
-        TimingBasis::FrequencyEstimate => 1,
-        TimingBasis::RealtimePrediction => 2,
-        TimingBasis::DelayAdjustedSchedule => 3,
-    }
 }

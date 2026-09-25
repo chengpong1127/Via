@@ -214,7 +214,7 @@ pub enum LegDetails {
     },
     Transit {
         transit_mode: TransitMode,
-        via_service_id: String,
+        via_pattern_id: String,
         via_boarding_point_id: String,
         via_alighting_point_id: String,
         service_label: String,

@@ -1,6 +1,6 @@
 use time::macros::{date, datetime};
 use via_server::domain::{
-    ids::{BoardingPointId, TransitServiceId},
+    ids::{BoardingPointId, TransitPatternId},
     realtime::{ArrivalState, ServiceDayPolicy},
 };
 use via_server::{
@@ -15,7 +15,7 @@ fn static_and_realtime_tdx_records_share_typed_ids() {
     assert_eq!(static_stop, realtime_stop);
 
     let static_service = transit_service_id("TPE-service-1");
-    let realtime_service = TransitServiceId::new("TPE-service-1");
+    let realtime_service = TransitPatternId::new("TPE-service-1");
     assert_eq!(static_service, realtime_service);
 }
 
@@ -33,7 +33,7 @@ fn tdx_authority_codes_and_directions_are_deterministic_namespaces() {
 
 #[test]
 fn n1_nulls_and_statuses_never_collapse_into_zero() {
-    let service = TransitServiceId::new("service_opaque");
+    let service = TransitPatternId::new("service_opaque");
     let boarding = BoardingPointId::new("boarding_opaque");
     let anchor = datetime!(2026-08-31 12:00 +08:00);
 

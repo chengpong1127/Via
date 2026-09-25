@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
 
 use super::{
-    ids::{BoardingPointId, EffectiveTripId, ScheduledTripId, TransitServiceId},
+    ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
     realtime::NormalizedRealtimeValue,
     transit::TransitNetwork,
 };
@@ -42,7 +42,7 @@ pub enum TimingReliability {
 /// does not need to know an alighting point or a pre-selected scheduled ride.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DepartureQuery {
-    pub service_id: TransitServiceId,
+    pub pattern_id: TransitPatternId,
     pub board_stop_id: BoardingPointId,
     pub board_index: Option<usize>,
     pub after: OffsetDateTime,
@@ -52,13 +52,13 @@ pub struct DepartureQuery {
 
 impl DepartureQuery {
     pub fn new(
-        service_id: TransitServiceId,
+        pattern_id: TransitPatternId,
         board_stop_id: BoardingPointId,
         after: OffsetDateTime,
         limit: usize,
     ) -> Self {
         Self {
-            service_id,
+            pattern_id,
             board_stop_id,
             board_index: None,
             after,
@@ -68,14 +68,14 @@ impl DepartureQuery {
     }
 
     pub fn at_position(
-        service_id: TransitServiceId,
+        pattern_id: TransitPatternId,
         board_stop_id: BoardingPointId,
         board_index: usize,
         after: OffsetDateTime,
         limit: usize,
     ) -> Self {
         Self {
-            service_id,
+            pattern_id,
             board_stop_id,
             board_index: Some(board_index),
             after,
@@ -91,13 +91,13 @@ impl DepartureQuery {
 
     pub fn resolve_board_index(&self, network: &TransitNetwork) -> Result<usize, DepartureError> {
         let service = network
-            .service(&self.service_id)
+            .pattern(&self.pattern_id)
             .ok_or(DepartureError::InvalidQuery)?;
         match self.board_index {
-            Some(index) if service.pattern.get(index) == Some(&self.board_stop_id) => Ok(index),
+            Some(index) if service.stops.get(index) == Some(&self.board_stop_id) => Ok(index),
             Some(_) => Err(DepartureError::InvalidQuery),
             None => service
-                .pattern
+                .stops
                 .iter()
                 .position(|stop| stop == &self.board_stop_id)
                 .ok_or(DepartureError::InvalidQuery),
@@ -107,7 +107,7 @@ impl DepartureQuery {
 
 #[derive(Clone, Debug, Default)]
 pub struct TimingSnapshot {
-    departures: HashMap<(TransitServiceId, usize), StoredDepartures>,
+    departures: HashMap<(TransitPatternId, usize), StoredDepartures>,
     trip_pool: HashMap<(EffectiveTripId, OffsetDateTime), Arc<EffectiveTrip>>,
     failures: Vec<DepartureError>,
 }
@@ -153,12 +153,12 @@ impl TimingSnapshot {
 
     pub fn insert(
         &mut self,
-        service_id: TransitServiceId,
+        pattern_id: TransitPatternId,
         board_index: usize,
         trips: Vec<EffectiveTrip>,
     ) {
         self.insert_entry(
-            service_id,
+            pattern_id,
             board_index,
             SnapshotDepartures {
                 preferred: trips,
@@ -170,7 +170,7 @@ impl TimingSnapshot {
 
     pub fn insert_entry(
         &mut self,
-        service_id: TransitServiceId,
+        pattern_id: TransitPatternId,
         board_index: usize,
         mut departures: SnapshotDepartures,
     ) {
@@ -209,7 +209,7 @@ impl TimingSnapshot {
             fallback: departures.fallback.into_iter().map(intern).collect(),
             failure: departures.failure,
         };
-        self.departures.insert((service_id, board_index), stored);
+        self.departures.insert((pattern_id, board_index), stored);
     }
 
     pub fn record_failure(&mut self, failure: DepartureError) {
@@ -231,12 +231,12 @@ impl TimingSnapshot {
 
     pub fn departures(
         &self,
-        service_id: &TransitServiceId,
+        pattern_id: &TransitPatternId,
         board_index: usize,
         after: OffsetDateTime,
         limit: usize,
     ) -> Vec<&EffectiveTrip> {
-        let Some(departures) = self.departures.get(&(service_id.clone(), board_index)) else {
+        let Some(departures) = self.departures.get(&(pattern_id.clone(), board_index)) else {
             return Vec::new();
         };
         let preferred = departures
@@ -279,8 +279,8 @@ pub trait TimingSnapshotLoader: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectiveTrip {
     pub id: EffectiveTripId,
-    pub service_id: TransitServiceId,
-    pub scheduled_trip_id: Option<ScheduledTripId>,
+    pub pattern_id: TransitPatternId,
+    pub scheduled_trip_id: Option<TransitTripId>,
     pub stop_times: Vec<EffectiveStopTime>,
     pub timing_basis: TimingBasis,
     pub timing_reliability: TimingReliability,
@@ -306,16 +306,18 @@ impl EffectiveTrip {
     pub fn from_scheduled(
         network: &TransitNetwork,
         service_day: Date,
-        trip_id: &ScheduledTripId,
+        trip_id: &TransitTripId,
     ) -> Option<Self> {
         let trip = network.scheduled_trip(trip_id)?;
-        let service = network.service(&trip.service_id)?;
-        if !trip.runs_on(service_day) || trip.stop_times.len() != service.pattern.len() {
+        let service = network.pattern(&trip.pattern_id)?;
+        if !network.calendar(&trip.calendar_id)?.runs_on(service_day)
+            || trip.stop_times.len() != service.stops.len()
+        {
             return None;
         }
         let start = network.service_day_start(service_day);
         let stop_times = service
-            .pattern
+            .stops
             .iter()
             .zip(&trip.stop_times)
             .map(|(stop_id, stop_time)| EffectiveStopTime {
@@ -327,7 +329,7 @@ impl EffectiveTrip {
             .collect();
         Some(Self {
             id: EffectiveTripId::new(trip.id.as_str()),
-            service_id: trip.service_id.clone(),
+            pattern_id: trip.pattern_id.clone(),
             scheduled_trip_id: Some(trip.id.clone()),
             stop_times,
             timing_basis: TimingBasis::Schedule,
@@ -344,17 +346,20 @@ impl EffectiveTrip {
         frequency: &super::transit::TransitFrequency,
         first_departure_seconds: u32,
     ) -> Option<Self> {
-        if !frequency.runs_on(service_day) {
+        if !network
+            .calendar(&frequency.calendar_id)?
+            .runs_on(service_day)
+        {
             return None;
         }
-        let service = network.service(&frequency.service_id)?;
-        if frequency.template_stop_times.len() != service.pattern.len() {
+        let service = network.pattern(&frequency.pattern_id)?;
+        if frequency.template_stop_times.len() != service.stops.len() {
             return None;
         }
         let template_start = frequency.template_stop_times.first()?.departure_seconds;
         let service_day_start = network.service_day_start(service_day);
         let stop_times = service
-            .pattern
+            .stops
             .iter()
             .zip(&frequency.template_stop_times)
             .map(|(stop_id, template)| {
@@ -393,7 +398,7 @@ impl EffectiveTrip {
                 service_day,
                 first_departure_seconds
             )),
-            service_id: frequency.service_id.clone(),
+            pattern_id: frequency.pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
             timing_basis,
@@ -451,16 +456,16 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if !service.pattern.contains(&query.board_stop_id) {
+        if !service.stops.contains(&query.board_stop_id) {
             return Err(DepartureError::InvalidQuery);
         }
         let board_index = query.resolve_board_index(&self.network)?;
         let trip_indices = self
             .network
-            .scheduled_trip_indices(&query.service_id, board_index);
+            .scheduled_trip_indices(&query.pattern_id, board_index);
         let first_service_day = self.network.service_day(query.after);
         let last_service_day = query
             .before
@@ -471,7 +476,9 @@ impl ScheduleTiming {
         loop {
             departures.extend(trip_indices.iter().filter_map(|trip_index| {
                 let trip = self.network.scheduled_trip_at(*trip_index)?;
-                trip.runs_on(service_day)
+                self.network
+                    .calendar(&trip.calendar_id)?
+                    .runs_on(service_day)
                     .then(|| EffectiveTrip::from_scheduled(&self.network, service_day, &trip.id))
                     .flatten()
             }));
@@ -504,10 +511,10 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if !service.pattern.contains(&query.board_stop_id) {
+        if !service.stops.contains(&query.board_stop_id) {
             return Err(DepartureError::InvalidQuery);
         }
         let board_index = query.resolve_board_index(&self.network)?;
@@ -530,12 +537,15 @@ impl ScheduleTiming {
                 .unwrap_or(u32::MAX);
             for frequency in self
                 .network
-                .frequencies
+                .frequency_indices(&query.pattern_id)
                 .iter()
-                .filter(|frequency| frequency.service_id == query.service_id)
+                .filter_map(|index| self.network.frequencies.get(*index))
             {
-                if !frequency.runs_on(service_day)
-                    || frequency.template_stop_times.len() != service.pattern.len()
+                if !self
+                    .network
+                    .calendar(&frequency.calendar_id)
+                    .is_some_and(|calendar| calendar.runs_on(service_day))
+                    || frequency.template_stop_times.len() != service.stops.len()
                 {
                     continue;
                 }
@@ -640,18 +650,18 @@ mod tests {
     use crate::{
         api::RequestCoordinate,
         domain::transit::{
-            ScheduledStopTime, ScheduledTrip, TransitMode, TransitService, TransitStop,
+            ScheduledStopTime, TransitMode, TransitPattern, TransitStop, TransitTrip,
         },
     };
 
     fn trip(
         id: &str,
-        service_id: &TransitServiceId,
+        pattern_id: &TransitPatternId,
         departure_at: OffsetDateTime,
     ) -> EffectiveTrip {
         EffectiveTrip {
             id: EffectiveTripId::new(id),
-            service_id: service_id.clone(),
+            pattern_id: pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times: vec![EffectiveStopTime {
                 stop_id: BoardingPointId::new("stop"),
@@ -668,34 +678,34 @@ mod tests {
 
     #[test]
     fn snapshot_uses_static_fallback_after_realtime_observations_are_exhausted() {
-        let service_id = TransitServiceId::new("service");
+        let pattern_id = TransitPatternId::new("service");
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert_entry(
-            service_id.clone(),
+            pattern_id.clone(),
             0,
             SnapshotDepartures {
                 preferred: vec![trip(
                     "realtime",
-                    &service_id,
+                    &pattern_id,
                     datetime!(2026-08-31 10:01 UTC),
                 )],
                 fallback: vec![trip(
                     "schedule",
-                    &service_id,
+                    &pattern_id,
                     datetime!(2026-08-31 11:00 UTC),
                 )],
                 failure: None,
             },
         );
 
-        let departures = snapshot.departures(&service_id, 0, datetime!(2026-08-31 10:30 UTC), 3);
+        let departures = snapshot.departures(&pattern_id, 0, datetime!(2026-08-31 10:30 UTC), 3);
         assert_eq!(departures.len(), 1);
         assert_eq!(departures[0].id, EffectiveTripId::new("schedule"));
     }
 
     #[tokio::test]
     async fn schedule_snapshot_window_can_cross_the_service_day_boundary() {
-        let service_id = TransitServiceId::new("service");
+        let pattern_id = TransitPatternId::new("service");
         let stop = |id: &str| {
             TransitStop::new(
                 BoardingPointId::new(id),
@@ -707,9 +717,9 @@ mod tests {
             )
         };
         let trip = |id: &str, weekday, departure_seconds| {
-            ScheduledTrip::weekdays(
-                ScheduledTripId::new(id),
-                service_id.clone(),
+            TransitTrip::fixture_weekdays(
+                TransitTripId::new(id),
+                pattern_id.clone(),
                 vec![weekday],
                 vec![
                     ScheduledStopTime::new(departure_seconds, departure_seconds),
@@ -717,11 +727,11 @@ mod tests {
                 ],
             )
         };
-        let network = Arc::new(TransitNetwork::new(
+        let network = Arc::new(TransitNetwork::fixture(
             time::macros::time!(4:00),
             vec![stop("a"), stop("b")],
-            vec![TransitService::new(
-                service_id.clone(),
+            vec![TransitPattern::fixture(
+                pattern_id.clone(),
                 TransitMode::Bus,
                 "service",
                 "b",
@@ -736,7 +746,7 @@ mod tests {
         let departures = timing
             .next_departures(
                 DepartureQuery::at_position(
-                    service_id,
+                    pattern_id,
                     BoardingPointId::new("a"),
                     0,
                     datetime!(2026-08-31 03:50 +08:00),

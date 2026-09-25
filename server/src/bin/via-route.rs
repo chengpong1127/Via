@@ -11,10 +11,10 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningRequest, SelectedPlace, TransportMode, new_request_id},
     config::load_dotenv,
-    data::load_network_artifact,
+    data::{load_network_artifact, load_provider_bindings_artifact},
     domain::{
         bikeshare::BikeShareNetwork,
-        ids::TransitServiceId,
+        ids::TransitPatternId,
         journey::PlanningOutcome,
         realtime::{FreshnessState, NormalizedRealtimeValue},
     },
@@ -86,12 +86,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .init();
     }
     let network = Arc::new(load_network_artifact(&cli.network)?);
+    let provider_bindings = Arc::new(load_provider_bindings_artifact(
+        &cli.network.with_file_name("provider-bindings.json"),
+    )?);
+    provider_bindings.validate(&network)?;
 
     let (service_conditions, tdx): (Arc<dyn ServiceConditionProvider>, Option<Arc<TdxClient>>) =
         match cli.service_conditions {
             ServiceConditionMode::Fixture => (Arc::new(FixtureServiceConditionProvider), None),
             ServiceConditionMode::Live => {
-                let (provider, tdx) = build_live_service_conditions().await?;
+                let (provider, tdx) =
+                    build_live_service_conditions(provider_bindings.clone()).await?;
                 (provider, Some(tdx))
             }
         };
@@ -109,10 +114,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let street = build_street_router(cli.service_conditions, cli.valhalla_timeout_ms).await?;
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), tdx.clone())
+            .with_bindings(provider_bindings.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()).with_tdx(tdx.clone()));
-    let tra = Arc::new(TraDepartureSource::new(network.clone()).with_tdx(tdx));
+    let metro = Arc::new(
+        MetroDepartureSource::new(network.clone())
+            .with_bindings(provider_bindings.clone())
+            .with_tdx(tdx.clone()),
+    );
+    let tra = Arc::new(
+        TraDepartureSource::new(network.clone())
+            .with_bindings(provider_bindings)
+            .with_tdx(tdx),
+    );
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
     let departure = Arc::new(DepartureDispatcher::new(
         network.clone(),
@@ -186,8 +200,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn build_live_service_conditions()
--> Result<(Arc<dyn ServiceConditionProvider>, Arc<TdxClient>), Box<dyn Error>> {
+async fn build_live_service_conditions(
+    bindings: Arc<via_server::providers::bindings::TdxProviderBindings>,
+) -> Result<(Arc<dyn ServiceConditionProvider>, Arc<TdxClient>), Box<dyn Error>> {
     let base_url = env::var("VIA_TDX_BASE_URL")
         .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".into());
     let base_url = url::Url::parse(&base_url)?;
@@ -195,7 +210,7 @@ async fn build_live_service_conditions()
         TdxCredentials::from_env()?,
         base_url.as_str(),
     )?);
-    let mut provider = TdxServiceConditionProvider::new(tdx_client.clone());
+    let mut provider = TdxServiceConditionProvider::new(tdx_client.clone()).with_bindings(bindings);
     if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
         provider = provider.with_service_condition_path(path);
     }
@@ -382,14 +397,14 @@ fn print_trace(result: &PlanningOutcome, events: &Arc<Mutex<Vec<String>>>) {
                             leg.from.display_name, leg.to.display_name, leg.duration_seconds
                         ),
                         via_server::domain::journey::LegDetails::Transit {
-                            via_service_id,
+                            via_pattern_id,
                             via_boarding_point_id,
                             via_alighting_point_id,
                             service_label,
                             ..
                         } => eprintln!(
                             "  TRANSIT service={} label={:?} board={} alight={} ({}s)",
-                            via_service_id,
+                            via_pattern_id,
                             service_label,
                             via_boarding_point_id,
                             via_alighting_point_id,
@@ -431,11 +446,11 @@ impl TraceServiceConditionProvider {
 impl ServiceConditionProvider for TraceServiceConditionProvider {
     async fn service_conditions(
         &self,
-        service_ids: &[TransitServiceId],
+        service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         self.record(format!(
             "SERVICE CONDITIONS services={}",
-            join_ids(service_ids.iter().map(TransitServiceId::as_str))
+            join_ids(service_ids.iter().map(TransitPatternId::as_str))
         ));
         let result = self.inner.service_conditions(service_ids).await;
         self.record(format_result(&result));
@@ -459,7 +474,7 @@ fn format_result(result: &Result<Vec<NormalizedRealtimeValue>, ServiceConditionE
 impl ServiceConditionProvider for FixtureServiceConditionProvider {
     async fn service_conditions(
         &self,
-        _service_ids: &[TransitServiceId],
+        _service_ids: &[TransitPatternId],
     ) -> Result<Vec<NormalizedRealtimeValue>, ServiceConditionError> {
         Ok(Vec::new())
     }

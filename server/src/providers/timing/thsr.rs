@@ -40,11 +40,11 @@ impl TransitDepartureSource for ThsrDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(service) = self.network.service(&query.service_id) else {
+        let Some(service) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if service.transit_mode != TransitMode::HighSpeedRail
-            || !service.pattern.contains(&query.board_stop_id)
+        if self.network.route_of(service).mode != TransitMode::HighSpeedRail
+            || !service.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }

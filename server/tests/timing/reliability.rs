@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use time::macros::datetime;
 use via_server::domain::{
-    ids::{BoardingPointId, EffectiveTripId, TransitServiceId},
+    ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
     transit_timing::{
         DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
         TimingReliability,
@@ -42,7 +42,7 @@ impl TransitDepartureSource for FixtureSource {
 
 fn query() -> DepartureQuery {
     DepartureQuery::new(
-        TransitServiceId::new("service"),
+        TransitPatternId::new("service"),
         BoardingPointId::new("stop-a"),
         datetime!(2026-08-31 10:00 UTC),
         1,
@@ -52,7 +52,7 @@ fn query() -> DepartureQuery {
 fn trip(basis: TimingBasis, reliability: TimingReliability) -> EffectiveTrip {
     EffectiveTrip {
         id: EffectiveTripId::new("effective-trip"),
-        service_id: TransitServiceId::new("service"),
+        pattern_id: TransitPatternId::new("service"),
         scheduled_trip_id: None,
         stop_times: vec![
             EffectiveStopTime {

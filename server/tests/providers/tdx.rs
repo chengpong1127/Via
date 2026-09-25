@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::support::tdx::spawn_tdx_fixture;
 use axum::{
@@ -10,8 +10,11 @@ use axum::{
 use serde_json::json;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    domain::ids::TransitServiceId,
-    providers::{ServiceConditionProvider, TdxServiceConditionProvider},
+    domain::ids::TransitPatternId,
+    providers::{
+        ServiceConditionProvider, TdxServiceConditionProvider,
+        timing::{BusPatternBinding, TdxProviderBindings},
+    },
 };
 
 async fn fixture_provider(app: Router) -> TdxServiceConditionProvider {
@@ -24,7 +27,19 @@ async fn fixture_provider(app: Router) -> TdxServiceConditionProvider {
             }))
         }),
     );
-    TdxServiceConditionProvider::new(spawn_tdx_fixture(app).await)
+    TdxServiceConditionProvider::new(spawn_tdx_fixture(app).await).with_bindings(Arc::new(
+        TdxProviderBindings {
+            bus_patterns: [(
+                TransitPatternId::new("via-pattern"),
+                BusPatternBinding {
+                    tdx_service_id: "provider-service".into(),
+                    realtime_scope: "Taipei".into(),
+                },
+            )]
+            .into(),
+            ..Default::default()
+        },
+    ))
 }
 
 #[tokio::test]
@@ -60,7 +75,7 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
         .with_service_condition_path("conditions");
 
     let values = source
-        .service_conditions(&[TransitServiceId::new("provider-service")])
+        .service_conditions(&[TransitPatternId::new("via-pattern")])
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -72,7 +87,7 @@ async fn tdx_service_conditions_are_scoped_and_normalized_inside_the_adapter() {
         condition.state,
         via_server::domain::realtime::ServiceConditionState::Suspended
     );
-    assert_eq!(condition.scope_via_ids, vec!["provider-service"]);
+    assert_eq!(condition.scope_via_ids, vec!["via-pattern"]);
     assert_eq!(condition.source_text_variants[0].text, "Service paused");
 }
 
@@ -86,7 +101,7 @@ async fn tdx_service_condition_rate_limits_are_explicit_errors() {
         .await
         .with_service_condition_path("conditions");
     let error = source
-        .service_conditions(&[TransitServiceId::new("provider-service")])
+        .service_conditions(&[TransitPatternId::new("via-pattern")])
         .await
         .unwrap_err();
     assert_eq!(
