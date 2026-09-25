@@ -9,7 +9,10 @@ use super::{
     segment_profile::distribute_runtime,
 };
 use crate::data::build_from_gtfs_archive_with_street;
-use crate::domain::transit::{ScheduledStopTime, TransitMode};
+use crate::domain::{
+    transit::{ScheduledStopTime, TransitMode},
+    transit_runtime::TransitRuntime,
+};
 use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
 use gtfs_structures::{RawGtfs, RouteType};
 
@@ -157,6 +160,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         .await
         .unwrap();
     let network = &built.build.network;
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
     assert_eq!(built.diagnostics.stops_loaded, 6);
     assert_eq!(built.diagnostics.trips_loaded, 4);
     assert_eq!(built.diagnostics.frequencies_loaded, 1);
@@ -175,7 +179,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     let bus_patterns = network
         .patterns
         .iter()
-        .filter(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
+        .filter(|pattern| runtime.route_of(pattern).mode == TransitMode::Bus)
         .collect::<Vec<_>>();
     assert_eq!(
         bus_patterns.len(),
@@ -187,7 +191,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         .find(|pattern| pattern.stops.len() == 3)
         .unwrap();
     assert_eq!(bus.route_id, bus_patterns[1].route_id);
-    assert_eq!(network.route_of(bus).label, "1");
+    assert_eq!(runtime.route_of(bus).label, "1");
     assert_eq!(
         network
             .routes
@@ -254,21 +258,21 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .iter()
             .any(|edge| edge.duration_seconds == 240)
     );
-    let calendar = network
+    let calendar = runtime
         .calendar(&network.frequencies[0].calendar_id)
         .unwrap();
     assert!(calendar.runs_on(date!(2026 - 09 - 22)));
     assert!(!calendar.runs_on(date!(2026 - 09 - 23)));
     assert!(calendar.runs_on(date!(2026 - 09 - 24)));
     assert!(
-        network
+        runtime
             .pattern(&crate::domain::ids::TransitPatternId::new(
                 "pattern:metro:BL::direction=0::variant=0"
             ))
             .is_some()
     );
     assert!(
-        network
+        runtime
             .pattern(&crate::domain::ids::TransitPatternId::new(
                 "pattern:THB123::direction=0::variant=0"
             ))

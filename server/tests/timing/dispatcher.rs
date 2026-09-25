@@ -11,6 +11,7 @@ use via_server::domain::{
         ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
         TransitMode, TransitNetwork, TransitPattern, TransitRoute, TransitTrip,
     },
+    transit_runtime::TransitRuntime,
     transit_timing::{
         DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
         TimingReliability,
@@ -129,6 +130,7 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
         )
         .with_routes(routes()),
     );
+    let network = Arc::new(TransitRuntime::new(network));
     let bus_calls = Arc::new(Mutex::new(Vec::new()));
     let metro_calls = Arc::new(Mutex::new(Vec::new()));
     let tra_calls = Arc::new(Mutex::new(Vec::new()));
@@ -200,7 +202,7 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
 
 #[tokio::test]
 async fn thsr_static_timetable_is_reliable() {
-    let service_id = TransitPatternId::new("thsr-service");
+    let pattern_id = TransitPatternId::new("thsr-service");
     let board = BoardingPointId::new("board");
     let alight = BoardingPointId::new("alight");
     let network = Arc::new(
@@ -208,7 +210,7 @@ async fn thsr_static_timetable_is_reliable() {
             Time::from_hms(4, 0, 0).unwrap(),
             Vec::new(),
             vec![TransitPattern::new(
-                service_id.clone(),
+                pattern_id.clone(),
                 TransitRouteId::new("thsr"),
                 None,
                 "alight",
@@ -222,7 +224,7 @@ async fn thsr_static_timetable_is_reliable() {
             )],
             vec![TransitTrip::new(
                 TransitTripId::new("thsr-trip"),
-                service_id.clone(),
+                pattern_id.clone(),
                 ServiceCalendarId::new("monday"),
                 vec![
                     ScheduledStopTime::new(36_000, 36_000),
@@ -233,13 +235,14 @@ async fn thsr_static_timetable_is_reliable() {
         .with_routes(routes())
         .with_calendars(vec![calendar()]),
     );
+    let network = Arc::new(TransitRuntime::new(network));
     let source = Arc::new(ThsrDepartureSource::new(network.clone()));
     let dispatcher =
         DepartureDispatcher::new(network, vec![source as Arc<dyn TransitDepartureSource>]);
 
     let result = dispatcher
         .next_departures(DepartureQuery::new(
-            service_id,
+            pattern_id,
             board,
             datetime!(2026-08-31 09:50 +08:00),
             1,

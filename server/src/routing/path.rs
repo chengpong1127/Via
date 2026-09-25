@@ -481,7 +481,7 @@ impl JourneyVariant {
         })
     }
 
-    pub fn transit_service_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
+    pub fn transit_pattern_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
         self.path
             .iter()
             .filter_map(|step| match &step.movement {

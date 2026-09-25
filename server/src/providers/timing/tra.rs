@@ -10,7 +10,8 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use crate::{
     domain::{
         realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
-        transit::{TransitMode, TransitNetwork},
+        transit::TransitMode,
+        transit_runtime::TransitRuntime,
         transit_timing::{
             DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingBasis,
             TimingReliability,
@@ -53,7 +54,7 @@ struct TraDelayObservation {
 
 /// TRA timing owned by the mode source: live train delay over static trip shape.
 pub struct TraDepartureSource {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
@@ -62,7 +63,7 @@ pub struct TraDepartureSource {
 }
 
 impl TraDepartureSource {
-    pub fn new(network: Arc<TransitNetwork>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
@@ -95,11 +96,11 @@ impl TraDepartureSource {
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.route_of(service).mode != TransitMode::Rail
-            || !service.stops.contains(&query.board_stop_id)
+        if self.network.route_of(pattern).mode != TransitMode::Rail
+            || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }
@@ -108,6 +109,7 @@ impl TraDepartureSource {
 
     fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
         self.network
+            .data()
             .trips
             .iter()
             .filter(|trip| &trip.pattern_id == pattern_id)
@@ -212,6 +214,7 @@ impl TraDepartureSource {
             after: adjusted_after,
             limit: self
                 .network
+                .data()
                 .trips
                 .iter()
                 .filter(|trip| trip.pattern_id == query.pattern_id)

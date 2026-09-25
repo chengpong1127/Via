@@ -19,7 +19,9 @@ pub fn path(from: Coordinate, to: Coordinate, duration: u32) -> StreetPath {
 
 pub fn stop_coordinate(network: &TransitNetwork, id: &str) -> Coordinate {
     let stop: &TransitStop = network
-        .stop(&via_server::domain::ids::BoardingPointId::new(id))
+        .stops
+        .iter()
+        .find(|stop| stop.id.as_str() == id)
         .unwrap();
     coordinate(stop.coordinate.latitude, stop.coordinate.longitude)
 }

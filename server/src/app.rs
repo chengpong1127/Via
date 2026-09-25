@@ -27,6 +27,7 @@ use crate::{
         bikeshare::BikeShareNetwork,
         journey::{PlanningError, PlanningOutcome},
         transit::TransitNetwork,
+        transit_runtime::TransitRuntime,
     },
     health::DependencyHealth,
     observability::OperationalMetrics,
@@ -49,7 +50,7 @@ use crate::{
 struct AppState {
     street_health: Arc<dyn DependencyHealth>,
     routing: RoutingService,
-    transit_network: Arc<TransitNetwork>,
+    transit_runtime: Arc<TransitRuntime>,
     metrics: OperationalMetrics,
     service_condition_metrics: ServiceConditionMetrics,
     bus_timing_metrics: BusTimingMetrics,
@@ -113,25 +114,25 @@ where
     ));
     let service_condition_metrics = service_conditions.metrics();
     let bus_timing_metrics = BusTimingMetrics::default();
-    let transit_network = Arc::new(transit_network);
+    let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(transit_network)));
     let bus = Arc::new(
-        BusDepartureSource::new(transit_network.clone(), dependencies.tdx.clone())
+        BusDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
             .with_bindings(dependencies.provider_bindings.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(
-        MetroDepartureSource::new(transit_network.clone())
+        MetroDepartureSource::new(transit_runtime.clone())
             .with_bindings(dependencies.provider_bindings.clone())
             .with_tdx(dependencies.tdx.clone()),
     );
     let tra = Arc::new(
-        TraDepartureSource::new(transit_network.clone())
+        TraDepartureSource::new(transit_runtime.clone())
             .with_bindings(dependencies.provider_bindings)
             .with_tdx(dependencies.tdx),
     );
-    let thsr = Arc::new(ThsrDepartureSource::new(transit_network.clone()));
+    let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
     let departure_resolver = Arc::new(DepartureDispatcher::new(
-        transit_network.clone(),
+        transit_runtime.clone(),
         vec![
             bus as Arc<dyn TransitDepartureSource>,
             metro as Arc<dyn TransitDepartureSource>,
@@ -141,7 +142,7 @@ where
     ));
     let routing = RoutingService::new(
         street_router,
-        transit_network.clone(),
+        transit_runtime.clone(),
         departure_resolver,
         service_conditions,
         dependencies.bike_share_network,
@@ -156,7 +157,7 @@ where
         .with_state(AppState {
             street_health,
             routing,
-            transit_network,
+            transit_runtime,
             metrics,
             service_condition_metrics,
             bus_timing_metrics,
@@ -532,13 +533,9 @@ struct ReadinessResponse {
 async fn readiness(State(state): State<AppState>) -> Response {
     // Readiness remains deliberately independent of realtime availability.
     let street_routing = state.street_health.healthy().await;
-    let static_network = !state
-        .transit_network
-        .static_network_revision
-        .trim()
-        .is_empty()
-        && !state.transit_network.schedule_revision.trim().is_empty();
-    let transit_artifact = state.transit_network.validate().is_ok();
+    let revisions = state.transit_runtime.data().revisions();
+    let static_network = !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty();
+    let transit_artifact = state.transit_runtime.data().validate().is_ok();
     let body = ReadinessResponse {
         ready: street_routing && static_network && transit_artifact,
         street_routing,

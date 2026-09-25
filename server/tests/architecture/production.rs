@@ -5,6 +5,7 @@ use via_server::domain::{
         ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
         TransitMode, TransitNetwork, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
+    transit_runtime::TransitRuntime,
 };
 
 fn stop(id: &str, latitude: f64, longitude: f64) -> TransitStop {
@@ -31,7 +32,8 @@ fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
         Vec::new(),
     );
 
-    let nearest = network.nearest_stops(
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+    let nearest = runtime.nearest_stops(
         RequestCoordinate {
             latitude: 25.0,
             longitude: 121.5,
@@ -45,8 +47,8 @@ fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
 #[test]
 fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
     let point = BoardingPointId::new("point");
-    let service = TransitPattern::new(
-        TransitPatternId::new("service"),
+    let pattern = TransitPattern::new(
+        TransitPatternId::new("pattern"),
         TransitRouteId::new("line"),
         None,
         "headsign",
@@ -60,7 +62,7 @@ fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
     );
     let trip = TransitTrip::new(
         TransitTripId::new("trip"),
-        service.id.clone(),
+        pattern.id.clone(),
         ServiceCalendarId::new("special"),
         vec![
             ScheduledStopTime::new(90_000, 90_000),
@@ -70,7 +72,7 @@ fn artifact_validation_requires_revisions_and_accepts_service_day_exceptions() {
     let network = TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).expect("valid fixture time"),
         vec![stop("point", 25.0, 121.5)],
-        vec![service],
+        vec![pattern],
         vec![trip],
     );
     assert!(network.validate().is_err());

@@ -16,7 +16,7 @@ fn candidate(key: &str, arrival: i64) -> CandidateJourney {
         bicycle_seconds: 0,
         bike_share_uses: 0,
         transfer_count: 1,
-        main_service_sequence: vec![key.into()],
+        main_pattern_sequence: vec![key.into()],
         timing_bases: Vec::new(),
         timing_reliability: TimingReliability::Reliable,
         required_live_status: vec![FreshnessState::Fresh],
@@ -137,12 +137,12 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
     let mut walking = candidate("direct-walking", 65 * 60);
     walking.walking_seconds = 65 * 60;
     walking.transfer_count = 0;
-    walking.main_service_sequence.clear();
+    walking.main_pattern_sequence.clear();
 
     let mut metro = candidate("schedule-only-metro", 12 * 60);
     metro.walking_seconds = 240;
     metro.transfer_count = 0;
-    metro.main_service_sequence = vec!["metro-blue".into()];
+    metro.main_pattern_sequence = vec!["metro-blue".into()];
     metro.timing_bases = vec![TimingBasis::Schedule];
     metro.timing_reliability = TimingReliability::Fallback;
 
@@ -235,13 +235,13 @@ fn bike_aware_ranking_keeps_faster_bike_and_slower_zero_bike_options() {
     bike.walking_seconds = 180;
     bike.bicycle_seconds = 420;
     bike.bike_share_uses = 1;
-    bike.main_service_sequence = vec!["shared-service".into()];
+    bike.main_pattern_sequence = vec!["shared-service".into()];
 
     let mut transit = candidate("transit", 2_000);
     transit.walking_seconds = 300;
     transit.bicycle_seconds = 0;
     transit.bike_share_uses = 0;
-    transit.main_service_sequence = vec!["shared-service".into()];
+    transit.main_pattern_sequence = vec!["shared-service".into()];
 
     let ranked = RankingPolicy::default().rank(vec![transit, bike]);
 
@@ -253,9 +253,9 @@ fn bike_aware_ranking_keeps_faster_bike_and_slower_zero_bike_options() {
 #[test]
 fn near_duplicates_keep_the_option_preferred_by_the_ranking_policy() {
     let mut reliable = candidate("reliable", 13 * 60);
-    reliable.main_service_sequence = vec!["shared-service".into()];
+    reliable.main_pattern_sequence = vec!["shared-service".into()];
     let mut feasible = candidate("schedule-only", 12 * 60);
-    feasible.main_service_sequence = vec!["shared-service".into()];
+    feasible.main_pattern_sequence = vec!["shared-service".into()];
     feasible.timing_bases = vec![TimingBasis::Schedule];
     feasible.timing_reliability = TimingReliability::Fallback;
 

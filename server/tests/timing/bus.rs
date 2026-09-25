@@ -22,6 +22,7 @@ use via_server::{
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
             TransitTrip,
         },
+        transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
@@ -204,12 +205,16 @@ fn trip(id: TransitTripId, pattern_id: TransitPatternId) -> TransitTrip {
     )
 }
 
-fn network_for(service_ids: &[TransitPatternId]) -> TransitNetwork {
-    network_for_with_scopes(service_ids, &[])
+fn network_for(pattern_ids: &[TransitPatternId]) -> TransitNetwork {
+    network_for_with_scopes(pattern_ids, &[])
+}
+
+fn runtime(network: TransitNetwork) -> Arc<TransitRuntime> {
+    Arc::new(TransitRuntime::new(Arc::new(network)))
 }
 
 fn network_for_with_scopes(
-    service_ids: &[TransitPatternId],
+    pattern_ids: &[TransitPatternId],
     _scopes: &[(&str, &str)],
 ) -> TransitNetwork {
     let board = BoardingPointId::new("stop-x");
@@ -217,11 +222,11 @@ fn network_for_with_scopes(
     TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).unwrap(),
         Vec::new(),
-        service_ids
+        pattern_ids
             .iter()
             .map(|id| bus_pattern(id.clone(), board.clone(), downstream.clone()))
             .collect(),
-        service_ids
+        pattern_ids
             .iter()
             .enumerate()
             .map(|(index, id)| trip(TransitTripId::new(format!("run-{index}")), id.clone()))
@@ -302,10 +307,10 @@ fn query(pattern_id: &str, board_stop_id: &str, after: OffsetDateTime) -> Depart
     )
 }
 
-fn bus_dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
+fn bus_dispatcher(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(&network, &[]))
+            .with_bindings(bindings(network.data(), &[]))
             .with_realtime_endpoint("feed"),
     );
     DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
@@ -313,23 +318,23 @@ fn bus_dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> Departur
 
 #[tokio::test]
 async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
-    let service_ids = (0..20)
+    let pattern_ids = (0..20)
         .map(|index| TransitPatternId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
     let update = recent_update();
     let payload = Value::Array(
-        service_ids
+        pattern_ids
             .iter()
-            .map(|service_id| arrival(service_id.as_str(), "stop-x", 60, &update))
+            .map(|pattern_id| arrival(pattern_id.as_str(), "stop-x", 60, &update))
             .collect(),
     );
     let (tdx, stats) = fixture_client(payload, StatusCode::OK).await;
-    let network = Arc::new(network_for(&service_ids));
+    let network = runtime(network_for(&pattern_ids));
     let resolver = bus_dispatcher(network, tdx);
-    let needs = service_ids
+    let needs = pattern_ids
         .iter()
-        .map(|service_id| {
-            DepartureQuery::new(service_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
+        .map(|pattern_id| {
+            DepartureQuery::new(pattern_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
         })
         .collect::<Vec<_>>();
 
@@ -350,9 +355,9 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
 
 #[tokio::test]
 async fn empty_bus_realtime_falls_back_to_static_schedule() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::OK).await;
-    let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
+    let network = runtime(network_for(std::slice::from_ref(&pattern_id)));
     let resolver = bus_dispatcher(network, tdx);
 
     let result = resolver
@@ -366,9 +371,9 @@ async fn empty_bus_realtime_falls_back_to_static_schedule() {
 
 #[tokio::test]
 async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
-    let service_id = TransitPatternId::new("service-without-scope");
+    let pattern_id = TransitPatternId::new("service-without-scope");
     let (tdx, stats) = fixture_client(json!([]), StatusCode::OK).await;
-    let network = Arc::new(network_for(std::slice::from_ref(&service_id)));
+    let network = runtime(network_for(std::slice::from_ref(&pattern_id)));
     let source = BusDepartureSource::new(network.clone(), Some(tdx.clone()));
 
     let realtime = source
@@ -392,7 +397,7 @@ async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
 
 #[tokio::test]
 async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
-    let service_ids = [
+    let pattern_ids = [
         TransitPatternId::new("service-a"),
         TransitPatternId::new("service-b"),
     ];
@@ -402,7 +407,7 @@ async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(Arc::new(network_for(&service_ids)), tdx);
+    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
 
     let results = resolver
         .next_departures_batch(vec![
@@ -423,7 +428,7 @@ async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
 
 #[tokio::test]
 async fn failed_bus_batch_only_falls_back_for_its_scope() {
-    let service_ids = [
+    let pattern_ids = [
         TransitPatternId::new("service-taipei"),
         TransitPatternId::new("service-new-taipei"),
     ];
@@ -440,10 +445,10 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
         "NewTaipei",
     )
     .await;
-    let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
+    let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(&network, &scopes)),
+            .with_bindings(bindings(network.data(), &scopes)),
     );
     let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
 
@@ -467,17 +472,14 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
 
 #[tokio::test]
 async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(
-        Arc::new(network_for(std::slice::from_ref(&service_id))),
-        tdx,
-    );
+    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -495,16 +497,16 @@ async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
 
 #[tokio::test]
 async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
         StatusCode::OK,
     )
     .await;
-    let mut network = network_for(std::slice::from_ref(&service_id));
+    let mut network = network_for(std::slice::from_ref(&pattern_id));
     network.trips.clear();
-    let resolver = bus_dispatcher(Arc::new(network), tdx);
+    let resolver = bus_dispatcher(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -519,20 +521,20 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
 
 #[tokio::test]
 async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_schedule() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
         StatusCode::OK,
     )
     .await;
-    let mut network = network_for(std::slice::from_ref(&service_id));
+    let mut network = network_for(std::slice::from_ref(&pattern_id));
     network.trips.clear();
     network.patterns[0].static_profile.segments[0] = SegmentTravelTime {
         seconds: 347,
         source: SegmentTimeSource::Derived,
     };
-    let resolver = bus_dispatcher(Arc::new(network), tdx);
+    let resolver = bus_dispatcher(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -548,14 +550,14 @@ async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_sched
 
 #[tokio::test]
 async fn realtime_bus_uses_position_aligned_profile_on_a_loop() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let update = recent_update();
     let (tdx, _) = fixture_client(
         json!([arrival("service-a", "stop-x", 60, &update)]),
         StatusCode::OK,
     )
     .await;
-    let mut network = network_for(std::slice::from_ref(&service_id));
+    let mut network = network_for(std::slice::from_ref(&pattern_id));
     network.trips.clear();
     network.patterns[0].stops = vec![
         BoardingPointId::new("stop-x"),
@@ -570,7 +572,7 @@ async fn realtime_bus_uses_position_aligned_profile_on_a_loop() {
             source: SegmentTimeSource::Derived,
         })
         .collect();
-    let resolver = bus_dispatcher(Arc::new(network), tdx);
+    let resolver = bus_dispatcher(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -584,7 +586,7 @@ async fn realtime_bus_uses_position_aligned_profile_on_a_loop() {
 
 #[tokio::test]
 async fn malformed_or_stale_realtime_falls_back_safely() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let stale = (OffsetDateTime::now_utc() - Duration::seconds(400))
         .format(&Rfc3339)
         .unwrap();
@@ -595,10 +597,7 @@ async fn malformed_or_stale_realtime_falls_back_safely() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(
-        Arc::new(network_for(std::slice::from_ref(&service_id))),
-        tdx,
-    );
+    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
     let departures = resolver
         .next_departures(query("service-a", "stop-x", NOW))
         .await
@@ -612,37 +611,37 @@ async fn malformed_or_stale_realtime_falls_back_safely() {
 
 #[tokio::test]
 async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
-    let service_ids = (0..97)
+    let pattern_ids = (0..97)
         .map(|index| TransitPatternId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
-    let scopes = service_ids
+    let scopes = pattern_ids
         .iter()
         .enumerate()
-        .map(|(index, service_id)| {
+        .map(|(index, pattern_id)| {
             (
-                service_id.as_str(),
+                pattern_id.as_str(),
                 if index < 65 { "Taipei" } else { "NewTaipei" },
             )
         })
         .collect::<Vec<_>>();
     let update = recent_update();
     let payload = Value::Array(
-        service_ids
+        pattern_ids
             .iter()
-            .map(|service_id| arrival(service_id.as_str(), "stop-x", 60, &update))
+            .map(|pattern_id| arrival(pattern_id.as_str(), "stop-x", 60, &update))
             .collect(),
     );
     let (tdx, stats) = fixture_client(payload, StatusCode::OK).await;
-    let network = Arc::new(network_for_with_scopes(&service_ids, &scopes));
+    let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(&network, &scopes)),
+            .with_bindings(bindings(network.data(), &scopes)),
     );
     let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
-    let needs = service_ids
+    let needs = pattern_ids
         .iter()
-        .map(|service_id| {
-            DepartureQuery::new(service_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
+        .map(|pattern_id| {
+            DepartureQuery::new(pattern_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
         })
         .collect::<Vec<_>>();
 
@@ -673,7 +672,7 @@ async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
 
 #[tokio::test]
 async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() {
-    let service_ids = [
+    let pattern_ids = [
         TransitPatternId::new("service-a"),
         TransitPatternId::new("service-b"),
     ];
@@ -688,7 +687,7 @@ async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() 
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(Arc::new(network_for(&service_ids)), tdx);
+    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
     let second_after = OffsetDateTime::now_utc() + Duration::seconds(90);
     let results = resolver
         .next_departures_batch(vec![
@@ -702,14 +701,14 @@ async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() 
     assert_eq!(results[0].as_ref().unwrap().len(), 1);
     assert!(results[1].as_ref().unwrap().is_empty());
     assert_eq!(results[2].as_ref().unwrap().len(), 1);
-    assert_eq!(results[2].as_ref().unwrap()[0].pattern_id, service_ids[1]);
+    assert_eq!(results[2].as_ref().unwrap()[0].pattern_id, pattern_ids[1]);
 }
 
 #[tokio::test]
-async fn directional_service_ids_do_not_cross_satisfy_each_other() {
+async fn directional_patterns_do_not_cross_satisfy_each_other() {
     let direction_zero = "route::direction=0";
     let direction_one = "route::direction=1";
-    let service_ids = [
+    let pattern_ids = [
         TransitPatternId::new(direction_zero),
         TransitPatternId::new(direction_one),
     ];
@@ -722,7 +721,7 @@ async fn directional_service_ids_do_not_cross_satisfy_each_other() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(Arc::new(network_for(&service_ids)), tdx);
+    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
     let results = resolver
         .next_departures_batch(vec![
             query(direction_zero, "stop-x", NOW),
@@ -742,12 +741,9 @@ async fn directional_service_ids_do_not_cross_satisfy_each_other() {
 
 #[tokio::test]
 async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
-    let service_id = TransitPatternId::new("service-a");
+    let pattern_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
-    let resolver = bus_dispatcher(
-        Arc::new(network_for(std::slice::from_ref(&service_id))),
-        tdx,
-    );
+    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
 
     let result = resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -763,7 +759,7 @@ async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
 async fn first_rate_limit_stops_remaining_chunks_for_the_scope() {
     let (network, queries) = network_for_unique_stops(201);
     let (tdx, stats) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
-    let resolver = bus_dispatcher(Arc::new(network), tdx);
+    let resolver = bus_dispatcher(runtime(network), tdx);
 
     let results = resolver.next_departures_batch(queries).await;
 
@@ -792,7 +788,7 @@ async fn later_rate_limit_preserves_successful_earlier_chunks() {
             .collect(),
     );
     let (tdx, stats) = rate_limit_after_first_client(payload).await;
-    let resolver = bus_dispatcher(Arc::new(network), tdx);
+    let resolver = bus_dispatcher(runtime(network), tdx);
 
     let results = resolver.next_departures_batch(queries).await;
 

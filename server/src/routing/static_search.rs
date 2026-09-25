@@ -13,7 +13,8 @@ use std::{
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::{SegmentTimeSource, SegmentTravelTime, TransitMode, TransitNetwork},
+    transit::{SegmentTimeSource, SegmentTravelTime, TransitMode},
+    transit_runtime::TransitRuntime,
 };
 
 use super::{
@@ -78,7 +79,7 @@ impl StaticCorridor {
         })
     }
 
-    pub fn service_sequence(&self) -> Vec<TransitPatternId> {
+    pub fn pattern_sequence(&self) -> Vec<TransitPatternId> {
         self.transit_legs()
             .map(|leg| leg.pattern_id.clone())
             .collect()
@@ -155,7 +156,7 @@ enum EquivalentStep {
 }
 
 fn equivalent_steps(
-    network: &TransitNetwork,
+    network: &TransitRuntime,
     steps: &[StaticCorridorStep],
 ) -> Option<Vec<EquivalentStep>> {
     steps
@@ -177,12 +178,12 @@ fn equivalent_steps(
 }
 
 fn equivalent_leg_key(
-    network: &TransitNetwork,
+    network: &TransitRuntime,
     leg: &StaticTransitLeg,
 ) -> Option<EquivalentLegKey> {
-    let service = network.pattern(&leg.pattern_id)?;
+    let pattern = network.pattern(&leg.pattern_id)?;
     Some(EquivalentLegKey {
-        mode: network.route_of(service).mode,
+        mode: network.route_of(pattern).mode,
         board_stop_id: leg.board_stop_id.clone(),
         alight_stop_id: leg.alight_stop_id.clone(),
     })
@@ -222,19 +223,19 @@ pub struct CandidateCorridor {
     retained: Vec<StaticCorridor>,
     boardings_by_stop: HashMap<BoardingPointId, Vec<CandidateBoarding>>,
     minimums_by_position: HashMap<PatternPosition, usize>,
-    selected_service_ids: HashSet<TransitPatternId>,
+    selected_pattern_ids: HashSet<TransitPatternId>,
     selected_bus_stop_ids: HashSet<BoardingPointId>,
     terminal_transfers: HashSet<(BoardingPointId, BoardingPointId)>,
 }
 
 impl CandidateCorridor {
     fn from_retained(
-        network: &TransitNetwork,
+        network: &TransitRuntime,
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         retained: Vec<StaticCorridor>,
     ) -> Self {
         let mut minimums_by_position = HashMap::<PatternPosition, usize>::new();
-        let mut selected_service_ids = HashSet::new();
+        let mut selected_pattern_ids = HashSet::new();
         let mut selected_bus_stop_ids = HashSet::new();
         let mut terminal_transfers = HashSet::new();
         for corridor in &retained {
@@ -259,10 +260,10 @@ impl CandidateCorridor {
                         .entry(position)
                         .and_modify(|known| *known = (*known).min(remaining))
                         .or_insert(remaining);
-                    selected_service_ids.insert(alternative.pattern_id.clone());
+                    selected_pattern_ids.insert(alternative.pattern_id.clone());
                     if network
                         .pattern(&alternative.pattern_id)
-                        .is_some_and(|service| network.route_of(service).mode == TransitMode::Bus)
+                        .is_some_and(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
                     {
                         selected_bus_stop_ids.insert(leg.board_stop_id.clone());
                     }
@@ -272,10 +273,10 @@ impl CandidateCorridor {
 
         let mut boardings_by_stop = HashMap::<BoardingPointId, Vec<CandidateBoarding>>::new();
         for (position, min_remaining_legs) in &minimums_by_position {
-            let Some(service) = network.pattern(&position.pattern_id) else {
+            let Some(pattern) = network.pattern(&position.pattern_id) else {
                 continue;
             };
-            let Some(stop_id) = service.stops.get(position.stop_index) else {
+            let Some(stop_id) = pattern.stops.get(position.stop_index) else {
                 continue;
             };
             boardings_by_stop
@@ -300,7 +301,7 @@ impl CandidateCorridor {
             retained,
             boardings_by_stop,
             minimums_by_position,
-            selected_service_ids,
+            selected_pattern_ids,
             selected_bus_stop_ids,
             terminal_transfers,
         }
@@ -352,8 +353,8 @@ impl CandidateCorridor {
         self.retained.is_empty()
     }
 
-    pub fn service_count(&self) -> usize {
-        self.selected_service_ids.len()
+    pub fn pattern_count(&self) -> usize {
+        self.selected_pattern_ids.len()
     }
 
     pub fn allows_terminal_transfer(&self, from: &BoardingPointId, to: &BoardingPointId) -> bool {
@@ -366,20 +367,20 @@ impl CandidateCorridor {
 pub struct StaticSearchStats {
     pub static_search_states_expanded: usize,
     pub static_unattributed_states_expanded: usize,
-    pub static_service_scans: usize,
+    pub static_pattern_scans: usize,
     pub static_positions_scanned: usize,
     pub static_walking_transfer_expansions: usize,
     pub static_duplicate_states_rejected: usize,
     pub static_dominance_states_rejected: usize,
     pub static_structurally_equivalent_states_rejected: usize,
-    pub static_equivalent_service_occurrences_collapsed: usize,
+    pub static_equivalent_pattern_occurrences_collapsed: usize,
     pub static_required_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
     pub static_complete_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
     pub static_complete_candidates_found: usize,
     pub static_unique_corridors_found: usize,
     pub static_unique_structural_corridors_found: usize,
     pub static_corridors_retained: usize,
-    pub static_retained_sequence_groups: Vec<RetainedSequenceStats>,
+    pub static_retained_pattern_sequence_groups: Vec<RetainedPatternSequenceStats>,
     pub static_retained_mode_sequence_groups: Vec<RetainedModeSequenceStats>,
     pub static_mode_stats: BTreeMap<TransitMode, TransitModeSearchStats>,
     pub static_expanded_stop_occurrence_samples: usize,
@@ -393,15 +394,15 @@ pub struct StaticSearchStats {
     pub static_expanded_terminal_transfer_source_states: usize,
     pub static_expanded_states_by_leg_count: Vec<(usize, usize)>,
     pub static_most_expanded_stops: Vec<(BoardingPointId, usize)>,
-    pub static_corridor_services: usize,
+    pub static_corridor_patterns: usize,
     pub static_corridor_positions: usize,
     pub static_corridor_bus_stops: usize,
     pub static_search_latency_ms: u64,
     pub static_pattern_index_build_latency_us: u64,
-    pub static_pattern_index_service_edge_scans: usize,
+    pub static_pattern_index_pattern_edges_scanned: usize,
     pub static_pattern_index_positions_scanned: usize,
     pub static_ride_profile_build_latency_us: u64,
-    pub static_ride_profile_services_scanned: usize,
+    pub static_ride_profile_patterns_scanned: usize,
     pub static_ride_profile_positions_scanned: usize,
     pub static_lower_bound_latency_us: u64,
     pub static_lower_bound_nodes_settled: usize,
@@ -420,15 +421,15 @@ pub struct StaticSearchStats {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransitModeSearchStats {
     pub states_expanded: usize,
-    pub service_scans: usize,
+    pub pattern_scans: usize,
     pub downstream_positions_scanned: usize,
-    pub distinct_services: usize,
-    pub distinct_patterns: usize,
+    pub distinct_pattern_ids: usize,
+    pub distinct_stop_sequences: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RetainedSequenceStats {
-    pub service_sequence: Vec<TransitPatternId>,
+pub struct RetainedPatternSequenceStats {
+    pub pattern_sequence: Vec<TransitPatternId>,
     pub mode_sequence: Vec<TransitMode>,
     pub corridors: usize,
     pub best_duration_seconds: u32,
@@ -446,10 +447,10 @@ pub struct RetainedModeSequenceStats {
 #[derive(Default)]
 struct ModeSearchAccumulator {
     states_expanded: usize,
-    service_scans: usize,
+    pattern_scans: usize,
     downstream_positions_scanned: usize,
-    services: HashSet<TransitPatternId>,
-    patterns: HashSet<Vec<BoardingPointId>>,
+    pattern_ids: HashSet<TransitPatternId>,
+    stop_sequences: HashSet<Vec<BoardingPointId>>,
 }
 
 #[derive(Clone, Debug)]
@@ -604,12 +605,12 @@ struct StaticPhase1PatternIndex {
 
 impl StaticPhase1PatternIndex {
     fn new(
-        network: &TransitNetwork,
+        network: &TransitRuntime,
         allowed_modes: &[TransitMode],
         stats: &mut StaticSearchStats,
     ) -> Self {
         let mut index = Self::default();
-        for pattern in &network.patterns {
+        for pattern in &network.data().patterns {
             let mode = network.route_of(pattern).mode;
             if !allowed_modes.contains(&mode) {
                 continue;
@@ -618,7 +619,8 @@ impl StaticPhase1PatternIndex {
             index
                 .group_index_by_pattern
                 .insert(pattern.id.clone(), group_index);
-            stats.static_pattern_index_service_edge_scans += pattern.static_profile.segments.len();
+            stats.static_pattern_index_pattern_edges_scanned +=
+                pattern.static_profile.segments.len();
             stats.static_pattern_index_positions_scanned += pattern.static_profile.segments.len();
             index.groups.push(PatternRideCache {
                 mode,
@@ -653,7 +655,7 @@ impl StaticPhase1PatternIndex {
         let mut options_by_alight = HashMap::<usize, Vec<PatternRideAlternative>>::new();
         {
             let pattern_id = &group.pattern_id;
-            stats.static_ride_profile_services_scanned += 1;
+            stats.static_ride_profile_patterns_scanned += 1;
             let mut duration_seconds = 0_u32;
             let mut first_source = None;
             let mut mixed_source = false;
@@ -743,7 +745,7 @@ impl StaticPhase1PatternIndex {
 }
 
 pub fn generate(
-    network: &TransitNetwork,
+    network: &TransitRuntime,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
     query: &TransitQuery,
@@ -950,12 +952,12 @@ pub fn generate(
             if !query.allowed_transit_modes.contains(&mode) {
                 continue;
             }
-            stats.static_service_scans += 1;
+            stats.static_pattern_scans += 1;
             {
                 let mode_stats = mode_accumulators.entry(mode).or_default();
-                mode_stats.service_scans += 1;
-                mode_stats.services.insert(group.pattern_id.clone());
-                mode_stats.patterns.insert(group.stops.clone());
+                mode_stats.pattern_scans += 1;
+                mode_stats.pattern_ids.insert(group.pattern_id.clone());
+                mode_stats.stop_sequences.insert(group.stops.clone());
             }
             let profile_started = Instant::now();
             if patterns.ensure_ride_options(
@@ -969,7 +971,7 @@ pub fn generate(
                     .saturating_add(elapsed_microseconds(profile_started));
             }
             let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
-                network.default_transfer_seconds
+                network.same_stop_transfer_seconds()
             } else {
                 0
             };
@@ -1062,10 +1064,10 @@ pub fn generate(
                 mode,
                 TransitModeSearchStats {
                     states_expanded: accumulator.states_expanded,
-                    service_scans: accumulator.service_scans,
+                    pattern_scans: accumulator.pattern_scans,
                     downstream_positions_scanned: accumulator.downstream_positions_scanned,
-                    distinct_services: accumulator.services.len(),
-                    distinct_patterns: accumulator.patterns.len(),
+                    distinct_pattern_ids: accumulator.pattern_ids.len(),
+                    distinct_stop_sequences: accumulator.stop_sequences.len(),
                 },
             )
         })
@@ -1113,11 +1115,12 @@ pub fn generate(
     }
     retained.sort_by(corridor_order);
     let surface = CandidateCorridor::from_retained(network, &equivalent_legs, retained);
-    stats.static_retained_sequence_groups = retained_sequence_groups(network, surface.retained());
+    stats.static_retained_pattern_sequence_groups =
+        retained_pattern_sequence_groups(network, surface.retained());
     stats.static_retained_mode_sequence_groups =
-        retained_mode_sequence_groups(&stats.static_retained_sequence_groups);
+        retained_mode_sequence_groups(&stats.static_retained_pattern_sequence_groups);
     stats.static_corridors_retained = surface.retained().len();
-    stats.static_corridor_services = surface.service_count();
+    stats.static_corridor_patterns = surface.pattern_count();
     stats.static_corridor_positions = surface.len();
     stats.static_corridor_bus_stops = surface.bus_stops().len();
     stats.kth_static_duration_seconds = surface
@@ -1141,23 +1144,23 @@ fn elapsed_microseconds(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-fn retained_sequence_groups(
-    network: &TransitNetwork,
+fn retained_pattern_sequence_groups(
+    network: &TransitRuntime,
     corridors: &[StaticCorridor],
-) -> Vec<RetainedSequenceStats> {
+) -> Vec<RetainedPatternSequenceStats> {
     let mut groups =
-        HashMap::<(Vec<TransitPatternId>, Vec<TransitMode>), RetainedSequenceStats>::new();
+        HashMap::<(Vec<TransitPatternId>, Vec<TransitMode>), RetainedPatternSequenceStats>::new();
     for corridor in corridors {
-        let service_sequence = corridor.service_sequence();
-        let mode_sequence = service_sequence
+        let pattern_sequence = corridor.pattern_sequence();
+        let mode_sequence = pattern_sequence
             .iter()
             .filter_map(|pattern_id| {
                 network
                     .pattern(pattern_id)
-                    .map(|service| network.route_of(service).mode)
+                    .map(|pattern| network.route_of(pattern).mode)
             })
             .collect::<Vec<_>>();
-        let key = (service_sequence.clone(), mode_sequence.clone());
+        let key = (pattern_sequence.clone(), mode_sequence.clone());
         groups
             .entry(key)
             .and_modify(|group| {
@@ -1169,8 +1172,8 @@ fn retained_sequence_groups(
                     .worst_duration_seconds
                     .max(corridor.theoretical_duration_seconds);
             })
-            .or_insert_with(|| RetainedSequenceStats {
-                service_sequence,
+            .or_insert_with(|| RetainedPatternSequenceStats {
+                pattern_sequence,
                 mode_sequence,
                 corridors: 1,
                 best_duration_seconds: corridor.theoretical_duration_seconds,
@@ -1183,41 +1186,41 @@ fn retained_sequence_groups(
             .corridors
             .cmp(&left.corridors)
             .then(
-                left.service_sequence
+                left.pattern_sequence
                     .len()
-                    .cmp(&right.service_sequence.len()),
+                    .cmp(&right.pattern_sequence.len()),
             )
             .then_with(|| {
-                left.service_sequence
+                left.pattern_sequence
                     .iter()
                     .map(TransitPatternId::as_str)
-                    .cmp(right.service_sequence.iter().map(TransitPatternId::as_str))
+                    .cmp(right.pattern_sequence.iter().map(TransitPatternId::as_str))
             })
     });
     groups
 }
 
 fn retained_mode_sequence_groups(
-    service_groups: &[RetainedSequenceStats],
+    pattern_groups: &[RetainedPatternSequenceStats],
 ) -> Vec<RetainedModeSequenceStats> {
     let mut groups = HashMap::<Vec<TransitMode>, RetainedModeSequenceStats>::new();
-    for service_group in service_groups {
+    for pattern_group in pattern_groups {
         groups
-            .entry(service_group.mode_sequence.clone())
+            .entry(pattern_group.mode_sequence.clone())
             .and_modify(|group| {
-                group.corridors += service_group.corridors;
+                group.corridors += pattern_group.corridors;
                 group.best_duration_seconds = group
                     .best_duration_seconds
-                    .min(service_group.best_duration_seconds);
+                    .min(pattern_group.best_duration_seconds);
                 group.worst_duration_seconds = group
                     .worst_duration_seconds
-                    .max(service_group.worst_duration_seconds);
+                    .max(pattern_group.worst_duration_seconds);
             })
             .or_insert_with(|| RetainedModeSequenceStats {
-                mode_sequence: service_group.mode_sequence.clone(),
-                corridors: service_group.corridors,
-                best_duration_seconds: service_group.best_duration_seconds,
-                worst_duration_seconds: service_group.worst_duration_seconds,
+                mode_sequence: pattern_group.mode_sequence.clone(),
+                corridors: pattern_group.corridors,
+                best_duration_seconds: pattern_group.best_duration_seconds,
+                worst_duration_seconds: pattern_group.worst_duration_seconds,
             });
     }
     let mut groups = groups.into_values().collect::<Vec<_>>();
@@ -1243,7 +1246,7 @@ fn record_complete_corridors(
     all_structurally_unique: &mut HashSet<EquivalentCorridorSignature>,
     best_by_mode_transition_sequence: &mut HashMap<Vec<TransitMode>, StaticCorridor>,
     complete_mode_pairs: &mut HashSet<EndpointModePair>,
-    network: &TransitNetwork,
+    network: &TransitRuntime,
 ) {
     for egress_seconds in egress_by_stop.get(&state.stop_id).into_iter().flatten() {
         let duration = state.elapsed_seconds.saturating_add(*egress_seconds);
@@ -1277,7 +1280,7 @@ fn record_complete_corridors(
             .filter_map(|leg| {
                 network
                     .pattern(&leg.pattern_id)
-                    .map(|service| network.route_of(service).mode)
+                    .map(|pattern| network.route_of(pattern).mode)
             })
             .collect::<Vec<_>>();
         if let (Some(first), Some(last)) = (modes.first(), modes.last()) {
@@ -1509,7 +1512,7 @@ fn trim_retained(retained: &mut HashMap<CorridorSignature, StaticCorridor>, limi
 }
 
 fn reachable_endpoint_mode_pairs(
-    network: &TransitNetwork,
+    network: &TransitRuntime,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
     query: &TransitQuery,
@@ -1529,14 +1532,14 @@ fn reachable_endpoint_mode_pairs(
                 continue;
             }
             for position in topology.occurrences_at(&stop_id) {
-                let Some(service) = network.pattern(&position.pattern_id) else {
+                let Some(pattern) = network.pattern(&position.pattern_id) else {
                     continue;
                 };
                 if query
                     .allowed_transit_modes
-                    .contains(&network.route_of(service).mode)
+                    .contains(&network.route_of(pattern).mode)
                 {
-                    origin_modes.insert(network.route_of(service).mode);
+                    origin_modes.insert(network.route_of(pattern).mode);
                 }
             }
         }
@@ -1553,14 +1556,14 @@ fn reachable_endpoint_mode_pairs(
         );
         for stop_id in alighting_stops {
             for position in topology.occurrences_at(&stop_id) {
-                let Some(service) = network.pattern(&position.pattern_id) else {
+                let Some(pattern) = network.pattern(&position.pattern_id) else {
                     continue;
                 };
                 if query
                     .allowed_transit_modes
-                    .contains(&network.route_of(service).mode)
+                    .contains(&network.route_of(pattern).mode)
                 {
-                    destination_modes.insert(network.route_of(service).mode);
+                    destination_modes.insert(network.route_of(pattern).mode);
                 }
             }
         }
@@ -1603,7 +1606,10 @@ mod tests {
         api::RequestCoordinate,
         domain::{
             ids::TransitTripId,
-            transit::{ScheduledStopTime, TransferEdge, TransitPattern, TransitStop, TransitTrip},
+            transit::{
+                ScheduledStopTime, TransferEdge, TransitNetwork, TransitPattern, TransitStop,
+                TransitTrip,
+            },
         },
         routing::{AccessPoint, EgressPoint},
     };
@@ -1612,7 +1618,7 @@ mod tests {
         BoardingPointId::new(value)
     }
 
-    fn service(value: &str, mode: TransitMode, pattern: &[&str]) -> TransitPattern {
+    fn pattern(value: &str, mode: TransitMode, pattern: &[&str]) -> TransitPattern {
         TransitPattern::fixture(
             TransitPatternId::new(value),
             mode,
@@ -1642,10 +1648,10 @@ mod tests {
         )
     }
 
-    fn network(services: Vec<TransitPattern>, trips: Vec<TransitTrip>) -> TransitNetwork {
-        let stop_ids = services
+    fn network(patterns: Vec<TransitPattern>, trips: Vec<TransitTrip>) -> TransitNetwork {
+        let stop_ids = patterns
             .iter()
-            .flat_map(|service| service.stops.iter().cloned())
+            .flat_map(|pattern| pattern.stops.iter().cloned())
             .collect::<HashSet<_>>();
         TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
@@ -1663,7 +1669,7 @@ mod tests {
                     )
                 })
                 .collect(),
-            services,
+            patterns,
             trips,
         )
     }
@@ -1692,17 +1698,18 @@ mod tests {
     }
 
     fn run(network: &TransitNetwork, query: &TransitQuery) -> CandidateCorridor {
-        let topology = TransitTopologyIndex::new(network);
-        let transfers = TransferShortcutIndex::from_network(network);
-        generate(network, &topology, &transfers, query).0
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+        let topology = TransitTopologyIndex::new(runtime.data());
+        let transfers = TransferShortcutIndex::from_network(runtime.data());
+        generate(&runtime, &topology, &transfers, query).0
     }
 
     #[test]
     fn one_global_k_is_shared_across_bus_and_metro() {
         let network = network(
             vec![
-                service("bus", TransitMode::Bus, &["o", "d"]),
-                service("metro", TransitMode::Metro, &["o", "d"]),
+                pattern("bus", TransitMode::Bus, &["o", "d"]),
+                pattern("metro", TransitMode::Metro, &["o", "d"]),
             ],
             vec![
                 trip("bus-trip", "bus", &[0, 100]),
@@ -1717,7 +1724,7 @@ mod tests {
 
         assert_eq!(surface.retained().len(), 1);
         assert_eq!(
-            surface.retained()[0].service_sequence(),
+            surface.retained()[0].pattern_sequence(),
             vec![TransitPatternId::new("bus")]
         );
     }
@@ -1726,9 +1733,9 @@ mod tests {
     fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
         let network = network(
             vec![
-                service("connector", TransitMode::Bus, &["o", "hub"]),
-                service("metro", TransitMode::Metro, &["hub", "d"]),
-                service("slow-bus", TransitMode::Bus, &["o", "d"]),
+                pattern("connector", TransitMode::Bus, &["o", "hub"]),
+                pattern("metro", TransitMode::Metro, &["hub", "d"]),
+                pattern("slow-bus", TransitMode::Bus, &["o", "d"]),
             ],
             vec![
                 trip("metro-trip", "metro", &[0, 300]),
@@ -1742,7 +1749,7 @@ mod tests {
         );
 
         assert_eq!(
-            surface.retained()[0].service_sequence(),
+            surface.retained()[0].pattern_sequence(),
             vec![
                 TransitPatternId::new("connector"),
                 TransitPatternId::new("metro")
@@ -1755,10 +1762,10 @@ mod tests {
     fn k_two_means_two_total_corridors_not_two_per_mode() {
         let network = network(
             vec![
-                service("bus-a", TransitMode::Bus, &["o", "d"]),
-                service("bus-b", TransitMode::Bus, &["o", "d"]),
-                service("metro-a", TransitMode::Metro, &["o", "d"]),
-                service("metro-b", TransitMode::Metro, &["o", "d"]),
+                pattern("bus-a", TransitMode::Bus, &["o", "d"]),
+                pattern("bus-b", TransitMode::Bus, &["o", "d"]),
+                pattern("metro-a", TransitMode::Metro, &["o", "d"]),
+                pattern("metro-b", TransitMode::Metro, &["o", "d"]),
             ],
             vec![
                 trip("a", "bus-a", &[0, 100]),
@@ -1774,30 +1781,31 @@ mod tests {
         );
 
         assert_eq!(surface.retained().len(), 2);
-        assert_eq!(surface.service_count(), 4);
+        assert_eq!(surface.pattern_count(), 4);
     }
 
     #[test]
-    fn equivalent_services_share_one_pattern_scan_and_remain_in_the_candidate_union() {
+    fn equivalent_patterns_share_one_pattern_scan_and_remain_in_the_candidate_union() {
         let network = network(
             vec![
-                service("bus-a", TransitMode::Bus, &["o", "d"]),
-                service("bus-b", TransitMode::Bus, &["o", "d"]),
+                pattern("bus-a", TransitMode::Bus, &["o", "d"]),
+                pattern("bus-b", TransitMode::Bus, &["o", "d"]),
             ],
             vec![trip("a", "bus-a", &[0, 100]), trip("b", "bus-b", &[0, 110])],
         );
         let topology = TransitTopologyIndex::new(&network);
         let transfers = TransferShortcutIndex::from_network(&network);
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
         let (surface, stats) = generate(
-            &network,
+            &runtime,
             &topology,
             &transfers,
             &query("o", "d", &[TransitMode::Bus], 0, 1),
         );
 
         assert_eq!(surface.retained().len(), 1);
-        assert_eq!(surface.service_count(), 2);
+        assert_eq!(surface.pattern_count(), 2);
         assert!(
             surface
                 .remaining_legs(&TransitPatternId::new("bus-a"), 0)
@@ -1809,22 +1817,22 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
-            stats.static_mode_stats[&TransitMode::Bus].distinct_services,
+            stats.static_mode_stats[&TransitMode::Bus].distinct_pattern_ids,
             2
         );
         assert_eq!(
-            stats.static_mode_stats[&TransitMode::Bus].distinct_patterns,
+            stats.static_mode_stats[&TransitMode::Bus].distinct_stop_sequences,
             1
         );
         assert!(stats.static_structurally_equivalent_states_rejected > 0);
     }
 
     #[test]
-    fn retained_segment_family_keeps_services_from_overlapping_patterns() {
+    fn retained_segment_family_keeps_overlapping_patterns() {
         let network = network(
             vec![
-                service("direct", TransitMode::Bus, &["o", "d"]),
-                service(
+                pattern("direct", TransitMode::Bus, &["o", "d"]),
+                pattern(
                     "continues-past-destination",
                     TransitMode::Bus,
                     &["o", "d", "x"],
@@ -1837,16 +1845,17 @@ mod tests {
         );
         let topology = TransitTopologyIndex::new(&network);
         let transfers = TransferShortcutIndex::from_network(&network);
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
         let (surface, _stats) = generate(
-            &network,
+            &runtime,
             &topology,
             &transfers,
             &query("o", "d", &[TransitMode::Bus], 0, 1),
         );
 
         assert_eq!(surface.retained().len(), 1);
-        assert_eq!(surface.service_count(), 2);
+        assert_eq!(surface.pattern_count(), 2);
         assert!(
             surface
                 .remaining_legs(&TransitPatternId::new("direct"), 0)
@@ -1863,10 +1872,10 @@ mod tests {
     fn retained_mode_transition_families_survive_a_bus_dominated_global_top_k() {
         let network = network(
             vec![
-                service("bus-direct-a", TransitMode::Bus, &["o", "a", "d"]),
-                service("bus-direct-b", TransitMode::Bus, &["o", "b", "d"]),
-                service("metro", TransitMode::Metro, &["o", "m"]),
-                service("bus-after-metro", TransitMode::Bus, &["x", "d"]),
+                pattern("bus-direct-a", TransitMode::Bus, &["o", "a", "d"]),
+                pattern("bus-direct-b", TransitMode::Bus, &["o", "b", "d"]),
+                pattern("metro", TransitMode::Metro, &["o", "m"]),
+                pattern("bus-after-metro", TransitMode::Bus, &["x", "d"]),
             ],
             vec![
                 trip("a", "bus-direct-a", &[0, 40, 100]),
@@ -1876,6 +1885,7 @@ mod tests {
             ],
         )
         .with_transfer_edges(vec![TransferEdge::new(id("m"), id("x"), 30)]);
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
         let surface = run(
             &network,
@@ -1888,8 +1898,8 @@ mod tests {
             .map(|corridor| {
                 corridor
                     .transit_legs()
-                    .filter_map(|leg| network.pattern(&leg.pattern_id))
-                    .map(|service| network.route_of(service).mode)
+                    .filter_map(|leg| runtime.pattern(&leg.pattern_id))
+                    .map(|pattern| runtime.route_of(pattern).mode)
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
@@ -1900,7 +1910,7 @@ mod tests {
     #[test]
     fn multiple_departures_of_one_structure_consume_one_slot() {
         let network = network(
-            vec![service("bus", TransitMode::Bus, &["o", "d"])],
+            vec![pattern("bus", TransitMode::Bus, &["o", "d"])],
             vec![
                 trip("morning", "bus", &[0, 100]),
                 trip("evening", "bus", &[10_000, 10_100]),
@@ -1916,8 +1926,8 @@ mod tests {
     fn much_slower_detour_is_excluded_when_k_is_full() {
         let network = network(
             vec![
-                service("direct", TransitMode::Bus, &["o", "d"]),
-                service("detour", TransitMode::Bus, &["o", "far", "d"]),
+                pattern("direct", TransitMode::Bus, &["o", "d"]),
+                pattern("detour", TransitMode::Bus, &["o", "far", "d"]),
             ],
             vec![
                 trip("direct-trip", "direct", &[0, 100]),
@@ -1928,7 +1938,7 @@ mod tests {
         let surface = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
         assert_eq!(
-            surface.retained()[0].service_sequence(),
+            surface.retained()[0].pattern_sequence(),
             vec![TransitPatternId::new("direct")]
         );
     }
@@ -1936,7 +1946,7 @@ mod tests {
     #[test]
     fn bus_without_exact_schedule_uses_optimistic_geometry() {
         let network = network(
-            vec![service("realtime-only", TransitMode::Bus, &["o", "d"])],
+            vec![pattern("realtime-only", TransitMode::Bus, &["o", "d"])],
             Vec::new(),
         );
 
@@ -1953,8 +1963,8 @@ mod tests {
     fn selected_mode_filtering_is_applied_before_retention() {
         let network = network(
             vec![
-                service("bus", TransitMode::Bus, &["o", "d"]),
-                service("metro", TransitMode::Metro, &["o", "d"]),
+                pattern("bus", TransitMode::Bus, &["o", "d"]),
+                pattern("metro", TransitMode::Metro, &["o", "d"]),
             ],
             vec![
                 trip("bus-trip", "bus", &[0, 50]),
@@ -1966,7 +1976,7 @@ mod tests {
 
         assert_eq!(surface.retained().len(), 1);
         assert_eq!(
-            surface.retained()[0].service_sequence(),
+            surface.retained()[0].pattern_sequence(),
             vec![TransitPatternId::new("metro")]
         );
     }
@@ -1975,8 +1985,8 @@ mod tests {
     fn maximum_transfer_count_is_respected() {
         let network = network(
             vec![
-                service("first", TransitMode::Bus, &["o", "hub"]),
-                service("second", TransitMode::Bus, &["hub", "d"]),
+                pattern("first", TransitMode::Bus, &["o", "hub"]),
+                pattern("second", TransitMode::Bus, &["hub", "d"]),
             ],
             vec![
                 trip("first-trip", "first", &[0, 100]),
@@ -1989,13 +1999,13 @@ mod tests {
 
         assert!(blocked.is_empty());
         assert_eq!(allowed.retained().len(), 1);
-        assert_eq!(allowed.retained()[0].service_sequence().len(), 2);
+        assert_eq!(allowed.retained()[0].pattern_sequence().len(), 2);
     }
 
     #[test]
     fn static_walking_transfer_can_connect_access_to_first_boarding() {
         let network = network(
-            vec![service("metro", TransitMode::Metro, &["board", "d"])],
+            vec![pattern("metro", TransitMode::Metro, &["board", "d"])],
             vec![trip("metro-trip", "metro", &[0, 100])],
         )
         .with_transfer_edges(vec![TransferEdge::new(id("access"), id("board"), 30)]);
@@ -2024,7 +2034,7 @@ mod tests {
     #[test]
     fn static_walking_transfer_can_connect_final_alight_to_egress() {
         let network = network(
-            vec![service("bus", TransitMode::Bus, &["o", "alight"])],
+            vec![pattern("bus", TransitMode::Bus, &["o", "alight"])],
             vec![trip("bus-trip", "bus", &[0, 100])],
         )
         .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("d"), 30)]);
@@ -2052,8 +2062,8 @@ mod tests {
     fn expansion_bound_is_reported_instead_of_silently_certifying_partial_top_k() {
         let network = network(
             vec![
-                service("first", TransitMode::Bus, &["o", "d"]),
-                service("second", TransitMode::Bus, &["o", "d"]),
+                pattern("first", TransitMode::Bus, &["o", "d"]),
+                pattern("second", TransitMode::Bus, &["o", "d"]),
             ],
             vec![
                 trip("first-trip", "first", &[0, 100]),
@@ -2064,8 +2074,9 @@ mod tests {
         let transfers = TransferShortcutIndex::from_network(&network);
         let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
         query.max_static_search_expansions = 1;
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-        let (_, stats) = generate(&network, &topology, &transfers, &query);
+        let (_, stats) = generate(&runtime, &topology, &transfers, &query);
 
         assert!(stats.static_search_limit_reached);
     }

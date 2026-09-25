@@ -4,23 +4,14 @@
 //! immutable revision and resolve departures through the timing boundary.
 
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, OnceLock},
-};
+use std::collections::{HashMap, HashSet};
 
-use time::{Date, OffsetDateTime, PrimitiveDateTime, Time, Weekday};
+use time::{Date, Time, Weekday};
 
 use super::ids::{
     BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
 };
-use super::{
-    location::{METRES_PER_DEGREE, RequestCoordinate},
-    normalize_to_taipei, taipei_offset,
-};
-
-const SPATIAL_CELL_DEGREES: f64 = 0.005;
-const MAX_SPATIAL_SEARCH_RING: i32 = 32;
+use super::location::RequestCoordinate;
 
 pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")
@@ -241,7 +232,7 @@ impl TransferEdge {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransitNetwork {
     pub service_day_boundary: Time,
@@ -262,30 +253,12 @@ pub struct TransitNetwork {
     pub static_network_revision: String,
     #[serde(default)]
     pub schedule_revision: String,
-    #[serde(skip, default)]
-    indexes: Arc<OnceLock<TransitIndexes>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct NetworkRevision {
     pub static_network_revision: String,
     pub schedule_revision: String,
-}
-
-impl PartialEq for TransitNetwork {
-    fn eq(&self, other: &Self) -> bool {
-        self.service_day_boundary == other.service_day_boundary
-            && self.stops == other.stops
-            && self.routes == other.routes
-            && self.patterns == other.patterns
-            && self.calendars == other.calendars
-            && self.trips == other.trips
-            && self.frequencies == other.frequencies
-            && self.transfer_edges == other.transfer_edges
-            && self.default_transfer_seconds == other.default_transfer_seconds
-            && self.static_network_revision == other.static_network_revision
-            && self.schedule_revision == other.schedule_revision
-    }
 }
 
 impl Default for TransitNetwork {
@@ -318,7 +291,6 @@ impl TransitNetwork {
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
             schedule_revision: String::new(),
-            indexes: Arc::new(OnceLock::new()),
         }
     }
 
@@ -392,51 +364,51 @@ impl TransitNetwork {
                 ));
             }
         }
-        let mut service_ids = HashSet::new();
+        let mut pattern_ids = HashSet::new();
         let mut pattern_topologies = HashSet::new();
-        for service in &self.patterns {
-            if !service_ids.insert(service.id.clone()) {
-                return Err(TransitNetworkValidationError::DuplicateService(
-                    service.id.clone(),
+        for pattern in &self.patterns {
+            if !pattern_ids.insert(pattern.id.clone()) {
+                return Err(TransitNetworkValidationError::DuplicatePattern(
+                    pattern.id.clone(),
                 ));
             }
-            if service.stops.len() < 2 {
+            if pattern.stops.len() < 2 {
                 return Err(TransitNetworkValidationError::PatternTooShort(
-                    service.id.clone(),
+                    pattern.id.clone(),
                 ));
             }
-            if !route_ids.contains(&service.route_id) {
+            if !route_ids.contains(&pattern.route_id) {
                 return Err(TransitNetworkValidationError::UnknownPatternRoute(
-                    service.id.clone(),
+                    pattern.id.clone(),
                 ));
             }
             if !pattern_topologies.insert((
-                service.route_id.clone(),
-                service.direction,
-                service.stops.clone(),
+                pattern.route_id.clone(),
+                pattern.direction,
+                pattern.stops.clone(),
             )) {
                 return Err(TransitNetworkValidationError::DuplicatePatternTopology(
-                    service.id.clone(),
+                    pattern.id.clone(),
                 ));
             }
-            if service.static_profile.segments.len() != service.stops.len() - 1
-                || service
+            if pattern.static_profile.segments.len() != pattern.stops.len() - 1
+                || pattern
                     .static_profile
                     .segments
                     .iter()
                     .any(|segment| segment.seconds == 0)
             {
                 return Err(TransitNetworkValidationError::InvalidPatternProfile(
-                    service.id.clone(),
+                    pattern.id.clone(),
                 ));
             }
-            if service
+            if pattern
                 .stops
                 .iter()
                 .any(|stop_id| !stop_ids.contains(stop_id))
             {
                 return Err(TransitNetworkValidationError::UnknownPatternStop(
-                    service.id.clone(),
+                    pattern.id.clone(),
                 ));
             }
         }
@@ -464,13 +436,13 @@ impl TransitNetwork {
             .map(|pattern| (&pattern.id, pattern))
             .collect::<HashMap<_, _>>();
         for trip in &self.trips {
-            let Some(service) = pattern_by_id.get(&trip.pattern_id).copied() else {
-                return Err(TransitNetworkValidationError::UnknownTripService(
+            let Some(pattern) = pattern_by_id.get(&trip.pattern_id).copied() else {
+                return Err(TransitNetworkValidationError::UnknownTripPattern(
                     trip.pattern_id.clone(),
                 ));
             };
             if !calendar_ids.contains(&trip.calendar_id)
-                || trip.stop_times.len() != service.stops.len()
+                || trip.stop_times.len() != pattern.stops.len()
             {
                 return Err(TransitNetworkValidationError::InvalidTripShape(
                     trip.id.clone(),
@@ -492,15 +464,15 @@ impl TransitNetwork {
         }
         let mut frequency_ids = HashSet::new();
         for frequency in &self.frequencies {
-            let Some(service) = pattern_by_id.get(&frequency.pattern_id).copied() else {
-                return Err(TransitNetworkValidationError::UnknownFrequencyService(
+            let Some(pattern) = pattern_by_id.get(&frequency.pattern_id).copied() else {
+                return Err(TransitNetworkValidationError::UnknownFrequencyPattern(
                     frequency.pattern_id.clone(),
                 ));
             };
             if !frequency_ids.insert(frequency.id.clone())
                 || frequency.start_seconds >= frequency.end_seconds
                 || frequency.headway_seconds == 0
-                || frequency.template_stop_times.len() != service.stops.len()
+                || frequency.template_stop_times.len() != pattern.stops.len()
                 || !calendar_ids.contains(&frequency.calendar_id)
                 || frequency
                     .template_stop_times
@@ -547,7 +519,7 @@ impl TransitNetwork {
     }
 
     /// Normalize outer artifact ordering before hashing, storing, or deploying
-    /// an artifact. Ordered Service Patterns and stop times are preserved.
+    /// an artifact. Ordered Patterns and stop times are preserved.
     pub fn canonicalize(mut self) -> Self {
         self.stops
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));
@@ -575,7 +547,6 @@ impl TransitNetwork {
         });
         self.transfer_edges
             .dedup_by(|left, right| left.from == right.from && left.to == right.to);
-        self.indexes = Arc::new(OnceLock::new());
         self
     }
 
@@ -602,133 +573,6 @@ impl TransitNetwork {
             static_network_revision: self.static_network_revision.clone(),
             schedule_revision: self.schedule_revision.clone(),
         }
-    }
-
-    /// Return spatially nearest stops in deterministic distance/id order.
-    /// The grid avoids scanning all of Taipei for the normal bounded query;
-    /// the bounded fallback preserves correctness for sparse fixtures.
-    pub fn nearest_stops(&self, coordinate: RequestCoordinate, limit: usize) -> Vec<&TransitStop> {
-        nearest_from_grid(
-            &self.indexes().spatial.stop_grid,
-            &self.stops,
-            coordinate,
-            limit,
-        )
-    }
-
-    /// Return all stops inside a bounded radius in deterministic distance/id order.
-    /// The query uses the same immutable grid as nearest-stop lookup, so callers
-    /// do not need to maintain a second spatial index over the network.
-    pub fn stops_within_radius(
-        &self,
-        coordinate: RequestCoordinate,
-        radius_metres: u32,
-    ) -> Vec<&TransitStop> {
-        points_within_radius_from_grid(
-            &self.indexes().spatial.stop_grid,
-            &self.stops,
-            coordinate,
-            radius_metres,
-        )
-    }
-
-    pub fn transfer_seconds(&self, from: &BoardingPointId, to: &BoardingPointId) -> Option<u32> {
-        if from == to {
-            return Some(self.default_transfer_seconds);
-        }
-        self.transfer_edges
-            .iter()
-            .find(|edge| &edge.from == from && &edge.to == to)
-            .map(|edge| edge.duration_seconds)
-    }
-
-    pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
-        let index = self.indexes().lookup.stop_by_id.get(id).copied()?;
-        self.stops.get(index)
-    }
-
-    pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
-        let index = self.indexes().lookup.pattern_by_id.get(id).copied()?;
-        self.patterns.get(index)
-    }
-
-    pub fn route_for_pattern(&self, pattern: &TransitPattern) -> Option<&TransitRoute> {
-        let index = self
-            .indexes()
-            .lookup
-            .route_by_id
-            .get(&pattern.route_id)
-            .copied()?;
-        self.routes.get(index)
-    }
-
-    pub fn route_of(&self, pattern: &TransitPattern) -> &TransitRoute {
-        self.route_for_pattern(pattern)
-            .expect("validated pattern route")
-    }
-
-    pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
-        let index = self.indexes().lookup.calendar_by_id.get(id).copied()?;
-        self.calendars.get(index)
-    }
-
-    pub fn modes_at_stop(&self, stop_id: &BoardingPointId) -> &[TransitMode] {
-        self.indexes()
-            .lookup
-            .modes_by_stop
-            .get(stop_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
-        let index = self.indexes().lookup.trip_by_id.get(id).copied()?;
-        self.trips.get(index)
-    }
-
-    pub(crate) fn scheduled_trip_at(&self, index: usize) -> Option<&TransitTrip> {
-        self.trips.get(index)
-    }
-
-    pub(crate) fn scheduled_trip_indices(
-        &self,
-        pattern_id: &TransitPatternId,
-        board_index: usize,
-    ) -> &[usize] {
-        self.indexes()
-            .schedule
-            .trip_indices_by_pattern_stop
-            .get(pattern_id)
-            .and_then(|by_stop| by_stop.get(board_index))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub(crate) fn frequency_indices(&self, pattern_id: &TransitPatternId) -> &[usize] {
-        self.indexes()
-            .schedule
-            .frequency_indices_by_pattern
-            .get(pattern_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn service_day(&self, instant: OffsetDateTime) -> Date {
-        let local = normalize_to_taipei(instant);
-        let local = local.date().with_time(local.time());
-        if local.time() < self.service_day_boundary {
-            local.date().previous_day().unwrap_or(local.date())
-        } else {
-            local.date()
-        }
-    }
-
-    pub fn service_day_start(&self, service_day: Date) -> OffsetDateTime {
-        PrimitiveDateTime::new(service_day, Time::MIDNIGHT).assume_offset(taipei_offset())
-    }
-
-    fn indexes(&self) -> &TransitIndexes {
-        self.indexes.get_or_init(|| TransitIndexes::build(self))
     }
 }
 
@@ -891,314 +735,6 @@ impl TransitNetwork {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct TransitIndexes {
-    spatial: SpatialStopIndex,
-    lookup: TransitLookupIndex,
-    schedule: ScheduleIndex,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SpatialStopIndex {
-    stop_grid: SpatialGrid,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct TransitLookupIndex {
-    stop_by_id: HashMap<BoardingPointId, usize>,
-    route_by_id: HashMap<TransitRouteId, usize>,
-    pattern_by_id: HashMap<TransitPatternId, usize>,
-    modes_by_stop: HashMap<BoardingPointId, Vec<TransitMode>>,
-    trip_by_id: HashMap<TransitTripId, usize>,
-    calendar_by_id: HashMap<ServiceCalendarId, usize>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ScheduleIndex {
-    trip_indices_by_pattern_stop: HashMap<TransitPatternId, Vec<Vec<usize>>>,
-    frequency_indices_by_pattern: HashMap<TransitPatternId, Vec<usize>>,
-}
-
-impl TransitIndexes {
-    fn build(network: &TransitNetwork) -> Self {
-        let mut indexes = Self::default();
-        for (index, stop) in network.stops.iter().enumerate() {
-            indexes.spatial.stop_grid.insert(stop.coordinate, index);
-            indexes.lookup.stop_by_id.insert(stop.id.clone(), index);
-        }
-        for (index, route) in network.routes.iter().enumerate() {
-            indexes.lookup.route_by_id.insert(route.id.clone(), index);
-        }
-        for (index, calendar) in network.calendars.iter().enumerate() {
-            indexes
-                .lookup
-                .calendar_by_id
-                .insert(calendar.id.clone(), index);
-        }
-        for (index, service) in network.patterns.iter().enumerate() {
-            indexes
-                .lookup
-                .pattern_by_id
-                .insert(service.id.clone(), index);
-            let mode = network.routes[*indexes
-                .lookup
-                .route_by_id
-                .get(&service.route_id)
-                .expect("validated pattern route")]
-            .mode;
-            for stop_id in &service.stops {
-                indexes
-                    .lookup
-                    .modes_by_stop
-                    .entry(stop_id.clone())
-                    .or_default()
-                    .push(mode);
-            }
-        }
-        for modes in indexes.lookup.modes_by_stop.values_mut() {
-            modes.sort_by_key(|mode| *mode as u8);
-            modes.dedup();
-        }
-        for (trip_index, trip) in network.trips.iter().enumerate() {
-            indexes
-                .lookup
-                .trip_by_id
-                .insert(trip.id.clone(), trip_index);
-            let Some(service_index) = indexes.lookup.pattern_by_id.get(&trip.pattern_id).copied()
-            else {
-                continue;
-            };
-            let service = &network.patterns[service_index];
-            if trip.stop_times.len() != service.stops.len() {
-                continue;
-            }
-            let trip_indices = indexes
-                .schedule
-                .trip_indices_by_pattern_stop
-                .entry(trip.pattern_id.clone())
-                .or_insert_with(|| vec![Vec::new(); service.stops.len()]);
-            for trip_indices_at_stop in trip_indices.iter_mut().take(trip.stop_times.len()) {
-                trip_indices_at_stop.push(trip_index);
-            }
-        }
-        for trip_indices_by_stop in indexes.schedule.trip_indices_by_pattern_stop.values_mut() {
-            for (board_index, trip_indices) in trip_indices_by_stop.iter_mut().enumerate() {
-                trip_indices.sort_by(|left, right| {
-                    let left_trip = &network.trips[*left];
-                    let right_trip = &network.trips[*right];
-                    left_trip.stop_times[board_index]
-                        .departure_seconds
-                        .cmp(&right_trip.stop_times[board_index].departure_seconds)
-                        .then(left_trip.id.as_str().cmp(right_trip.id.as_str()))
-                });
-            }
-        }
-        for (index, frequency) in network.frequencies.iter().enumerate() {
-            indexes
-                .schedule
-                .frequency_indices_by_pattern
-                .entry(frequency.pattern_id.clone())
-                .or_default()
-                .push(index);
-        }
-        indexes
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SpatialGrid {
-    cells: HashMap<SpatialCell, Vec<usize>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct SpatialCell {
-    latitude: i32,
-    longitude: i32,
-}
-
-impl SpatialGrid {
-    fn insert(&mut self, coordinate: RequestCoordinate, index: usize) {
-        self.cells
-            .entry(SpatialCell::from_coordinate(coordinate))
-            .or_default()
-            .push(index);
-    }
-}
-
-impl SpatialCell {
-    fn from_coordinate(coordinate: RequestCoordinate) -> Self {
-        Self {
-            latitude: (coordinate.latitude / SPATIAL_CELL_DEGREES).floor() as i32,
-            longitude: (coordinate.longitude / SPATIAL_CELL_DEGREES).floor() as i32,
-        }
-    }
-}
-
-trait SpatialPoint {
-    fn coordinate(&self) -> RequestCoordinate;
-    fn stable_id(&self) -> &str;
-}
-
-impl SpatialPoint for TransitStop {
-    fn coordinate(&self) -> RequestCoordinate {
-        self.coordinate
-    }
-
-    fn stable_id(&self) -> &str {
-        self.id.as_str()
-    }
-}
-
-fn nearest_from_grid<'a, T: SpatialPoint>(
-    grid: &SpatialGrid,
-    points: &'a [T],
-    coordinate: RequestCoordinate,
-    limit: usize,
-) -> Vec<&'a T> {
-    if limit == 0 || points.is_empty() {
-        return Vec::new();
-    }
-    let origin = SpatialCell::from_coordinate(coordinate);
-    let mut indices = HashSet::new();
-    let mut visited_cells = HashSet::new();
-    for ring in 0..=MAX_SPATIAL_SEARCH_RING {
-        for latitude in (origin.latitude - ring)..=(origin.latitude + ring) {
-            for longitude in (origin.longitude - ring)..=(origin.longitude + ring) {
-                if ring != 0
-                    && (latitude - origin.latitude).abs() != ring
-                    && (longitude - origin.longitude).abs() != ring
-                {
-                    continue;
-                }
-                let spatial_cell = SpatialCell {
-                    latitude,
-                    longitude,
-                };
-                visited_cells.insert(spatial_cell);
-                if let Some(cell) = grid.cells.get(&spatial_cell) {
-                    indices.extend(cell.iter().copied());
-                }
-            }
-        }
-        if indices.len() >= limit || ring == MAX_SPATIAL_SEARCH_RING {
-            break;
-        }
-    }
-    if indices.len() < limit {
-        indices.extend(0..points.len());
-    } else {
-        loop {
-            let worst_distance = indices
-                .iter()
-                .filter_map(|index| points.get(*index))
-                .map(|point| coordinate.planar_distance_metres(point.coordinate()))
-                .max()
-                .unwrap_or(0);
-            let mut added_cell = false;
-            for (cell, cell_indices) in &grid.cells {
-                if visited_cells.contains(cell)
-                    || cell_lower_bound_metres(coordinate, *cell) > worst_distance
-                {
-                    continue;
-                }
-                visited_cells.insert(*cell);
-                indices.extend(cell_indices.iter().copied());
-                added_cell = true;
-            }
-            if !added_cell {
-                break;
-            }
-        }
-    }
-    let mut nearest = indices
-        .into_iter()
-        .filter_map(|index| points.get(index))
-        .collect::<Vec<_>>();
-    nearest.sort_by(|left, right| {
-        coordinate
-            .planar_distance_metres(left.coordinate())
-            .cmp(&coordinate.planar_distance_metres(right.coordinate()))
-            .then(left.stable_id().cmp(right.stable_id()))
-    });
-    nearest.truncate(limit);
-    nearest
-}
-
-fn points_within_radius_from_grid<'a, T: SpatialPoint>(
-    grid: &SpatialGrid,
-    points: &'a [T],
-    coordinate: RequestCoordinate,
-    radius_metres: u32,
-) -> Vec<&'a T> {
-    if points.is_empty() {
-        return Vec::new();
-    }
-
-    let latitude_delta = f64::from(radius_metres) / METRES_PER_DEGREE;
-    let longitude_scale =
-        METRES_PER_DEGREE * coordinate.latitude.to_radians().cos().abs().max(0.01);
-    let longitude_delta = f64::from(radius_metres) / longitude_scale;
-    let latitude_min = SpatialCell::from_coordinate(RequestCoordinate {
-        latitude: coordinate.latitude - latitude_delta,
-        longitude: coordinate.longitude,
-    })
-    .latitude;
-    let latitude_max = SpatialCell::from_coordinate(RequestCoordinate {
-        latitude: coordinate.latitude + latitude_delta,
-        longitude: coordinate.longitude,
-    })
-    .latitude;
-    let longitude_min = SpatialCell::from_coordinate(RequestCoordinate {
-        latitude: coordinate.latitude,
-        longitude: coordinate.longitude - longitude_delta,
-    })
-    .longitude;
-    let longitude_max = SpatialCell::from_coordinate(RequestCoordinate {
-        latitude: coordinate.latitude,
-        longitude: coordinate.longitude + longitude_delta,
-    })
-    .longitude;
-    let mut indices = HashSet::new();
-    for latitude in latitude_min..=latitude_max {
-        for longitude in longitude_min..=longitude_max {
-            if let Some(cell) = grid.cells.get(&SpatialCell {
-                latitude,
-                longitude,
-            }) {
-                indices.extend(cell.iter().copied());
-            }
-        }
-    }
-
-    let mut nearby = indices
-        .into_iter()
-        .filter_map(|index| points.get(index))
-        .filter(|point| {
-            coordinate.planar_distance_metres(point.coordinate()) <= u64::from(radius_metres)
-        })
-        .collect::<Vec<_>>();
-    nearby.sort_by(|left, right| {
-        coordinate
-            .planar_distance_metres(left.coordinate())
-            .cmp(&coordinate.planar_distance_metres(right.coordinate()))
-            .then(left.stable_id().cmp(right.stable_id()))
-    });
-    nearby
-}
-
-fn cell_lower_bound_metres(coordinate: RequestCoordinate, cell: SpatialCell) -> u64 {
-    let latitude_min = f64::from(cell.latitude) * SPATIAL_CELL_DEGREES;
-    let latitude_max = latitude_min + SPATIAL_CELL_DEGREES;
-    let longitude_min = f64::from(cell.longitude) * SPATIAL_CELL_DEGREES;
-    let longitude_max = longitude_min + SPATIAL_CELL_DEGREES;
-    let latitude = coordinate.latitude.clamp(latitude_min, latitude_max);
-    let longitude = coordinate.longitude.clamp(longitude_min, longitude_max);
-    coordinate.planar_distance_metres(RequestCoordinate {
-        latitude,
-        longitude,
-    })
-}
-
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TransitNetworkValidationError {
     #[error("transit artifact revisions are required")]
@@ -1221,22 +757,22 @@ pub enum TransitNetworkValidationError {
     DuplicateCalendar(ServiceCalendarId),
     #[error("Service Calendar {0:?} has invalid dates")]
     InvalidCalendar(ServiceCalendarId),
-    #[error("duplicate Transit Service {0:?}")]
-    DuplicateService(TransitPatternId),
+    #[error("duplicate Transit Pattern {0:?}")]
+    DuplicatePattern(TransitPatternId),
     #[error("duplicate Scheduled Trip {0:?}")]
     DuplicateTrip(TransitTripId),
-    #[error("Transit Service {0:?} has fewer than two Boarding Points")]
+    #[error("Transit Pattern {0:?} has fewer than two Boarding Points")]
     PatternTooShort(TransitPatternId),
-    #[error("Transit Service {0:?} references an unknown Boarding Point")]
+    #[error("Transit Pattern {0:?} references an unknown Boarding Point")]
     UnknownPatternStop(TransitPatternId),
-    #[error("Scheduled Trip references unknown Transit Service {0:?}")]
-    UnknownTripService(TransitPatternId),
+    #[error("Scheduled Trip references unknown Transit Pattern {0:?}")]
+    UnknownTripPattern(TransitPatternId),
     #[error("Scheduled Trip {0:?} has an invalid shape or calendar")]
     InvalidTripShape(TransitTripId),
     #[error("Scheduled Trip {0:?} is not chronological")]
     NonChronologicalTrip(TransitTripId),
-    #[error("Transit frequency references unknown Transit Service {0:?}")]
-    UnknownFrequencyService(TransitPatternId),
+    #[error("Transit frequency references unknown Transit Pattern {0:?}")]
+    UnknownFrequencyPattern(TransitPatternId),
     #[error("Transit frequency template {0:?} has an invalid shape or calendar")]
     InvalidFrequencyShape(TransitTripId),
     #[error("transfer edge references unknown endpoints {from:?} -> {to:?}")]

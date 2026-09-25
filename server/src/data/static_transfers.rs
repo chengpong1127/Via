@@ -68,7 +68,7 @@ pub async fn enrich_network_with_static_transfers(
     let used = network
         .patterns
         .iter()
-        .flat_map(|service| service.stops.iter())
+        .flat_map(|pattern| pattern.stops.iter())
         .collect::<HashSet<_>>();
     let indices = network
         .stops
@@ -198,12 +198,20 @@ pub async fn enrich_network_with_static_transfers(
             .then_with(|| a.to.as_str().cmp(b.to.as_str()))
     });
     stats.retained_edges = network.transfer_edges.len();
+    let route_modes = network
+        .routes
+        .iter()
+        .map(|route| (&route.id, route.mode))
+        .collect::<HashMap<_, _>>();
     let modes = network
         .patterns
         .iter()
-        .flat_map(|service| {
-            let mode = network.route_of(service).mode;
-            service.stops.iter().map(move |id| (id, mode))
+        .flat_map(|pattern| {
+            let mode = route_modes
+                .get(&pattern.route_id)
+                .copied()
+                .expect("validated pattern route");
+            pattern.stops.iter().map(move |id| (id, mode))
         })
         .fold(HashMap::<_, HashSet<_>>::new(), |mut modes, (id, mode)| {
             modes.entry(id).or_default().insert(mode);
@@ -255,7 +263,7 @@ mod tests {
             default_service_day_boundary(),
             stops,
             vec![TransitPattern::fixture(
-                TransitPatternId::new("service"),
+                TransitPatternId::new("pattern"),
                 TransitMode::Bus,
                 "bus",
                 "end",

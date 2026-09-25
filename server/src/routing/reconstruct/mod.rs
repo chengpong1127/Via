@@ -80,7 +80,7 @@ impl RoutingService {
                 bicycle_seconds: assembled.bicycle_seconds,
                 bike_share_uses: assembled.bike_share_uses,
                 transfer_count,
-                main_service_sequence: assembled.main_service_sequence,
+                main_pattern_sequence: assembled.main_pattern_sequence,
                 timing_bases: assembled.timing_bases,
                 timing_reliability: assembled.timing_reliability,
                 required_live_status: assembled.required_states,
@@ -113,7 +113,7 @@ impl RoutingService {
         &self,
         stop_id: &crate::domain::ids::BoardingPointId,
     ) -> Option<Place> {
-        self.transit_network.stop(stop_id).map(legs::transit_place)
+        self.transit_runtime.stop(stop_id).map(legs::transit_place)
     }
 
     pub(crate) fn bike_station_place(

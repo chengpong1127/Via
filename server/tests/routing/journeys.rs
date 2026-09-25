@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use via_server::street::{FakeStreetRouter, StreetTravelMode};
 
 use super::fixtures::{
-    FixtureRealtime, leg_modes, near_stop, network, option_for_services, request, route_body,
+    FixtureRealtime, leg_modes, near_stop, network, option_for_patterns, request, route_body,
     transit_street,
 };
 use crate::support::routing::{coordinate, path};
@@ -19,7 +19,7 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
         request(origin, destination, &["metro"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-mrt-red"]);
+    let option = option_for_patterns(&body, &["fixture-mrt-red"]);
 
     assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
     assert_eq!(option["travel_modes"], json!(["walking", "transit"]));
@@ -54,7 +54,7 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
         request(origin, destination, &["bus"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-bus-main"]);
+    let option = option_for_patterns(&body, &["fixture-bus-main"]);
 
     assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
     assert_eq!(option["legs"][1]["details"]["transit_mode"], "bus");
@@ -85,7 +85,7 @@ async fn static_bus_schedule_is_used_when_realtime_is_unavailable() {
         request(origin, destination, &["bus"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-bus-main"]);
+    let option = option_for_patterns(&body, &["fixture-bus-main"]);
 
     assert_eq!(
         option["legs"][1]["departure_time"],
@@ -118,7 +118,7 @@ async fn arrive_by_rejects_results_after_the_requested_arrival() {
         body,
     )
     .await;
-    let option = option_for_services(&body, &["fixture-mrt-red"]);
+    let option = option_for_patterns(&body, &["fixture-mrt-red"]);
 
     assert!(option["arrival_time"].as_str().unwrap() <= "2026-08-31T10:10:00+08:00");
 }
@@ -134,7 +134,7 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
+    let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
 
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
@@ -166,7 +166,7 @@ async fn three_transit_services_reconstruct_with_two_transfers() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(
+    let option = option_for_patterns(
         &body,
         &["fixture-mrt-red", "fixture-mrt-blue", "fixture-mrt-green"],
     );
@@ -210,7 +210,7 @@ async fn bus_to_mrt_transfer_keeps_the_bus_then_metro_order() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-bus-in", "fixture-mrt-blue"]);
+    let option = option_for_patterns(&body, &["fixture-bus-in", "fixture-mrt-blue"]);
 
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
@@ -250,7 +250,7 @@ async fn mrt_to_bus_transfer_keeps_the_metro_then_bus_order() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-mrt-blue", "fixture-bus-out"]);
+    let option = option_for_patterns(&body, &["fixture-mrt-blue", "fixture-bus-out"]);
 
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
@@ -282,7 +282,7 @@ async fn train_route_uses_the_rail_service_and_stops() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-tra-local"]);
+    let option = option_for_patterns(&body, &["fixture-tra-local"]);
 
     assert_eq!(option["legs"][1]["details"]["transit_mode"], "rail");
     assert_eq!(
@@ -314,7 +314,7 @@ async fn high_speed_rail_route_uses_the_generic_transit_model() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-thsr"]);
+    let option = option_for_patterns(&body, &["fixture-thsr"]);
 
     assert_eq!(
         option["legs"][1]["details"]["transit_mode"],
@@ -345,7 +345,7 @@ async fn train_can_transfer_to_local_mrt() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-tra-local", "fixture-mrt-red"]);
+    let option = option_for_patterns(&body, &["fixture-tra-local", "fixture-mrt-red"]);
 
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
@@ -430,7 +430,7 @@ async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
         request(origin, destination, &["bus", "metro", "tra", "thsr"]),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-bus-main"]);
+    let option = option_for_patterns(&body, &["fixture-bus-main"]);
 
     assert_eq!(
         option["legs"][1]["departure_time"],

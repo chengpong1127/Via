@@ -18,7 +18,8 @@ use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
         realtime::FreshnessPolicy,
-        transit::{TransitMode, TransitNetwork},
+        transit::TransitMode,
+        transit_runtime::TransitRuntime,
         transit_timing::{
             DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
             TimingBasis, TimingReliability,
@@ -37,7 +38,7 @@ const MAX_REALTIME_BATCH_PAIRS: usize = 64;
 /// stops.
 #[derive(Clone)]
 pub struct MetroDepartureSource {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
     tdx: Option<Arc<TdxClient>>,
     realtime_path: String,
@@ -53,7 +54,7 @@ struct MetroRealtimeMatch {
 }
 
 impl MetroDepartureSource {
-    pub fn new(network: Arc<TransitNetwork>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
@@ -86,11 +87,11 @@ impl MetroDepartureSource {
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.route_of(service).mode != TransitMode::Metro
-            || !service.stops.contains(&query.board_stop_id)
+        if self.network.route_of(pattern).mode != TransitMode::Metro
+            || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }
@@ -98,12 +99,12 @@ impl MetroDepartureSource {
     }
 
     fn realtime_match(&self, query: &DepartureQuery) -> Option<MetroRealtimeMatch> {
-        let service = self.network.pattern(&query.pattern_id)?;
+        let pattern = self.network.pattern(&query.pattern_id)?;
         let binding = self.bindings.metro_patterns.get(&query.pattern_id)?;
         if binding.direction > 1 {
             return None;
         }
-        let destination_station_id = service.stops.last()?;
+        let destination_station_id = pattern.stops.last()?;
         Some(MetroRealtimeMatch {
             line_id: binding.line_id.clone(),
             station_id: local_station_id(&query.board_stop_id)?.to_owned(),

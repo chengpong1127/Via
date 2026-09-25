@@ -56,7 +56,7 @@ pub struct CandidateJourney {
     pub bicycle_seconds: u32,
     pub bike_share_uses: u32,
     pub transfer_count: u32,
-    pub main_service_sequence: Vec<String>,
+    pub main_pattern_sequence: Vec<String>,
     pub timing_bases: Vec<TimingBasis>,
     pub timing_reliability: TimingReliability,
     pub required_live_status: Vec<FreshnessState>,
@@ -76,7 +76,7 @@ pub struct RankedJourney {
     pub bicycle_seconds: u32,
     pub bike_share_uses: u32,
     pub transfer_count: u32,
-    pub main_service_sequence: Vec<String>,
+    pub main_pattern_sequence: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,7 +175,7 @@ impl RankingPolicy {
             bicycle_seconds: candidate.bicycle_seconds,
             bike_share_uses: candidate.bike_share_uses,
             transfer_count: candidate.transfer_count,
-            main_service_sequence: candidate.main_service_sequence,
+            main_pattern_sequence: candidate.main_pattern_sequence,
         })
     }
 
@@ -183,7 +183,7 @@ impl RankingPolicy {
         let mut kept = Vec::new();
         for candidate in candidates {
             let duplicate = kept.iter().any(|current: &RankedJourney| {
-                current.main_service_sequence == candidate.main_service_sequence
+                current.main_pattern_sequence == candidate.main_pattern_sequence
                     && current.transfer_count == candidate.transfer_count
                     && (current.arrival_epoch_seconds - candidate.arrival_epoch_seconds).abs()
                         <= self.near_duplicate_arrival_seconds
@@ -207,7 +207,7 @@ impl RankingPolicy {
             >= self.material_walking_difference_seconds;
         let different_bicycle = candidate.bicycle_seconds != current.bicycle_seconds
             || candidate.bike_share_uses != current.bike_share_uses;
-        let different_sequence = candidate.main_service_sequence != current.main_service_sequence;
+        let different_sequence = candidate.main_pattern_sequence != current.main_pattern_sequence;
         if !different_sequence && !fewer_transfers && !less_walking && !different_bicycle {
             return false;
         }

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::domain::{
-    transit::{TransitMode, TransitNetwork},
+    transit::TransitMode,
+    transit_runtime::TransitRuntime,
     transit_timing::{
         DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingReliability,
     },
@@ -13,12 +14,12 @@ use super::source::TransitDepartureSource;
 
 /// Static-only THSR timing. The timetable is an authoritative, reliable source.
 pub struct ThsrDepartureSource {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
 }
 
 impl ThsrDepartureSource {
-    pub fn new(network: Arc<TransitNetwork>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
@@ -40,11 +41,11 @@ impl TransitDepartureSource for ThsrDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.route_of(service).mode != TransitMode::HighSpeedRail
-            || !service.stops.contains(&query.board_stop_id)
+        if self.network.route_of(pattern).mode != TransitMode::HighSpeedRail
+            || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }

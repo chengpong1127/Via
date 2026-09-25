@@ -9,6 +9,7 @@ pub mod location;
 pub mod ranking;
 pub mod realtime;
 pub mod transit;
+pub mod transit_runtime;
 pub mod transit_timing;
 
 pub fn taipei_offset() -> UtcOffset {

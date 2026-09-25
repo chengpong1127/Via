@@ -19,7 +19,8 @@ use crate::{
         realtime::{
             ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
         },
-        transit::{TransitMode, TransitNetwork},
+        transit::TransitMode,
+        transit_runtime::TransitRuntime,
         transit_timing::{
             DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
             TimingReliability,
@@ -31,7 +32,7 @@ use crate::{
 const MAX_REALTIME_STOPS_PER_REQUEST: usize = 100;
 
 pub struct BusDepartureSource {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     tdx: Option<Arc<TdxClient>>,
     schedule: ScheduleTiming,
     realtime_path: String,
@@ -41,7 +42,7 @@ pub struct BusDepartureSource {
 }
 
 impl BusDepartureSource {
-    pub fn new(network: Arc<TransitNetwork>, tdx: Option<Arc<TdxClient>>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>, tdx: Option<Arc<TdxClient>>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
@@ -59,7 +60,7 @@ impl BusDepartureSource {
     }
 
     /// Override the bus endpoint for a fixture or a TDX deployment variant.
-    /// The default endpoint still appends the service's validated city scope.
+    /// The default endpoint still appends the pattern's validated city scope.
     pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
         self.realtime_path = path.into();
         self
@@ -82,11 +83,11 @@ impl BusDepartureSource {
         observed_at: OffsetDateTime,
         evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
-        let service = self.network.pattern(&query.pattern_id)?;
+        let pattern = self.network.pattern(&query.pattern_id)?;
         let board_index = query.resolve_board_index(&self.network).ok()?;
-        let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(service.stops.len());
+        let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(pattern.stops.len());
         let mut previous_departure = None;
-        for (index, stop_id) in service.stops.iter().enumerate() {
+        for (index, stop_id) in pattern.stops.iter().enumerate() {
             let stop_time = if index <= board_index {
                 EffectiveStopTime {
                     stop_id: stop_id.clone(),
@@ -94,7 +95,7 @@ impl BusDepartureSource {
                     departure_at,
                 }
             } else {
-                let duration = service.static_profile.segments.get(index - 1)?.seconds;
+                let duration = pattern.static_profile.segments.get(index - 1)?.seconds;
                 let previous = previous_departure
                     .or_else(|| stop_times.last().map(|time| time.departure_at))?;
                 let arrival_at = previous + TimeDuration::seconds(i64::from(duration));
@@ -204,14 +205,14 @@ impl BusDepartureSource {
         let mut unscoped_queries = 0;
         for query in &active_queries {
             let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
-            let Some(service) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
                 continue;
             };
             let scope = self
                 .bindings
                 .bus_patterns
-                .get(&service.id)
+                .get(&pattern.id)
                 .map(|binding| binding.realtime_scope.clone())
                 .or_else(|| (self.realtime_path != DEFAULT_ARRIVAL_PATH).then(String::new));
             let Some(scope) = scope else {
@@ -423,11 +424,11 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.route_of(service).mode != TransitMode::Bus
-            || !service.stops.contains(&query.board_stop_id)
+        if self.network.route_of(pattern).mode != TransitMode::Bus
+            || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }

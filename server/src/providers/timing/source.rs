@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use futures_util::future::join_all;
 
 use crate::domain::{
-    transit::{TransitMode, TransitNetwork},
+    transit::TransitMode,
+    transit_runtime::TransitRuntime,
     transit_timing::{
         DepartureError, DepartureQuery, EffectiveTrip, SnapshotDepartures, TimingReliability,
         TimingSnapshot, TimingSnapshotLoader,
@@ -170,13 +171,13 @@ pub trait TransitDepartureSource: Send + Sync {
 /// Adapts a mode-owned source to the algorithm-facing departure boundary.
 #[derive(Clone)]
 pub struct DepartureDispatcher {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     sources: HashMap<TransitMode, Arc<dyn TransitDepartureSource>>,
 }
 
 impl DepartureDispatcher {
     pub fn new(
-        network: Arc<TransitNetwork>,
+        network: Arc<TransitRuntime>,
         sources: impl IntoIterator<Item = Arc<dyn TransitDepartureSource>>,
     ) -> Self {
         let sources = sources
@@ -214,12 +215,12 @@ impl DepartureDispatcher {
         let mut results = vec![None; queries.len()];
         let mut grouped = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
         for (index, query) in queries.into_iter().enumerate() {
-            let Some(service) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
                 results[index] = Some(Err(DepartureError::InvalidQuery));
                 continue;
             };
             grouped
-                .entry(self.network.route_of(service).mode)
+                .entry(self.network.route_of(pattern).mode)
                 .or_default()
                 .push((index, query));
         }
@@ -260,12 +261,12 @@ impl TimingSnapshotLoader for DepartureDispatcher {
         let mut snapshot = TimingSnapshot::default();
         let mut grouped = HashMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
-            let Some(service) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
                 snapshot.record_failure(DepartureError::InvalidQuery);
                 continue;
             };
             grouped
-                .entry(self.network.route_of(service).mode)
+                .entry(self.network.route_of(pattern).mode)
                 .or_default()
                 .push(query);
         }

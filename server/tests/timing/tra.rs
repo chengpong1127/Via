@@ -25,6 +25,7 @@ use via_server::{
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
             TransitTrip,
         },
+        transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
@@ -116,7 +117,7 @@ fn payload(trains: Vec<Value>, update_time: &str) -> Value {
     })
 }
 
-fn network_for(train_numbers: &[&str]) -> Arc<TransitNetwork> {
+fn network_for(train_numbers: &[&str]) -> Arc<TransitRuntime> {
     let board = BoardingPointId::new("stop-a");
     let alight = BoardingPointId::new("stop-b");
     let patterns = train_numbers
@@ -151,7 +152,7 @@ fn network_for(train_numbers: &[&str]) -> Arc<TransitNetwork> {
             )
         })
         .collect();
-    Arc::new(
+    Arc::new(TransitRuntime::new(Arc::new(
         TransitNetwork::new(
             Time::from_hms(4, 0, 0).unwrap(),
             Vec::new(),
@@ -180,7 +181,7 @@ fn network_for(train_numbers: &[&str]) -> Arc<TransitNetwork> {
             removed_dates: Vec::new(),
         }])
         .with_revisions("static", "schedule"),
-    )
+    )))
 }
 
 fn query(train_no: &str) -> DepartureQuery {
@@ -192,12 +193,13 @@ fn query(train_no: &str) -> DepartureQuery {
     )
 }
 
-fn dispatcher(network: Arc<TransitNetwork>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
+fn dispatcher(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
     let tra = Arc::new(
         TraDepartureSource::new(network.clone())
             .with_tdx(Some(tdx))
             .with_bindings(Arc::new(TdxProviderBindings {
                 tra_trips: network
+                    .data()
                     .trips
                     .iter()
                     .map(|trip| {

@@ -16,7 +16,7 @@ use crate::{
         },
         normalize_to_taipei,
         ranking::{CandidateJourney, RankingPolicy},
-        transit::TransitNetwork,
+        transit_runtime::TransitRuntime,
         transit_timing::TimingSnapshotLoader,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
@@ -43,7 +43,7 @@ pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
     pub(crate) transit_planner: TransitPlanner,
     pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
-    pub(crate) transit_network: Arc<TransitNetwork>,
+    pub(crate) transit_runtime: Arc<TransitRuntime>,
     pub(crate) bike_share_network: Arc<BikeShareNetwork>,
     pub(crate) ranking: RankingPolicy,
     pub(crate) limits: RoutingLimits,
@@ -91,14 +91,14 @@ impl Default for RoutingLimits {
 impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
-        transit_network: Arc<TransitNetwork>,
+        transit_runtime: Arc<TransitRuntime>,
         timing: Arc<dyn TimingSnapshotLoader>,
         service_conditions: Arc<dyn ServiceConditionProvider>,
         bike_share_network: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: RoutingLimits,
     ) -> Self {
-        let transit_planner = TransitPlanner::new(transit_network.clone(), timing).with_bike_share(
+        let transit_planner = TransitPlanner::new(transit_runtime.clone(), timing).with_bike_share(
             bike_share_network.clone(),
             bike_availability_source,
             street_routing.clone(),
@@ -108,7 +108,7 @@ impl RoutingService {
             street_routing: street_routing.clone(),
             transit_planner,
             service_conditions,
-            transit_network,
+            transit_runtime,
             bike_share_network,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
@@ -185,7 +185,7 @@ impl RoutingService {
             request
                 .departure_setting
                 .effective_search_time(request_started_at),
-            self.transit_network.revision(),
+            self.transit_runtime.data().revision(),
         );
         let context = PlanningContext::new(
             &request,
@@ -238,7 +238,7 @@ impl RoutingService {
             let access = access::discover_access_points(
                 self.street_routing.as_ref(),
                 access::AccessNetwork {
-                    network: &self.transit_network,
+                    runtime: &self.transit_runtime,
                     topology: self.transit_planner.topology(),
                 },
                 request.origin.coordinate,
@@ -251,7 +251,7 @@ impl RoutingService {
             let egress = access::discover_egress_points(
                 self.street_routing.as_ref(),
                 access::AccessNetwork {
-                    network: &self.transit_network,
+                    runtime: &self.transit_runtime,
                     topology: self.transit_planner.topology(),
                 },
                 request.destination.coordinate,
@@ -275,12 +275,20 @@ impl RoutingService {
                 target: "via_server::routing",
                 access = ?access.iter().map(|point| (
                     point.stop_id.as_str(),
-                    self.transit_network.modes_at_stop(&point.stop_id),
+                    access::modes_at_stop(
+                        &self.transit_runtime,
+                        self.transit_planner.topology(),
+                        &point.stop_id,
+                    ),
                     point.walking_seconds,
                 )).collect::<Vec<_>>(),
                 egress = ?egress.iter().map(|point| (
                     point.stop_id.as_str(),
-                    self.transit_network.modes_at_stop(&point.stop_id),
+                    access::modes_at_stop(
+                        &self.transit_runtime,
+                        self.transit_planner.topology(),
+                        &point.stop_id,
+                    ),
                     point.walking_seconds,
                 )).collect::<Vec<_>>(),
                 "discovered transit access and egress"
@@ -307,7 +315,7 @@ impl RoutingService {
                     Ok((candidates, planner_stats)) => {
                         stage_metrics.transit_reachable_boardings =
                             planner_stats.reachable_boarding_opportunities;
-                        stage_metrics.transit_reachable_services = planner_stats.reachable_services;
+                        stage_metrics.transit_reachable_patterns = planner_stats.reachable_patterns;
                         stage_metrics.transit_realtime_stops_requested =
                             planner_stats.realtime_stops_requested;
                         stage_metrics.transit_temporal_departure_lookups =
@@ -320,7 +328,7 @@ impl RoutingService {
                             search_started.elapsed().as_millis() as u64;
                         let service_ids = candidates
                             .iter()
-                            .flat_map(JourneyVariant::transit_service_sequence);
+                            .flat_map(JourneyVariant::transit_pattern_sequence);
                         let (_, condition_failed) = status::collect_service_conditions(
                             self.service_conditions.as_ref(),
                             service_ids,
@@ -359,7 +367,7 @@ impl RoutingService {
             multimodal_search_ms = stage_metrics.multimodal_search_duration_ms,
             transit_candidate_stops = stage_metrics.transit_candidate_stops,
             reachable_boardings = stage_metrics.transit_reachable_boardings,
-            reachable_services = stage_metrics.transit_reachable_services,
+            reachable_patterns = stage_metrics.transit_reachable_patterns,
             realtime_stops_requested = stage_metrics.transit_realtime_stops_requested,
             temporal_departure_lookups = stage_metrics.transit_temporal_departure_lookups,
             realtime_evidence_values = stage_metrics.transit_realtime_evidence_values,

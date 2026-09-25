@@ -2,6 +2,7 @@ use std::{
     env,
     error::Error,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -12,10 +13,7 @@ use via_server::{
         ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive_with_street,
         load_bikeshare_artifact, load_manifest, load_network_artifact,
     },
-    domain::{
-        ids::BoardingPointId,
-        transit::{TransitMode, TransitNetwork},
-    },
+    domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     providers::valhalla::{ValhallaConfig, ValhallaProvider},
 };
 
@@ -192,9 +190,11 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact.artifact)?;
+    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
+    let network = TransitRuntime::new(network);
+    let data = network.data();
     let query = args.query.to_lowercase();
-    let mut matches = network
+    let mut matches = data
         .stops
         .iter()
         .filter(|stop| stop.id.as_str() == args.query || stop.name.to_lowercase().contains(&query))
@@ -212,12 +212,12 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
             stop.coordinate.latitude,
             stop.coordinate.longitude
         );
-        for service in &network.patterns {
-            if let Some(position) = service.stops.iter().position(|id| id == &stop.id) {
+        for pattern in &data.patterns {
+            if let Some(position) = pattern.stops.iter().position(|id| id == &stop.id) {
                 println!(
                     "  pattern={} label={:?} position={}",
-                    service.id.as_str(),
-                    network.route_of(service).label,
+                    pattern.id.as_str(),
+                    network.route_of(pattern).label,
                     position + 1
                 );
             }
@@ -227,15 +227,17 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact.artifact)?;
+    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
+    let network = TransitRuntime::new(network);
+    let data = network.data();
     let query = args.query.to_lowercase();
-    let mut matches = network
+    let mut matches = data
         .patterns
         .iter()
-        .filter(|service| {
-            service.id.as_str() == args.query
+        .filter(|pattern| {
+            pattern.id.as_str() == args.query
                 || network
-                    .route_of(service)
+                    .route_of(pattern)
                     .label
                     .to_lowercase()
                     .contains(&query)
@@ -246,17 +248,17 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         println!("no patterns matched {:?}", args.query);
         return Ok(());
     }
-    for service in matches {
+    for pattern in matches {
         println!(
             "pattern={} label={:?} mode={} headsign={:?}",
-            service.id.as_str(),
-            network.route_of(service).label,
-            mode_name(network.route_of(service).mode),
-            service.headsign
+            pattern.id.as_str(),
+            network.route_of(pattern).label,
+            mode_name(network.route_of(pattern).mode),
+            pattern.headsign
         );
         println!(
             "  stops: {}",
-            service
+            pattern
                 .stops
                 .iter()
                 .map(|id| id.as_str())
@@ -265,18 +267,16 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         );
         println!(
             "  scheduled trips: {}",
-            network
-                .trips
+            data.trips
                 .iter()
-                .filter(|trip| trip.pattern_id == service.id)
+                .filter(|trip| trip.pattern_id == pattern.id)
                 .count()
         );
         println!(
             "  GTFS frequencies: {}",
-            network
-                .frequencies
+            data.frequencies
                 .iter()
-                .filter(|frequency| frequency.pattern_id == service.id)
+                .filter(|frequency| frequency.pattern_id == pattern.id)
                 .count()
         );
     }
@@ -284,7 +284,8 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact.artifact)?;
+    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
+    let network = TransitRuntime::new(network);
     let coordinate = coordinate(args.lat, args.lon)?;
     for stop in network.nearest_stops(coordinate, args.limit.max(1)) {
         println!(
@@ -292,14 +293,16 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
             coordinate.haversine_distance_metres(stop.coordinate),
             stop.id.as_str(),
             stop.name,
-            service_labels(&network, &stop.id)
+            pattern_labels(&network, &stop.id)
         );
     }
     Ok(())
 }
 
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact.artifact)?;
+    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
+    let network = TransitRuntime::new(network);
+    let data = network.data();
     let bike_share_network = load_bikeshare_artifact(
         &args
             .artifact
@@ -312,13 +315,13 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         .ok()
         .map(|manifest| manifest.counts)
         .unwrap_or_else(|| ArtifactCounts {
-            stops: network.stops.len(),
-            routes: network.routes.len(),
-            patterns: network.patterns.len(),
-            trips: network.trips.len(),
-            calendars: network.calendars.len(),
-            frequencies: network.frequencies.len(),
-            transfer_edges: network.transfer_edges.len(),
+            stops: data.stops.len(),
+            routes: data.routes.len(),
+            patterns: data.patterns.len(),
+            trips: data.trips.len(),
+            calendars: data.calendars.len(),
+            frequencies: data.frequencies.len(),
+            transfer_edges: data.transfer_edges.len(),
             bike_stations: bike_share_network
                 .as_ref()
                 .map_or(0, |network| network.stations.len()),
@@ -326,8 +329,8 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
                 .as_ref()
                 .map_or(0, |network| network.access_links.len()),
         });
-    println!("network revision: {}", network.static_network_revision);
-    println!("schedule revision: {}", network.schedule_revision);
+    println!("network revision: {}", data.static_network_revision);
+    println!("schedule revision: {}", data.schedule_revision);
     if let Some(bike_share_network) = &bike_share_network {
         println!(
             "bike-share artifact revision: {}",
@@ -342,8 +345,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     println!("frequency count: {}", counts.frequencies);
     println!(
         "derived Bus Phase 1 profiles: {}",
-        network
-            .patterns
+        data.patterns
             .iter()
             .filter(|pattern| pattern
                 .static_profile
@@ -362,17 +364,16 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         println!(
             "{} pattern count: {}",
             mode_name(mode),
-            network
-                .patterns
+            data.patterns
                 .iter()
-                .filter(|service| network.route_of(service).mode == mode)
+                .filter(|pattern| network.route_of(pattern).mode == mode)
                 .count()
         );
     }
     println!("transfer edge count: {}", counts.transfer_edges);
     println!("bike station count: {}", counts.bike_stations);
     println!("bike access link count: {}", counts.bike_access_links);
-    println!("service-day boundary: {}", network.service_day_boundary);
+    println!("service-day boundary: {}", data.service_day_boundary);
     Ok(())
 }
 
@@ -508,12 +509,13 @@ fn coordinate(
     })
 }
 
-fn service_labels(network: &TransitNetwork, stop_id: &BoardingPointId) -> String {
+fn pattern_labels(network: &TransitRuntime, stop_id: &BoardingPointId) -> String {
     network
+        .data()
         .patterns
         .iter()
-        .filter(|service| service.stops.iter().any(|id| id == stop_id))
-        .map(|service| network.route_of(service).label.as_str())
+        .filter(|pattern| pattern.stops.iter().any(|id| id == stop_id))
+        .map(|pattern| network.route_of(pattern).label.as_str())
         .collect::<Vec<_>>()
         .join(", ")
 }

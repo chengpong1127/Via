@@ -22,6 +22,7 @@ use via_server::{
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
             TransitStop, TransitTrip,
         },
+        transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
@@ -88,20 +89,20 @@ fn live_board(line: &str, station: &str, destination: &str, update: &str) -> Val
     })
 }
 
-fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
+fn network_for(static_departure: OffsetDateTime) -> Arc<TransitRuntime> {
     let first = BoardingPointId::new("TRTC-BL12");
     let second = BoardingPointId::new("TRTC-BL23");
-    let service_id = TransitPatternId::new("metro:BL::direction=0");
-    let seed = TransitNetwork::new(
+    let pattern_id = TransitPatternId::new("metro:BL::direction=0");
+    let seed = TransitRuntime::new(Arc::new(TransitNetwork::new(
         time::Time::from_hms(4, 0, 0).unwrap(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
-    );
+    )));
     let service_day_start = seed.service_day_start(seed.service_day(static_departure));
     let static_seconds =
         u32::try_from((static_departure - service_day_start).whole_seconds()).unwrap();
-    Arc::new(
+    Arc::new(TransitRuntime::new(Arc::new(
         TransitNetwork::new(
             time::Time::from_hms(4, 0, 0).unwrap(),
             vec![
@@ -123,7 +124,7 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
                 ),
             ],
             vec![TransitPattern::new(
-                service_id.clone(),
+                pattern_id.clone(),
                 TransitRouteId::new("metro:BL"),
                 Some(0),
                 "南港展覽館",
@@ -137,7 +138,7 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
             )],
             vec![TransitTrip::new(
                 TransitTripId::new("metro-trip"),
-                service_id,
+                pattern_id,
                 ServiceCalendarId::new("daily"),
                 vec![
                     ScheduledStopTime::new(static_seconds, static_seconds),
@@ -167,7 +168,7 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitNetwork> {
             removed_dates: Vec::new(),
         }])
         .with_revisions("static", "schedule"),
-    )
+    )))
 }
 
 fn query(after: OffsetDateTime) -> DepartureQuery {
@@ -180,7 +181,7 @@ fn query(after: OffsetDateTime) -> DepartureQuery {
 }
 
 async fn resolver(
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     payload: Value,
     status: StatusCode,
 ) -> (DepartureDispatcher, FixtureStats) {

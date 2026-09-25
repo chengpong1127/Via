@@ -6,7 +6,7 @@ use time::Duration;
 
 use crate::domain::{
     bikeshare::BikeShareNetwork,
-    transit::TransitNetwork,
+    transit_runtime::TransitRuntime,
     transit_timing::{DepartureQuery, TimingSnapshotLoader},
 };
 use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
@@ -22,7 +22,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct TransitPlanner {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
     topology: Arc<TransitTopologyIndex>,
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
@@ -32,16 +32,16 @@ pub struct TransitPlanner {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransitPlannerStats {
     pub reachable_boarding_opportunities: usize,
-    pub reachable_services: usize,
+    pub reachable_patterns: usize,
     pub realtime_stops_requested: usize,
     pub temporal_departure_lookups: usize,
     pub static_search_states_expanded: usize,
-    pub static_service_scans: usize,
+    pub static_pattern_scans: usize,
     pub static_positions_scanned: usize,
     pub static_complete_candidates_found: usize,
     pub static_unique_corridors_found: usize,
     pub static_corridors_retained: usize,
-    pub static_corridor_services: usize,
+    pub static_corridor_patterns: usize,
     pub static_corridor_positions: usize,
     pub static_corridor_bus_stops: usize,
     pub static_search_latency_ms: u64,
@@ -68,10 +68,10 @@ impl TransitPlanner {
         &self.topology
     }
 
-    pub fn new(network: Arc<TransitNetwork>, timing: Arc<dyn TimingSnapshotLoader>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>, timing: Arc<dyn TimingSnapshotLoader>) -> Self {
         Self {
-            topology: Arc::new(TransitTopologyIndex::new(&network)),
-            transfers: Arc::new(TransferShortcutIndex::from_network(&network)),
+            topology: Arc::new(TransitTopologyIndex::new(network.data())),
+            transfers: Arc::new(TransferShortcutIndex::from_network(network.data())),
             network,
             timing,
             bike: None,
@@ -110,15 +110,15 @@ impl TransitPlanner {
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
         let mut planner_stats = TransitPlannerStats {
             reachable_boarding_opportunities: corridor.len(),
-            reachable_services: corridor.service_count(),
+            reachable_patterns: corridor.pattern_count(),
             realtime_stops_requested: corridor.bus_stops().len(),
             static_search_states_expanded: static_stats.static_search_states_expanded,
-            static_service_scans: static_stats.static_service_scans,
+            static_pattern_scans: static_stats.static_pattern_scans,
             static_positions_scanned: static_stats.static_positions_scanned,
             static_complete_candidates_found: static_stats.static_complete_candidates_found,
             static_unique_corridors_found: static_stats.static_unique_corridors_found,
             static_corridors_retained: static_stats.static_corridors_retained,
-            static_corridor_services: static_stats.static_corridor_services,
+            static_corridor_patterns: static_stats.static_corridor_patterns,
             static_corridor_positions: static_stats.static_corridor_positions,
             static_corridor_bus_stops: static_stats.static_corridor_bus_stops,
             static_search_latency_ms: static_stats.static_search_latency_ms,
@@ -136,28 +136,28 @@ impl TransitPlanner {
             target: "via_server::routing",
             static_search_states_expanded = static_stats.static_search_states_expanded,
             static_unattributed_states_expanded = static_stats.static_unattributed_states_expanded,
-            static_service_scans = static_stats.static_service_scans,
+            static_pattern_scans = static_stats.static_pattern_scans,
             static_positions_scanned = static_stats.static_positions_scanned,
             static_walking_transfer_expansions = static_stats.static_walking_transfer_expansions,
             static_duplicate_states_rejected = static_stats.static_duplicate_states_rejected,
             static_dominance_states_rejected = static_stats.static_dominance_states_rejected,
             static_structurally_equivalent_states_rejected = static_stats.static_structurally_equivalent_states_rejected,
-            static_equivalent_service_occurrences_collapsed = static_stats.static_equivalent_service_occurrences_collapsed,
+            static_equivalent_pattern_occurrences_collapsed = static_stats.static_equivalent_pattern_occurrences_collapsed,
             static_required_endpoint_mode_pairs = ?static_stats.static_required_endpoint_mode_pairs,
             static_complete_endpoint_mode_pairs = ?static_stats.static_complete_endpoint_mode_pairs,
             static_complete_candidates_found = static_stats.static_complete_candidates_found,
             static_unique_structural_corridors_found = static_stats.static_unique_structural_corridors_found,
             static_unique_corridors_found = static_stats.static_unique_corridors_found,
             static_corridors_retained = static_stats.static_corridors_retained,
-            static_corridor_services = static_stats.static_corridor_services,
+            static_corridor_patterns = static_stats.static_corridor_patterns,
             static_corridor_positions = static_stats.static_corridor_positions,
             static_corridor_bus_stops = static_stats.static_corridor_bus_stops,
             static_search_latency_ms = static_stats.static_search_latency_ms,
             static_pattern_index_build_latency_us = static_stats.static_pattern_index_build_latency_us,
-            static_pattern_index_service_edge_scans = static_stats.static_pattern_index_service_edge_scans,
+            static_pattern_index_pattern_edges_scanned = static_stats.static_pattern_index_pattern_edges_scanned,
             static_pattern_index_positions_scanned = static_stats.static_pattern_index_positions_scanned,
             static_ride_profile_build_latency_us = static_stats.static_ride_profile_build_latency_us,
-            static_ride_profile_services_scanned = static_stats.static_ride_profile_services_scanned,
+            static_ride_profile_patterns_scanned = static_stats.static_ride_profile_patterns_scanned,
             static_ride_profile_positions_scanned = static_stats.static_ride_profile_positions_scanned,
             static_lower_bound_latency_us = static_stats.static_lower_bound_latency_us,
             static_lower_bound_nodes_settled = static_stats.static_lower_bound_nodes_settled,
@@ -186,8 +186,8 @@ impl TransitPlanner {
         );
         tracing::debug!(
             target: "via_server::routing",
-            service_sequence_group_count = static_stats.static_retained_sequence_groups.len(),
-            retained_sequence_groups = ?static_stats.static_retained_sequence_groups,
+            pattern_sequence_group_count = static_stats.static_retained_pattern_sequence_groups.len(),
+            retained_pattern_sequence_groups = ?static_stats.static_retained_pattern_sequence_groups,
             "retained static corridor sequence groups"
         );
         tracing::debug!(
@@ -200,7 +200,7 @@ impl TransitPlanner {
                 target: "via_server::routing",
                 corridor_rank = index + 1,
                 theoretical_duration_seconds = retained.theoretical_duration_seconds,
-                service_sequence = ?retained.service_sequence(),
+                pattern_sequence = ?retained.pattern_sequence(),
                 structural_steps = ?retained.steps,
                 cost_source = retained.cost_source.as_str(),
                 "retained static corridor"
@@ -232,8 +232,8 @@ impl TransitPlanner {
         let timing_queries = positions
             .into_iter()
             .filter_map(|position| {
-                let service = self.network.pattern(&position.pattern_id)?;
-                let stop_id = service.stops.get(position.stop_index)?.clone();
+                let pattern = self.network.pattern(&position.pattern_id)?;
+                let stop_id = pattern.stops.get(position.stop_index)?.clone();
                 Some(
                     DepartureQuery::at_position(
                         position.pattern_id,
@@ -366,7 +366,11 @@ mod tests {
         api::RequestCoordinate,
         domain::{
             ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
-            transit::{ScheduledStopTime, TransitMode, TransitPattern, TransitStop, TransitTrip},
+            transit::{
+                ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
+                TransitTrip,
+            },
+            transit_runtime::TransitRuntime,
             transit_timing::{
                 EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot,
             },
@@ -410,7 +414,7 @@ mod tests {
         )
     }
 
-    fn service(value: &str) -> TransitPattern {
+    fn pattern(value: &str) -> TransitPattern {
         TransitPattern::fixture(
             TransitPatternId::new(value),
             TransitMode::Bus,
@@ -461,16 +465,17 @@ mod tests {
         }
     }
 
-    fn network() -> Arc<TransitNetwork> {
-        Arc::new(TransitNetwork::fixture(
+    fn network() -> Arc<TransitRuntime> {
+        let network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             vec![stop("origin"), stop("destination")],
-            vec![service("static-fast"), service("realtime-fast")],
+            vec![pattern("static-fast"), pattern("realtime-fast")],
             vec![
                 scheduled_trip("static-fast-trip", "static-fast", 100),
                 scheduled_trip("realtime-fast-trip", "realtime-fast", 200),
             ],
-        ))
+        );
+        Arc::new(TransitRuntime::new(Arc::new(network)))
     }
 
     fn query(k: usize) -> TransitQuery {
@@ -491,7 +496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timing_queries_include_all_services_in_a_retained_pattern_family() {
+    async fn timing_queries_include_all_patterns_in_a_retained_pattern_family() {
         let loader = Arc::new(RecordingTimingLoader {
             trips: HashMap::from([
                 (
@@ -547,7 +552,7 @@ mod tests {
         assert_eq!(stats.static_corridors_retained, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
-            candidates[0].transit_service_sequence(),
+            candidates[0].transit_pattern_sequence(),
             vec![TransitPatternId::new("realtime-fast")]
         );
     }

@@ -17,6 +17,7 @@ use via_server::{
         ids::TransitPatternId,
         journey::PlanningOutcome,
         realtime::{FreshnessState, NormalizedRealtimeValue},
+        transit_runtime::TransitRuntime,
     },
     health::DependencyHealth,
     providers::service_conditions::{
@@ -90,6 +91,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &cli.network.with_file_name("provider-bindings.json"),
     )?);
     provider_bindings.validate(&network)?;
+    let runtime = Arc::new(TransitRuntime::new(network.clone()));
 
     let (service_conditions, tdx): (Arc<dyn ServiceConditionProvider>, Option<Arc<TdxClient>>) =
         match cli.service_conditions {
@@ -113,23 +115,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bus_timing_metrics = BusTimingMetrics::default();
     let street = build_street_router(cli.service_conditions, cli.valhalla_timeout_ms).await?;
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx.clone())
+        BusDepartureSource::new(runtime.clone(), tdx.clone())
             .with_bindings(provider_bindings.clone())
             .with_metrics(bus_timing_metrics.clone()),
     );
     let metro = Arc::new(
-        MetroDepartureSource::new(network.clone())
+        MetroDepartureSource::new(runtime.clone())
             .with_bindings(provider_bindings.clone())
             .with_tdx(tdx.clone()),
     );
     let tra = Arc::new(
-        TraDepartureSource::new(network.clone())
+        TraDepartureSource::new(runtime.clone())
             .with_bindings(provider_bindings)
             .with_tdx(tdx),
     );
-    let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
+    let thsr = Arc::new(ThsrDepartureSource::new(runtime.clone()));
     let departure = Arc::new(DepartureDispatcher::new(
-        network.clone(),
+        runtime.clone(),
         vec![
             bus as Arc<dyn TransitDepartureSource>,
             metro as Arc<dyn TransitDepartureSource>,
@@ -155,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bike_availability_source = Arc::new(UnavailableBikeAvailabilitySource);
     let routing = RoutingService::new(
         street,
-        network.clone(),
+        runtime.clone(),
         departure,
         cached,
         bike_share_network,
@@ -168,7 +170,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("  destination ({:.6}, {:.6})", cli.to_lat, cli.to_lon);
         eprintln!("  modes={}", cli.modes);
         eprintln!("  service conditions={:?}", cli.service_conditions);
-        eprintln!("  network={}", network.static_network_revision);
+        eprintln!("  network={}", runtime.data().static_network_revision);
     }
     let result = routing
         .route(request, new_request_id())
@@ -183,8 +185,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         print_summary(
             &result,
-            &network.static_network_revision,
-            &network.schedule_revision,
+            &runtime.data().static_network_revision,
+            &runtime.data().schedule_revision,
             cli.service_conditions,
         );
     }

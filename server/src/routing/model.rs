@@ -157,7 +157,7 @@ pub enum JourneySegment {
 }
 
 impl JourneySegment {
-    pub fn service_id(&self) -> Option<&TransitPatternId> {
+    pub fn pattern_id(&self) -> Option<&TransitPatternId> {
         match self {
             Self::Transit { trip, .. } => Some(&trip.pattern_id),
             Self::WalkingTransfer { .. } => None,
@@ -181,10 +181,10 @@ pub struct JourneyCandidate {
 }
 
 impl JourneyCandidate {
-    pub fn transit_service_sequence(&self) -> Vec<TransitPatternId> {
+    pub fn transit_pattern_sequence(&self) -> Vec<TransitPatternId> {
         self.segments
             .iter()
-            .filter_map(JourneySegment::service_id)
+            .filter_map(JourneySegment::pattern_id)
             .cloned()
             .collect()
     }

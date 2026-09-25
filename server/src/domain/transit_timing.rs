@@ -13,7 +13,7 @@ use time::{Date, OffsetDateTime};
 use super::{
     ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
     realtime::NormalizedRealtimeValue,
-    transit::TransitNetwork,
+    transit_runtime::TransitRuntime,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -38,7 +38,7 @@ pub enum TimingReliability {
 
 /// The timing request used while preparing a request-local snapshot.
 ///
-/// The caller supplies a service and the boarding point it has reached. It
+/// The caller supplies a pattern and the boarding point it has reached. It
 /// does not need to know an alighting point or a pre-selected scheduled ride.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DepartureQuery {
@@ -89,14 +89,14 @@ impl DepartureQuery {
         self
     }
 
-    pub fn resolve_board_index(&self, network: &TransitNetwork) -> Result<usize, DepartureError> {
-        let service = network
+    pub fn resolve_board_index(&self, network: &TransitRuntime) -> Result<usize, DepartureError> {
+        let pattern = network
             .pattern(&self.pattern_id)
             .ok_or(DepartureError::InvalidQuery)?;
         match self.board_index {
-            Some(index) if service.stops.get(index) == Some(&self.board_stop_id) => Ok(index),
+            Some(index) if pattern.stops.get(index) == Some(&self.board_stop_id) => Ok(index),
             Some(_) => Err(DepartureError::InvalidQuery),
-            None => service
+            None => pattern
                 .stops
                 .iter()
                 .position(|stop| stop == &self.board_stop_id)
@@ -274,7 +274,7 @@ pub trait TimingSnapshotLoader: Send + Sync {
 
 /// A concrete trip instance materialized for one routing request.
 ///
-/// The stop sequence is inherited from the immutable service pattern. Runtime
+/// The stop sequence is inherited from the immutable Pattern. Runtime
 /// data may replace only its effective times and evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectiveTrip {
@@ -304,19 +304,19 @@ impl EffectiveTrip {
     }
 
     pub fn from_scheduled(
-        network: &TransitNetwork,
+        network: &TransitRuntime,
         service_day: Date,
         trip_id: &TransitTripId,
     ) -> Option<Self> {
         let trip = network.scheduled_trip(trip_id)?;
-        let service = network.pattern(&trip.pattern_id)?;
+        let pattern = network.pattern(&trip.pattern_id)?;
         if !network.calendar(&trip.calendar_id)?.runs_on(service_day)
-            || trip.stop_times.len() != service.stops.len()
+            || trip.stop_times.len() != pattern.stops.len()
         {
             return None;
         }
         let start = network.service_day_start(service_day);
-        let stop_times = service
+        let stop_times = pattern
             .stops
             .iter()
             .zip(&trip.stop_times)
@@ -341,7 +341,7 @@ impl EffectiveTrip {
     }
 
     pub fn from_frequency(
-        network: &TransitNetwork,
+        network: &TransitRuntime,
         service_day: Date,
         frequency: &super::transit::TransitFrequency,
         first_departure_seconds: u32,
@@ -352,13 +352,13 @@ impl EffectiveTrip {
         {
             return None;
         }
-        let service = network.pattern(&frequency.pattern_id)?;
-        if frequency.template_stop_times.len() != service.stops.len() {
+        let pattern = network.pattern(&frequency.pattern_id)?;
+        if frequency.template_stop_times.len() != pattern.stops.len() {
             return None;
         }
         let template_start = frequency.template_stop_times.first()?.departure_seconds;
         let service_day_start = network.service_day_start(service_day);
-        let stop_times = service
+        let stop_times = pattern
             .stops
             .iter()
             .zip(&frequency.template_stop_times)
@@ -422,7 +422,7 @@ pub enum DepartureError {
     InvalidResponse,
     #[error("departure resolver configuration is invalid")]
     InvalidConfiguration,
-    #[error("departure query references an invalid service or boarding point")]
+    #[error("departure query references an invalid pattern or boarding point")]
     InvalidQuery,
 }
 
@@ -438,15 +438,15 @@ impl DepartureError {
 /// Resolve complete scheduled trips without requiring an alighting stop.
 #[derive(Clone)]
 pub struct ScheduleTiming {
-    network: Arc<TransitNetwork>,
+    network: Arc<TransitRuntime>,
 }
 
 impl ScheduleTiming {
-    pub fn new(network: Arc<TransitNetwork>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>) -> Self {
         Self { network }
     }
 
-    pub fn network(&self) -> &Arc<TransitNetwork> {
+    pub fn network(&self) -> &Arc<TransitRuntime> {
         &self.network
     }
     pub async fn next_departures(
@@ -456,10 +456,10 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if !service.stops.contains(&query.board_stop_id) {
+        if !pattern.stops.contains(&query.board_stop_id) {
             return Err(DepartureError::InvalidQuery);
         }
         let board_index = query.resolve_board_index(&self.network)?;
@@ -511,10 +511,10 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(service) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if !service.stops.contains(&query.board_stop_id) {
+        if !pattern.stops.contains(&query.board_stop_id) {
             return Err(DepartureError::InvalidQuery);
         }
         let board_index = query.resolve_board_index(&self.network)?;
@@ -539,13 +539,13 @@ impl ScheduleTiming {
                 .network
                 .frequency_indices(&query.pattern_id)
                 .iter()
-                .filter_map(|index| self.network.frequencies.get(*index))
+                .filter_map(|index| self.network.frequency_at(*index))
             {
                 if !self
                     .network
                     .calendar(&frequency.calendar_id)
                     .is_some_and(|calendar| calendar.runs_on(service_day))
-                    || frequency.template_stop_times.len() != service.stops.len()
+                    || frequency.template_stop_times.len() != pattern.stops.len()
                 {
                     continue;
                 }
@@ -568,7 +568,7 @@ impl ScheduleTiming {
                 let Some(end_seconds) = frequency.end_seconds.checked_add(board_offset) else {
                     continue;
                 };
-                for board_seconds in expand_service_frequency(
+                for board_seconds in expand_frequency_departures(
                     start_seconds,
                     end_seconds,
                     frequency.headway_seconds,
@@ -617,7 +617,7 @@ impl ScheduleTiming {
     }
 }
 
-fn expand_service_frequency(
+fn expand_frequency_departures(
     start: u32,
     end: u32,
     headway: u32,
@@ -650,8 +650,10 @@ mod tests {
     use crate::{
         api::RequestCoordinate,
         domain::transit::{
-            ScheduledStopTime, TransitMode, TransitPattern, TransitStop, TransitTrip,
+            ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
+            TransitTrip,
         },
+        domain::transit_runtime::TransitRuntime,
     };
 
     fn trip(
@@ -742,7 +744,7 @@ mod tests {
                 trip("monday-early", time::Weekday::Monday, 4 * 3600 + 10 * 60),
             ],
         ));
-        let timing = ScheduleTiming::new(network);
+        let timing = ScheduleTiming::new(Arc::new(TransitRuntime::new(network)));
         let departures = timing
             .next_departures(
                 DepartureQuery::at_position(

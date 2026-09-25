@@ -23,7 +23,7 @@ use via_server::{
 };
 
 use super::fixtures::{
-    FixtureRealtime, leg_modes, near_stop, network, option_for_services, request,
+    FixtureRealtime, leg_modes, near_stop, network, option_for_patterns, request,
     route_body_with_bike, transit_street,
 };
 use crate::support::routing::{path, stop_coordinate};
@@ -340,7 +340,7 @@ async fn bike_availability_failure_keeps_the_transit_baseline() {
         Arc::new(UnavailableBikeAvailabilitySource),
     )
     .await;
-    let option = option_for_services(&body, &["fixture-mrt-red"]);
+    let option = option_for_patterns(&body, &["fixture-mrt-red"]);
     assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
 }
 

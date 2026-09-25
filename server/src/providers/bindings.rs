@@ -33,11 +33,29 @@ pub struct TraTripBinding {
 
 impl TdxProviderBindings {
     pub fn validate(&self, network: &TransitNetwork) -> Result<(), String> {
+        let patterns_by_id = network
+            .patterns
+            .iter()
+            .map(|pattern| (&pattern.id, pattern))
+            .collect::<HashMap<_, _>>();
+        let routes_by_id = network
+            .routes
+            .iter()
+            .map(|route| (&route.id, route))
+            .collect::<HashMap<_, _>>();
+        let trips_by_id = network
+            .trips
+            .iter()
+            .map(|trip| (&trip.id, trip))
+            .collect::<HashMap<_, _>>();
         for (id, binding) in &self.bus_patterns {
-            let pattern = network
-                .pattern(id)
+            let pattern = patterns_by_id
+                .get(id)
+                .copied()
                 .ok_or_else(|| format!("unknown Bus pattern {}", id.as_str()))?;
-            if network.route_of(pattern).mode != TransitMode::Bus
+            if routes_by_id
+                .get(&pattern.route_id)
+                .is_none_or(|route| route.mode != TransitMode::Bus)
                 || binding.tdx_service_id.trim().is_empty()
                 || binding.realtime_scope.trim().is_empty()
             {
@@ -45,10 +63,13 @@ impl TdxProviderBindings {
             }
         }
         for (id, binding) in &self.metro_patterns {
-            let pattern = network
-                .pattern(id)
+            let pattern = patterns_by_id
+                .get(id)
+                .copied()
                 .ok_or_else(|| format!("unknown Metro pattern {}", id.as_str()))?;
-            if network.route_of(pattern).mode != TransitMode::Metro
+            if routes_by_id
+                .get(&pattern.route_id)
+                .is_none_or(|route| route.mode != TransitMode::Metro)
                 || binding.line_id.trim().is_empty()
                 || binding.direction > 1
             {
@@ -56,13 +77,17 @@ impl TdxProviderBindings {
             }
         }
         for (id, binding) in &self.tra_trips {
-            let trip = network
-                .scheduled_trip(id)
+            let trip = trips_by_id
+                .get(id)
+                .copied()
                 .ok_or_else(|| format!("unknown TRA trip {}", id.as_str()))?;
-            let pattern = network
-                .pattern(&trip.pattern_id)
+            let pattern = patterns_by_id
+                .get(&trip.pattern_id)
+                .copied()
                 .ok_or_else(|| format!("unknown pattern for TRA trip {}", id.as_str()))?;
-            if network.route_of(pattern).mode != TransitMode::Rail
+            if routes_by_id
+                .get(&pattern.route_id)
+                .is_none_or(|route| route.mode != TransitMode::Rail)
                 || binding.train_number.trim().is_empty()
             {
                 return Err(format!("invalid TRA binding for {}", id.as_str()));

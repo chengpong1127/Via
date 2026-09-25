@@ -11,6 +11,7 @@ use via_server::{
             ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork,
             TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
         },
+        transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
@@ -86,7 +87,7 @@ fn trip(id: &str, pattern_id: &str, departure: u32) -> TransitTrip {
 }
 
 fn resolver(network: TransitNetwork) -> DepartureDispatcher {
-    let network = Arc::new(network);
+    let network = Arc::new(TransitRuntime::new(Arc::new(network)));
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
     DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>])
 }

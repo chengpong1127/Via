@@ -10,6 +10,7 @@ use via_server::{
         ids::BoardingPointId,
         realtime::FreshnessPolicy,
         transit::{TransferEdge, TransitNetwork},
+        transit_runtime::TransitRuntime,
     },
     providers::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
@@ -107,7 +108,7 @@ async fn route_body_inner(
 ) -> Value {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
-    let network = Arc::new(network());
+    let network = Arc::new(TransitRuntime::new(Arc::new(network())));
     let bindings: TdxProviderBindings = serde_json::from_str(BINDINGS_JSON).unwrap();
     let tdx = if realtime.arrivals_available {
         Some(fixture_tdx_client(bus_tdx_payload()).await)
@@ -158,7 +159,7 @@ async fn route_body_inner(
     serde_json::to_value(service.route(request, new_request_id()).await.unwrap()).unwrap()
 }
 
-pub(crate) fn option_for_services<'a>(body: &'a Value, services: &[&str]) -> &'a Value {
+pub(crate) fn option_for_patterns<'a>(body: &'a Value, services: &[&str]) -> &'a Value {
     body["journey_options"]
         .as_array()
         .unwrap_or_else(|| panic!("response has no journey options: {body}"))
@@ -186,6 +187,7 @@ pub(crate) fn leg_modes(option: &Value) -> Vec<&str> {
 #[test]
 fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     let network = network();
+    let runtime = TransitRuntime::new(Arc::new(network.clone()));
     let transfers = TransferShortcutIndex::from_network(&network);
 
     assert_eq!(network.stops.len(), 18);
@@ -195,7 +197,7 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
         network
             .patterns
             .iter()
-            .filter(|pattern| network.route_of(pattern).mode
+            .filter(|pattern| runtime.route_of(pattern).mode
                 == via_server::domain::transit::TransitMode::Metro)
             .count(),
         3

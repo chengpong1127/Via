@@ -46,7 +46,7 @@ pub(crate) struct ReconstructedLegs {
     pub(crate) live_evidence: Vec<LiveStatusEvidence>,
     pub(crate) required_states: Vec<FreshnessState>,
     pub(crate) travel_modes: Vec<JourneyMode>,
-    pub(crate) main_service_sequence: Vec<String>,
+    pub(crate) main_pattern_sequence: Vec<String>,
     pub(crate) transfer_evidence: Vec<TransferEvidence>,
     pub(crate) walking_seconds: u32,
     pub(crate) bicycle_seconds: u32,
@@ -76,7 +76,7 @@ pub(crate) async fn assemble(
         live_evidence: Vec::new(),
         required_states: Vec::new(),
         travel_modes: Vec::new(),
-        main_service_sequence: Vec::new(),
+        main_pattern_sequence: Vec::new(),
         transfer_evidence: Vec::new(),
         walking_seconds: 0,
         bicycle_seconds: 0,
@@ -213,17 +213,17 @@ pub(crate) async fn assemble(
                         {
                             return Ok(None);
                         }
-                        let service_data = service
-                            .transit_network
+                        let pattern_data = service
+                            .transit_runtime
                             .pattern(&trip.pattern_id)
                             .ok_or(PlanningError::Internal)?;
-                        let route_data = service.transit_network.route_of(service_data);
+                        let route_data = service.transit_runtime.route_of(pattern_data);
                         let boarding = service
-                            .transit_network
+                            .transit_runtime
                             .stop(&board.stop_id)
                             .ok_or(PlanningError::Internal)?;
                         let alighting = service
-                            .transit_network
+                            .transit_runtime
                             .stop(&alight.stop_id)
                             .ok_or(PlanningError::Internal)?;
                         let live = trip
@@ -238,7 +238,7 @@ pub(crate) async fn assemble(
                         let leg_id = format!("candidate_leg_{}", result.legs.len());
                         result.legs.push(transit_leg(
                             leg_id.clone(),
-                            service_data,
+                            pattern_data,
                             route_data,
                             boarding,
                             alighting,
@@ -267,8 +267,8 @@ pub(crate) async fn assemble(
                         }
                         evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Transit);
                         result
-                            .main_service_sequence
-                            .push(service_data.id.as_str().to_owned());
+                            .main_pattern_sequence
+                            .push(pattern_data.id.as_str().to_owned());
                         current_stop = Some(alight.stop_id.clone());
                     }
                 }
