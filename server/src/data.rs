@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -15,11 +16,12 @@ use crate::domain::{
     transit::{TransitNetwork, TransitNetworkValidationError},
 };
 use crate::providers::bindings::TdxProviderBindings;
+use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod gtfs;
 pub mod static_transfers;
-pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput, build_from_gtfs_archive_with_street};
+pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput};
 
 pub const ARTIFACT_SCHEMA_VERSION: u32 = 7;
 
@@ -58,7 +60,9 @@ pub struct ArtifactManifest {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BuildDiagnostics;
+pub struct BuildDiagnostics {
+    pub static_transfers: Option<static_transfers::TransferStatistics>,
+}
 
 #[derive(Clone, Debug)]
 pub struct BuildOutput {
@@ -75,12 +79,6 @@ pub enum DataError {
     Io(PathBuf, #[source] std::io::Error),
     #[error("GTFS archive {path} is invalid: {detail}")]
     InvalidGtfsArchive { path: PathBuf, detail: String },
-    #[error("GTFS file {path} has malformed {kind}: {detail}")]
-    MalformedGtfs {
-        path: PathBuf,
-        kind: &'static str,
-        detail: String,
-    },
     #[error("GTFS archive contains no usable transit stops")]
     EmptyNetwork,
     #[error("artifact JSON is invalid: {0}")]
@@ -93,6 +91,107 @@ pub enum DataError {
     InvalidBikeShareArtifact(#[from] crate::domain::bikeshare::BikeShareNetworkValidationError),
     #[error("walking transfer preprocessing failed: {0}")]
     StreetRouting(#[from] crate::street::StreetRoutingError),
+}
+
+/// Build static data from a GTFS feed, then run Via's generic transfer preprocessing.
+pub async fn build_from_gtfs_archive_with_street(
+    input: &Path,
+    output: &Path,
+    street: &dyn StreetRouter,
+) -> Result<GtfsBuildOutput, DataError> {
+    let (mut network, provider_bindings, diagnostics) = gtfs::build_network(input)?;
+    let static_transfers =
+        static_transfers::enrich_network_with_static_transfers(&mut network, street).await?;
+    let build = finish_gtfs_build(
+        input,
+        output,
+        network,
+        provider_bindings,
+        BuildDiagnostics {
+            static_transfers: Some(static_transfers),
+        },
+    )?;
+    Ok(GtfsBuildOutput { build, diagnostics })
+}
+
+fn finish_gtfs_build(
+    input: &Path,
+    output: &Path,
+    network: TransitNetwork,
+    provider_bindings: TdxProviderBindings,
+    diagnostics: BuildDiagnostics,
+) -> Result<BuildOutput, DataError> {
+    let bike_share_network = BikeShareNetwork::new(Vec::new());
+    let static_revision = revision_for_network(&network, false)?;
+    let schedule_revision = revision_for_network(&network, true)?;
+    let network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
+    network.validate()?;
+    provider_bindings
+        .validate(&network)
+        .map_err(DataError::InvalidProviderBindings)?;
+    let bike_share_revision = revision_for_bike_share_network(&bike_share_network)?;
+    let bike_share_network = bike_share_network.with_revision(bike_share_revision.clone());
+    bike_share_network.validate()?;
+    let source_hash = hash_file(input)?;
+    let manifest = ArtifactManifest {
+        schema_version: ARTIFACT_SCHEMA_VERSION,
+        scope: "taiwan-gtfs".into(),
+        built_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "unknown".into()),
+        raw_snapshot_date: None,
+        sources: BTreeMap::from([(
+            input
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("gtfs.zip")
+                .to_owned(),
+            source_hash,
+        )]),
+        counts: ArtifactCounts {
+            stops: network.stops.len(),
+            routes: network.routes.len(),
+            patterns: network.patterns.len(),
+            trips: network.trips.len(),
+            calendars: network.calendars.len(),
+            frequencies: network.frequencies.len(),
+            transfer_edges: network.transfer_edges.len(),
+            bike_stations: bike_share_network.stations.len(),
+            bike_access_links: bike_share_network.access_links.len(),
+        },
+        revisions: ArtifactRevisions {
+            static_network_revision: static_revision,
+            schedule_revision,
+            bike_share_network_revision: bike_share_revision,
+        },
+    };
+    write_network_artifact(output, &network)?;
+    write_json_atomic(&output.join("provider-bindings.json"), &provider_bindings)?;
+    write_bikeshare_artifact(output, &bike_share_network)?;
+    write_json_atomic(&output.join("manifest.json"), &manifest)?;
+    Ok(BuildOutput {
+        network,
+        provider_bindings,
+        bike_share_network,
+        manifest,
+        diagnostics,
+    })
+}
+
+fn hash_file(path: &Path) -> Result<String, DataError> {
+    let mut file = fs::File::open(path).map_err(|error| DataError::Io(path.into(), error))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| DataError::Io(path.into(), error))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 pub fn load_network_artifact(path: &Path) -> Result<TransitNetwork, DataError> {

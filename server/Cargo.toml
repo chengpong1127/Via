@@ -8,10 +8,11 @@ rust-version = "1.85"
 async-trait = "0.1"
 axum = "0.8"
 bytes = "1"
-csv = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures-util = "0.3"
+gtfs-structures = { version = "0.50.1", default-features = false }
+jiff = "0.2"
 httpdate = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -30,11 +31,11 @@ moka = { version = "0.12", features = ["future"] }
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
-zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 strip = true

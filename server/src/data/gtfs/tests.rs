@@ -3,15 +3,11 @@ use std::{fs::File, io::Write, path::PathBuf};
 use time::macros::date;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
-use super::{
-    build_from_gtfs_archive_with_street,
-    identity::tdx_stop_id,
-    reader::{parse_gtfs_date, parse_gtfs_time},
-    routes::parse_route_mode,
-    segment_profile::{distribute_runtime, is_chronological_times},
-};
+use super::{distribute_runtime, is_chronological_times, tdx_stop_id, via_mode};
+use crate::data::build_from_gtfs_archive_with_street;
 use crate::domain::transit::{ScheduledStopTime, TransitMode};
 use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
+use gtfs_structures::{RawGtfs, RouteType};
 
 fn temporary_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -38,7 +34,7 @@ fn write_gtfs_fixture(path: &PathBuf) {
         ),
         (
             "stop_times.txt",
-            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nbus-branch,,08:10:00,TPE001,1,0\nbus-branch,08:35:00,,TPE003,2,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\n",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nbus-branch,,25:10:05,TPE001,1,0\nbus-branch,25:35:05,,TPE003,2,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\n",
         ),
         (
             "calendar.txt",
@@ -68,28 +64,40 @@ fn write_gtfs_fixture(path: &PathBuf) {
 }
 
 #[test]
-fn parses_gtfs_extended_times_and_dates() {
-    assert_eq!(parse_gtfs_time("25:10:05"), Some(90_605));
-    assert_eq!(parse_gtfs_time("25:61:00"), None);
-    assert_eq!(
-        parse_gtfs_date("20260923").unwrap().to_string(),
-        "2026-09-23"
-    );
-}
-
-#[test]
 fn maps_gtfs_modes_and_canonical_tdx_stop_ids() {
-    assert_eq!(parse_route_mode("3", "THB123_0"), Some(TransitMode::Bus));
+    assert_eq!(via_mode(RouteType::Bus, "THB123_0"), Some(TransitMode::Bus));
     assert_eq!(
-        parse_route_mode("1", "TRTC_BL_BL-1_0"),
+        via_mode(RouteType::Subway, "TRTC_BL_BL-1_0"),
         Some(TransitMode::Metro)
     );
     assert_eq!(
-        parse_route_mode("2", "THSR_0108_1"),
+        via_mode(RouteType::Rail, "THSR_0108_1"),
         Some(TransitMode::HighSpeedRail)
     );
     assert_eq!(tdx_stop_id("TRTC_BL12"), "TRTC-BL12");
     assert_eq!(tdx_stop_id("THB300516"), "THB300516");
+}
+
+#[test]
+fn raw_gtfs_keeps_sparse_times_and_extended_service_day_times() {
+    let input = temporary_path("raw-parser.zip");
+    write_gtfs_fixture(&input);
+
+    let raw = RawGtfs::from_path(&input).unwrap();
+    let stop_times = raw.stop_times.unwrap();
+    let sparse = stop_times
+        .iter()
+        .find(|time| time.trip_id == "bus-1" && time.stop_id == "TPE002")
+        .unwrap();
+    assert_eq!(sparse.arrival_time, None);
+    assert_eq!(sparse.departure_time, None);
+    let extended = stop_times
+        .iter()
+        .find(|time| time.trip_id == "bus-branch" && time.stop_id == "TPE001")
+        .unwrap();
+    assert_eq!(extended.departure_time, Some(90_605));
+
+    std::fs::remove_file(input).unwrap();
 }
 
 #[test]
@@ -109,6 +117,20 @@ fn complete_exact_trip_times_must_be_chronological() {
         ScheduledStopTime::new(23_040, 23_040),
         ScheduledStopTime::new(60, 60),
     ]));
+}
+
+#[test]
+fn repeated_stops_are_rejected_and_headsign_falls_back_to_route_label() {
+    assert!(super::has_unique_stops(&[1, 2, 3]));
+    assert!(!super::has_unique_stops(&[1, 2, 1]));
+
+    let route = gtfs_structures::Route {
+        id: "THB123_0".to_owned(),
+        short_name: Some("1".to_owned()),
+        long_name: Some("   ".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(super::route_headsign_fallback(&route), "1");
 }
 
 #[tokio::test]
@@ -134,7 +156,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     assert_eq!(built.diagnostics.stops_loaded, 6);
     assert_eq!(built.diagnostics.trips_loaded, 4);
     assert_eq!(built.diagnostics.frequencies_loaded, 1);
-    assert!(built.diagnostics.static_transfers.is_some());
+    assert!(built.build.diagnostics.static_transfers.is_some());
     assert_eq!(built.diagnostics.invalid_timing_trips, 0);
     assert_eq!(built.diagnostics.exact_static_timing_patterns, 1);
     assert_eq!(built.diagnostics.derived_bus_timing_patterns, 2);
@@ -198,6 +220,24 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     );
     assert_eq!(built.build.provider_bindings.bus_patterns.len(), 2);
     assert_eq!(built.build.provider_bindings.metro_patterns.len(), 1);
+    assert!(
+        network
+            .stops
+            .iter()
+            .any(|stop| stop.id.as_str() == "TRTC-BL12")
+    );
+    let bus_binding = &built.build.provider_bindings.bus_patterns[&bus.id];
+    assert_eq!(bus_binding.tdx_service_id, "THB123::direction=0");
+    assert_eq!(bus_binding.realtime_scope, "Taipei");
+    let metro_binding = built
+        .build
+        .provider_bindings
+        .metro_patterns
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(metro_binding.line_id, "BL");
+    assert_eq!(metro_binding.direction, 0);
     assert!(
         network
             .transfer_edges

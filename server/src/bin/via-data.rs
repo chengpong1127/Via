@@ -133,7 +133,7 @@ fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
         &street,
     ))?;
     println!("build latency: {} ms", started.elapsed().as_millis());
-    print_build_diagnostics(&result.diagnostics);
+    print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
     print_counts(
         "built",
         &result.build.manifest.counts,
@@ -405,8 +405,11 @@ fn print_counts(
     );
 }
 
-fn print_build_diagnostics(diagnostics: &GtfsBuildDiagnostics) {
-    if let Some(stats) = &diagnostics.static_transfers {
+fn print_build_diagnostics(
+    diagnostics: &GtfsBuildDiagnostics,
+    build_diagnostics: &via_server::data::BuildDiagnostics,
+) {
+    if let Some(stats) = &build_diagnostics.static_transfers {
         println!(
             "walking transfers: boarding_points={} candidates={} matrix_pairs={} reachable={} retained={} removed_by_limits={} removed_by_fanout={} latency_ms={}",
             stats.boarding_points,
