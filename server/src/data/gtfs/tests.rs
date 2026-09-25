@@ -3,7 +3,11 @@ use std::{fs::File, io::Write, path::PathBuf};
 use time::macros::date;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
-use super::{distribute_runtime, is_chronological_times, tdx_stop_id, via_mode};
+use super::{
+    bindings::tdx_stop_id,
+    normalize::{has_unique_stops, is_chronological_times, route_headsign_fallback, via_mode},
+    segment_profile::distribute_runtime,
+};
 use crate::data::build_from_gtfs_archive_with_street;
 use crate::domain::transit::{ScheduledStopTime, TransitMode};
 use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
@@ -121,8 +125,8 @@ fn complete_exact_trip_times_must_be_chronological() {
 
 #[test]
 fn repeated_stops_are_rejected_and_headsign_falls_back_to_route_label() {
-    assert!(super::has_unique_stops(&[1, 2, 3]));
-    assert!(!super::has_unique_stops(&[1, 2, 1]));
+    assert!(has_unique_stops(&[1, 2, 3]));
+    assert!(!has_unique_stops(&[1, 2, 1]));
 
     let route = gtfs_structures::Route {
         id: "THB123_0".to_owned(),
@@ -130,7 +134,7 @@ fn repeated_stops_are_rejected_and_headsign_falls_back_to_route_label() {
         long_name: Some("   ".to_owned()),
         ..Default::default()
     };
-    assert_eq!(super::route_headsign_fallback(&route), "1");
+    assert_eq!(route_headsign_fallback(&route), "1");
 }
 
 #[tokio::test]
