@@ -66,11 +66,14 @@ def run_route(
             f"{(process.stdout + process.stderr)[-2000:]}"
         )
     diagnostics = process.stdout + "\n" + process.stderr
+    options = parse_option_count(process.stdout)
+    if options is None:
+        raise RuntimeError(f"via-route returned no JSON result for {case['id']} K={k} {strategy}")
     return {
         "strategy": strategy,
         "wall_ms": round(elapsed_ms, 3),
-        "phase2": parse_phase2(diagnostics, strategy),
-        "options": parse_option_count(process.stdout),
+        "phase2": parse_phase2(diagnostics, strategy) if strategy != "compare" else None,
+        "options": options,
         "diagnostics": diagnostics,
     }
 
@@ -92,10 +95,12 @@ def numeric_field(line: str, name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def parse_phase2(stderr: str, strategy: str) -> dict[str, Any]:
+def parse_phase2(diagnostics: str, strategy: str) -> dict[str, Any] | None:
     search_name = "fixed corridor evaluation" if strategy == "fixed" else "temporal search"
-    line = next((item for item in stderr.splitlines() if search_name in item), "")
+    line = next((item for item in diagnostics.splitlines() if search_name in item), "")
     if not line:
+        if "timing snapshot" not in diagnostics:
+            return None
         raise RuntimeError(f"did not find {search_name!r} diagnostics")
     fields = {
         "phase2_latency_us": numeric_field(line, "phase2_latency_us"),
@@ -118,13 +123,35 @@ def parse_phase2(stderr: str, strategy: str) -> dict[str, Any]:
     return fields
 
 
-def parse_comparison(stderr: str) -> tuple[dict[str, Any], str, str, list[str]]:
+def parse_comparison(
+    diagnostics: str,
+) -> tuple[dict[str, Any], str | None, str | None, list[str]]:
     line = next(
-        (item for item in stderr.splitlines() if "Phase 2 strategy comparison" in item),
+        (item for item in diagnostics.splitlines() if "Phase 2 strategy comparison" in item),
         "",
     )
     if not line:
-        raise RuntimeError("did not find paired Phase 2 comparison diagnostics")
+        if "timing snapshot" in diagnostics:
+            raise RuntimeError("timing snapshot ran without paired Phase 2 comparison diagnostics")
+        return {
+            "union_latency_us": None,
+            "fixed_latency_us": None,
+            "union_candidate_count": 0,
+            "fixed_candidate_count": 0,
+            "union_departure_lookups": 0,
+            "fixed_departure_lookups": 0,
+            "union_states_expanded": 0,
+            "fixed_states_evaluated": 0,
+            "same_best_exact_signature": False,
+            "same_best_structural_signature": False,
+            "union_best_in_retained_topk_exact": False,
+            "union_best_in_retained_topk_structural": False,
+            "recombination_used": False,
+            "best_arrival_delta_seconds": None,
+            "fixed_no_route_union_route": False,
+            "union_no_route_fixed_route": False,
+            "phase2_executed": False,
+        }, None, None, []
     fields: dict[str, Any] = {}
     for name, value in re.findall(
         r"\b([a-z_]+): (true|false|Some\(-?\d+\)|None|\d+)", line
@@ -152,11 +179,12 @@ def parse_comparison(stderr: str) -> tuple[dict[str, Any], str, str, list[str]]:
     missing = required - fields.keys()
     if missing:
         raise RuntimeError(f"missing comparison fields {sorted(missing)}: {line}")
+    fields["phase2_executed"] = True
     union_best = debug_summary(line, "union_best")
     fixed_best = debug_summary(line, "fixed_best")
     retained = [
         item.split("DEBUG via_server::routing: retained static corridor ", 1)[1]
-        for item in stderr.splitlines()
+        for item in diagnostics.splitlines()
         if "DEBUG via_server::routing: retained static corridor corridor_rank=" in item
     ]
     return fields, union_best, fixed_best, retained
@@ -191,7 +219,9 @@ def median_field(rows: list[dict[str, Any]], strategy: str, field: str) -> float
     values = [
         row["phase2"][field]
         for row in rows
-        if row["strategy"] == strategy and row["phase2"].get(field) is not None
+        if row["strategy"] == strategy
+        and row["phase2"] is not None
+        and row["phase2"].get(field) is not None
     ]
     return statistics.median(values) if values else None
 
@@ -205,6 +235,11 @@ def aggregate(paired: list[dict[str, Any]], standalone: list[dict[str, Any]]) ->
         both_successes = sum(
             row["comparison"]["fixed_candidate_count"] > 0
             and row["comparison"]["union_candidate_count"] > 0
+            for row in pairs
+        )
+        both_no_route = sum(
+            row["comparison"]["fixed_candidate_count"] == 0
+            and row["comparison"]["union_candidate_count"] == 0
             for row in pairs
         )
         both_routes = [
@@ -222,6 +257,7 @@ def aggregate(paired: list[dict[str, Any]], standalone: list[dict[str, Any]]) ->
         by_k[str(k)] = {
             "requests": paired_count,
             "both_successes": both_successes,
+            "both_no_route": both_no_route,
             "fixed_successes": sum(row["comparison"]["fixed_candidate_count"] > 0 for row in pairs),
             "union_successes": sum(row["comparison"]["union_candidate_count"] > 0 for row in pairs),
             "same_exact": sum(row["comparison"]["same_best_exact_signature"] for row in pairs),
@@ -243,7 +279,7 @@ def aggregate(paired: list[dict[str, Any]], standalone: list[dict[str, Any]]) ->
                         [
                             row["phase2"]["phase2_latency_us"]
                             for row in single
-                            if row["strategy"] == strategy
+                            if row["strategy"] == strategy and row["phase2"] is not None
                         ]
                     ),
                     "departure_lookups_median": median_field(single, strategy, "departure_lookups"),
@@ -297,17 +333,18 @@ def render_report(metadata: dict[str, Any], paired: list[dict[str, Any]], aggreg
         "",
         "## Paired quality results",
         "",
-        "Each paired row ran Compare mode, so both algorithms used the same Phase 1 corridors and one loaded TimingSnapshot. A negative arrival delta means Union arrived earlier. Winner-agreement and arrival-delta statistics include only requests where both strategies found a route; success and no-route counts use every request.",
+        "Each paired row that executed Phase 2 ran Compare mode, so both algorithms used the same Phase 1 corridors and one loaded TimingSnapshot. Rows with `phase2_executed=false` had no retained transit corridor, so Phase 2 did not run or load a snapshot. A negative arrival delta means Union arrived earlier. Winner-agreement and arrival-delta statistics include only requests where both strategies found a route; success and no-route counts use every request.",
         "",
-        "| K | Requests | Fixed success | Union success | Same exact winner | Same structural winner | Union recombination | Fixed none / Union route | Union none / Fixed route | Arrival delta mean / median / p95 / min..max | Recombination gain mean / median / p95 / max |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| K | Requests | Both no route | Fixed success | Union success | Same exact winner | Same structural winner | Union recombination | Fixed none / Union route | Union none / Fixed route | Arrival delta mean / median / p95 / min..max | Recombination gain mean / median / p95 / max |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for k, data in aggregate_by_k.items():
         count = data["requests"]
         deltas = data["arrival_deltas"]
         gains = data["recombination_gains"]
         lines.append(
-            f"| {k} | {count} | {percent(data['fixed_successes'], count)} | {percent(data['union_successes'], count)} | "
+            f"| {k} | {count} | {data['both_no_route']} | "
+            f"{percent(data['fixed_successes'], count)} | {percent(data['union_successes'], count)} | "
             f"{percent(data['same_exact'], data['both_successes'])} | "
             f"{percent(data['same_structural'], data['both_successes'])} | "
             f"{percent(data['recombinations'], count)} | "
@@ -323,9 +360,9 @@ def render_report(metadata: dict[str, Any], paired: list[dict[str, Any]], aggreg
             "",
             "## Standalone Phase 2 performance",
             "",
-            "Each strategy ran in its own process. Union and Fixed order alternated by case, K, and repetition. The Phase 2 figures are internal microsecond timers; CLI wall time includes process and fixture setup.",
+            "Each strategy ran in its own process. Union and Fixed order alternated by case, K, and repetition. Phase 2 sample counts exclude requests with no retained transit corridor; CLI wall time includes every request, process startup, and fixture setup.",
             "",
-            "| K | Strategy | Repetitions | Phase 2 median | Phase 2 p95 | Departure lookups median | States median | Candidates median | CLI wall median / p95 |",
+            "| K | Strategy | Phase 2 samples | Phase 2 median | Phase 2 p95 | Departure lookups median | States median | Candidates median | CLI wall median / p95 |",
             "|---:|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
@@ -342,6 +379,8 @@ def render_report(metadata: dict[str, Any], paired: list[dict[str, Any]], aggreg
     disagreements = {}
     for row in paired:
         stats = row["comparison"]
+        if stats["fixed_candidate_count"] == 0 and stats["union_candidate_count"] == 0:
+            continue
         if (
             stats["same_best_exact_signature"]
             and stats["same_best_structural_signature"]
