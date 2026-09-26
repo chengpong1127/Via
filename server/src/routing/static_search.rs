@@ -221,6 +221,7 @@ pub struct CandidateBoarding {
 #[derive(Clone, Debug, Default)]
 pub struct CandidateCorridor {
     retained: Vec<StaticCorridor>,
+    equivalent_legs: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     boardings_by_stop: HashMap<BoardingPointId, Vec<CandidateBoarding>>,
     minimums_by_position: HashMap<PatternPosition, usize>,
     selected_pattern_ids: HashSet<TransitPatternId>,
@@ -229,11 +230,29 @@ pub struct CandidateCorridor {
 }
 
 impl CandidateCorridor {
+    #[cfg(test)]
+    pub(super) fn from_retained_for_test(
+        network: &TransitRuntime,
+        retained: Vec<StaticCorridor>,
+    ) -> Self {
+        Self::from_retained(network, &HashMap::new(), retained)
+    }
+
     fn from_retained(
         network: &TransitRuntime,
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         retained: Vec<StaticCorridor>,
     ) -> Self {
+        let retained_equivalent_legs = retained
+            .iter()
+            .flat_map(StaticCorridor::transit_legs)
+            .filter_map(|leg| {
+                let key = equivalent_leg_key(network, leg)?;
+                equivalent_legs
+                    .get(&key)
+                    .map(|alternatives| (key, alternatives.clone()))
+            })
+            .collect::<HashMap<_, _>>();
         let mut minimums_by_position = HashMap::<PatternPosition, usize>::new();
         let mut selected_pattern_ids = HashSet::new();
         let mut selected_bus_stop_ids = HashSet::new();
@@ -247,11 +266,9 @@ impl CandidateCorridor {
             let legs = corridor.transit_legs().collect::<Vec<_>>();
             for (index, leg) in legs.iter().enumerate() {
                 let remaining = legs.len() - index;
-                let alternatives = equivalent_leg_key(network, leg)
-                    .and_then(|key| equivalent_legs.get(&key))
-                    .cloned()
-                    .unwrap_or_else(|| vec![(*leg).clone()]);
-                for alternative in alternatives {
+                for alternative in
+                    Self::equivalent_legs_from(network, &retained_equivalent_legs, leg)
+                {
                     let position = PatternPosition {
                         pattern_id: alternative.pattern_id.clone(),
                         stop_index: alternative.board_index,
@@ -299,6 +316,7 @@ impl CandidateCorridor {
 
         Self {
             retained,
+            equivalent_legs: retained_equivalent_legs,
             boardings_by_stop,
             minimums_by_position,
             selected_pattern_ids,
@@ -309,6 +327,35 @@ impl CandidateCorridor {
 
     pub fn retained(&self) -> &[StaticCorridor] {
         &self.retained
+    }
+
+    /// Return the same mode and endpoint-equivalent Pattern family used by
+    /// the union surface for this retained structural leg.
+    pub fn equivalent_legs_for(
+        &self,
+        network: &TransitRuntime,
+        leg: &StaticTransitLeg,
+    ) -> Vec<StaticTransitLeg> {
+        Self::equivalent_legs_from(network, &self.equivalent_legs, leg)
+    }
+
+    fn equivalent_legs_from(
+        network: &TransitRuntime,
+        equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+        leg: &StaticTransitLeg,
+    ) -> Vec<StaticTransitLeg> {
+        let mut alternatives = equivalent_leg_key(network, leg)
+            .and_then(|key| equivalent_legs.get(&key))
+            .cloned()
+            .unwrap_or_else(|| vec![leg.clone()]);
+        alternatives.sort_by(|left, right| {
+            left.pattern_id
+                .as_str()
+                .cmp(right.pattern_id.as_str())
+                .then(left.board_index.cmp(&right.board_index))
+                .then(left.alight_index.cmp(&right.alight_index))
+        });
+        alternatives
     }
 
     pub fn boardings_at(&self, stop: &BoardingPointId) -> &[CandidateBoarding] {

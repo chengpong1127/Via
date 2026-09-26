@@ -6,74 +6,17 @@ use time::{Duration, OffsetDateTime};
 
 use crate::domain::{
     ids::BoardingPointId,
-    realtime::NormalizedRealtimeValue,
     transit_runtime::TransitRuntime,
-    transit_timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
+    transit_timing::{EffectiveTrip, TimingSnapshot},
 };
 
 use super::{
-    model::{
-        AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
-    },
+    model::{EgressPoint, JourneyCandidate, RoutingError, TransitQuery},
+    phase2::{Phase2Path as SearchPath, make_candidate, pareto_candidates},
     static_search::CandidateCorridor,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
-
-#[derive(Clone)]
-struct SearchPath {
-    access: AccessPoint,
-    segments: Vec<JourneySegment>,
-    walking_seconds: u32,
-    evidence: Vec<NormalizedRealtimeValue>,
-    timing_bases: Vec<TimingBasis>,
-    timing_reliability: TimingReliability,
-    uncertainty_seconds: Option<u32>,
-}
-
-impl SearchPath {
-    fn from_access(access: AccessPoint) -> Self {
-        Self {
-            walking_seconds: access.walking_seconds,
-            access,
-            segments: Vec::new(),
-            evidence: Vec::new(),
-            timing_bases: Vec::new(),
-            timing_reliability: TimingReliability::Reliable,
-            uncertainty_seconds: None,
-        }
-    }
-
-    fn with_ride(&self, trip: &EffectiveTrip, board_index: usize, alight_index: usize) -> Self {
-        let mut next = self.clone();
-        next.segments.push(JourneySegment::Transit {
-            trip: trip.clone(),
-            board_index,
-            alight_index,
-        });
-        next.evidence.extend(trip.evidence.clone());
-        next.timing_bases.push(trip.timing_basis);
-        if trip.timing_reliability == TimingReliability::Fallback {
-            next.timing_reliability = TimingReliability::Fallback;
-        }
-        next.uncertainty_seconds = match (next.uncertainty_seconds, trip.uncertainty_seconds) {
-            (Some(left), Some(right)) => Some(left.max(right)),
-            (None, value) | (value, None) => value,
-        };
-        next
-    }
-
-    fn with_walking_transfer(&self, shortcut: &super::transfers::TransferShortcut) -> Self {
-        let mut next = self.clone();
-        next.segments.push(JourneySegment::WalkingTransfer {
-            shortcut: shortcut.clone(),
-        });
-        next.walking_seconds = next
-            .walking_seconds
-            .saturating_add(shortcut.duration_seconds);
-        next
-    }
-}
 
 #[derive(Clone)]
 struct TimedState {
@@ -96,6 +39,7 @@ pub struct TemporalSearchStats {
     pub positions_without_departures: usize,
     pub candidates_before_pareto: usize,
     pub expansion_limit_reached: bool,
+    pub phase2_latency_us: u64,
 }
 
 pub fn search(
@@ -218,6 +162,7 @@ pub fn search_with_stats(
     stats.candidates_before_pareto = candidates.len();
     let candidates = pareto_candidates(candidates, query.max_candidates);
     stats.final_candidates = candidates.len();
+    stats.phase2_latency_us = u64::try_from(started_at.elapsed().as_micros()).unwrap_or(u64::MAX);
     tracing::debug!(
         target: "via_server::routing",
         initial_states = stats.initial_states,
@@ -231,6 +176,7 @@ pub fn search_with_stats(
         positions_without_departures = stats.positions_without_departures,
         candidates_before_pareto = stats.candidates_before_pareto,
         expansion_limit_reached = stats.expansion_limit_reached,
+        phase2_latency_us = stats.phase2_latency_us,
         latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         "temporal search"
     );
@@ -276,21 +222,12 @@ fn scan_trip(
             {
                 continue;
             }
-            candidates.push(JourneyCandidate {
-                access: ride_path.access.clone(),
-                egress: egress.clone(),
-                segments: ride_path.segments.clone(),
-                departure_time: ride_path.access.departure_at,
+            candidates.push(make_candidate(
+                &ride_path,
+                egress,
                 arrival_time,
-                walking_seconds: ride_path
-                    .walking_seconds
-                    .saturating_add(egress.walking_seconds),
-                transfer_count: u32::try_from(next_legs_used.saturating_sub(1)).unwrap_or(u32::MAX),
-                uncertainty_seconds: ride_path.uncertainty_seconds,
-                evidence: ride_path.evidence.clone(),
-                timing_bases: ride_path.timing_bases.clone(),
-                timing_reliability: ride_path.timing_reliability,
-            });
+                next_legs_used,
+            ));
         }
 
         for shortcut in transfers.transfers_from(&stop_time.stop_id) {
@@ -313,22 +250,12 @@ fn scan_trip(
                     continue;
                 }
                 reached_destination = true;
-                candidates.push(JourneyCandidate {
-                    access: transfer_path.access.clone(),
-                    egress: egress.clone(),
-                    segments: transfer_path.segments.clone(),
-                    departure_time: transfer_path.access.departure_at,
+                candidates.push(make_candidate(
+                    &transfer_path,
+                    egress,
                     arrival_time,
-                    walking_seconds: transfer_path
-                        .walking_seconds
-                        .saturating_add(egress.walking_seconds),
-                    transfer_count: u32::try_from(next_legs_used.saturating_sub(1))
-                        .unwrap_or(u32::MAX),
-                    uncertainty_seconds: transfer_path.uncertainty_seconds,
-                    evidence: transfer_path.evidence.clone(),
-                    timing_bases: transfer_path.timing_bases.clone(),
-                    timing_reliability: transfer_path.timing_reliability,
-                });
+                    next_legs_used,
+                ));
             }
             if reached_destination {
                 stats.transfer_expansions += 1;
@@ -428,28 +355,6 @@ fn index_egress(points: &[EgressPoint]) -> HashMap<BoardingPointId, Vec<EgressPo
     by_stop
 }
 
-fn pareto_candidates(mut candidates: Vec<JourneyCandidate>, limit: usize) -> Vec<JourneyCandidate> {
-    candidates.sort_by(|left, right| {
-        left.arrival_time
-            .cmp(&right.arrival_time)
-            .then(left.transfer_count.cmp(&right.transfer_count))
-            .then(left.walking_seconds.cmp(&right.walking_seconds))
-            .then(left.signature().cmp(&right.signature()))
-    });
-    let mut pareto = Vec::new();
-    for candidate in candidates {
-        if pareto.iter().any(|existing: &JourneyCandidate| {
-            existing.dominates(&candidate) || existing.signature() == candidate.signature()
-        }) {
-            continue;
-        }
-        pareto.retain(|existing| !candidate.dominates(existing));
-        pareto.push(candidate);
-    }
-    pareto.truncate(limit.max(1));
-    pareto
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -463,9 +368,10 @@ mod tests {
         domain::{
             ids::{EffectiveTripId, TransitPatternId},
             transit::{TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop},
-            transit_timing::EffectiveStopTime,
+            transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
         },
         routing::{
+            AccessPoint, EgressPoint, JourneySegment,
             static_search::{CandidateCorridor, generate as static_search},
             topology::TransitTopologyIndex,
             transfers::TransferShortcutIndex,

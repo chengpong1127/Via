@@ -10,6 +10,7 @@ use via_server::{
         TdxBikeAvailabilitySource, TdxServiceConditionProvider, TracingOperationalEventObserver,
         ValhallaConfig, ValhallaProvider,
     },
+    routing::Phase2Strategy,
     tdx::{TdxClient, TdxCredentials},
 };
 
@@ -33,6 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .without_time()
         .init();
+
+    let phase2_strategy = match env::var("VIA_PHASE2_STRATEGY") {
+        Ok(value) => value.parse::<Phase2Strategy>()?,
+        Err(env::VarError::NotPresent) => Phase2Strategy::Union,
+        Err(error) => return Err(error.into()),
+    };
 
     let mut config = ValhallaConfig::local();
     if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
@@ -94,7 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_tdx(tdx_client)
     .with_provider_bindings(provider_bindings)
-    .with_service_condition_cache_ttl(cache_ttl);
+    .with_service_condition_cache_ttl(cache_ttl)
+    .with_phase2_strategy(phase2_strategy);
     let router = build_router(provider, dependencies, transit_network).await?;
     let port = env::var("PORT")
         .unwrap_or_else(|_| "3000".into())

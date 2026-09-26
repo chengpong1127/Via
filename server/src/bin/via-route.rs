@@ -29,7 +29,7 @@ use via_server::{
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         UnavailableBikeAvailabilitySource, ValhallaConfig, ValhallaProvider,
     },
-    routing::{RoutingLimits, RoutingService},
+    routing::{Phase2Strategy, RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
     tdx::{TdxClient, TdxCredentials},
 };
@@ -60,6 +60,10 @@ struct Cli {
     modes: String,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
+    #[arg(long, value_enum, default_value = "union")]
+    phase2_strategy: Phase2StrategyArgument,
+    #[arg(long)]
+    max_static_corridors: Option<usize>,
     #[arg(long)]
     valhalla_timeout_ms: Option<u64>,
     #[arg(long = "service-conditions", value_enum, default_value_t = ServiceConditionMode::Fixture)]
@@ -74,6 +78,23 @@ struct Cli {
 enum ServiceConditionMode {
     Fixture,
     Live,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Phase2StrategyArgument {
+    Union,
+    Fixed,
+    Compare,
+}
+
+impl From<Phase2StrategyArgument> for Phase2Strategy {
+    fn from(value: Phase2StrategyArgument) -> Self {
+        match value {
+            Phase2StrategyArgument::Union => Self::Union,
+            Phase2StrategyArgument::Fixed => Self::Fixed,
+            Phase2StrategyArgument::Compare => Self::Compare,
+        }
+    }
 }
 
 #[tokio::main]
@@ -143,6 +164,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.max_departures_per_query = max_departures;
     }
+    if let Some(max_static_corridors) = cli.max_static_corridors {
+        limits.max_static_corridors = max_static_corridors.max(1);
+    }
     if let Some(timeout_ms) = cli.valhalla_timeout_ms {
         limits.request_timeout = std::time::Duration::from_millis(timeout_ms.saturating_mul(5));
     }
@@ -155,6 +179,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let bike_share_network =
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled"));
     let bike_availability_source = Arc::new(UnavailableBikeAvailabilitySource);
+    if cli.trace {
+        eprintln!("  Phase 2 strategy={:?}", cli.phase2_strategy);
+        eprintln!("  max static corridors={}", limits.max_static_corridors);
+    }
     let routing = RoutingService::new(
         street,
         runtime.clone(),
@@ -163,7 +191,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         bike_share_network,
         bike_availability_source,
         limits,
-    );
+    )
+    .with_phase2_strategy(cli.phase2_strategy.into());
     if cli.trace {
         eprintln!("ACCESS");
         eprintln!("  origin ({:.6}, {:.6})", cli.from_lat, cli.from_lon);

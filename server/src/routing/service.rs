@@ -31,6 +31,7 @@ use super::{
     access,
     model::TransitQuery,
     path::{JourneySkeleton, JourneyVariant},
+    phase2::Phase2Strategy,
     planner::TransitPlanner,
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
@@ -115,6 +116,11 @@ impl RoutingService {
             limits,
             operational_metrics: OperationalMetrics::default(),
         }
+    }
+
+    pub fn with_phase2_strategy(mut self, strategy: Phase2Strategy) -> Self {
+        self.transit_planner = self.transit_planner.with_phase2_strategy(strategy);
+        self
     }
 }
 
