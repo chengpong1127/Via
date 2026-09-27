@@ -424,10 +424,6 @@ impl BikeShareNetwork {
             .map(|_| network)
     }
 
-    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.clone().canonicalize())
-    }
-
     fn indexes(&self) -> &BikeShareIndexes {
         self.indexes.get_or_init(|| BikeShareIndexes::build(self))
     }

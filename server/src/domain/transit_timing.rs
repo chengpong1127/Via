@@ -24,12 +24,6 @@ pub enum TimingBasis {
     FrequencyEstimate,
 }
 
-impl TimingBasis {
-    pub fn is_realtime_backed(self) -> bool {
-        matches!(self, Self::RealtimePrediction | Self::DelayAdjustedSchedule)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimingReliability {
     Reliable,
@@ -297,12 +291,6 @@ pub struct EffectiveStopTime {
 }
 
 impl EffectiveTrip {
-    pub fn stop_index(&self, stop_id: &BoardingPointId) -> Option<usize> {
-        self.stop_times
-            .iter()
-            .position(|stop_time| &stop_time.stop_id == stop_id)
-    }
-
     pub fn from_scheduled(
         network: &TransitRuntime,
         service_day: Date,

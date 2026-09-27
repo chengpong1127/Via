@@ -177,10 +177,6 @@ impl Maneuver {
         Self::new(ManeuverKind::Depart, index)
     }
 
-    pub fn turn_right(index: usize) -> Self {
-        Self::new(ManeuverKind::TurnRight, index)
-    }
-
     pub fn arrive(index: usize) -> Self {
         Self::new(ManeuverKind::Arrive, index)
     }

@@ -151,21 +151,6 @@ pub struct NormalizedRealtimeValue {
     pub value: RealtimeValue,
 }
 
-impl NormalizedRealtimeValue {
-    pub fn kind(&self) -> RealtimeValueKind {
-        match &self.value {
-            RealtimeValue::ArrivalEstimate(_) => RealtimeValueKind::ArrivalEstimate,
-            RealtimeValue::ServiceCondition(_) => RealtimeValueKind::ServiceCondition,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RealtimeValueKind {
-    ArrivalEstimate,
-    ServiceCondition,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceConditionState {

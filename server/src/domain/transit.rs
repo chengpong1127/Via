@@ -294,11 +294,6 @@ impl TransitNetwork {
         }
     }
 
-    pub fn with_default_transfer_seconds(mut self, seconds: u32) -> Self {
-        self.default_transfer_seconds = seconds;
-        self
-    }
-
     pub fn with_routes(mut self, routes: Vec<TransitRoute>) -> Self {
         self.routes = routes;
         self
@@ -558,10 +553,6 @@ impl TransitNetwork {
             .validate()
             .map_err(TransitArtifactError::Invalid)
             .map(|_| network)
-    }
-
-    pub fn canonical_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&self.clone().canonicalize())
     }
 
     pub fn revisions(&self) -> (&str, &str) {

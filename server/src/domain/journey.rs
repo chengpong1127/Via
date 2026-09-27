@@ -301,9 +301,3 @@ pub enum PlanningError {
     TemporarilyUnavailable,
     Internal,
 }
-
-impl PlanningError {
-    pub fn is_temporary(&self) -> bool {
-        matches!(self, Self::TemporarilyUnavailable)
-    }
-}

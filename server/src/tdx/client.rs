@@ -46,14 +46,6 @@ impl TdxCredentials {
             client_secret,
         })
     }
-
-    pub fn client_id(&self) -> &str {
-        &self.client_id
-    }
-
-    pub(crate) fn client_secret(&self) -> &str {
-        &self.client_secret
-    }
 }
 
 impl fmt::Debug for TdxCredentials {
@@ -174,7 +166,7 @@ impl TdxClient {
     }
 
     /// Return a cached process-local OAuth token, refreshing it before expiry.
-    pub async fn access_token(&self) -> Result<String, TdxClientError> {
+    async fn access_token(&self) -> Result<String, TdxClientError> {
         let mut cached = self.token.lock().await;
         if cached
             .as_ref()
@@ -188,8 +180,8 @@ impl TdxClient {
             .post(self.token_url.clone())
             .form(&[
                 ("grant_type", "client_credentials"),
-                ("client_id", self.credentials.client_id()),
-                ("client_secret", self.credentials.client_secret()),
+                ("client_id", self.credentials.client_id.as_str()),
+                ("client_secret", self.credentials.client_secret.as_str()),
             ])
             .send()
             .await

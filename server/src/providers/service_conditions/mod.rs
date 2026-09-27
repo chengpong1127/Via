@@ -15,12 +15,12 @@ use moka::future::Cache;
 
 use crate::domain::{
     ids::TransitPatternId,
-    realtime::{FreshnessReason, FreshnessState, NormalizedRealtimeValue},
+    realtime::{FreshnessState, NormalizedRealtimeValue},
 };
 
 pub mod tdx;
 
-pub use crate::domain::realtime::{RealtimeValue, RealtimeValueKind};
+pub use crate::domain::realtime::RealtimeValue;
 pub use tdx::TdxServiceConditionProvider;
 
 pub const DEFAULT_SERVICE_CONDITION_CACHE_TTL: Duration = Duration::from_secs(45);
@@ -113,17 +113,6 @@ pub enum ServiceConditionError {
 }
 
 impl ServiceConditionError {
-    pub fn freshness_reason(&self) -> FreshnessReason {
-        match self {
-            Self::TimedOut => FreshnessReason::TimedOut,
-            Self::RateLimited => FreshnessReason::RateLimited,
-            Self::TemporarilyUnavailable | Self::InvalidConfiguration => {
-                FreshnessReason::SourceError
-            }
-            Self::RejectedPayload | Self::InvalidResponse => FreshnessReason::RejectedPayload,
-        }
-    }
-
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
@@ -144,7 +133,6 @@ pub trait ServiceConditionProvider: Send + Sync {
 pub struct CachedServiceConditionProvider {
     inner: Arc<dyn ServiceConditionProvider>,
     condition_cache: Cache<TransitPatternId, Arc<Vec<NormalizedRealtimeValue>>>,
-    ttl: Duration,
     metrics: ServiceConditionMetrics,
 }
 
@@ -158,13 +146,8 @@ impl CachedServiceConditionProvider {
         Self {
             inner,
             condition_cache: Cache::builder().time_to_live(ttl).build(),
-            ttl,
             metrics: ServiceConditionMetrics::default(),
         }
-    }
-
-    pub fn ttl(&self) -> Duration {
-        self.ttl
     }
 
     pub fn metrics(&self) -> ServiceConditionMetrics {

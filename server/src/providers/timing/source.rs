@@ -186,11 +186,6 @@ impl DepartureDispatcher {
             .collect();
         Self { network, sources }
     }
-
-    pub fn with_source(mut self, source: Arc<dyn TransitDepartureSource>) -> Self {
-        self.sources.insert(source.mode(), source);
-        self
-    }
 }
 
 impl DepartureDispatcher {

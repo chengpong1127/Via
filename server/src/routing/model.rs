@@ -3,7 +3,7 @@
 use time::OffsetDateTime;
 
 use crate::domain::{
-    ids::{BoardingPointId, TransitPatternId},
+    ids::BoardingPointId,
     realtime::NormalizedRealtimeValue,
     transit::TransitMode,
     transit_timing::{DepartureError, EffectiveTrip, TimingBasis, TimingReliability},
@@ -133,11 +133,6 @@ impl TransitQuery {
         self
     }
 
-    pub fn with_latest_arrival(mut self, latest_arrival: OffsetDateTime) -> Self {
-        self.latest_arrival = Some(latest_arrival);
-        self
-    }
-
     pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
         self.max_static_corridors = max_static_corridors.max(1);
         self
@@ -154,15 +149,6 @@ pub enum JourneySegment {
     WalkingTransfer {
         shortcut: TransferShortcut,
     },
-}
-
-impl JourneySegment {
-    pub fn pattern_id(&self) -> Option<&TransitPatternId> {
-        match self {
-            Self::Transit { trip, .. } => Some(&trip.pattern_id),
-            Self::WalkingTransfer { .. } => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
