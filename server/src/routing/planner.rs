@@ -2,7 +2,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use time::Duration;
+use time::{Duration, OffsetDateTime};
 
 use crate::domain::{
     bikeshare::BikeShareNetwork,
@@ -16,7 +16,7 @@ use super::{
     evaluator::{self, Phase2EvaluationStats},
     model::{RoutingError, TransitQuery},
     path::JourneyVariant,
-    static_search,
+    static_search::{self, StaticCorridorStep},
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -32,29 +32,8 @@ pub struct TransitPlanner {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransitPlannerStats {
-    pub reachable_boarding_opportunities: usize,
-    pub reachable_patterns: usize,
-    pub realtime_stops_requested: usize,
-    pub transit_departure_lookups: usize,
-    pub static_search_states_expanded: usize,
-    pub static_pattern_scans: usize,
-    pub static_positions_scanned: usize,
-    pub static_complete_candidates_found: usize,
-    pub static_unique_corridors_found: usize,
-    pub static_corridors_retained: usize,
-    pub static_corridor_patterns: usize,
-    pub static_corridor_positions: usize,
-    pub static_corridor_bus_stops: usize,
-    pub static_search_latency_ms: u64,
     pub timing_snapshot_latency_ms: u64,
-    pub phase2_latency_us: u64,
     pub phase2_evaluation: Phase2EvaluationStats,
-    pub kth_static_duration_seconds: Option<u32>,
-    pub exact_schedule_cost: usize,
-    pub derived_bus_cost: usize,
-    pub estimated_cost: usize,
-    pub mixed_cost: usize,
-    pub static_search_limit_reached: bool,
     pub phase1: static_search::StaticSearchStats,
     pub bike_share_enabled: bool,
     pub relevant_bike_stations: usize,
@@ -64,7 +43,6 @@ pub struct TransitPlannerStats {
     pub bike_station_pairs: usize,
     pub bike_matrix_requests: usize,
     pub bike_realizations_feasible: usize,
-    pub bike_realizations_selected: usize,
     pub multimodal_variants: usize,
 }
 
@@ -114,25 +92,6 @@ impl TransitPlanner {
         let (corridor, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
         let mut planner_stats = TransitPlannerStats {
-            reachable_boarding_opportunities: corridor.timing_positions().count(),
-            reachable_patterns: corridor.pattern_count(),
-            realtime_stops_requested: corridor.bus_stops().len(),
-            static_search_states_expanded: static_stats.static_search_states_expanded,
-            static_pattern_scans: static_stats.static_pattern_scans,
-            static_positions_scanned: static_stats.static_positions_scanned,
-            static_complete_candidates_found: static_stats.static_complete_candidates_found,
-            static_unique_corridors_found: static_stats.static_unique_corridors_found,
-            static_corridors_retained: static_stats.static_corridors_retained,
-            static_corridor_patterns: static_stats.static_corridor_patterns,
-            static_corridor_positions: static_stats.static_corridor_positions,
-            static_corridor_bus_stops: static_stats.static_corridor_bus_stops,
-            static_search_latency_ms: static_stats.static_search_latency_ms,
-            kth_static_duration_seconds: static_stats.kth_static_duration_seconds,
-            exact_schedule_cost: static_stats.exact_schedule_cost,
-            derived_bus_cost: static_stats.derived_bus_cost,
-            estimated_cost: static_stats.estimated_cost,
-            mixed_cost: static_stats.mixed_cost,
-            static_search_limit_reached: static_stats.static_search_limit_reached,
             phase1: static_stats.clone(),
             ..TransitPlannerStats::default()
         };
@@ -250,9 +209,17 @@ impl TransitPlanner {
             .collect::<Vec<_>>();
         let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
-        let bike_enabled = query.allow_bike_share && self.bike.is_some();
+        let has_surface_transfer = corridor.retained().iter().any(|retained| {
+            retained
+                .steps
+                .iter()
+                .any(|step| matches!(step, StaticCorridorStep::SurfaceTransfer { .. }))
+        });
+        let bike_enabled = query.allow_bike_share && self.bike.is_some() && has_surface_transfer;
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
+            // TODO: future DepartAt/ArriveBy inventory is undefined; this is a current-count hint,
+            // not a forecast or guarantee of future availability.
             let (snapshot, bike_snapshot) = tokio::join!(
                 self.timing.load_snapshot(timing_queries),
                 bike.availability_source.snapshot()
@@ -294,7 +261,10 @@ impl TransitPlanner {
         }
 
         let (bike_realizations, bike_stats) = match (self.bike.as_ref(), bike_snapshot.as_deref()) {
-            (Some(bike), Some(snapshot)) => bike.movement_realizations(&corridor, snapshot).await,
+            (Some(bike), Some(snapshot)) => {
+                bike.movement_realizations(&corridor, snapshot, OffsetDateTime::now_utc())
+                    .await
+            }
             _ => (Default::default(), BikePlanningStats::default()),
         };
         let (variants, phase2_stats) = evaluator::evaluate_with_realizations(
@@ -304,8 +274,6 @@ impl TransitPlanner {
             query,
             &bike_realizations,
         )?;
-        planner_stats.phase2_latency_us = phase2_stats.phase2_latency_us;
-        planner_stats.transit_departure_lookups = phase2_stats.transit_departure_lookups;
         planner_stats.phase2_evaluation = phase2_stats;
         planner_stats.bike_share_enabled = bike_enabled;
         planner_stats.relevant_bike_stations = bike_stats.relevant_bike_stations;
@@ -315,8 +283,6 @@ impl TransitPlanner {
         planner_stats.bike_station_pairs = bike_stats.station_pairs;
         planner_stats.bike_matrix_requests = bike_stats.matrix_requests;
         planner_stats.bike_realizations_feasible = bike_stats.realizations_feasible;
-        planner_stats.bike_realizations_selected =
-            planner_stats.phase2_evaluation.bike_realizations_selected;
         planner_stats.multimodal_variants = variants.len();
         tracing::debug!(
             target: "via_server::routing",
@@ -328,7 +294,7 @@ impl TransitPlanner {
             bike_station_pairs = planner_stats.bike_station_pairs,
             bike_matrix_requests = planner_stats.bike_matrix_requests,
             bike_realizations_feasible = planner_stats.bike_realizations_feasible,
-            bike_realizations_selected = planner_stats.bike_realizations_selected,
+            bike_realizations_selected = planner_stats.phase2_evaluation.bike_realizations_selected,
             multimodal_variants = planner_stats.multimodal_variants,
             "Phase 2 corridor evaluation"
         );
@@ -486,31 +452,59 @@ mod tests {
     }
 
     fn multiple_mode_corridors_network() -> Arc<TransitRuntime> {
-        let patterns = [TransitMode::Bus, TransitMode::Metro]
-            .into_iter()
-            .map(|mode| {
-                TransitPattern::fixture(
-                    TransitPatternId::new(format!("{mode:?}-direct")),
-                    mode,
-                    format!("{mode:?}"),
-                    "destination",
-                    vec![
-                        BoardingPointId::new("origin"),
-                        BoardingPointId::new("destination"),
-                    ],
-                )
-            })
-            .collect();
-        let trips = ["Bus", "Metro"]
-            .into_iter()
-            .map(|mode| scheduled_trip(&format!("{mode}-trip"), &format!("{mode}-direct"), 120))
-            .collect();
-        Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::fixture(
+        let pattern = |id: &str, mode, from: &str, to: &str| {
+            TransitPattern::fixture(
+                TransitPatternId::new(id),
+                mode,
+                id,
+                to,
+                vec![BoardingPointId::new(from), BoardingPointId::new(to)],
+            )
+        };
+        let network = TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
-            vec![stop("origin"), stop("destination")],
-            patterns,
-            trips,
-        ))))
+            [
+                "origin",
+                "bus-end-a",
+                "metro-start-a",
+                "bus-end-b",
+                "metro-start-b",
+                "destination",
+            ]
+            .into_iter()
+            .map(stop)
+            .collect(),
+            vec![
+                pattern("bus-a", TransitMode::Bus, "origin", "bus-end-a"),
+                pattern(
+                    "metro-a",
+                    TransitMode::Metro,
+                    "metro-start-a",
+                    "destination",
+                ),
+                pattern("bus-b", TransitMode::Bus, "origin", "bus-end-b"),
+                pattern(
+                    "metro-b",
+                    TransitMode::Metro,
+                    "metro-start-b",
+                    "destination",
+                ),
+            ],
+            Vec::new(),
+        )
+        .with_transfer_edges(vec![
+            crate::domain::transit::TransferEdge::new(
+                BoardingPointId::new("bus-end-a"),
+                BoardingPointId::new("metro-start-a"),
+                60,
+            ),
+            crate::domain::transit::TransferEdge::new(
+                BoardingPointId::new("bus-end-b"),
+                BoardingPointId::new("metro-start-b"),
+                60,
+            ),
+        ]);
+        Arc::new(TransitRuntime::new(Arc::new(network)))
     }
 
     fn query(k: usize) -> TransitQuery {
@@ -561,8 +555,8 @@ mod tests {
                 .iter()
                 .any(|query| query.pattern_id == TransitPatternId::new("realtime-fast"))
         );
-        assert_eq!(stats.static_corridor_positions, 2);
-        assert_eq!(stats.static_corridors_retained, 1);
+        assert_eq!(stats.phase1.static_corridor_positions, 2);
+        assert_eq!(stats.phase1.static_corridors_retained, 1);
     }
 
     #[tokio::test]
@@ -584,12 +578,32 @@ mod tests {
 
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
-        assert_eq!(stats.static_corridors_retained, 1);
+        assert_eq!(stats.phase1.static_corridors_retained, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].transit_pattern_sequence(),
             vec![TransitPatternId::new("realtime-fast")]
         );
+    }
+
+    #[tokio::test]
+    async fn phase2_expansion_limit_is_returned_to_the_planner_caller() {
+        let loader = Arc::new(RecordingTimingLoader {
+            trips: HashMap::from([(
+                TransitPatternId::new("static-fast"),
+                vec![effective_trip("static-fast-live", "static-fast", 20)],
+            )]),
+            ..RecordingTimingLoader::default()
+        });
+        let planner = TransitPlanner::new(network(), loader);
+        let mut query = query(1);
+        query.origin_access.push(query.origin_access[0].clone());
+        query.max_expansions = 1;
+
+        assert!(matches!(
+            planner.plan(query).await,
+            Err(RoutingError::Phase2EvaluationLimit)
+        ));
     }
 
     #[tokio::test]
@@ -606,12 +620,34 @@ mod tests {
             );
         let query = query(2)
             .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
+            .with_limits(1, 16, 2_000, 3, 4 * 60 * 60)
             .with_bike_share(true);
 
         let (_, stats) = planner.plan_with_stats(query).await.unwrap();
 
-        assert_eq!(stats.static_corridors_retained, 2);
+        assert_eq!(stats.phase1.static_corridors_retained, 2);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn bike_availability_is_not_loaded_without_a_surface_transfer() {
+        let timing = Arc::new(RecordingTimingLoader::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let planner = TransitPlanner::new(network(), timing).with_bike_share(
+            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
+            Arc::new(CountingBikeAvailabilitySource {
+                calls: calls.clone(),
+            }),
+            Arc::new(FakeStreetRouter::builder().build()),
+        );
+
+        let (_, stats) = planner
+            .plan_with_stats(query(1).with_bike_share(true))
+            .await
+            .unwrap();
+
+        assert_eq!(stats.phase1.static_corridors_retained, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

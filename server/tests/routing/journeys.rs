@@ -1,9 +1,13 @@
 use serde_json::{Value, json};
-use via_server::street::{FakeStreetRouter, StreetTravelMode};
+use via_server::{
+    domain::journey::PlanningError,
+    routing::RoutingLimits,
+    street::{FakeStreetRouter, StreetTravelMode},
+};
 
 use super::fixtures::{
     FixtureRealtime, leg_modes, near_stop, network, option_for_patterns, request, route_body,
-    transit_street,
+    route_body_with_limits, transit_street,
 };
 use crate::support::routing::{coordinate, path};
 
@@ -153,6 +157,48 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
         option["legs"][1]["arrival_time"].as_str().unwrap()
             <= option["legs"][3]["departure_time"].as_str().unwrap()
     );
+}
+
+#[tokio::test]
+async fn phase2_safety_limit_is_returned_as_a_planning_error() {
+    let network = network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M3-BLUE");
+    let limits = RoutingLimits {
+        max_search_expansions: 1,
+        ..RoutingLimits::default()
+    };
+
+    let result = route_body_with_limits(
+        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        limits,
+    )
+    .await;
+
+    assert_eq!(result.unwrap_err(), PlanningError::Internal);
+}
+
+#[tokio::test]
+async fn phase1_safety_limit_is_not_reported_as_an_empty_result() {
+    let network = network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M3-BLUE");
+    let limits = RoutingLimits {
+        max_static_search_expansions: 1,
+        ..RoutingLimits::default()
+    };
+
+    let result = route_body_with_limits(
+        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        limits,
+    )
+    .await;
+
+    assert_eq!(result.unwrap_err(), PlanningError::Internal);
 }
 
 #[tokio::test]

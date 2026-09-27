@@ -71,7 +71,7 @@ impl BikeStationAccess {
         }
     }
 
-    pub fn has_direction(&self) -> bool {
+    fn has_direction(&self) -> bool {
         self.walk_to_station.is_some() || self.walk_from_station.is_some()
     }
 }
@@ -126,18 +126,19 @@ impl BikeAvailabilitySnapshot {
         self.stations.get(id)
     }
 
-    pub fn is_fresh(
+    fn is_fresh(
         &self,
         availability: &BikeStationAvailability,
         now: OffsetDateTime,
         max_age: Duration,
     ) -> bool {
         let age = now - availability.observed_at;
-        age >= Duration::ZERO && age <= max_age
+        age >= -MAX_BIKE_AVAILABILITY_CLOCK_SKEW && age <= max_age
     }
 }
 
 pub const DEFAULT_BIKE_AVAILABILITY_MAX_AGE: Duration = Duration::seconds(120);
+pub const MAX_BIKE_AVAILABILITY_CLOCK_SKEW: Duration = Duration::seconds(300);
 
 pub struct BikeAvailabilityView<'a> {
     network: &'a BikeShareNetwork,
@@ -147,7 +148,7 @@ pub struct BikeAvailabilityView<'a> {
 }
 
 impl<'a> BikeAvailabilityView<'a> {
-    pub fn new(network: &'a BikeShareNetwork, snapshot: &'a BikeAvailabilitySnapshot) -> Self {
+    fn new(network: &'a BikeShareNetwork, snapshot: &'a BikeAvailabilitySnapshot) -> Self {
         Self::at(
             network,
             snapshot,
@@ -156,7 +157,7 @@ impl<'a> BikeAvailabilityView<'a> {
         )
     }
 
-    pub fn at(
+    fn at(
         network: &'a BikeShareNetwork,
         snapshot: &'a BikeAvailabilitySnapshot,
         now: OffsetDateTime,
@@ -194,7 +195,7 @@ impl<'a> BikeAvailabilityView<'a> {
             .collect()
     }
 
-    pub fn station_usable_as_pickup(&self, station_id: &BikeStationId) -> bool {
+    fn station_usable_as_pickup(&self, station_id: &BikeStationId) -> bool {
         self.station_is_serviceable(station_id)
             && self
                 .snapshot
@@ -202,7 +203,7 @@ impl<'a> BikeAvailabilityView<'a> {
                 .is_some_and(|availability| availability.available_bikes > 0)
     }
 
-    pub fn station_usable_as_dropoff(&self, station_id: &BikeStationId) -> bool {
+    fn station_usable_as_dropoff(&self, station_id: &BikeStationId) -> bool {
         self.station_is_serviceable(station_id)
             && self
                 .snapshot
@@ -369,7 +370,7 @@ impl BikeShareNetwork {
         Ok(())
     }
 
-    pub fn canonicalize(mut self) -> Self {
+    pub(crate) fn canonicalize(mut self) -> Self {
         self.stations.sort_by(|left, right| {
             left.id
                 .as_str()

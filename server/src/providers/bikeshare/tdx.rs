@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use futures_util::future::try_join_all;
 use moka::future::Cache;
 use serde::Deserialize;
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
     domain::bikeshare::{
         BikeAvailabilitySnapshot, BikeShareNetwork, BikeStationAvailability,
-        DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
+        DEFAULT_BIKE_AVAILABILITY_MAX_AGE, MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
     },
     tdx::{TdxClient, TdxClientError, bike_station_id},
 };
@@ -22,15 +22,12 @@ use crate::{
 use super::{BikeAvailabilityError, BikeAvailabilitySource, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL};
 
 const SUPPORTED_CITIES: [(&str, &str); 2] = [("Taipei", "Taipei"), ("NewTaipei", "NewTaipei")];
-const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::seconds(300);
 
 #[derive(Clone)]
 pub struct TdxBikeAvailabilitySource {
     network: Arc<BikeShareNetwork>,
     tdx_client: Arc<TdxClient>,
     snapshot_cache: Cache<(), Arc<BikeAvailabilitySnapshot>>,
-    cache_ttl: Duration,
-    max_observation_age: TimeDuration,
 }
 
 impl TdxBikeAvailabilitySource {
@@ -48,26 +45,12 @@ impl TdxBikeAvailabilitySource {
             network,
             tdx_client,
             snapshot_cache: Cache::builder().time_to_live(cache_ttl).build(),
-            cache_ttl,
-            max_observation_age: DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
         }
-    }
-
-    pub fn with_max_observation_age(mut self, max_observation_age: TimeDuration) -> Self {
-        self.max_observation_age = max_observation_age;
-        self
-    }
-
-    pub fn cache_ttl(&self) -> Duration {
-        self.cache_ttl
-    }
-
-    pub async fn clear_cache(&self) {
-        self.snapshot_cache.invalidate_all();
     }
 
     async fn fetch_snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
         let received_at = OffsetDateTime::now_utc();
+        // A snapshot covers both service areas; do not cache partial city inventory as complete.
         let city_payloads = try_join_all(
             SUPPORTED_CITIES
                 .into_iter()
@@ -81,9 +64,7 @@ impl TdxBikeAvailabilitySource {
         for (city, records) in city_payloads {
             record_count += records.len();
             for record in records {
-                let Some(availability) =
-                    normalize_record(city, record, received_at, self.max_observation_age)
-                else {
+                let Some(availability) = normalize_record(city, record, received_at) else {
                     continue;
                 };
                 if self.network.station(&availability.station_id).is_none() {
@@ -174,7 +155,6 @@ fn normalize_record(
     city: &str,
     record: TdxBikeAvailabilityRecord,
     received_at: OffsetDateTime,
-    max_observation_age: TimeDuration,
 ) -> Option<BikeStationAvailability> {
     let station_uid = record.station_uid?.trim().to_owned();
     if station_uid.is_empty() {
@@ -193,10 +173,7 @@ fn normalize_record(
         None => update_time,
     };
     let age = received_at - observed_at;
-    if age < TimeDuration::ZERO
-        || age > max_observation_age
-        || observed_at > received_at + MAX_PROVIDER_CLOCK_SKEW
-    {
+    if age < -MAX_BIKE_AVAILABILITY_CLOCK_SKEW || age > DEFAULT_BIKE_AVAILABILITY_MAX_AGE {
         return None;
     }
     Some(BikeStationAvailability::new(

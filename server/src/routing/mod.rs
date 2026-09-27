@@ -27,5 +27,3 @@ pub use planner::{TransitPlanner, TransitPlannerStats};
 pub use service::{RoutingLimits, RoutingService};
 pub use static_search::{CandidateCorridor, StaticCorridor, StaticCostSource, StaticSearchStats};
 pub use transfers::{TransferShortcut, TransferShortcutIndex};
-
-pub type RouteQuery = crate::api::PlanningRequest;

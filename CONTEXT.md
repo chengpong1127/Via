@@ -55,14 +55,20 @@ calling the synchronous, provider-free corridor evaluator. Bus realtime is
 fetched by unique stop and scope, then filtered locally. Other modes keep their
 provider-native batching and static fallback behavior.
 
-When BikeShare is selected, one availability snapshot is loaded alongside
-transit timing. The evaluator considers walking and feasible YouBike choices
-only for retained surface transfers. A YouBike choice requires a fresh,
-serviceable pickup with a bike and a return station with a dock. It includes
-walks to and from the stations and a bicycle route. Candidate station choices
-are bounded to the three nearest usable pickups and three nearest usable
-dropoffs per transfer anchor, so each structural movement evaluates at most
-nine pairs. BikeShare never adds transit connectivity, changes an anchor, or
+When BikeShare is selected and at least one retained corridor contains a
+surface transfer, one availability snapshot is loaded alongside transit timing.
+The evaluator considers walking and feasible YouBike choices only for retained
+surface transfers. A YouBike choice requires a fresh, serviceable pickup with a
+bike and a return station with a dock. It includes walks to and from the
+stations and a bicycle route. Candidate station choices are bounded to the
+three nearest usable pickups and three nearest usable dropoffs per transfer
+anchor, so each structural movement evaluates at most nine pairs. With the
+current limits of 100 retained corridors and four transit transfers, a corridor
+has at most six surface transfers (one access-side, four between transit legs,
+and one egress-side), bounding request preparation to 5,400 station-pair needs
+before deduplication. Bike availability is observed at request time; future
+DepartAt and ArriveBy inventory is not forecast, so it cannot guarantee future
+availability. BikeShare never adds transit connectivity, changes an anchor, or
 creates a direct BikeShare-only route. Direct walking remains walking-only.
 
 Static transfer edges are directional facts in `TransitNetwork.transfer_edges`.

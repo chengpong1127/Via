@@ -207,6 +207,40 @@ async fn unusable_counts_status_stale_observations_and_directionality_are_filter
 }
 
 #[tokio::test]
+async fn provider_clock_skew_within_the_allowance_is_tolerated_but_excess_is_rejected() {
+    let tolerated = source_with_routes(
+        json!([availability("TPE-1", 1, 2, 1, -TimeDuration::seconds(60),)]),
+        json!([]),
+    )
+    .await;
+    let snapshot = tolerated.snapshot().await.unwrap();
+    assert_eq!(
+        snapshot
+            .station(&BikeStationId::new("tdx:Taipei:TPE-1"))
+            .unwrap()
+            .available_bikes,
+        2
+    );
+    assert_eq!(
+        network()
+            .availability_view(&snapshot)
+            .usable_pickups(&BoardingPointId::new("pickup"))
+            .len(),
+        1
+    );
+
+    let excessive = source_with_routes(
+        json!([availability("TPE-1", 1, 2, 1, -TimeDuration::seconds(301),)]),
+        json!([]),
+    )
+    .await;
+    assert_eq!(
+        excessive.snapshot().await.unwrap_err(),
+        BikeAvailabilityError::RejectedPayload
+    );
+}
+
+#[tokio::test]
 async fn fresh_snapshot_is_cached_and_expiry_refreshes_both_city_requests() {
     let taipei_calls = Arc::new(AtomicUsize::new(0));
     let new_taipei_calls = Arc::new(AtomicUsize::new(0));
@@ -365,6 +399,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
             }),
         );
     let failing = TdxBikeAvailabilitySource::new(network(), spawn_tdx_fixture(app).await);
+    // One successful city feed does not turn a failed two-city snapshot into complete inventory.
     assert!(matches!(
         failing.snapshot().await,
         Err(BikeAvailabilityError::TemporarilyUnavailable)

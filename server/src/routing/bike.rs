@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+use time::OffsetDateTime;
 
 use crate::{
     domain::bikeshare::{
@@ -76,16 +77,15 @@ impl BikeSegmentPlanner {
         &self,
         corridor: &CandidateCorridor,
         snapshot: &BikeAvailabilitySnapshot,
+        now: OffsetDateTime,
     ) -> (BikeMovementRealizations, BikePlanningStats) {
         if corridor.is_empty() {
             return (HashMap::new(), BikePlanningStats::default());
         }
 
-        let view = self.network.availability_view_at(
-            snapshot,
-            snapshot.received_at,
-            DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
-        );
+        let view =
+            self.network
+                .availability_view_at(snapshot, now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE);
         let mut pair_needs = HashMap::<StationPair, Vec<PairNeed>>::new();
         let mut relevant_stations = HashSet::new();
         let mut movements = HashSet::new();
@@ -378,9 +378,22 @@ fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Option<
 
 #[cfg(test)]
 mod tests {
+    use time::{Time, macros::datetime};
+
     use crate::{
         api::RequestCoordinate,
-        domain::{bikeshare::BikeStation, ids::BoardingPointId},
+        domain::{
+            bikeshare::{
+                BikeAvailabilitySnapshot, BikeShareNetwork, BikeStation, BikeStationAccess,
+                BikeStationAvailability,
+            },
+            ids::BoardingPointId,
+            transit::TransitNetwork,
+            transit_runtime::TransitRuntime,
+        },
+        providers::UnavailableBikeAvailabilitySource,
+        routing::{StaticCorridor, StaticCostSource, static_search::StaticCorridorStep},
+        street::FakeStreetRouter,
     };
 
     use super::*;
@@ -436,5 +449,100 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["station-0", "station-1", "station-2"]
         );
+    }
+
+    #[tokio::test]
+    async fn cached_bike_availability_is_checked_at_the_request_time() {
+        let from = BoardingPointId::new("from");
+        let to = BoardingPointId::new("to");
+        let pickup_id = BikeStationId::new("tdx:Taipei:pickup");
+        let dropoff_id = BikeStationId::new("tdx:Taipei:dropoff");
+        let bike_network = Arc::new(
+            BikeShareNetwork::new(vec![
+                BikeStation::new(
+                    pickup_id.clone(),
+                    "Pickup",
+                    RequestCoordinate {
+                        latitude: 25.0,
+                        longitude: 121.5,
+                    },
+                ),
+                BikeStation::new(
+                    dropoff_id.clone(),
+                    "Dropoff",
+                    RequestCoordinate {
+                        latitude: 25.001,
+                        longitude: 121.501,
+                    },
+                ),
+            ])
+            .with_access_links(vec![
+                BikeStationAccess::new(
+                    from.clone(),
+                    pickup_id.clone(),
+                    Some(BikeWalkingAccess::new(10, 50)),
+                    None,
+                ),
+                BikeStationAccess::new(
+                    to.clone(),
+                    dropoff_id.clone(),
+                    None,
+                    Some(BikeWalkingAccess::new(10, 50)),
+                ),
+            ])
+            .with_revision("fixture"),
+        );
+        let transit = TransitRuntime::new(Arc::new(TransitNetwork::fixture(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )));
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &transit,
+            vec![StaticCorridor {
+                access_stop_id: from.clone(),
+                egress_stop_id: to.clone(),
+                theoretical_duration_seconds: 0,
+                cost_source: StaticCostSource::OptimisticEstimate,
+                steps: vec![StaticCorridorStep::SurfaceTransfer {
+                    from,
+                    to,
+                    walking_duration_seconds: 60,
+                }],
+            }],
+        );
+        let received_at = datetime!(2026-09-21 10:00 UTC);
+        let mut stations = HashMap::new();
+        for (station_id, bikes, docks) in [(pickup_id, 1, 0), (dropoff_id, 0, 1)] {
+            stations.insert(
+                station_id.clone(),
+                BikeStationAvailability::new(
+                    station_id,
+                    bikes,
+                    docks,
+                    true,
+                    received_at - time::Duration::seconds(110),
+                ),
+            );
+        }
+        let snapshot = BikeAvailabilitySnapshot::new(received_at, stations);
+        let planner = BikeSegmentPlanner::new(
+            bike_network,
+            Arc::new(UnavailableBikeAvailabilitySource),
+            Arc::new(FakeStreetRouter::builder().build()),
+        );
+
+        let (_, stats) = planner
+            .movement_realizations(
+                &corridor,
+                &snapshot,
+                received_at + time::Duration::seconds(11),
+            )
+            .await;
+
+        assert_eq!(stats.pickup_stations_considered, 0);
+        assert_eq!(stats.dropoff_stations_considered, 0);
+        assert_eq!(stats.station_pairs, 0);
     }
 }

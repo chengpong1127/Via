@@ -8,6 +8,7 @@ use via_server::{
     domain::{
         bikeshare::BikeShareNetwork,
         ids::BoardingPointId,
+        journey::PlanningError,
         realtime::FreshnessPolicy,
         transit::{TransferEdge, TransitNetwork},
         transit_runtime::TransitRuntime,
@@ -87,7 +88,9 @@ pub(crate) async fn route_body(
     realtime: FixtureRealtime,
     body: Value,
 ) -> Value {
-    route_body_inner(street, realtime, body, None).await
+    route_body_inner(street, realtime, body, None, RoutingLimits::default())
+        .await
+        .unwrap()
 }
 
 pub(crate) async fn route_body_with_bike(
@@ -97,7 +100,24 @@ pub(crate) async fn route_body_with_bike(
     network: Arc<BikeShareNetwork>,
     availability_source: Arc<dyn BikeAvailabilitySource>,
 ) -> Value {
-    route_body_inner(street, realtime, body, Some((network, availability_source))).await
+    route_body_inner(
+        street,
+        realtime,
+        body,
+        Some((network, availability_source)),
+        RoutingLimits::default(),
+    )
+    .await
+    .unwrap()
+}
+
+pub(crate) async fn route_body_with_limits(
+    street: FakeStreetRouter,
+    realtime: FixtureRealtime,
+    body: Value,
+    limits: RoutingLimits,
+) -> Result<Value, PlanningError> {
+    route_body_inner(street, realtime, body, None, limits).await
 }
 
 async fn route_body_inner(
@@ -105,7 +125,8 @@ async fn route_body_inner(
     realtime: FixtureRealtime,
     body: Value,
     bike: Option<(Arc<BikeShareNetwork>, Arc<dyn BikeAvailabilitySource>)>,
-) -> Value {
+    limits: RoutingLimits,
+) -> Result<Value, PlanningError> {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
     let network = Arc::new(TransitRuntime::new(Arc::new(network())));
@@ -154,9 +175,9 @@ async fn route_body_inner(
         cached,
         bike_network,
         availability_source,
-        RoutingLimits::default(),
+        limits,
     );
-    serde_json::to_value(service.route(request, new_request_id()).await.unwrap()).unwrap()
+    Ok(serde_json::to_value(service.route(request, new_request_id()).await?).unwrap())
 }
 
 pub(crate) fn option_for_patterns<'a>(body: &'a Value, services: &[&str]) -> &'a Value {

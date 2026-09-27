@@ -181,14 +181,6 @@ pub struct JourneyCandidate {
 }
 
 impl JourneyCandidate {
-    pub fn transit_pattern_sequence(&self) -> Vec<TransitPatternId> {
-        self.segments
-            .iter()
-            .filter_map(JourneySegment::pattern_id)
-            .cloned()
-            .collect()
-    }
-
     pub fn dominates(&self, other: &Self) -> bool {
         let no_worse = self.arrival_time <= other.arrival_time
             && self.walking_seconds <= other.walking_seconds
@@ -241,6 +233,8 @@ pub enum RoutingError {
     InvalidQuery,
     #[error("static corridor search exceeded its safety expansion bound")]
     StaticSearchLimit,
+    #[error("fixed-corridor evaluation exceeded its safety expansion bound")]
+    Phase2EvaluationLimit,
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
 }

@@ -28,8 +28,6 @@ use super::fixtures::{
 };
 use crate::support::routing::{path, stop_coordinate};
 
-const START: OffsetDateTime = time::macros::datetime!(2026-08-31 10:00 UTC);
-
 #[derive(Clone)]
 struct FixtureAvailabilitySource {
     snapshot: Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>,
@@ -45,17 +43,18 @@ impl BikeAvailabilitySource for FixtureAvailabilitySource {
 }
 
 fn bike_snapshot(ids: &[(&str, u32, u32)]) -> Arc<BikeAvailabilitySnapshot> {
+    let observed_at = OffsetDateTime::now_utc();
     let stations = ids
         .iter()
         .map(|(id, bikes, slots)| {
             let id = BikeStationId::new(*id);
             (
                 id.clone(),
-                BikeStationAvailability::new(id, *bikes, *slots, true, START),
+                BikeStationAvailability::new(id, *bikes, *slots, true, observed_at),
             )
         })
         .collect::<HashMap<_, _>>();
-    Arc::new(BikeAvailabilitySnapshot::new(START, stations))
+    Arc::new(BikeAvailabilitySnapshot::new(observed_at, stations))
 }
 
 fn segment_network(
@@ -149,7 +148,7 @@ async fn bike_does_not_replace_a_transit_leg() {
     )
     .await;
 
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
     let options = body["journey_options"].as_array().unwrap();
     assert!(
         options

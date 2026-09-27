@@ -827,10 +827,10 @@ pub fn generate(
                 has_multi_mode_family
             };
             structural_coverage_complete
-                && entry.state.lower_bound_seconds >= kth
+                && entry.state.lower_bound_seconds > kth
                 && frontier
                     .iter()
-                    .all(|queued| queued.state.lower_bound_seconds >= kth)
+                    .all(|queued| queued.state.lower_bound_seconds > kth)
         }) {
             break;
         }
@@ -1769,6 +1769,33 @@ mod tests {
 
         assert_eq!(surface.retained().len(), 2);
         assert_eq!(surface.pattern_count(), 4);
+    }
+
+    #[test]
+    fn top_k_search_expands_equal_cost_bounds_before_terminating() {
+        let network = network(
+            vec![
+                pattern("direct", TransitMode::Bus, &["o", "d"]),
+                pattern("first", TransitMode::Bus, &["o", "hub-from"]),
+                pattern("second", TransitMode::Bus, &["hub-to", "d"]),
+            ],
+            vec![
+                trip("direct-trip", "direct", &[0, 3]),
+                trip("first-trip", "first", &[0, 1]),
+                trip("second-trip", "second", &[0, 1]),
+            ],
+        )
+        .with_transfer_edges(vec![TransferEdge::new(id("hub-from"), id("hub-to"), 1)]);
+
+        let (surface, stats) = generate(
+            &TransitRuntime::new(std::sync::Arc::new(network.clone())),
+            &TransitTopologyIndex::new(&network),
+            &TransferShortcutIndex::from_network(&network),
+            &query("o", "d", &[TransitMode::Bus], 1, 1),
+        );
+
+        assert_eq!(surface.retained().len(), 1);
+        assert_eq!(stats.static_unique_corridors_found, 2);
     }
 
     #[test]

@@ -314,12 +314,13 @@ impl RoutingService {
                 match self.transit_planner.plan_with_stats(query).await {
                     Ok((candidates, planner_stats)) => {
                         stage_metrics.transit_reachable_boardings =
-                            planner_stats.reachable_boarding_opportunities;
-                        stage_metrics.transit_reachable_patterns = planner_stats.reachable_patterns;
+                            planner_stats.phase1.static_corridor_positions;
+                        stage_metrics.transit_reachable_patterns =
+                            planner_stats.phase1.static_corridor_patterns;
                         stage_metrics.transit_realtime_stops_requested =
-                            planner_stats.realtime_stops_requested;
+                            planner_stats.phase1.static_corridor_bus_stops;
                         stage_metrics.transit_departure_lookups =
-                            planner_stats.transit_departure_lookups;
+                            planner_stats.phase2_evaluation.transit_departure_lookups;
                         stage_metrics.transit_realtime_evidence_values = candidates
                             .iter()
                             .map(JourneyVariant::realtime_evidence_count)
@@ -351,8 +352,15 @@ impl RoutingService {
                         }
                     }
                     Err(error) => {
-                        if let super::model::RoutingError::Timing(timing) = &error {
-                            had_transient_failure |= timing.is_transient();
+                        match &error {
+                            super::model::RoutingError::Timing(timing) => {
+                                had_transient_failure |= timing.is_transient();
+                            }
+                            super::model::RoutingError::StaticSearchLimit
+                            | super::model::RoutingError::Phase2EvaluationLimit => {
+                                had_global_failure = true;
+                            }
+                            super::model::RoutingError::InvalidQuery => {}
                         }
                         tracing::error!(error = %error, "transit planning failed");
                     }

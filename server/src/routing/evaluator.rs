@@ -172,6 +172,12 @@ impl EvaluationPath {
             .map(|(_, shortcut)| shortcut.bicycle_duration_seconds)
             .fold(0, u32::saturating_add)
     }
+
+    fn same_timing_quality(&self, other: &Self) -> bool {
+        self.timing_reliability == other.timing_reliability
+            && self.timing_bases == other.timing_bases
+            && self.evidence == other.evidence
+    }
 }
 
 fn make_candidate(
@@ -205,6 +211,9 @@ struct EvaluatedCandidate {
 impl EvaluatedCandidate {
     fn dominates(&self, other: &Self) -> bool {
         self.bike_share_uses == other.bike_share_uses
+            && self.metrics.timing_reliability == other.metrics.timing_reliability
+            && self.metrics.timing_bases == other.metrics.timing_bases
+            && self.metrics.evidence == other.metrics.evidence
             && self.bicycle_seconds <= other.bicycle_seconds
             && (self.metrics.dominates(&other.metrics)
                 || (self.bicycle_seconds < other.bicycle_seconds
@@ -533,6 +542,19 @@ pub(super) fn evaluate_with_realizations(
         }
     }
 
+    if stats.expansion_limit_reached {
+        stats.phase2_latency_us = elapsed_micros(started_at);
+        tracing::error!(
+            target: "via_server::routing",
+            corridors_evaluated = stats.corridors_evaluated,
+            corridor_states_evaluated = stats.corridor_states_evaluated,
+            max_expansions = query.max_expansions,
+            phase2_latency_us = stats.phase2_latency_us,
+            "Phase 2 hit its safety bound; rejecting the incomplete candidate set"
+        );
+        return Err(RoutingError::Phase2EvaluationLimit);
+    }
+
     stats.candidates_before_pareto = candidates.len();
     let candidates = pareto_candidates(candidates, query.max_candidates);
     stats.final_candidates = candidates.len();
@@ -560,6 +582,11 @@ pub(super) fn evaluate_with_realizations(
         corridor_states_evaluated = stats.corridor_states_evaluated,
         transit_departure_lookups = stats.transit_departure_lookups,
         effective_trips_examined = stats.effective_trips_examined,
+        surface_transfers_evaluated = stats.surface_transfers_evaluated,
+        walking_realizations_considered = stats.walking_realizations_considered,
+        bike_realizations_considered = stats.bike_realizations_considered,
+        bike_realizations_feasible = stats.bike_realizations_feasible,
+        bike_realizations_selected = stats.bike_realizations_selected,
         infeasible_no_departure = stats.infeasible_no_departure,
         infeasible_transfer = stats.infeasible_transfer,
         infeasible_access = stats.infeasible_access,
@@ -621,6 +648,14 @@ fn retained_alight_time(
             .iter()
             .zip(&pattern.stops)
             .any(|(time, stop_id)| &time.stop_id != stop_id)
+        || trip
+            .stop_times
+            .iter()
+            .any(|time| time.arrival_at > time.departure_at)
+        || trip
+            .stop_times
+            .windows(2)
+            .any(|pair| pair[0].departure_at > pair[1].arrival_at)
     {
         return None;
     }
@@ -662,6 +697,7 @@ fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<Evaluatio
     for state in states {
         if frontier.iter().any(|known| {
             known.path.bike_shortcuts.len() == state.path.bike_shortcuts.len()
+                && known.path.same_timing_quality(&state.path)
                 && known.ready_at <= state.ready_at
                 && known.path.walking_seconds() <= state.path.walking_seconds()
                 && known.path.bicycle_seconds() <= state.path.bicycle_seconds()
@@ -671,6 +707,7 @@ fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<Evaluatio
         }
         frontier.retain(|known| {
             !(state.path.bike_shortcuts.len() == known.path.bike_shortcuts.len()
+                && state.path.same_timing_quality(&known.path)
                 && state.ready_at <= known.ready_at
                 && state.path.walking_seconds() <= known.path.walking_seconds()
                 && state.path.bicycle_seconds() <= known.path.bicycle_seconds()
@@ -1038,6 +1075,38 @@ mod tests {
     }
 
     #[test]
+    fn phase2_rejects_non_monotonic_effective_trip_times() {
+        let network = network(
+            vec![pattern(
+                "bus",
+                TransitMode::Bus,
+                &["origin", "middle", "destination"],
+            )],
+            &["origin", "middle", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus], 0, 10);
+        let corridor = candidate_corridor(&network, &query);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("bus"),
+            0,
+            vec![trip(
+                "malformed-trip",
+                "bus",
+                &["origin", "middle", "destination"],
+                &[1, 5, 4],
+            )],
+        );
+
+        let (candidates, stats) =
+            evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
+
+        assert!(candidates.is_empty());
+        assert!(stats.malformed_trips > 0);
+    }
+
+    #[test]
     fn phase2_later_departure_can_have_earlier_arrival() {
         let network = network(
             vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
@@ -1075,6 +1144,72 @@ mod tests {
                 .map(|movement| &movement.kind),
             Some(super::super::path::JourneyMovementKind::Transit { .. })
         ));
+    }
+
+    #[test]
+    fn phase2_keeps_reliable_candidate_when_fallback_arrives_earlier() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+            &["origin", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus], 0, 10);
+        let corridor = candidate_corridor(&network, &query);
+        let mut fallback = trip("a-fallback", "bus", &["origin", "destination"], &[1, 5]);
+        fallback.timing_reliability = TimingReliability::Fallback;
+        let reliable = trip("z-reliable", "bus", &["origin", "destination"], &[2, 6]);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(TransitPatternId::new("bus"), 0, vec![fallback, reliable]);
+
+        let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.skeleton().movements().iter().any(|movement| {
+                matches!(
+                    &movement.kind,
+                    super::super::path::JourneyMovementKind::Transit { trip, .. }
+                        if trip.timing_reliability == TimingReliability::Reliable
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn phase2_state_pruning_keeps_reliability_alternatives_for_later_legs() {
+        let network = network(
+            vec![
+                pattern("first", TransitMode::Bus, &["origin", "transfer"]),
+                pattern("second", TransitMode::Bus, &["transfer", "destination"]),
+            ],
+            &["origin", "transfer", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus], 1, 10);
+        let corridor = candidate_corridor(&network, &query);
+        let mut fallback = trip("a-fallback", "first", &["origin", "transfer"], &[1, 3]);
+        fallback.timing_reliability = TimingReliability::Fallback;
+        let reliable = trip("z-reliable", "first", &["origin", "transfer"], &[1, 3]);
+        let second = trip(
+            "second-trip",
+            "second",
+            &["transfer", "destination"],
+            &[5, 10],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(TransitPatternId::new("first"), 0, vec![fallback, reliable]);
+        snapshot.insert(TransitPatternId::new("second"), 0, vec![second]);
+
+        let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
+
+        assert!(candidates.iter().any(|candidate| {
+            candidate.skeleton().movements().iter().any(|movement| {
+                matches!(
+                    &movement.kind,
+                    super::super::path::JourneyMovementKind::Transit { trip, .. }
+                        if trip.id == EffectiveTripId::new("z-reliable")
+                )
+            })
+        }));
     }
 
     #[test]
@@ -1156,6 +1291,33 @@ mod tests {
         assert_eq!(stats.final_candidates, 2);
         assert!(stats.candidates_before_pareto >= stats.final_candidates);
         assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn phase2_expansion_limit_rejects_partial_candidates() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+            &["origin", "destination"],
+            Vec::new(),
+        );
+        let mut query = query(&[TransitMode::Bus], 0, 10);
+        query.origin_access.push(AccessPoint::new(
+            BoardingPointId::new("origin"),
+            datetime!(2026-09-21 10:00 UTC),
+            datetime!(2026-09-21 10:00 UTC),
+            0,
+            0,
+        ));
+        query.max_expansions = 1;
+        let corridor = candidate_corridor(&network, &query);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("bus"),
+            0,
+            vec![trip("bus-trip", "bus", &["origin", "destination"], &[1, 5])],
+        );
+
+        assert!(evaluate_with_stats(&network, &corridor, &snapshot, query).is_err());
     }
 
     #[test]
