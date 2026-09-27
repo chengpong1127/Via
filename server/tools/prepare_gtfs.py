@@ -16,7 +16,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT = ROOT / "server/data/dev/gtfs.zip"
-DEFAULT_OUTPUT = ROOT / "server/data/dev/phase2-realtime/gtfs-transit-compatible.zip"
+DEFAULT_OUTPUT = ROOT / "server/data/dev/prepared/gtfs-transit-compatible.zip"
 TRANSIT_TABLES = (
     "agency.txt",
     "routes.txt",

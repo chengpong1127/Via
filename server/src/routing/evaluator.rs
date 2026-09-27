@@ -1,29 +1,38 @@
-//! Bounded evaluation of the retained Phase 1 corridors without topology search.
+//! Bounded evaluation of retained Phase 1 corridors without topology search.
 
-use std::{collections::HashMap, time::Instant};
+use std::{cmp::Ordering, collections::HashMap, time::Instant};
 
 use time::{Duration, OffsetDateTime};
 
 use crate::domain::{
     ids::BoardingPointId,
+    realtime::NormalizedRealtimeValue,
     transit_runtime::TransitRuntime,
-    transit_timing::{EffectiveTrip, TimingSnapshot},
+    transit_timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
 };
 
 use super::{
-    model::{EgressPoint, JourneyCandidate, RoutingError, TransitQuery},
-    phase2::{Phase2Path, make_candidate, pareto_candidates},
+    bike::{BikeMovementRealizations, CorridorMovement},
+    model::{
+        AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
+    },
+    path::{BikeShortcut, JourneySkeleton, JourneyVariant},
     static_search::{CandidateCorridor, StaticCorridorStep, StaticTransitLeg},
     transfers::TransferShortcut,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FixedCorridorStats {
+pub struct Phase2EvaluationStats {
     pub corridors_evaluated: usize,
     pub corridors_feasible: usize,
     pub corridor_states_evaluated: usize,
-    pub departure_lookups: usize,
+    pub transit_departure_lookups: usize,
     pub effective_trips_examined: usize,
+    pub surface_transfers_evaluated: usize,
+    pub walking_realizations_considered: usize,
+    pub bike_realizations_considered: usize,
+    pub bike_realizations_feasible: usize,
+    pub bike_realizations_selected: usize,
     pub infeasible_no_departure: usize,
     pub infeasible_transfer: usize,
     pub infeasible_access: usize,
@@ -36,11 +45,218 @@ pub struct FixedCorridorStats {
 }
 
 #[derive(Clone)]
-struct FixedState {
+struct EvaluationState {
     stop_id: BoardingPointId,
     ready_at: OffsetDateTime,
     transit_legs: usize,
-    path: Phase2Path,
+    path: EvaluationPath,
+}
+
+#[derive(Clone)]
+struct EvaluationPath {
+    access: AccessPoint,
+    segments: Vec<JourneySegment>,
+    walking_seconds: u32,
+    evidence: Vec<NormalizedRealtimeValue>,
+    timing_bases: Vec<TimingBasis>,
+    timing_reliability: TimingReliability,
+    uncertainty_seconds: Option<u32>,
+    bike_shortcuts: Vec<(usize, BikeShortcut)>,
+}
+
+impl EvaluationPath {
+    fn from_access(access: AccessPoint) -> Self {
+        Self {
+            walking_seconds: access.walking_seconds,
+            access,
+            segments: Vec::new(),
+            evidence: Vec::new(),
+            timing_bases: Vec::new(),
+            timing_reliability: TimingReliability::Reliable,
+            uncertainty_seconds: None,
+            bike_shortcuts: Vec::new(),
+        }
+    }
+
+    fn with_ride(&self, trip: &EffectiveTrip, board_index: usize, alight_index: usize) -> Self {
+        let mut next = self.clone();
+        next.segments.push(JourneySegment::Transit {
+            trip: trip.clone(),
+            board_index,
+            alight_index,
+        });
+        next.evidence.extend(trip.evidence.clone());
+        next.timing_bases.push(trip.timing_basis);
+        if trip.timing_reliability == TimingReliability::Fallback {
+            next.timing_reliability = TimingReliability::Fallback;
+        }
+        next.uncertainty_seconds = match (next.uncertainty_seconds, trip.uncertainty_seconds) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (None, value) | (value, None) => value,
+        };
+        next
+    }
+
+    fn with_walking_transfer(&self, shortcut: &TransferShortcut) -> Self {
+        let mut next = self.clone();
+        next.segments.push(JourneySegment::WalkingTransfer {
+            shortcut: shortcut.clone(),
+        });
+        next.walking_seconds = next
+            .walking_seconds
+            .saturating_add(shortcut.duration_seconds);
+        next
+    }
+
+    fn with_bike_transfer(&self, movement: &CorridorMovement, shortcut: &BikeShortcut) -> Self {
+        let mut next = self.clone();
+        let segment_index = next.segments.len();
+        next.segments.push(JourneySegment::WalkingTransfer {
+            shortcut: TransferShortcut::new(
+                movement.from.clone(),
+                movement.to.clone(),
+                shortcut.total_seconds,
+            ),
+        });
+        next.walking_seconds = next
+            .walking_seconds
+            .saturating_add(shortcut.walk_to_pickup.duration_seconds)
+            .saturating_add(shortcut.walk_from_dropoff.duration_seconds);
+        next.bike_shortcuts.push((segment_index, shortcut.clone()));
+        next
+    }
+
+    fn stable_signature(&self) -> String {
+        let segments = self
+            .segments
+            .iter()
+            .map(|segment| match segment {
+                JourneySegment::Transit {
+                    trip,
+                    board_index,
+                    alight_index,
+                } => {
+                    format!("transit:{}:{board_index}:{alight_index}", trip.id.as_str())
+                }
+                JourneySegment::WalkingTransfer { shortcut } => format!(
+                    "transfer:{}:{}:{}",
+                    shortcut.from.as_str(),
+                    shortcut.to.as_str(),
+                    shortcut.duration_seconds
+                ),
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        let bikes = self
+            .bike_shortcuts
+            .iter()
+            .map(|(index, shortcut)| {
+                format!(
+                    "bike:{index}:{}:{}",
+                    shortcut.pickup_station_id.as_str(),
+                    shortcut.dropoff_station_id.as_str()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+        format!("{segments}|{bikes}")
+    }
+
+    fn walking_seconds(&self) -> u32 {
+        self.walking_seconds
+    }
+
+    fn bicycle_seconds(&self) -> u32 {
+        self.bike_shortcuts
+            .iter()
+            .map(|(_, shortcut)| shortcut.bicycle_duration_seconds)
+            .fold(0, u32::saturating_add)
+    }
+}
+
+fn make_candidate(
+    path: &EvaluationPath,
+    egress: &EgressPoint,
+    arrival_time: OffsetDateTime,
+    transit_legs: usize,
+) -> JourneyCandidate {
+    JourneyCandidate {
+        access: path.access.clone(),
+        egress: egress.clone(),
+        segments: path.segments.clone(),
+        departure_time: path.access.departure_at,
+        arrival_time,
+        walking_seconds: path.walking_seconds.saturating_add(egress.walking_seconds),
+        transfer_count: u32::try_from(transit_legs.saturating_sub(1)).unwrap_or(u32::MAX),
+        uncertainty_seconds: path.uncertainty_seconds,
+        evidence: path.evidence.clone(),
+        timing_bases: path.timing_bases.clone(),
+        timing_reliability: path.timing_reliability,
+    }
+}
+
+struct EvaluatedCandidate {
+    metrics: JourneyCandidate,
+    variant: JourneyVariant,
+    bike_share_uses: usize,
+    bicycle_seconds: u32,
+}
+
+impl EvaluatedCandidate {
+    fn dominates(&self, other: &Self) -> bool {
+        self.bike_share_uses == other.bike_share_uses
+            && self.bicycle_seconds <= other.bicycle_seconds
+            && (self.metrics.dominates(&other.metrics)
+                || (self.bicycle_seconds < other.bicycle_seconds
+                    && self.metrics.arrival_time == other.metrics.arrival_time
+                    && self.metrics.walking_seconds == other.metrics.walking_seconds
+                    && self.metrics.transfer_count == other.metrics.transfer_count))
+    }
+}
+
+fn make_variant(
+    candidate: JourneyCandidate,
+    bike_shortcuts: &[(usize, BikeShortcut)],
+) -> Option<JourneyVariant> {
+    let skeleton = JourneySkeleton::from_candidate(candidate).ok()?;
+    let mut variant = JourneyVariant::baseline(skeleton);
+    for (segment_index, shortcut) in bike_shortcuts {
+        let movement_index = segment_index.saturating_add(1);
+        let movement = variant.skeleton().movements().get(movement_index)?;
+        let mut shortcut = shortcut.clone();
+        shortcut.from_anchor = movement.from_anchor;
+        shortcut.to_anchor = movement.to_anchor;
+        variant = JourneyVariant::with_replacement(&variant, movement_index, shortcut)?;
+    }
+    Some(variant)
+}
+
+fn pareto_candidates(
+    mut candidates: Vec<EvaluatedCandidate>,
+    limit: usize,
+) -> Vec<EvaluatedCandidate> {
+    candidates.sort_by(|left, right| candidate_order(&left.metrics, &right.metrics));
+    let mut pareto = Vec::new();
+    for candidate in candidates {
+        if pareto.iter().any(|existing: &EvaluatedCandidate| {
+            existing.variant.signature() == candidate.variant.signature()
+                || existing.dominates(&candidate)
+        }) {
+            continue;
+        }
+        pareto.retain(|existing: &EvaluatedCandidate| !candidate.dominates(existing));
+        pareto.push(candidate);
+    }
+    pareto.truncate(limit.max(1));
+    pareto
+}
+
+fn candidate_order(left: &JourneyCandidate, right: &JourneyCandidate) -> Ordering {
+    left.arrival_time
+        .cmp(&right.arrival_time)
+        .then(left.transfer_count.cmp(&right.transfer_count))
+        .then(left.walking_seconds.cmp(&right.walking_seconds))
+        .then(left.signature().cmp(&right.signature()))
 }
 
 #[cfg(test)]
@@ -49,16 +265,33 @@ fn evaluate(
     corridor: &CandidateCorridor,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
-) -> Result<Vec<JourneyCandidate>, RoutingError> {
+) -> Result<Vec<JourneyVariant>, RoutingError> {
     evaluate_with_stats(network, corridor, snapshot, query).map(|(items, _)| items)
 }
 
-pub(super) fn evaluate_with_stats(
+#[cfg(test)]
+fn evaluate_with_stats(
     network: &TransitRuntime,
     corridor: &CandidateCorridor,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
-) -> Result<(Vec<JourneyCandidate>, FixedCorridorStats), RoutingError> {
+) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
+    evaluate_with_realizations(
+        network,
+        corridor,
+        snapshot,
+        query,
+        &BikeMovementRealizations::new(),
+    )
+}
+
+pub(super) fn evaluate_with_realizations(
+    network: &TransitRuntime,
+    corridor: &CandidateCorridor,
+    snapshot: &TimingSnapshot,
+    query: TransitQuery,
+    bike_realizations: &BikeMovementRealizations,
+) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
     let started_at = Instant::now();
     if query.origin_access.is_empty() || query.destination_egress.is_empty() {
         return Err(RoutingError::InvalidQuery);
@@ -66,8 +299,8 @@ pub(super) fn evaluate_with_stats(
 
     let egress_by_stop = index_egress(&query.destination_egress);
     let max_legs = query.max_transfers.saturating_add(1);
-    let mut stats = FixedCorridorStats::default();
-    let mut candidates = Vec::new();
+    let mut stats = Phase2EvaluationStats::default();
+    let mut candidates = Vec::<EvaluatedCandidate>::new();
 
     'corridors: for retained in corridor.retained() {
         stats.corridors_evaluated += 1;
@@ -81,11 +314,11 @@ pub(super) fn evaluate_with_stats(
             .iter()
             .filter(|access| access.stop_id == retained.access_stop_id)
             .cloned()
-            .map(|access| FixedState {
+            .map(|access| EvaluationState {
                 stop_id: access.stop_id.clone(),
                 ready_at: access.available_at,
                 transit_legs: 0,
-                path: Phase2Path::from_access(access),
+                path: EvaluationPath::from_access(access),
             })
             .collect::<Vec<_>>();
         if states.is_empty() {
@@ -100,11 +333,20 @@ pub(super) fn evaluate_with_stats(
                 break;
             }
             match step {
-                StaticCorridorStep::WalkingTransfer {
+                StaticCorridorStep::SurfaceTransfer {
                     from,
                     to,
-                    duration_seconds,
+                    walking_duration_seconds,
                 } => {
+                    stats.surface_transfers_evaluated += 1;
+                    let movement = CorridorMovement {
+                        from: from.clone(),
+                        to: to.clone(),
+                    };
+                    let bike_options = bike_realizations
+                        .get(&movement)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
                     let mut next = Vec::with_capacity(states.len());
                     for state in states {
                         if charge_state(&mut stats, query.max_expansions) {
@@ -115,21 +357,47 @@ pub(super) fn evaluate_with_stats(
                             transfer_mismatch = true;
                             continue;
                         }
-                        let ready_at =
-                            state.ready_at + Duration::seconds(i64::from(*duration_seconds));
+                        let ready_at = state.ready_at
+                            + Duration::seconds(i64::from(*walking_duration_seconds));
                         if !within_query_bounds(&query, ready_at) {
                             continue;
                         }
-                        let shortcut =
-                            TransferShortcut::new(from.clone(), to.clone(), *duration_seconds);
-                        next.push(FixedState {
+                        let shortcut = TransferShortcut::new(
+                            from.clone(),
+                            to.clone(),
+                            *walking_duration_seconds,
+                        );
+                        stats.walking_realizations_considered += 1;
+                        next.push(EvaluationState {
                             stop_id: to.clone(),
                             ready_at,
                             transit_legs: state.transit_legs,
                             path: state.path.with_walking_transfer(&shortcut),
                         });
+                        for bike in bike_options {
+                            stats.bike_realizations_considered += 1;
+                            if bike.total_seconds >= *walking_duration_seconds {
+                                continue;
+                            }
+                            if charge_state(&mut stats, query.max_expansions) {
+                                stats.expansion_limit_reached = true;
+                                break 'corridors;
+                            }
+                            let ready_at =
+                                state.ready_at + Duration::seconds(i64::from(bike.total_seconds));
+                            if !within_query_bounds(&query, ready_at) {
+                                continue;
+                            }
+                            stats.bike_realizations_feasible += 1;
+                            next.push(EvaluationState {
+                                stop_id: to.clone(),
+                                ready_at,
+                                transit_legs: state.transit_legs,
+                                path: state.path.with_bike_transfer(&movement, bike),
+                            });
+                        }
                     }
-                    states = prune_states(next);
+                    states = prune_states(next, query.max_candidates);
                 }
                 StaticCorridorStep::Transit(leg) => {
                     let alternatives = corridor.equivalent_legs_for(network, leg);
@@ -144,10 +412,10 @@ pub(super) fn evaluate_with_stats(
                                 stats.expansion_limit_reached = true;
                                 break 'corridors;
                             }
-                            if !valid_pattern_leg(network, leg, alternative) {
+                            if !valid_pattern_leg(network, corridor, leg, alternative) {
                                 continue;
                             }
-                            stats.departure_lookups += 1;
+                            stats.transit_departure_lookups += 1;
                             let departures = snapshot.departures(
                                 &alternative.pattern_id,
                                 alternative.board_index,
@@ -159,9 +427,12 @@ pub(super) fn evaluate_with_stats(
                             }
                             stats.effective_trips_examined += departures.len();
                             for trip in departures {
-                                let Some(arrival_at) =
-                                    fixed_alight_time(network, trip, alternative, state.ready_at)
-                                else {
+                                let Some(arrival_at) = retained_alight_time(
+                                    network,
+                                    trip,
+                                    alternative,
+                                    state.ready_at,
+                                ) else {
                                     stats.malformed_trips += 1;
                                     continue;
                                 };
@@ -187,7 +458,7 @@ pub(super) fn evaluate_with_stats(
                                 if !within_query_bounds(&query, ready_at) {
                                     continue;
                                 }
-                                next.push(FixedState {
+                                next.push(EvaluationState {
                                     stop_id: alternative.alight_stop_id.clone(),
                                     ready_at,
                                     transit_legs: state.transit_legs + 1,
@@ -200,7 +471,7 @@ pub(super) fn evaluate_with_stats(
                             }
                         }
                     }
-                    states = prune_states(next);
+                    states = prune_states(next, query.max_candidates);
                 }
             }
         }
@@ -225,12 +496,27 @@ pub(super) fn evaluate_with_stats(
                 {
                     continue;
                 }
-                corridor_candidates.push(make_candidate(
-                    &state.path,
-                    egress,
-                    arrival_at,
-                    state.transit_legs,
-                ));
+                let candidate = make_candidate(&state.path, egress, arrival_at, state.transit_legs);
+                let Some(variant) = make_variant(candidate.clone(), &state.path.bike_shortcuts)
+                else {
+                    stats.malformed_trips += 1;
+                    continue;
+                };
+                corridor_candidates.push(EvaluatedCandidate {
+                    metrics: candidate,
+                    bike_share_uses: variant
+                        .path()
+                        .iter()
+                        .filter(|step| {
+                            matches!(
+                                step.movement,
+                                super::path::JourneyPathMovement::BikeShare { .. }
+                            )
+                        })
+                        .count(),
+                    bicycle_seconds: state.path.bicycle_seconds(),
+                    variant,
+                });
             }
         }
         if corridor_candidates.is_empty() {
@@ -250,13 +536,29 @@ pub(super) fn evaluate_with_stats(
     stats.candidates_before_pareto = candidates.len();
     let candidates = pareto_candidates(candidates, query.max_candidates);
     stats.final_candidates = candidates.len();
+    stats.bike_realizations_selected = candidates
+        .iter()
+        .map(|candidate| {
+            candidate
+                .variant
+                .path()
+                .iter()
+                .filter(|step| {
+                    matches!(
+                        step.movement,
+                        super::path::JourneyPathMovement::BikeShare { .. }
+                    )
+                })
+                .count()
+        })
+        .sum();
     stats.phase2_latency_us = elapsed_micros(started_at);
     tracing::debug!(
         target: "via_server::routing",
         corridors_evaluated = stats.corridors_evaluated,
         corridors_feasible = stats.corridors_feasible,
         corridor_states_evaluated = stats.corridor_states_evaluated,
-        departure_lookups = stats.departure_lookups,
+        transit_departure_lookups = stats.transit_departure_lookups,
         effective_trips_examined = stats.effective_trips_examined,
         infeasible_no_departure = stats.infeasible_no_departure,
         infeasible_transfer = stats.infeasible_transfer,
@@ -267,12 +569,18 @@ pub(super) fn evaluate_with_stats(
         final_candidates = stats.final_candidates,
         phase2_latency_us = stats.phase2_latency_us,
         expansion_limit_reached = stats.expansion_limit_reached,
-        "fixed corridor evaluation"
+        "Phase 2 corridor evaluation"
     );
-    Ok((candidates, stats))
+    Ok((
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.variant)
+            .collect(),
+        stats,
+    ))
 }
 
-fn charge_state(stats: &mut FixedCorridorStats, max_expansions: usize) -> bool {
+fn charge_state(stats: &mut Phase2EvaluationStats, max_expansions: usize) -> bool {
     if stats.corridor_states_evaluated >= max_expansions {
         return true;
     }
@@ -282,12 +590,11 @@ fn charge_state(stats: &mut FixedCorridorStats, max_expansions: usize) -> bool {
 
 fn valid_pattern_leg(
     network: &TransitRuntime,
+    corridor: &CandidateCorridor,
     retained: &StaticTransitLeg,
     alternative: &StaticTransitLeg,
 ) -> bool {
-    if alternative.board_stop_id != retained.board_stop_id
-        || alternative.alight_stop_id != retained.alight_stop_id
-    {
+    if !corridor.is_equivalent_leg(network, retained, alternative) {
         return false;
     }
     let Some(pattern) = network.pattern(&alternative.pattern_id) else {
@@ -298,7 +605,7 @@ fn valid_pattern_leg(
         && alternative.board_index < alternative.alight_index
 }
 
-fn fixed_alight_time(
+fn retained_alight_time(
     network: &TransitRuntime,
     trip: &EffectiveTrip,
     leg: &StaticTransitLeg,
@@ -335,28 +642,43 @@ fn within_query_bounds(query: &TransitQuery, time: OffsetDateTime) -> bool {
             <= Duration::seconds(i64::from(query.max_journey_duration_seconds))
 }
 
-fn prune_states(mut states: Vec<FixedState>) -> Vec<FixedState> {
+fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
     states.sort_by(|left, right| {
-        left.ready_at.cmp(&right.ready_at).then(
-            left.path
-                .walking_seconds()
-                .cmp(&right.path.walking_seconds()),
-        )
+        left.ready_at
+            .cmp(&right.ready_at)
+            .then(
+                left.path
+                    .walking_seconds()
+                    .cmp(&right.path.walking_seconds()),
+            )
+            .then(left.transit_legs.cmp(&right.transit_legs))
+            .then(
+                left.path
+                    .stable_signature()
+                    .cmp(&right.path.stable_signature()),
+            )
     });
-    let mut frontier = Vec::<FixedState>::new();
+    let mut frontier = Vec::<EvaluationState>::new();
     for state in states {
         if frontier.iter().any(|known| {
-            known.ready_at <= state.ready_at
+            known.path.bike_shortcuts.len() == state.path.bike_shortcuts.len()
+                && known.ready_at <= state.ready_at
                 && known.path.walking_seconds() <= state.path.walking_seconds()
+                && known.path.bicycle_seconds() <= state.path.bicycle_seconds()
+                && known.transit_legs <= state.transit_legs
         }) {
             continue;
         }
         frontier.retain(|known| {
-            !(state.ready_at <= known.ready_at
-                && state.path.walking_seconds() <= known.path.walking_seconds())
+            !(state.path.bike_shortcuts.len() == known.path.bike_shortcuts.len()
+                && state.ready_at <= known.ready_at
+                && state.path.walking_seconds() <= known.path.walking_seconds()
+                && state.path.bicycle_seconds() <= known.path.bicycle_seconds()
+                && state.transit_legs <= known.transit_legs)
         });
         frontier.push(state);
     }
+    frontier.truncate(limit.max(1));
     frontier
 }
 
@@ -385,7 +707,8 @@ mod tests {
     use crate::{
         api::RequestCoordinate,
         domain::{
-            ids::{EffectiveTripId, TransitPatternId},
+            bikeshare::BikeWalkingAccess,
+            ids::{BikeStationId, EffectiveTripId, TransitPatternId},
             transit::{TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop},
             transit_runtime::TransitRuntime,
             transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
@@ -393,7 +716,6 @@ mod tests {
         routing::{
             AccessPoint, EgressPoint,
             static_search::{StaticCorridor, generate},
-            temporal,
             topology::TransitTopologyIndex,
             transfers::TransferShortcutIndex,
         },
@@ -497,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_single_leg_route() {
+    fn phase2_single_leg_route() {
         let network = network(
             vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
             &["origin", "destination"],
@@ -521,12 +843,15 @@ mod tests {
             evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].arrival_time, datetime!(2026-09-21 10:20 UTC));
+        assert_eq!(
+            candidates[0].evaluate_timing().unwrap().arrival_at,
+            datetime!(2026-09-21 10:20 UTC)
+        );
         assert_eq!(stats.corridors_feasible, 1);
     }
 
     #[test]
-    fn fixed_multi_leg_route_keeps_explicit_walking_transfer() {
+    fn phase2_multi_leg_route_keeps_explicit_surface_transfer() {
         let network = network(
             vec![
                 pattern("bus", TransitMode::Bus, &["origin", "bus-end"]),
@@ -561,18 +886,121 @@ mod tests {
         let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].transfer_count, 1);
-        assert_eq!(candidates[0].walking_seconds, 30);
+        assert_eq!(candidates[0].evaluate_timing().unwrap().walking_seconds, 30);
         assert!(matches!(
-            candidates[0].segments.get(1),
-            Some(super::super::model::JourneySegment::WalkingTransfer { shortcut })
-                if shortcut.from == BoardingPointId::new("bus-end")
-                    && shortcut.to == BoardingPointId::new("metro-start")
+            candidates[0]
+                .skeleton()
+                .movements()
+                .get(2)
+                .map(|movement| &movement.kind),
+            Some(super::super::path::JourneyMovementKind::Walking {
+                kind: super::super::path::WalkingMovementKind::Transfer,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn fixed_rejects_corridor_without_a_departure_after_ready_at() {
+    fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
+        let network = network(
+            vec![
+                pattern("first", TransitMode::Bus, &["origin", "transfer-from"]),
+                pattern(
+                    "second",
+                    TransitMode::Metro,
+                    &["transfer-to", "destination"],
+                ),
+            ],
+            &["origin", "transfer-from", "transfer-to", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("origin"),
+                egress_stop_id: BoardingPointId::new("destination"),
+                theoretical_duration_seconds: 0,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![
+                    static_leg("first", "origin", "transfer-from"),
+                    StaticCorridorStep::SurfaceTransfer {
+                        from: BoardingPointId::new("transfer-from"),
+                        to: BoardingPointId::new("transfer-to"),
+                        walking_duration_seconds: 8 * 60,
+                    },
+                    static_leg("second", "transfer-to", "destination"),
+                ],
+            }],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("first"),
+            0,
+            vec![trip(
+                "first-trip",
+                "first",
+                &["origin", "transfer-from"],
+                &[0, 0],
+            )],
+        );
+        snapshot.insert(
+            TransitPatternId::new("second"),
+            0,
+            vec![trip(
+                "second-trip",
+                "second",
+                &["transfer-to", "destination"],
+                &[6, 10],
+            )],
+        );
+        let movement = CorridorMovement {
+            from: BoardingPointId::new("transfer-from"),
+            to: BoardingPointId::new("transfer-to"),
+        };
+        let bike = BikeShortcut::new(
+            0,
+            1,
+            BikeStationId::new("pickup"),
+            BikeStationId::new("dropoff"),
+            BikeWalkingAccess::new(60, 50),
+            crate::routing::BikeRide {
+                duration_seconds: 200,
+                distance_metres: 1_000,
+            },
+            BikeWalkingAccess::new(90, 50),
+        )
+        .unwrap();
+        let realizations = HashMap::from([(movement, vec![bike])]);
+
+        let (variants, stats) =
+            evaluate_with_realizations(&network, &corridor, &snapshot, query, &realizations)
+                .unwrap();
+
+        assert_eq!(variants.len(), 1);
+        let timing = variants[0].evaluate_timing().unwrap();
+        assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:10 UTC));
+        assert_eq!(timing.bike_share_uses, 1);
+        assert_eq!(timing.walking_seconds, 150);
+        let bike_shortcut = variants[0]
+            .path()
+            .iter()
+            .find_map(|step| match &step.movement {
+                super::super::path::JourneyPathMovement::BikeShare { shortcut } => Some(shortcut),
+                super::super::path::JourneyPathMovement::Baseline { .. } => None,
+            })
+            .unwrap();
+        assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
+        assert_eq!(bike_shortcut.walk_from_dropoff.duration_seconds, 90);
+        assert_eq!(stats.bike_realizations_selected, 1);
+        assert!(variants[0].path().iter().any(|step| matches!(
+            step.movement,
+            super::super::path::JourneyPathMovement::BikeShare { .. }
+        )));
+    }
+
+    #[test]
+    fn phase2_rejects_corridor_without_a_departure_after_ready_at() {
         let network = network(
             vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
             &["origin", "destination"],
@@ -590,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_checks_multiple_departures_and_chooses_earlier_arrival() {
+    fn phase2_later_departure_can_have_earlier_arrival() {
         let network = network(
             vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
             &["origin", "destination"],
@@ -611,19 +1039,107 @@ mod tests {
         let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].arrival_time, datetime!(2026-09-21 10:15 UTC));
+        assert_eq!(
+            candidates[0].evaluate_timing().unwrap().arrival_at,
+            datetime!(2026-09-21 10:15 UTC)
+        );
         assert_eq!(
             candidates[0].transit_pattern_sequence(),
             vec![TransitPatternId::new("bus")]
         );
-        assert_eq!(
-            candidates[0].segments[0].pattern_id(),
-            Some(&TransitPatternId::new("bus"))
+        assert!(matches!(
+            candidates[0]
+                .skeleton()
+                .movements()
+                .get(1)
+                .map(|movement| &movement.kind),
+            Some(super::super::path::JourneyMovementKind::Transit { .. })
+        ));
+    }
+
+    #[test]
+    fn phase2_respects_maximum_journey_duration_and_latest_arrival() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+            &["origin", "destination"],
+            Vec::new(),
+        );
+        let corridor_query = query(&[TransitMode::Bus], 0, 10);
+        let corridor = candidate_corridor(&network, &corridor_query);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("bus"),
+            0,
+            vec![trip(
+                "late-trip",
+                "bus",
+                &["origin", "destination"],
+                &[1, 20],
+            )],
+        );
+
+        let short_duration_query = corridor_query.clone().with_limits(0, 16, 2_000, 3, 10 * 60);
+        assert!(
+            evaluate(&network, &corridor, &snapshot, short_duration_query)
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut latest_arrival_query = corridor_query;
+        latest_arrival_query.latest_arrival = Some(datetime!(2026-09-21 10:10 UTC));
+        assert!(
+            evaluate(&network, &corridor, &snapshot, latest_arrival_query)
+                .unwrap()
+                .is_empty()
         );
     }
 
     #[test]
-    fn fixed_applies_same_stop_transfer_time() {
+    fn phase2_respects_candidate_limit_after_pareto_pruning() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+            &["origin", "destination"],
+            Vec::new(),
+        );
+        let mut query = query(&[TransitMode::Bus], 0, 10);
+        query.origin_access[0].walking_seconds = 200;
+        query.origin_access.push(AccessPoint::new(
+            BoardingPointId::new("origin"),
+            datetime!(2026-09-21 10:00 UTC),
+            datetime!(2026-09-21 10:03 UTC),
+            100,
+            0,
+        ));
+        query.origin_access.push(AccessPoint::new(
+            BoardingPointId::new("origin"),
+            datetime!(2026-09-21 10:00 UTC),
+            datetime!(2026-09-21 10:05 UTC),
+            0,
+            0,
+        ));
+        query.max_candidates = 2;
+        let corridor = candidate_corridor(&network, &query);
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("bus"),
+            0,
+            vec![
+                trip("early-arrival", "bus", &["origin", "destination"], &[1, 5]),
+                trip("middle-arrival", "bus", &["origin", "destination"], &[4, 8]),
+                trip("late-arrival", "bus", &["origin", "destination"], &[6, 10]),
+            ],
+        );
+
+        let (candidates, stats) =
+            evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
+
+        assert_eq!(stats.final_candidates, 2);
+        assert!(stats.candidates_before_pareto >= stats.final_candidates);
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn phase2_applies_same_stop_transfer_time() {
         let network = network(
             vec![
                 pattern("first", TransitMode::Bus, &["origin", "middle"]),
@@ -657,11 +1173,11 @@ mod tests {
         assert!(candidates.is_empty());
         assert!(network.same_stop_transfer_seconds() >= 60);
         assert_eq!(stats.corridors_feasible, 0);
-        assert!(stats.departure_lookups > 0);
+        assert!(stats.transit_departure_lookups > 0);
     }
 
     #[test]
-    fn explicit_walking_transfer_does_not_add_same_stop_penalty() {
+    fn explicit_surface_transfer_does_not_add_same_stop_penalty() {
         let network = network(
             vec![
                 pattern("first", TransitMode::Bus, &["origin", "bus-end"]),
@@ -700,11 +1216,14 @@ mod tests {
         let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].arrival_time, datetime!(2026-09-21 10:20 UTC));
+        assert_eq!(
+            candidates[0].evaluate_timing().unwrap().arrival_at,
+            datetime!(2026-09-21 10:20 UTC)
+        );
     }
 
     #[test]
-    fn fixed_allows_equivalent_pattern_substitution() {
+    fn phase2_allows_equivalent_pattern_substitution() {
         let network = network(
             vec![
                 pattern("pattern-a", TransitMode::Bus, &["origin", "destination"]),
@@ -744,7 +1263,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_does_not_recombine_retained_corridors_and_compare_detects_recombination() {
+    fn phase2_never_combines_different_retained_corridors() {
         let network = network(
             vec![
                 pattern("a-bus-prefix", TransitMode::Bus, &["origin", "middle"]),
@@ -783,8 +1302,6 @@ mod tests {
             },
         ];
         let corridor = CandidateCorridor::from_retained_for_test(&network, retained);
-        let topology = TransitTopologyIndex::new(network.data());
-        let transfers = TransferShortcutIndex::from_network(network.data());
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitPatternId::new("a-bus-prefix"),
@@ -827,30 +1344,9 @@ mod tests {
             )],
         );
 
-        let (fixed_candidates, fixed_stats) =
-            evaluate_with_stats(&network, &corridor, &snapshot, query.clone()).unwrap();
-        let (union_candidates, union_stats) = temporal::search_with_stats(
-            &network, &topology, &transfers, &corridor, &snapshot, query,
-        )
-        .unwrap();
-        let comparison = super::super::phase2::comparison_stats(
-            &network,
-            &corridor,
-            super::super::phase2::Phase2Run {
-                candidates: &union_candidates,
-                latency_us: union_stats.phase2_latency_us,
-                departure_lookups: union_stats.departure_lookups,
-                states_evaluated: union_stats.states_expanded,
-            },
-            super::super::phase2::Phase2Run {
-                candidates: &fixed_candidates,
-                latency_us: fixed_stats.phase2_latency_us,
-                departure_lookups: fixed_stats.departure_lookups,
-                states_evaluated: fixed_stats.corridor_states_evaluated,
-            },
-        );
+        let (candidates, _) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
-        assert!(fixed_candidates.iter().all(|candidate| {
+        assert!(candidates.iter().all(|candidate| {
             let sequence = candidate.transit_pattern_sequence();
             sequence
                 == [
@@ -863,14 +1359,6 @@ mod tests {
                         TransitPatternId::new("d-metro-suffix"),
                     ]
         }));
-        assert_eq!(
-            union_candidates[0].transit_pattern_sequence(),
-            vec![
-                TransitPatternId::new("a-bus-prefix"),
-                TransitPatternId::new("d-metro-suffix")
-            ]
-        );
-        assert!(comparison.recombination_used);
-        assert!(!comparison.union_best_in_retained_topk_structural);
+        assert!(!candidates.is_empty());
     }
 }

@@ -109,7 +109,22 @@ fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions()
     assert!(planner.contains("pub struct TransitPlanner"));
     assert!(planner.contains("static_search::generate"));
     assert!(planner.contains("load_snapshot"));
-    assert!(planner.contains("temporal::search"));
+    assert!(planner.contains("evaluator::evaluate_with_realizations"));
+    for obsolete in [
+        "Phase2Strategy",
+        "phase2::",
+        "temporal::",
+        "FixedCorridorStats",
+    ] {
+        assert!(
+            !planner.contains(obsolete),
+            "obsolete Phase 2 strategy surface remains: {obsolete}"
+        );
+    }
+    let routing_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing");
+    for obsolete in ["phase2.rs", "temporal.rs", "fixed.rs"] {
+        assert!(!routing_root.join(obsolete).exists());
+    }
     assert!(
         !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/routing/algorithm.rs")
@@ -162,10 +177,10 @@ fn static_corridor_search_has_no_realtime_or_bikeshare_dependency() {
 }
 
 #[test]
-fn temporal_search_is_local_and_provider_free() {
-    let temporal = source("src/routing/temporal.rs");
-    assert!(temporal.contains("&TimingSnapshot"));
-    assert!(temporal.contains("corridor.remaining_legs"));
+fn phase2_evaluator_is_local_and_provider_free() {
+    let evaluator = source("src/routing/evaluator.rs");
+    assert!(evaluator.contains("&TimingSnapshot"));
+    assert!(evaluator.contains("corridor.retained()"));
     for forbidden in [
         "TdxClient",
         "reqwest",
@@ -174,10 +189,15 @@ fn temporal_search_is_local_and_provider_free() {
         "crate::providers",
     ] {
         assert!(
-            !temporal.contains(forbidden),
-            "temporal search contains I/O: {forbidden}"
+            !evaluator.contains(forbidden),
+            "Phase 2 evaluator contains I/O: {forbidden}"
         );
     }
+    assert!(
+        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/routing/temporal.rs")
+            .exists()
+    );
 }
 
 #[test]

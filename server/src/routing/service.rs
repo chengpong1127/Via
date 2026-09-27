@@ -31,7 +31,6 @@ use super::{
     access,
     model::TransitQuery,
     path::{JourneySkeleton, JourneyVariant},
-    phase2::Phase2Strategy,
     planner::TransitPlanner,
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
@@ -116,11 +115,6 @@ impl RoutingService {
             limits,
             operational_metrics: OperationalMetrics::default(),
         }
-    }
-
-    pub fn with_phase2_strategy(mut self, strategy: Phase2Strategy) -> Self {
-        self.transit_planner = self.transit_planner.with_phase2_strategy(strategy);
-        self
     }
 }
 
@@ -324,8 +318,8 @@ impl RoutingService {
                         stage_metrics.transit_reachable_patterns = planner_stats.reachable_patterns;
                         stage_metrics.transit_realtime_stops_requested =
                             planner_stats.realtime_stops_requested;
-                        stage_metrics.transit_temporal_departure_lookups =
-                            planner_stats.temporal_departure_lookups;
+                        stage_metrics.transit_departure_lookups =
+                            planner_stats.transit_departure_lookups;
                         stage_metrics.transit_realtime_evidence_values = candidates
                             .iter()
                             .map(JourneyVariant::realtime_evidence_count)
@@ -375,7 +369,7 @@ impl RoutingService {
             reachable_boardings = stage_metrics.transit_reachable_boardings,
             reachable_patterns = stage_metrics.transit_reachable_patterns,
             realtime_stops_requested = stage_metrics.transit_realtime_stops_requested,
-            temporal_departure_lookups = stage_metrics.transit_temporal_departure_lookups,
+            transit_departure_lookups = stage_metrics.transit_departure_lookups,
             realtime_evidence_values = stage_metrics.transit_realtime_evidence_values,
             generated_candidates = generated.len(),
             "journey planning routing stages"

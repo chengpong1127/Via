@@ -44,21 +44,22 @@ Configuration:
 ```text
 PlanningRequest → RoutingService → street access / egress
 → TransitPlanner
-→ static Top-K corridor search
-→ TimingSnapshot + optional BikeAvailabilitySnapshot
-→ temporal multimodal search → reconstruct → rank → JourneyOption[]
+→ Phase 1: static Top-K structural corridors
+→ request-local TimingSnapshot + optional BikeAvailabilitySnapshot
+→ Phase 2: fixed corridor evaluation (Transit / Walk / YouBike)
+→ reconstruct → rank → JourneyOption[]
 ```
 
 `RoutingService` owns the concrete `TransitPlanner`. The planner first retains
-one global Top-K set of structurally distinct corridors across selected modes,
-then loads request-local timing only for their boarding-position union through
-`TimingSnapshotLoader`, optionally loads one
-BikeShare availability snapshot, and finally searches using only immutable
-networks, snapshots, and the static transfer index. BikeShare can replace an
-existing adjacent transit movement or walking transfer, but cannot create new
-transit connectivity or replace access/egress. Bus realtime requests are
-deduplicated by stop and grouped by TDX city scope; temporal search never
-performs network I/O.
+one global Top-K set of structurally distinct corridors across selected modes.
+It loads one request-local timing snapshot for their positions and optionally
+loads one BikeShare availability snapshot. The Phase 2 evaluator walks each
+retained corridor in order and uses only immutable networks and those
+snapshots. It may choose an equivalent transit Pattern and departure, or
+realize a fixed surface transfer with walking or YouBike. It cannot add a
+transfer anchor or combine different corridors. Bus realtime requests are
+deduplicated by stop and grouped by TDX city scope; the evaluator performs no
+network I/O.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
 transfers. Requests select fine-grained transport systems through
@@ -67,10 +68,11 @@ Walking remains an implicit connector, while output legs retain the coarse
 `walking`, `transit`, and `bicycle` `JourneyMode` values. Direct walking remains
 walking-only in this version.
 
-The `via-route` binary is intentionally an offline transit-debugging tool and
-rejects `bike_share` rather than constructing a fake BikeShare capability.
-Production HTTP assembly requires the immutable BikeShare artifact and its
-availability source explicitly.
+The `via-route` binary is an offline transit-debugging tool and does not
+configure BikeShare. Production HTTP assembly requires the immutable BikeShare
+artifact and its TDX availability source explicitly. Station metadata can be
+built from local TDX Taipei and New Taipei Bike Station City snapshots; absent
+those files, the station artifact remains empty.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and

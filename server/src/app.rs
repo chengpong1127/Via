@@ -41,7 +41,7 @@ use crate::{
         BusDepartureSource, BusTimingMetrics, DepartureDispatcher, MetroDepartureSource,
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
     },
-    routing::{Phase2Strategy, RoutingLimits, RoutingService},
+    routing::{RoutingLimits, RoutingService},
     street::{StreetRouter, StreetRoutingError},
     tdx::TdxClient,
 };
@@ -65,7 +65,6 @@ pub struct RouterDependencies {
     bike_share_network: Arc<BikeShareNetwork>,
     bike_availability_source: Arc<dyn BikeAvailabilitySource>,
     provider_bindings: Arc<TdxProviderBindings>,
-    phase2_strategy: Phase2Strategy,
 }
 
 impl RouterDependencies {
@@ -81,7 +80,6 @@ impl RouterDependencies {
             bike_share_network,
             bike_availability_source,
             provider_bindings: Arc::new(TdxProviderBindings::default()),
-            phase2_strategy: Phase2Strategy::Union,
         }
     }
 
@@ -97,11 +95,6 @@ impl RouterDependencies {
 
     pub fn with_service_condition_cache_ttl(mut self, ttl: Duration) -> Self {
         self.service_condition_cache_ttl = ttl;
-        self
-    }
-
-    pub fn with_phase2_strategy(mut self, strategy: Phase2Strategy) -> Self {
-        self.phase2_strategy = strategy;
         self
     }
 }
@@ -147,7 +140,6 @@ where
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let phase2_strategy = dependencies.phase2_strategy;
     let routing = RoutingService::new(
         street_router,
         transit_runtime.clone(),
@@ -156,8 +148,7 @@ where
         dependencies.bike_share_network,
         dependencies.bike_availability_source,
         RoutingLimits::default(),
-    )
-    .with_phase2_strategy(phase2_strategy);
+    );
     let metrics = routing.operational_metrics.clone();
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);

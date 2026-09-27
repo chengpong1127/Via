@@ -13,13 +13,10 @@ use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
 
 use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
-    fixed::{self, FixedCorridorStats},
+    evaluator::{self, Phase2EvaluationStats},
     model::{RoutingError, TransitQuery},
-    path::{JourneySkeleton, JourneyVariant},
-    phase2::{
-        Phase2ComparisonStats, Phase2Run, Phase2Strategy, candidate_debug_summary, comparison_stats,
-    },
-    static_search, temporal,
+    path::JourneyVariant,
+    static_search,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -31,7 +28,6 @@ pub struct TransitPlanner {
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
     bike: Option<BikeSegmentPlanner>,
-    phase2_strategy: Phase2Strategy,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,7 +35,7 @@ pub struct TransitPlannerStats {
     pub reachable_boarding_opportunities: usize,
     pub reachable_patterns: usize,
     pub realtime_stops_requested: usize,
-    pub temporal_departure_lookups: usize,
+    pub transit_departure_lookups: usize,
     pub static_search_states_expanded: usize,
     pub static_pattern_scans: usize,
     pub static_positions_scanned: usize,
@@ -51,11 +47,8 @@ pub struct TransitPlannerStats {
     pub static_corridor_bus_stops: usize,
     pub static_search_latency_ms: u64,
     pub timing_snapshot_latency_ms: u64,
-    pub temporal_search_latency_ms: u64,
     pub phase2_latency_us: u64,
-    pub phase2_strategy: Phase2Strategy,
-    pub fixed_corridor: Option<FixedCorridorStats>,
-    pub phase2_comparison: Option<Phase2ComparisonStats>,
+    pub phase2_evaluation: Phase2EvaluationStats,
     pub kth_static_duration_seconds: Option<u32>,
     pub exact_schedule_cost: usize,
     pub derived_bus_cost: usize,
@@ -65,10 +58,13 @@ pub struct TransitPlannerStats {
     pub phase1: static_search::StaticSearchStats,
     pub bike_share_enabled: bool,
     pub relevant_bike_stations: usize,
-    pub bike_candidate_segments: usize,
+    pub bike_candidate_movements: usize,
+    pub bike_pickup_stations_considered: usize,
+    pub bike_dropoff_stations_considered: usize,
     pub bike_station_pairs: usize,
     pub bike_matrix_requests: usize,
-    pub bike_shortcuts_accepted: usize,
+    pub bike_realizations_feasible: usize,
+    pub bike_realizations_selected: usize,
     pub multimodal_variants: usize,
 }
 
@@ -84,13 +80,7 @@ impl TransitPlanner {
             network,
             timing,
             bike: None,
-            phase2_strategy: Phase2Strategy::Union,
         }
-    }
-
-    pub fn with_phase2_strategy(mut self, strategy: Phase2Strategy) -> Self {
-        self.phase2_strategy = strategy;
-        self
     }
 
     pub fn with_bike_share(
@@ -124,8 +114,7 @@ impl TransitPlanner {
         let (corridor, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
         let mut planner_stats = TransitPlannerStats {
-            phase2_strategy: self.phase2_strategy,
-            reachable_boarding_opportunities: corridor.len(),
+            reachable_boarding_opportunities: corridor.timing_positions().count(),
             reachable_patterns: corridor.pattern_count(),
             realtime_stops_requested: corridor.bus_stops().len(),
             static_search_states_expanded: static_stats.static_search_states_expanded,
@@ -234,13 +223,7 @@ impl TransitPlanner {
             return Ok((Vec::new(), planner_stats));
         }
 
-        let mut positions = corridor.positions().collect::<Vec<_>>();
-        positions.sort_by(|left, right| {
-            left.pattern_id
-                .as_str()
-                .cmp(right.pattern_id.as_str())
-                .then(left.stop_index.cmp(&right.stop_index))
-        });
+        let positions = corridor.timing_positions().collect::<Vec<_>>();
         let snapshot_limit = usize::try_from(query.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
             .saturating_add(1)
@@ -268,7 +251,6 @@ impl TransitPlanner {
         let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
         let bike_enabled = query.allow_bike_share && self.bike.is_some();
-        let max_variants = query.max_candidates;
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
             let (snapshot, bike_snapshot) = tokio::join!(
@@ -311,127 +293,44 @@ impl TransitPlanner {
                 .into());
         }
 
-        let (candidates, departure_lookups, phase2_latency_us, fixed_stats, comparison) = match self
-            .phase2_strategy
-        {
-            Phase2Strategy::Union => {
-                let (candidates, stats) = temporal::search_with_stats(
-                    &self.network,
-                    &self.topology,
-                    &self.transfers,
-                    &corridor,
-                    &snapshot,
-                    query,
-                )?;
-                (
-                    candidates,
-                    stats.departure_lookups,
-                    stats.phase2_latency_us,
-                    None,
-                    None,
-                )
-            }
-            Phase2Strategy::Fixed => {
-                let (candidates, stats) =
-                    fixed::evaluate_with_stats(&self.network, &corridor, &snapshot, query)?;
-                (
-                    candidates,
-                    stats.departure_lookups,
-                    stats.phase2_latency_us,
-                    Some(stats),
-                    None,
-                )
-            }
-            Phase2Strategy::Compare => {
-                let (fixed_candidates, fixed_stats) =
-                    fixed::evaluate_with_stats(&self.network, &corridor, &snapshot, query.clone())?;
-                let (union_candidates, union_stats) = temporal::search_with_stats(
-                    &self.network,
-                    &self.topology,
-                    &self.transfers,
-                    &corridor,
-                    &snapshot,
-                    query,
-                )?;
-                let comparison = comparison_stats(
-                    &self.network,
-                    &corridor,
-                    Phase2Run {
-                        candidates: &union_candidates,
-                        latency_us: union_stats.phase2_latency_us,
-                        departure_lookups: union_stats.departure_lookups,
-                        states_evaluated: union_stats.states_expanded,
-                    },
-                    Phase2Run {
-                        candidates: &fixed_candidates,
-                        latency_us: fixed_stats.phase2_latency_us,
-                        departure_lookups: fixed_stats.departure_lookups,
-                        states_evaluated: fixed_stats.corridor_states_evaluated,
-                    },
-                );
-                tracing::info!(
-                    target: "via_server::routing",
-                    ?comparison,
-                    union_best = ?union_candidates.first().map(|candidate| candidate_debug_summary(&self.network, candidate)),
-                    fixed_best = ?fixed_candidates.first().map(|candidate| candidate_debug_summary(&self.network, candidate)),
-                    retained_corridors = ?corridor.retained(),
-                    "Phase 2 strategy comparison"
-                );
-                (
-                    union_candidates,
-                    union_stats.departure_lookups,
-                    union_stats.phase2_latency_us,
-                    Some(fixed_stats),
-                    Some(comparison),
-                )
-            }
+        let (bike_realizations, bike_stats) = match (self.bike.as_ref(), bike_snapshot.as_deref()) {
+            (Some(bike), Some(snapshot)) => bike.movement_realizations(&corridor, snapshot).await,
+            _ => (Default::default(), BikePlanningStats::default()),
         };
-        planner_stats.phase2_latency_us = phase2_latency_us;
-        planner_stats.temporal_search_latency_ms = phase2_latency_us / 1_000;
-        planner_stats.temporal_departure_lookups = departure_lookups;
-        planner_stats.fixed_corridor = fixed_stats;
-        planner_stats.phase2_comparison = comparison;
+        let (variants, phase2_stats) = evaluator::evaluate_with_realizations(
+            &self.network,
+            &corridor,
+            &snapshot,
+            query,
+            &bike_realizations,
+        )?;
+        planner_stats.phase2_latency_us = phase2_stats.phase2_latency_us;
+        planner_stats.transit_departure_lookups = phase2_stats.transit_departure_lookups;
+        planner_stats.phase2_evaluation = phase2_stats;
         planner_stats.bike_share_enabled = bike_enabled;
-
-        let skeletons = candidates
-            .into_iter()
-            .filter_map(|candidate| match JourneySkeleton::from_candidate(candidate) {
-                Ok(skeleton) => Some(skeleton),
-                Err(error) => {
-                    tracing::error!(error = %error, "journey candidate could not be projected to a path");
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        let (variants, bike_stats) = match (self.bike.as_ref(), bike_snapshot.as_deref()) {
-            (Some(bike), Some(snapshot)) => {
-                bike.choose_variants(skeletons, snapshot, max_variants)
-                    .await
-            }
-            _ => (
-                skeletons
-                    .into_iter()
-                    .map(JourneyVariant::baseline)
-                    .collect(),
-                BikePlanningStats::default(),
-            ),
-        };
         planner_stats.relevant_bike_stations = bike_stats.relevant_bike_stations;
-        planner_stats.bike_candidate_segments = bike_stats.candidate_segments;
+        planner_stats.bike_candidate_movements = bike_stats.candidate_movements;
+        planner_stats.bike_pickup_stations_considered = bike_stats.pickup_stations_considered;
+        planner_stats.bike_dropoff_stations_considered = bike_stats.dropoff_stations_considered;
         planner_stats.bike_station_pairs = bike_stats.station_pairs;
         planner_stats.bike_matrix_requests = bike_stats.matrix_requests;
-        planner_stats.bike_shortcuts_accepted = bike_stats.shortcuts_accepted;
+        planner_stats.bike_realizations_feasible = bike_stats.realizations_feasible;
+        planner_stats.bike_realizations_selected =
+            planner_stats.phase2_evaluation.bike_realizations_selected;
         planner_stats.multimodal_variants = variants.len();
         tracing::debug!(
             target: "via_server::routing",
             bike_share_enabled = bike_enabled,
             relevant_bike_stations = planner_stats.relevant_bike_stations,
-            bike_candidate_segments = planner_stats.bike_candidate_segments,
+            bike_candidate_movements = planner_stats.bike_candidate_movements,
+            bike_pickup_stations_considered = planner_stats.bike_pickup_stations_considered,
+            bike_dropoff_stations_considered = planner_stats.bike_dropoff_stations_considered,
             bike_station_pairs = planner_stats.bike_station_pairs,
             bike_matrix_requests = planner_stats.bike_matrix_requests,
-            bike_shortcuts_accepted = planner_stats.bike_shortcuts_accepted,
+            bike_realizations_feasible = planner_stats.bike_realizations_feasible,
+            bike_realizations_selected = planner_stats.bike_realizations_selected,
             multimodal_variants = planner_stats.multimodal_variants,
-            "temporal multimodal planning"
+            "Phase 2 corridor evaluation"
         );
         Ok((variants, planner_stats))
     }
@@ -453,6 +352,7 @@ mod tests {
     use crate::{
         api::RequestCoordinate,
         domain::{
+            bikeshare::{BikeAvailabilitySnapshot, BikeShareNetwork},
             ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
             transit::{
                 ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
@@ -463,7 +363,9 @@ mod tests {
                 EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot,
             },
         },
+        providers::{BikeAvailabilityError, BikeAvailabilitySource},
         routing::{AccessPoint, EgressPoint},
+        street::FakeStreetRouter,
     };
 
     #[derive(Default)]
@@ -490,6 +392,21 @@ mod tests {
                 );
             }
             snapshot
+        }
+    }
+
+    struct CountingBikeAvailabilitySource {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl BikeAvailabilitySource for CountingBikeAvailabilitySource {
+        async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Arc::new(BikeAvailabilitySnapshot::new(
+                datetime!(2026-09-21 10:00 UTC),
+                HashMap::new(),
+            )))
         }
     }
 
@@ -568,6 +485,34 @@ mod tests {
         Arc::new(TransitRuntime::new(Arc::new(network)))
     }
 
+    fn multiple_mode_corridors_network() -> Arc<TransitRuntime> {
+        let patterns = [TransitMode::Bus, TransitMode::Metro]
+            .into_iter()
+            .map(|mode| {
+                TransitPattern::fixture(
+                    TransitPatternId::new(format!("{mode:?}-direct")),
+                    mode,
+                    format!("{mode:?}"),
+                    "destination",
+                    vec![
+                        BoardingPointId::new("origin"),
+                        BoardingPointId::new("destination"),
+                    ],
+                )
+            })
+            .collect();
+        let trips = ["Bus", "Metro"]
+            .into_iter()
+            .map(|mode| scheduled_trip(&format!("{mode}-trip"), &format!("{mode}-direct"), 120))
+            .collect();
+        Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::fixture(
+            Time::from_hms(4, 0, 0).unwrap(),
+            vec![stop("origin"), stop("destination")],
+            patterns,
+            trips,
+        ))))
+    }
+
     fn query(k: usize) -> TransitQuery {
         TransitQuery::new(
             vec![AccessPoint::new(
@@ -618,11 +563,10 @@ mod tests {
         );
         assert_eq!(stats.static_corridor_positions, 2);
         assert_eq!(stats.static_corridors_retained, 1);
-        assert_eq!(stats.phase2_strategy, Phase2Strategy::Union);
     }
 
     #[tokio::test]
-    async fn temporal_search_chooses_actual_best_journey_within_retained_corridors() {
+    async fn phase2_chooses_actual_best_journey_within_retained_corridors() {
         let loader = Arc::new(RecordingTimingLoader {
             trips: HashMap::from([
                 (
@@ -641,8 +585,6 @@ mod tests {
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
         assert_eq!(stats.static_corridors_retained, 1);
-        assert_eq!(stats.phase2_strategy, Phase2Strategy::Union);
-        assert!(stats.phase2_comparison.is_none());
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].transit_pattern_sequence(),
@@ -651,32 +593,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compare_uses_one_shared_timing_snapshot() {
-        let loader = Arc::new(RecordingTimingLoader {
-            trips: HashMap::from([
-                (
-                    TransitPatternId::new("static-fast"),
-                    vec![effective_trip("static-fast-live", "static-fast", 20)],
-                ),
-                (
-                    TransitPatternId::new("realtime-fast"),
-                    vec![effective_trip("realtime-fast-live", "realtime-fast", 10)],
-                ),
-            ]),
-            ..RecordingTimingLoader::default()
-        });
-        let planner = TransitPlanner::new(network(), loader.clone())
-            .with_phase2_strategy(Phase2Strategy::Compare);
+    async fn one_bike_snapshot_is_shared_by_multiple_retained_corridors() {
+        let timing = Arc::new(RecordingTimingLoader::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let planner = TransitPlanner::new(multiple_mode_corridors_network(), timing.clone())
+            .with_bike_share(
+                Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
+                Arc::new(CountingBikeAvailabilitySource {
+                    calls: calls.clone(),
+                }),
+                Arc::new(FakeStreetRouter::builder().build()),
+            );
+        let query = query(2)
+            .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
+            .with_bike_share(true);
 
-        let (candidates, stats) = planner.plan_with_stats(query(1)).await.unwrap();
+        let (_, stats) = planner.plan_with_stats(query).await.unwrap();
 
-        assert_eq!(loader.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(stats.phase2_strategy, Phase2Strategy::Compare);
-        assert!(stats.phase2_comparison.is_some());
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(
-            candidates[0].transit_pattern_sequence(),
-            vec![TransitPatternId::new("realtime-fast")]
-        );
+        assert_eq!(stats.static_corridors_retained, 2);
+        assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

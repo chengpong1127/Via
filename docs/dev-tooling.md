@@ -1,15 +1,25 @@
 # Via development data and routing tools
 
-Static transit data is built only from the local GTFS archive:
+Static transit data is built from a local GTFS archive. Request-time TDX data
+supplies transit timing, service conditions, and YouBike availability.
 
 ```text
-GTFS zip → via-data build → validated TransitNetwork → Phase 1 static Top-K
-TDX realtime APIs → TimingSnapshot → Phase 2 temporal search
+local GTFS → via-data build → TransitNetwork + optional station catalog
+TDX realtime → one request-local snapshot → fixed corridor evaluation
 ```
 
-`via-data` does not download or refresh the archive. It reads the supplied zip
-in place and writes the normalized network, an empty BikeShare artifact, and a
-manifest. The current development archive is `server/data/dev/gtfs.zip`.
+`via-data` does not download or refresh GTFS or TDX files. The development
+archive is `server/data/dev/gtfs.zip`.
+
+For a local GTFS archive with noncanonical `direction_id` values or minute-only
+stop times, `server/tools/prepare_gtfs.py` can normalize those fields without
+fetching any data:
+
+```bash
+python3 server/tools/prepare_gtfs.py \
+  --input ./server/data/dev/gtfs.zip \
+  --output ./server/data/dev/prepared/gtfs.zip
+```
 
 ## Build and validate
 
@@ -26,28 +36,29 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- validate \
 
 The builder reads `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`,
 `shapes.txt`, `frequencies.txt`, `calendar.txt`, and `calendar_dates.txt` when
-present. It ignores `transfers.txt`. Bus
-stop-time rows with incomplete intermediate times are not turned into
-`TransitTrip` records. When terminal anchors provide a full runtime, the
-builder distributes that runtime across adjacent stops using GTFS shape
-distance, then geographic distance as a fallback. The per-segment median is a
-persisted Pattern static profile and can time downstream segments after a realtime Bus
-boarding prediction; it is not an exact timetable. Patterns without usable
-static timing receive an optimistic geometric profile during preprocessing.
+present. It ignores `transfers.txt`. Bus stop-time rows with incomplete
+intermediate times are not turned into scheduled Trips. If terminal anchors
+provide a full runtime, preprocessing distributes it across adjacent stops
+using shape distance, then geographic distance. These derived segment costs
+rank Phase 1 corridors; they are not timetable data.
 
-The build output is:
+The output contains `transit-network.json`, `provider-bindings.json`,
+`bikeshare-network.json`, and `manifest.json`. Without station inputs, the
+BikeShare artifact has no stations. To include static YouBike station metadata,
+provide local TDX Taipei and New Taipei `Bike/Station/City` JSON snapshots:
 
-```text
-transit-network.json
-provider-bindings.json
-bikeshare-network.json
-manifest.json
+```bash
+cargo run --manifest-path server/Cargo.toml --bin via-data -- build \
+  --input ./server/data/dev/gtfs.zip \
+  --output ./server/data/dev/normalized \
+  --bike-stations-taipei ./server/data/dev/tdx/taipei-bike-stations.json \
+  --bike-stations-new-taipei ./server/data/dev/tdx/new-taipei-bike-stations.json
 ```
 
-Revisions are hashes of canonical normalized content. The manifest includes
-the local archive hash and counts. GTFS has no BikeShare station catalog, so
-the generated BikeShare artifact is empty; BikeShare variants are unavailable
-until a static station source is added outside this transit GTFS import.
+The build maps TDX station IDs to city-scoped Via IDs and uses Valhalla to
+precompute bounded directional walking links from transit boarding points.
+Live bikes, docks, and service status still come from request-time TDX
+availability. The two JSON files must be supplied together.
 
 ## Inspect
 
@@ -70,10 +81,11 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect stats \
 
 ## Route debugging
 
-`via-route` uses the production
-`RoutingService → TransitPlanner → static Top-K corridors → TimingSnapshot →
-temporal search → reconstruct → rank` path. For a deterministic offline route,
-use the provider-neutral fixture network:
+`via-route` uses the production transit planning flow through static Top-K
+corridors, a request-local timing snapshot, fixed corridor evaluation,
+reconstruction, and ranking. The offline CLI does not configure BikeShare;
+production HTTP assembly uses the BikeShare artifact and TDX availability
+source. For a deterministic offline route, use the provider-neutral fixture:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
@@ -86,12 +98,11 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
   --trace
 ```
 
-For live realtime, build the local GTFS artifact and switch the service
-condition source to `live`. Bus ETA, service conditions, and BikeShare
-availability are realtime provider inputs; TDX is not used to build static
-transit stops, routes, patterns, trips, calendars, frequencies, transfers, or timing metadata.
-Only the live route requires `TDX_CLIENT_ID` and `TDX_CLIENT_SECRET` in the
-environment or `.env` file.
+For live realtime, build the local GTFS artifact and use the live service
+condition source. The live route needs `TDX_CLIENT_ID` and
+`TDX_CLIENT_SECRET` in the environment or `.env` file. TDX is not used to build
+static transit stops, routes, patterns, trips, calendars, frequencies,
+transfers, or timing metadata.
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
@@ -106,14 +117,11 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
 `--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, and `thsr`.
-The offline CLI rejects `bike_share` explicitly. BikeShare may replace an
-existing adjacent transit stop movement when a station network and realtime
-availability snapshot are configured; it does not create transit connectivity
-or origin/destination access alternatives.
+Walking remains an implicit connector. BikeShare can realize a retained
+surface transfer when production has station metadata and fresh availability;
+it does not create a direct BikeShare-only route.
 
-`TransferShortcutIndex` is projected directly from validated
-`TransitNetwork.transfer_edges` at server or CLI startup. Public-transit
-transfer reconstruction does not call Valhalla. During `via-data build`, Via
-generates directional walking transfers from boarding-point coordinates and
-Valhalla, then stores them in `TransitNetwork.transfer_edges`. GTFS
-`transfers.txt` is ignored.
+`TransferShortcutIndex` is projected from validated directional
+`TransitNetwork.transfer_edges`. During `via-data build`, Valhalla generates
+walking transfers between nearby boarding points and stores them in the
+network. GTFS `transfers.txt` is ignored.

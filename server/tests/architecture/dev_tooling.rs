@@ -20,7 +20,9 @@ fn via_data_exposes_local_gtfs_build_without_a_fetch_command() {
     assert!(build_help.status.success());
     let build_help = String::from_utf8_lossy(&build_help.stdout);
     assert!(build_help.contains("Local GTFS .zip archive"));
-    assert!(!build_help.contains("TDX"));
+    assert!(build_help.contains("--bike-stations-taipei"));
+    assert!(build_help.contains("--bike-stations-new-taipei"));
+    assert!(build_help.contains("Local TDX"));
 }
 
 #[test]

@@ -11,7 +11,8 @@ use via_server::{
     config::load_dotenv,
     data::{
         ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive_with_street,
-        load_bikeshare_artifact, load_manifest, load_network_artifact,
+        build_from_gtfs_archive_with_tdx_bike_stations, load_bikeshare_artifact, load_manifest,
+        load_network_artifact,
     },
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     providers::valhalla::{ValhallaConfig, ValhallaProvider},
@@ -41,6 +42,12 @@ struct BuildArgs {
     input: PathBuf,
     #[arg(long)]
     output: PathBuf,
+    /// Local TDX `Bike/Station/City/Taipei` JSON snapshot.
+    #[arg(long)]
+    bike_stations_taipei: Option<PathBuf>,
+    /// Local TDX `Bike/Station/City/NewTaipei` JSON snapshot.
+    #[arg(long)]
+    bike_stations_new_taipei: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -125,11 +132,27 @@ fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = runtime.block_on(build_from_gtfs_archive_with_street(
-        &args.input,
-        &args.output,
-        &street,
-    ))?;
+    let result = match (&args.bike_stations_taipei, &args.bike_stations_new_taipei) {
+        (Some(taipei), Some(new_taipei)) => {
+            runtime.block_on(build_from_gtfs_archive_with_tdx_bike_stations(
+                &args.input,
+                &args.output,
+                taipei,
+                new_taipei,
+                &street,
+            ))?
+        }
+        (None, None) => runtime.block_on(build_from_gtfs_archive_with_street(
+            &args.input,
+            &args.output,
+            &street,
+        ))?,
+        _ => {
+            return Err(
+                "provide both --bike-stations-taipei and --bike-stations-new-taipei".into(),
+            );
+        }
+    };
     println!("build latency: {} ms", started.elapsed().as_millis());
     print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
     print_counts(
@@ -425,6 +448,16 @@ fn print_build_diagnostics(
         for (modes, count) in &stats.by_mode {
             println!("  {modes}: {count}");
         }
+    }
+    if let Some(stats) = &build_diagnostics.bike_access {
+        println!(
+            "BikeShare access: boarding_points={} candidates={} walking_matrices={} access_links={} latency_ms={}",
+            stats.boarding_points_processed,
+            stats.geometric_candidate_pairs,
+            stats.walking_matrix_requests,
+            stats.retained_access_links,
+            stats.build_wall_clock_milliseconds
+        );
     }
     println!("GTFS stops loaded: {}", diagnostics.stops_loaded);
     println!("GTFS trips loaded: {}", diagnostics.trips_loaded);

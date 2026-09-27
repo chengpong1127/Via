@@ -2,21 +2,19 @@
 
 pub(crate) mod access;
 mod bike;
-mod fixed;
+mod evaluator;
 pub mod model;
 mod path;
-mod phase2;
 pub mod planner;
 pub mod reconstruct;
 pub mod static_search;
-pub mod temporal;
 pub mod topology;
 pub mod transfers;
 
 pub(crate) mod service;
 pub(crate) mod status;
 
-pub use fixed::FixedCorridorStats;
+pub use evaluator::Phase2EvaluationStats;
 pub use model::{
     AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
 };
@@ -25,7 +23,6 @@ pub use path::{
     JourneyPathMovement, JourneyPathStep, JourneySkeleton, JourneySkeletonError,
     JourneyTimingError, JourneyVariant, JourneyVariantTiming, WalkingMovementKind,
 };
-pub use phase2::{Phase2ComparisonStats, Phase2Strategy};
 pub use planner::{TransitPlanner, TransitPlannerStats};
 pub use service::{RoutingLimits, RoutingService};
 pub use static_search::{CandidateCorridor, StaticCorridor, StaticCostSource, StaticSearchStats};

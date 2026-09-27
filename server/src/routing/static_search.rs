@@ -55,10 +55,10 @@ pub struct StaticTransitLeg {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticCorridorStep {
     Transit(StaticTransitLeg),
-    WalkingTransfer {
+    SurfaceTransfer {
         from: BoardingPointId,
         to: BoardingPointId,
-        duration_seconds: u32,
+        walking_duration_seconds: u32,
     },
 }
 
@@ -75,7 +75,7 @@ impl StaticCorridor {
     pub fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
         self.steps.iter().filter_map(|step| match step {
             StaticCorridorStep::Transit(leg) => Some(leg),
-            StaticCorridorStep::WalkingTransfer { .. } => None,
+            StaticCorridorStep::SurfaceTransfer { .. } => None,
         })
     }
 
@@ -116,7 +116,7 @@ enum StructuralStep {
         alight_stop_id: BoardingPointId,
         alight_index: usize,
     },
-    WalkingTransfer {
+    SurfaceTransfer {
         from: BoardingPointId,
         to: BoardingPointId,
     },
@@ -149,7 +149,7 @@ enum EquivalentStep {
         board_stop_id: BoardingPointId,
         alight_stop_id: BoardingPointId,
     },
-    WalkingTransfer {
+    SurfaceTransfer {
         from: BoardingPointId,
         to: BoardingPointId,
     },
@@ -167,8 +167,8 @@ fn equivalent_steps(
                 board_stop_id: leg.board_stop_id.clone(),
                 alight_stop_id: leg.alight_stop_id.clone(),
             }),
-            StaticCorridorStep::WalkingTransfer { from, to, .. } => {
-                Some(EquivalentStep::WalkingTransfer {
+            StaticCorridorStep::SurfaceTransfer { from, to, .. } => {
+                Some(EquivalentStep::SurfaceTransfer {
                     from: from.clone(),
                     to: to.clone(),
                 })
@@ -200,8 +200,8 @@ fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralStep> {
                 alight_stop_id: leg.alight_stop_id.clone(),
                 alight_index: leg.alight_index,
             },
-            StaticCorridorStep::WalkingTransfer { from, to, .. } => {
-                StructuralStep::WalkingTransfer {
+            StaticCorridorStep::SurfaceTransfer { from, to, .. } => {
+                StructuralStep::SurfaceTransfer {
                     from: from.clone(),
                     to: to.clone(),
                 }
@@ -210,23 +210,14 @@ fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralStep> {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CandidateBoarding {
-    pub pattern_id: TransitPatternId,
-    pub board_index: usize,
-    pub min_remaining_legs: usize,
-}
-
-/// The small union surface consumed by snapshot loading and temporal search.
+/// Phase 1's retained corridors and the exact timing inputs Phase 2 needs.
 #[derive(Clone, Debug, Default)]
 pub struct CandidateCorridor {
     retained: Vec<StaticCorridor>,
     equivalent_legs: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-    boardings_by_stop: HashMap<BoardingPointId, Vec<CandidateBoarding>>,
-    minimums_by_position: HashMap<PatternPosition, usize>,
-    selected_pattern_ids: HashSet<TransitPatternId>,
+    timing_positions: Vec<PatternPosition>,
+    pattern_count: usize,
     selected_bus_stop_ids: HashSet<BoardingPointId>,
-    terminal_transfers: HashSet<(BoardingPointId, BoardingPointId)>,
 }
 
 impl CandidateCorridor {
@@ -253,75 +244,43 @@ impl CandidateCorridor {
                     .map(|alternatives| (key, alternatives.clone()))
             })
             .collect::<HashMap<_, _>>();
-        let mut minimums_by_position = HashMap::<PatternPosition, usize>::new();
+        let mut timing_positions = HashSet::<PatternPosition>::new();
         let mut selected_pattern_ids = HashSet::new();
         let mut selected_bus_stop_ids = HashSet::new();
-        let mut terminal_transfers = HashSet::new();
         for corridor in &retained {
-            if let Some(StaticCorridorStep::WalkingTransfer { from, to, .. }) =
-                corridor.steps.last()
-            {
-                terminal_transfers.insert((from.clone(), to.clone()));
-            }
-            let legs = corridor.transit_legs().collect::<Vec<_>>();
-            for (index, leg) in legs.iter().enumerate() {
-                let remaining = legs.len() - index;
+            for leg in corridor.transit_legs() {
                 for alternative in
                     Self::equivalent_legs_from(network, &retained_equivalent_legs, leg)
                 {
-                    let position = PatternPosition {
+                    timing_positions.insert(PatternPosition {
                         pattern_id: alternative.pattern_id.clone(),
                         stop_index: alternative.board_index,
-                    };
-                    minimums_by_position
-                        .entry(position)
-                        .and_modify(|known| *known = (*known).min(remaining))
-                        .or_insert(remaining);
+                    });
                     selected_pattern_ids.insert(alternative.pattern_id.clone());
                     if network
                         .pattern(&alternative.pattern_id)
                         .is_some_and(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
                     {
-                        selected_bus_stop_ids.insert(leg.board_stop_id.clone());
+                        selected_bus_stop_ids.insert(alternative.board_stop_id.clone());
                     }
                 }
             }
         }
 
-        let mut boardings_by_stop = HashMap::<BoardingPointId, Vec<CandidateBoarding>>::new();
-        for (position, min_remaining_legs) in &minimums_by_position {
-            let Some(pattern) = network.pattern(&position.pattern_id) else {
-                continue;
-            };
-            let Some(stop_id) = pattern.stops.get(position.stop_index) else {
-                continue;
-            };
-            boardings_by_stop
-                .entry(stop_id.clone())
-                .or_default()
-                .push(CandidateBoarding {
-                    pattern_id: position.pattern_id.clone(),
-                    board_index: position.stop_index,
-                    min_remaining_legs: *min_remaining_legs,
-                });
-        }
-        for boardings in boardings_by_stop.values_mut() {
-            boardings.sort_by(|left, right| {
-                left.pattern_id
-                    .as_str()
-                    .cmp(right.pattern_id.as_str())
-                    .then(left.board_index.cmp(&right.board_index))
-            });
-        }
+        let mut timing_positions = timing_positions.into_iter().collect::<Vec<_>>();
+        timing_positions.sort_by(|left, right| {
+            left.pattern_id
+                .as_str()
+                .cmp(right.pattern_id.as_str())
+                .then(left.stop_index.cmp(&right.stop_index))
+        });
 
         Self {
             retained,
             equivalent_legs: retained_equivalent_legs,
-            boardings_by_stop,
-            minimums_by_position,
-            selected_pattern_ids,
+            timing_positions,
+            pattern_count: selected_pattern_ids.len(),
             selected_bus_stop_ids,
-            terminal_transfers,
         }
     }
 
@@ -330,13 +289,23 @@ impl CandidateCorridor {
     }
 
     /// Return the same mode and endpoint-equivalent Pattern family used by
-    /// the union surface for this retained structural leg.
+    /// the candidate pattern family for this retained structural leg.
     pub fn equivalent_legs_for(
         &self,
         network: &TransitRuntime,
         leg: &StaticTransitLeg,
     ) -> Vec<StaticTransitLeg> {
         Self::equivalent_legs_from(network, &self.equivalent_legs, leg)
+    }
+
+    pub fn is_equivalent_leg(
+        &self,
+        network: &TransitRuntime,
+        retained: &StaticTransitLeg,
+        alternative: &StaticTransitLeg,
+    ) -> bool {
+        equivalent_leg_key(network, retained).is_some()
+            && equivalent_leg_key(network, retained) == equivalent_leg_key(network, alternative)
     }
 
     fn equivalent_legs_from(
@@ -358,28 +327,8 @@ impl CandidateCorridor {
         alternatives
     }
 
-    pub fn boardings_at(&self, stop: &BoardingPointId) -> &[CandidateBoarding] {
-        self.boardings_by_stop
-            .get(stop)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn remaining_legs(
-        &self,
-        pattern_id: &TransitPatternId,
-        board_index: usize,
-    ) -> Option<usize> {
-        self.minimums_by_position
-            .get(&PatternPosition {
-                pattern_id: pattern_id.clone(),
-                stop_index: board_index,
-            })
-            .copied()
-    }
-
-    pub fn positions(&self) -> impl Iterator<Item = PatternPosition> + '_ {
-        self.minimums_by_position.keys().cloned()
+    pub fn timing_positions(&self) -> impl Iterator<Item = PatternPosition> + '_ {
+        self.timing_positions.iter().cloned()
     }
 
     pub fn bus_stops(&self) -> Vec<BoardingPointId> {
@@ -392,21 +341,12 @@ impl CandidateCorridor {
         stops
     }
 
-    pub fn len(&self) -> usize {
-        self.minimums_by_position.len()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.retained.is_empty()
     }
 
     pub fn pattern_count(&self) -> usize {
-        self.selected_pattern_ids.len()
-    }
-
-    pub fn allows_terminal_transfer(&self, from: &BoardingPointId, to: &BoardingPointId) -> bool {
-        self.terminal_transfers
-            .contains(&(from.clone(), to.clone()))
+        self.pattern_count
     }
 }
 
@@ -952,10 +892,10 @@ pub fn generate(
                 };
                 next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
                 next.priority_seconds = next.lower_bound_seconds;
-                next.steps.push(StaticCorridorStep::WalkingTransfer {
+                next.steps.push(StaticCorridorStep::SurfaceTransfer {
                     from: shortcut.from.clone(),
                     to: shortcut.to.clone(),
-                    duration_seconds: shortcut.duration_seconds,
+                    walking_duration_seconds: shortcut.duration_seconds,
                 });
                 next.transfer_ready = true;
                 if next.transit_legs_used > 0 {
@@ -1168,7 +1108,7 @@ pub fn generate(
         retained_mode_sequence_groups(&stats.static_retained_pattern_sequence_groups);
     stats.static_corridors_retained = surface.retained().len();
     stats.static_corridor_patterns = surface.pattern_count();
-    stats.static_corridor_positions = surface.len();
+    stats.static_corridor_positions = surface.timing_positions().count();
     stats.static_corridor_bus_stops = surface.bus_stops().len();
     stats.kth_static_duration_seconds = surface
         .retained()
@@ -1832,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn equivalent_patterns_share_one_pattern_scan_and_remain_in_the_candidate_union() {
+    fn equivalent_patterns_share_one_phase1_scan_and_remain_available_for_timing() {
         let network = network(
             vec![
                 pattern("bus-a", TransitMode::Bus, &["o", "d"]),
@@ -1853,16 +1793,12 @@ mod tests {
 
         assert_eq!(surface.retained().len(), 1);
         assert_eq!(surface.pattern_count(), 2);
-        assert!(
-            surface
-                .remaining_legs(&TransitPatternId::new("bus-a"), 0)
-                .is_some()
-        );
-        assert!(
-            surface
-                .remaining_legs(&TransitPatternId::new("bus-b"), 0)
-                .is_some()
-        );
+        let timing_patterns = surface
+            .timing_positions()
+            .map(|position| position.pattern_id)
+            .collect::<HashSet<_>>();
+        assert!(timing_patterns.contains(&TransitPatternId::new("bus-a")));
+        assert!(timing_patterns.contains(&TransitPatternId::new("bus-b")));
         assert_eq!(
             stats.static_mode_stats[&TransitMode::Bus].distinct_pattern_ids,
             2
@@ -1903,16 +1839,12 @@ mod tests {
 
         assert_eq!(surface.retained().len(), 1);
         assert_eq!(surface.pattern_count(), 2);
-        assert!(
-            surface
-                .remaining_legs(&TransitPatternId::new("direct"), 0)
-                .is_some()
-        );
-        assert!(
-            surface
-                .remaining_legs(&TransitPatternId::new("continues-past-destination"), 0)
-                .is_some()
-        );
+        let timing_patterns = surface
+            .timing_positions()
+            .map(|position| position.pattern_id)
+            .collect::<HashSet<_>>();
+        assert!(timing_patterns.contains(&TransitPatternId::new("direct")));
+        assert!(timing_patterns.contains(&TransitPatternId::new("continues-past-destination")));
     }
 
     #[test]
@@ -2074,7 +2006,7 @@ mod tests {
         assert_eq!(surface.retained().len(), 1);
         assert!(matches!(
             surface.retained()[0].steps.first(),
-            Some(StaticCorridorStep::WalkingTransfer { .. })
+            Some(StaticCorridorStep::SurfaceTransfer { .. })
         ));
     }
 
@@ -2100,7 +2032,7 @@ mod tests {
         assert_eq!(surface.retained().len(), 1);
         assert!(matches!(
             surface.retained()[0].steps.last(),
-            Some(StaticCorridorStep::WalkingTransfer { from, to, .. })
+            Some(StaticCorridorStep::SurfaceTransfer { from, to, .. })
                 if from == &id("alight") && to == &id("d")
         ));
     }

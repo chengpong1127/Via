@@ -107,7 +107,7 @@ fn segment_network(
 }
 
 #[tokio::test]
-async fn bike_replaces_an_adjacent_transit_segment_and_keeps_the_baseline() {
+async fn bike_does_not_replace_a_transit_leg() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -150,32 +150,13 @@ async fn bike_replaces_an_adjacent_transit_segment_and_keeps_the_baseline() {
     .await;
 
     assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let options = body["journey_options"].as_array().unwrap();
     assert!(
-        body["journey_options"]
-            .as_array()
-            .unwrap()
+        options
             .iter()
-            .any(|option| {
-                option["bike_share_uses"] == 0 && leg_modes(option).contains(&"transit")
-            })
+            .any(|option| leg_modes(option).contains(&"transit"))
     );
-    let bike = body["journey_options"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|option| option["bike_share_uses"] == 1)
-        .unwrap_or_else(|| panic!("bike option missing: {body}"));
-    assert_eq!(
-        leg_modes(bike),
-        vec!["walking", "walking", "bicycle", "walking", "walking"]
-    );
-    assert!(
-        bike["legs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|leg| leg["details"]["via_pattern_id"].is_null())
-    );
+    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
 }
 
 #[tokio::test]
@@ -248,8 +229,7 @@ async fn slower_bike_segment_is_rejected() {
     );
 }
 
-#[tokio::test]
-async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
+async fn surface_transfer_options(bikes: u32, docks: u32) -> serde_json::Value {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M3-BLUE");
@@ -285,7 +265,7 @@ async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
             path(dropoff, blue, 10),
         )
         .build();
-    let body = route_body_with_bike(
+    route_body_with_bike(
         street,
         FixtureRealtime::empty(),
         request(
@@ -295,27 +275,38 @@ async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
         ),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
+            snapshot: Ok(bike_snapshot(&[
+                ("pickup", bikes, 0),
+                ("dropoff", 0, docks),
+            ])),
             calls: Arc::new(AtomicUsize::new(0)),
         }),
     )
-    .await;
+    .await
+}
 
+#[tokio::test]
+async fn bike_can_realize_a_surface_transfer_without_skipping_transit() {
+    let body = surface_transfer_options(2, 2).await;
     let options = body["journey_options"].as_array().unwrap();
-    assert!(options.iter().any(|option| {
-        option["bike_share_uses"] == 0
-            && option["legs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|leg| leg["details"]["via_pattern_id"].as_str())
-                .eq(["fixture-mrt-red", "fixture-mrt-blue"])
-    }));
+    assert!(
+        options.iter().any(|option| {
+            option["bike_share_uses"] == 0
+                && option["legs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|leg| leg["details"]["via_pattern_id"].as_str())
+                    .eq(["fixture-mrt-red", "fixture-mrt-blue"])
+        }),
+        "walking realization missing: {body}"
+    );
     let bike = options
         .iter()
         .find(|option| option["bike_share_uses"] == 1)
         .unwrap_or_else(|| panic!("bike transfer option missing: {body}"));
     assert_eq!(bike["transfer_count"], 1);
+    assert_eq!(bike["walking_seconds"], 140);
     assert_eq!(
         bike["legs"]
             .as_array()
@@ -325,6 +316,22 @@ async fn bike_can_replace_a_walking_transfer_without_skipping_transit() {
             .collect::<Vec<_>>(),
         vec!["fixture-mrt-red", "fixture-mrt-blue"]
     );
+}
+
+#[tokio::test]
+async fn no_bike_at_pickup_keeps_the_walking_transfer() {
+    let body = surface_transfer_options(0, 2).await;
+    let options = body["journey_options"].as_array().unwrap();
+    assert!(options.iter().any(|option| option["bike_share_uses"] == 0));
+    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
+}
+
+#[tokio::test]
+async fn no_dock_at_dropoff_keeps_the_walking_transfer() {
+    let body = surface_transfer_options(2, 0).await;
+    let options = body["journey_options"].as_array().unwrap();
+    assert!(options.iter().any(|option| option["bike_share_uses"] == 0));
+    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
 }
 
 #[tokio::test]

@@ -19,6 +19,7 @@ use crate::providers::bindings::TdxProviderBindings;
 use crate::street::StreetRouter;
 
 pub mod bike_access;
+pub mod bikeshare_catalog;
 pub mod gtfs;
 pub mod static_transfers;
 pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput};
@@ -62,6 +63,7 @@ pub struct ArtifactManifest {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildDiagnostics {
     pub static_transfers: Option<static_transfers::TransferStatistics>,
+    pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,16 +101,75 @@ pub async fn build_from_gtfs_archive_with_street(
     output: &Path,
     street: &dyn StreetRouter,
 ) -> Result<GtfsBuildOutput, DataError> {
+    build_from_gtfs_archive_with_catalog(
+        input,
+        output,
+        BikeShareNetwork::new(Vec::new()),
+        None,
+        street,
+    )
+    .await
+}
+
+/// Build GTFS transit data and enrich a supplied local TDX Bike Station catalog
+/// with bounded walking links using the configured street router.
+pub async fn build_from_gtfs_archive_with_tdx_bike_stations(
+    input: &Path,
+    output: &Path,
+    taipei_stations: &Path,
+    new_taipei_stations: &Path,
+    street: &dyn StreetRouter,
+) -> Result<GtfsBuildOutput, DataError> {
+    let taipei_json = fs::read_to_string(taipei_stations)
+        .map_err(|error| DataError::Io(taipei_stations.into(), error))?;
+    let new_taipei_json = fs::read_to_string(new_taipei_stations)
+        .map_err(|error| DataError::Io(new_taipei_stations.into(), error))?;
+    let bike_share = bikeshare_catalog::parse_tdx_station_catalog(&taipei_json, &new_taipei_json)?;
+    let sources = BTreeMap::from([
+        (
+            source_key("taipei", taipei_stations),
+            hash_file(taipei_stations)?,
+        ),
+        (
+            source_key("new-taipei", new_taipei_stations),
+            hash_file(new_taipei_stations)?,
+        ),
+    ]);
+    build_from_gtfs_archive_with_catalog(input, output, bike_share, Some(sources), street).await
+}
+
+async fn build_from_gtfs_archive_with_catalog(
+    input: &Path,
+    output: &Path,
+    bike_share: BikeShareNetwork,
+    supplementary_sources: Option<BTreeMap<String, String>>,
+    street: &dyn StreetRouter,
+) -> Result<GtfsBuildOutput, DataError> {
     let (mut network, provider_bindings, diagnostics) = gtfs::build_network(input)?;
     let static_transfers =
         static_transfers::enrich_network_with_static_transfers(&mut network, street).await?;
+    let (bike_share, bike_access) = if bike_share.stations.is_empty() {
+        (bike_share, None)
+    } else {
+        let (network, diagnostics) = bike_access::precompute_bike_access(
+            &network,
+            bike_share,
+            street,
+            bike_access::BikeAccessPolicy::default(),
+        )
+        .await?;
+        (network, Some(diagnostics))
+    };
     let build = finish_gtfs_build(
         input,
         output,
         network,
         provider_bindings,
+        bike_share,
+        supplementary_sources.unwrap_or_default(),
         BuildDiagnostics {
             static_transfers: Some(static_transfers),
+            bike_access,
         },
     )?;
     Ok(GtfsBuildOutput { build, diagnostics })
@@ -119,9 +180,10 @@ fn finish_gtfs_build(
     output: &Path,
     network: TransitNetwork,
     provider_bindings: TdxProviderBindings,
+    bike_share_network: BikeShareNetwork,
+    supplementary_sources: BTreeMap<String, String>,
     diagnostics: BuildDiagnostics,
 ) -> Result<BuildOutput, DataError> {
-    let bike_share_network = BikeShareNetwork::new(Vec::new());
     let static_revision = revision_for_network(&network, false)?;
     let schedule_revision = revision_for_network(&network, true)?;
     let network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
@@ -133,6 +195,15 @@ fn finish_gtfs_build(
     let bike_share_network = bike_share_network.with_revision(bike_share_revision.clone());
     bike_share_network.validate()?;
     let source_hash = hash_file(input)?;
+    let mut sources = BTreeMap::from([(
+        input
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("gtfs.zip")
+            .to_owned(),
+        source_hash,
+    )]);
+    sources.extend(supplementary_sources);
     let manifest = ArtifactManifest {
         schema_version: ARTIFACT_SCHEMA_VERSION,
         scope: "taiwan-gtfs".into(),
@@ -140,14 +211,7 @@ fn finish_gtfs_build(
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "unknown".into()),
         raw_snapshot_date: None,
-        sources: BTreeMap::from([(
-            input
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("gtfs.zip")
-                .to_owned(),
-            source_hash,
-        )]),
+        sources,
         counts: ArtifactCounts {
             stops: network.stops.len(),
             routes: network.routes.len(),
@@ -176,6 +240,15 @@ fn finish_gtfs_build(
         manifest,
         diagnostics,
     })
+}
+
+fn source_key(city: &str, path: &Path) -> String {
+    format!(
+        "tdx-bike-stations/{city}/{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("station.json")
+    )
 }
 
 fn hash_file(path: &Path) -> Result<String, DataError> {

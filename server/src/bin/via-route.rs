@@ -29,7 +29,7 @@ use via_server::{
         ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         UnavailableBikeAvailabilitySource, ValhallaConfig, ValhallaProvider,
     },
-    routing::{Phase2Strategy, RoutingLimits, RoutingService},
+    routing::{RoutingLimits, RoutingService},
     street::{StraightLineStreetRouter, StreetRouter},
     tdx::{TdxClient, TdxCredentials},
 };
@@ -60,8 +60,6 @@ struct Cli {
     modes: String,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
-    #[arg(long, value_enum, default_value = "union")]
-    phase2_strategy: Phase2StrategyArgument,
     #[arg(long)]
     max_static_corridors: Option<usize>,
     #[arg(long)]
@@ -78,23 +76,6 @@ struct Cli {
 enum ServiceConditionMode {
     Fixture,
     Live,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum Phase2StrategyArgument {
-    Union,
-    Fixed,
-    Compare,
-}
-
-impl From<Phase2StrategyArgument> for Phase2Strategy {
-    fn from(value: Phase2StrategyArgument) -> Self {
-        match value {
-            Phase2StrategyArgument::Union => Self::Union,
-            Phase2StrategyArgument::Fixed => Self::Fixed,
-            Phase2StrategyArgument::Compare => Self::Compare,
-        }
-    }
 }
 
 #[tokio::main]
@@ -180,7 +161,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("cli-disabled"));
     let bike_availability_source = Arc::new(UnavailableBikeAvailabilitySource);
     if cli.trace {
-        eprintln!("  Phase 2 strategy={:?}", cli.phase2_strategy);
         eprintln!("  max static corridors={}", limits.max_static_corridors);
     }
     let routing = RoutingService::new(
@@ -191,8 +171,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         bike_share_network,
         bike_availability_source,
         limits,
-    )
-    .with_phase2_strategy(cli.phase2_strategy.into());
+    );
     if cli.trace {
         eprintln!("ACCESS");
         eprintln!("  origin ({:.6}, {:.6})", cli.from_lat, cli.from_lon);
