@@ -992,6 +992,26 @@ mod tests {
             .unwrap();
         assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
         assert_eq!(bike_shortcut.walk_from_dropoff.duration_seconds, 90);
+        let bike_step = variants[0]
+            .path()
+            .iter()
+            .find(|step| {
+                matches!(
+                    step.movement,
+                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                )
+            })
+            .unwrap();
+        assert!(matches!(
+            &variants[0].skeleton().anchors()[bike_step.from_anchor].kind,
+            super::super::path::JourneyAnchorKind::BoardingPoint { id }
+                if id == &BoardingPointId::new("transfer-from")
+        ));
+        assert!(matches!(
+            &variants[0].skeleton().anchors()[bike_step.to_anchor].kind,
+            super::super::path::JourneyAnchorKind::BoardingPoint { id }
+                if id == &BoardingPointId::new("transfer-to")
+        ));
         assert_eq!(stats.bike_realizations_selected, 1);
         assert!(variants[0].path().iter().any(|step| matches!(
             step.movement,

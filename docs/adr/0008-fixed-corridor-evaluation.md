@@ -34,8 +34,8 @@ locally. The static `TransferShortcutIndex` keeps directional incoming and
 outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
 station with a dock. Each surface-transfer anchor considers no more than three
-pickup and three return stations, and uses one batched bicycle matrix operation
-for feasible station pairs.
+pickup and three return stations. Feasible pairs are evaluated with bicycle
+matrix requests chunked to the street router's source and target limits.
 
 ## Consequences
 
