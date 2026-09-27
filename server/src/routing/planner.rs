@@ -35,15 +35,6 @@ pub struct TransitPlannerStats {
     pub timing_snapshot_latency_ms: u64,
     pub phase2_evaluation: Phase2EvaluationStats,
     pub phase1: static_search::StaticSearchStats,
-    pub bike_share_enabled: bool,
-    pub relevant_bike_stations: usize,
-    pub bike_candidate_movements: usize,
-    pub bike_pickup_stations_considered: usize,
-    pub bike_dropoff_stations_considered: usize,
-    pub bike_station_pairs: usize,
-    pub bike_matrix_requests: usize,
-    pub bike_realizations_feasible: usize,
-    pub multimodal_variants: usize,
 }
 
 impl TransitPlanner {
@@ -75,12 +66,6 @@ impl TransitPlanner {
         self
     }
 
-    pub async fn plan(&self, query: TransitQuery) -> Result<Vec<JourneyVariant>, RoutingError> {
-        self.plan_with_stats(query)
-            .await
-            .map(|(candidates, _)| candidates)
-    }
-
     pub async fn plan_with_stats(
         &self,
         query: TransitQuery,
@@ -91,10 +76,7 @@ impl TransitPlanner {
         let max_legs = query.max_transfers.saturating_add(1);
         let (corridor, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
-        let mut planner_stats = TransitPlannerStats {
-            phase1: static_stats.clone(),
-            ..TransitPlannerStats::default()
-        };
+        let mut planner_stats = TransitPlannerStats::default();
 
         tracing::debug!(
             target: "via_server::routing",
@@ -178,6 +160,7 @@ impl TransitPlanner {
             );
             return Err(RoutingError::StaticSearchLimit);
         }
+        planner_stats.phase1 = static_stats;
         if corridor.is_empty() {
             return Ok((Vec::new(), planner_stats));
         }
@@ -243,7 +226,7 @@ impl TransitPlanner {
             target: "via_server::routing",
             positions_requested = timing_positions_requested,
             snapshot_summary = ?snapshot.trace_summary(),
-            relevant_bus_stops = corridor.bus_stops().len(),
+            relevant_bus_stops = planner_stats.phase1.static_corridor_bus_stops,
             bike_share_enabled = bike_enabled,
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "timing snapshot"
@@ -275,27 +258,18 @@ impl TransitPlanner {
             &bike_realizations,
         )?;
         planner_stats.phase2_evaluation = phase2_stats;
-        planner_stats.bike_share_enabled = bike_enabled;
-        planner_stats.relevant_bike_stations = bike_stats.relevant_bike_stations;
-        planner_stats.bike_candidate_movements = bike_stats.candidate_movements;
-        planner_stats.bike_pickup_stations_considered = bike_stats.pickup_stations_considered;
-        planner_stats.bike_dropoff_stations_considered = bike_stats.dropoff_stations_considered;
-        planner_stats.bike_station_pairs = bike_stats.station_pairs;
-        planner_stats.bike_matrix_requests = bike_stats.matrix_requests;
-        planner_stats.bike_realizations_feasible = bike_stats.realizations_feasible;
-        planner_stats.multimodal_variants = variants.len();
         tracing::debug!(
             target: "via_server::routing",
             bike_share_enabled = bike_enabled,
-            relevant_bike_stations = planner_stats.relevant_bike_stations,
-            bike_candidate_movements = planner_stats.bike_candidate_movements,
-            bike_pickup_stations_considered = planner_stats.bike_pickup_stations_considered,
-            bike_dropoff_stations_considered = planner_stats.bike_dropoff_stations_considered,
-            bike_station_pairs = planner_stats.bike_station_pairs,
-            bike_matrix_requests = planner_stats.bike_matrix_requests,
-            bike_realizations_feasible = planner_stats.bike_realizations_feasible,
+            relevant_bike_stations = bike_stats.relevant_bike_stations,
+            bike_candidate_movements = bike_stats.candidate_movements,
+            bike_pickup_stations_considered = bike_stats.pickup_stations_considered,
+            bike_dropoff_stations_considered = bike_stats.dropoff_stations_considered,
+            bike_station_pairs = bike_stats.station_pairs,
+            bike_matrix_requests = bike_stats.matrix_requests,
+            bike_realizations_feasible = bike_stats.realizations_feasible,
             bike_realizations_selected = planner_stats.phase2_evaluation.bike_realizations_selected,
-            multimodal_variants = planner_stats.multimodal_variants,
+            multimodal_variants = variants.len(),
             "Phase 2 corridor evaluation"
         );
         Ok((variants, planner_stats))
@@ -601,7 +575,7 @@ mod tests {
         query.max_expansions = 1;
 
         assert!(matches!(
-            planner.plan(query).await,
+            planner.plan_with_stats(query).await,
             Err(RoutingError::Phase2EvaluationLimit)
         ));
     }

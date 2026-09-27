@@ -223,7 +223,7 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
             .count(),
         3
     );
-    assert_eq!(transfers.len(), 12);
+    assert_eq!(network.transfer_edges.len(), 12);
     assert!(network.validate().is_ok());
     assert!(
         transfers

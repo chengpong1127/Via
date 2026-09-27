@@ -58,14 +58,6 @@ impl TransferShortcutIndex {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.by_from.values().map(Vec::len).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_from.values().all(Vec::is_empty)
-    }
-
     pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
         self.by_from.get(stop).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -127,14 +119,21 @@ mod tests {
         ]);
 
         let index = TransferShortcutIndex::from_network(&network);
-        assert_eq!(index.len(), 2);
         assert_eq!(
             index.transfers_from(&BoardingPointId::new("a"))[0].duration_seconds,
             90
         );
         assert_eq!(
+            index.transfers_from(&BoardingPointId::new("b"))[0].to,
+            BoardingPointId::new("a")
+        );
+        assert_eq!(
             index.transfers_to(&BoardingPointId::new("b"))[0].from,
             BoardingPointId::new("a")
+        );
+        assert_eq!(
+            index.transfers_to(&BoardingPointId::new("a"))[0].from,
+            BoardingPointId::new("b")
         );
     }
 }

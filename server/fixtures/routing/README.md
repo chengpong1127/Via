@@ -1,8 +1,8 @@
 # Routing fixtures
 
 This directory is a deliberately small, provider-neutral network used by the
-end-to-end routing tests in `tests/routing_fixtures.rs`. It is not a copy of
-the development TDX snapshot.
+end-to-end routing tests in `tests/routing`. It is not a copy of the
+development TDX snapshot.
 
 The common topology is:
 

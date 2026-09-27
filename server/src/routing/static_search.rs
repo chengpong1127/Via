@@ -216,8 +216,6 @@ pub struct CandidateCorridor {
     retained: Vec<StaticCorridor>,
     equivalent_legs: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     timing_positions: Vec<PatternPosition>,
-    pattern_count: usize,
-    selected_bus_stop_ids: HashSet<BoardingPointId>,
 }
 
 impl CandidateCorridor {
@@ -226,14 +224,14 @@ impl CandidateCorridor {
         network: &TransitRuntime,
         retained: Vec<StaticCorridor>,
     ) -> Self {
-        Self::from_retained(network, &HashMap::new(), retained)
+        Self::from_retained(network, &HashMap::new(), retained).0
     }
 
     fn from_retained(
         network: &TransitRuntime,
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         retained: Vec<StaticCorridor>,
-    ) -> Self {
+    ) -> (Self, usize, usize) {
         let retained_equivalent_legs = retained
             .iter()
             .flat_map(StaticCorridor::transit_legs)
@@ -275,13 +273,15 @@ impl CandidateCorridor {
                 .then(left.stop_index.cmp(&right.stop_index))
         });
 
-        Self {
-            retained,
-            equivalent_legs: retained_equivalent_legs,
-            timing_positions,
-            pattern_count: selected_pattern_ids.len(),
-            selected_bus_stop_ids,
-        }
+        (
+            Self {
+                retained,
+                equivalent_legs: retained_equivalent_legs,
+                timing_positions,
+            },
+            selected_pattern_ids.len(),
+            selected_bus_stop_ids.len(),
+        )
     }
 
     pub fn retained(&self) -> &[StaticCorridor] {
@@ -331,22 +331,8 @@ impl CandidateCorridor {
         self.timing_positions.iter().cloned()
     }
 
-    pub fn bus_stops(&self) -> Vec<BoardingPointId> {
-        let mut stops = self
-            .selected_bus_stop_ids
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        stops
-    }
-
     pub fn is_empty(&self) -> bool {
         self.retained.is_empty()
-    }
-
-    pub fn pattern_count(&self) -> usize {
-        self.pattern_count
     }
 }
 
@@ -1101,15 +1087,16 @@ pub fn generate(
         }
     }
     retained.sort_by(corridor_order);
-    let surface = CandidateCorridor::from_retained(network, &equivalent_legs, retained);
+    let (surface, pattern_count, bus_stop_count) =
+        CandidateCorridor::from_retained(network, &equivalent_legs, retained);
     stats.static_retained_pattern_sequence_groups =
         retained_pattern_sequence_groups(network, surface.retained());
     stats.static_retained_mode_sequence_groups =
         retained_mode_sequence_groups(&stats.static_retained_pattern_sequence_groups);
     stats.static_corridors_retained = surface.retained().len();
-    stats.static_corridor_patterns = surface.pattern_count();
+    stats.static_corridor_patterns = pattern_count;
     stats.static_corridor_positions = surface.timing_positions().count();
-    stats.static_corridor_bus_stops = surface.bus_stops().len();
+    stats.static_corridor_bus_stops = bus_stop_count;
     stats.kth_static_duration_seconds = surface
         .retained()
         .get(limit.saturating_sub(1))
@@ -1762,13 +1749,15 @@ mod tests {
             ],
         );
 
-        let surface = run(
-            &network,
+        let (surface, stats) = generate(
+            &TransitRuntime::new(std::sync::Arc::new(network.clone())),
+            &TransitTopologyIndex::new(&network),
+            &TransferShortcutIndex::from_network(&network),
             &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 2),
         );
 
         assert_eq!(surface.retained().len(), 2);
-        assert_eq!(surface.pattern_count(), 4);
+        assert_eq!(stats.static_corridor_patterns, 4);
     }
 
     #[test]
@@ -1819,7 +1808,7 @@ mod tests {
         );
 
         assert_eq!(surface.retained().len(), 1);
-        assert_eq!(surface.pattern_count(), 2);
+        assert_eq!(stats.static_corridor_patterns, 2);
         let timing_patterns = surface
             .timing_positions()
             .map(|position| position.pattern_id)
@@ -1857,7 +1846,7 @@ mod tests {
         let transfers = TransferShortcutIndex::from_network(&network);
         let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-        let (surface, _stats) = generate(
+        let (surface, stats) = generate(
             &runtime,
             &topology,
             &transfers,
@@ -1865,7 +1854,7 @@ mod tests {
         );
 
         assert_eq!(surface.retained().len(), 1);
-        assert_eq!(surface.pattern_count(), 2);
+        assert_eq!(stats.static_corridor_patterns, 2);
         let timing_patterns = surface
             .timing_positions()
             .map(|position| position.pattern_id)
