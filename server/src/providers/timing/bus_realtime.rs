@@ -25,8 +25,10 @@ const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 struct TdxBusEstimatedArrival {
     #[serde(rename = "StopUID")]
     stop_uid: String,
-    #[serde(rename = "SubRouteUID")]
-    sub_route_uid: String,
+    #[serde(rename = "SubRouteUID", default)]
+    sub_route_uid: Option<String>,
+    #[serde(rename = "RouteUID", default)]
+    route_uid: Option<String>,
     #[serde(rename = "Direction", default)]
     direction: Option<u8>,
     #[serde(rename = "StopStatus", default)]
@@ -68,10 +70,17 @@ pub(super) fn parse_bus_realtime_payload(
             received_at,
             None,
         );
+        let Some(service_uid) = record
+            .sub_route_uid
+            .as_deref()
+            .or(record.route_uid.as_deref())
+        else {
+            continue;
+        };
         let directional_id = record
             .direction
-            .map(|direction| transit_service_id_for_direction(&record.sub_route_uid, direction));
-        let base_id = transit_service_id(&record.sub_route_uid);
+            .map(|direction| transit_service_id_for_direction(service_uid, direction));
+        let base_id = transit_service_id(service_uid);
         let ids = directional_id
             .as_ref()
             .and_then(|id| requested_services.get(id.as_str()))
@@ -85,7 +94,7 @@ pub(super) fn parse_bus_realtime_payload(
                 published_at,
             );
             normalized.push(NormalizedRealtimeValue {
-                id: observation_id(&record.stop_uid, &record.sub_route_uid, published_at),
+                id: observation_id(&record.stop_uid, service_uid, published_at),
                 received_at,
                 normalized_at: received_at,
                 provider_published_at: Some(published_at),
@@ -167,5 +176,43 @@ pub fn normalize_n1(
         predicted_arrival_at,
         state,
         transmitted_at,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::format_description::well_known::Rfc3339;
+
+    #[test]
+    fn route_uid_fallback_maps_tdx_bus_estimates_without_subroute_uid() {
+        let pattern_id = TransitPatternId::new("pattern:TPE11871::direction=0::variant=0");
+        let service_id = transit_service_id_for_direction("TPE11871", 0);
+        let requested_services =
+            HashMap::from([(service_id.as_str().to_owned(), vec![pattern_id.clone()])]);
+        let update_time = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+        let payload = serde_json::json!([{
+            "RouteUID": "TPE11871",
+            "StopUID": "TPE11896",
+            "Direction": 0,
+            "StopStatus": 0,
+            "EstimateTime": 1381,
+            "UpdateTime": update_time,
+        }]);
+
+        let values = parse_bus_realtime_payload(
+            &payload,
+            &requested_services,
+            &FreshnessPolicy::tdx_one_minute("test"),
+        )
+        .unwrap();
+
+        assert_eq!(values.len(), 1);
+        let RealtimeValue::ArrivalEstimate(arrival) = &values[0].value else {
+            panic!("expected an arrival estimate");
+        };
+        assert_eq!(arrival.transit_pattern_id, pattern_id);
+        assert_eq!(arrival.boarding_point_id, boarding_point_id("TPE11896"));
+        assert_eq!(arrival.state, ArrivalState::Predicted);
     }
 }
