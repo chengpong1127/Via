@@ -7,7 +7,7 @@ The server's canonical planning flow is:
 ```text
 street access/egress → TransitPlanner
   → static Top-K structural corridors → request-local snapshots
-  → fixed corridor evaluator (Transit / Walk / YouBike realizations)
+  → forward fixed corridor evaluator (Transit / Walk / lazy YouBike routing)
   → reconstruct → rank
 ```
 
@@ -15,9 +15,14 @@ street access/egress → TransitPlanner
 global, bounded forward Top-K search across the selected transit modes using
 static schedule durations or optimistic geometry estimates. Phase 2 loads one
 request-local timing snapshot for retained corridors and, when selected, one
-BikeShare availability snapshot. A synchronous fixed-corridor evaluator
-chooses equivalent transit Patterns and departures, then Walk or YouBike for
-retained surface transfers. It cannot add anchors or combine corridors. The
+BikeShare availability snapshot. An asynchronous forward fixed-corridor
+evaluator chooses equivalent transit Patterns and departures, then evaluates
+Walk and normal successors before screening BikeShare with a cheap optimistic
+lower bound. Competitive BikeShare movements are routed lazily through the
+street provider, and a continuous rental may extend from its original anchor
+to the next corridor anchor. The evaluator cannot add anchors or combine
+corridors and makes no additional TDX calls. A direct origin-to-destination
+BikeShare alternative remains separate. The
 static `TransferShortcutIndex` exposes directional `transfers_from` and
 `transfers_to` lookups. Bus realtime is fetched by unique stop and scope, then
 filtered locally. BikeShare does not add transit connectivity, replace access

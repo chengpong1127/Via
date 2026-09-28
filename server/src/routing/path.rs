@@ -349,7 +349,7 @@ impl JourneyVariant {
                     self.skeleton.baseline_movement_signature(*movement_index)
                 ),
                 JourneyPathMovement::BikeShare { shortcut } => format!(
-                    "bike:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    "bike:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                     anchor_signature(&self.skeleton.anchors()[step.from_anchor].kind),
                     anchor_signature(&self.skeleton.anchors()[step.to_anchor].kind),
                     shortcut.pickup_station_id.as_str(),
@@ -360,6 +360,7 @@ impl JourneyVariant {
                     shortcut.bicycle_distance_metres,
                     shortcut.walk_from_dropoff.duration_seconds,
                     shortcut.walk_from_dropoff.distance_metres,
+                    shortcut.rental_wait_seconds,
                     shortcut.total_seconds,
                 ),
             })
@@ -656,6 +657,7 @@ pub struct BikeShortcut {
     pub bicycle_duration_seconds: u32,
     pub bicycle_distance_metres: u32,
     pub walk_from_dropoff: BikeWalkingAccess,
+    pub rental_wait_seconds: u32,
     pub total_seconds: u32,
 }
 
@@ -685,8 +687,16 @@ impl BikeShortcut {
             bicycle_duration_seconds: bicycle.duration_seconds,
             bicycle_distance_metres: bicycle.distance_metres,
             walk_from_dropoff,
+            rental_wait_seconds: 0,
             total_seconds,
         })
+    }
+
+    pub(crate) fn with_rental_wait(mut self, seconds: u32) -> Option<Self> {
+        let route_seconds = self.total_seconds.checked_sub(self.rental_wait_seconds)?;
+        self.total_seconds = route_seconds.checked_add(seconds)?;
+        self.rental_wait_seconds = seconds;
+        Some(self)
     }
 }
 

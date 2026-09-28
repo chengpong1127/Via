@@ -73,16 +73,6 @@ impl CorridorAnchors {
     pub(crate) fn stops(&self) -> &[BoardingPointId] {
         &self.stops
     }
-
-    pub(crate) fn forward_pairs(&self, max_span: usize) -> Vec<(usize, usize)> {
-        let last = self.stops.len().saturating_sub(1);
-        (0..last)
-            .flat_map(|from| {
-                let end = from.saturating_add(max_span).min(last);
-                ((from + 1)..=end).map(move |to| (from, to))
-            })
-            .collect()
-    }
 }
 
 impl StaticCorridor {

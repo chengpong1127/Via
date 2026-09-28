@@ -59,13 +59,13 @@ fn bike_snapshot(ids: &[(&str, u32, u32)]) -> Arc<BikeAvailabilitySnapshot> {
 fn segment_network(
     from: &str,
     to: &str,
+    pickup: via_server::street::Coordinate,
+    dropoff: via_server::street::Coordinate,
 ) -> (
     Arc<BikeShareNetwork>,
     via_server::street::Coordinate,
     via_server::street::Coordinate,
 ) {
-    let pickup = via_server::street::Coordinate::try_new(25.01, 121.51).unwrap();
-    let dropoff = via_server::street::Coordinate::try_new(25.02, 121.52).unwrap();
     let pickup_id = BikeStationId::new("pickup");
     let dropoff_id = BikeStationId::new("dropoff");
     let network = BikeShareNetwork::new(vec![
@@ -109,9 +109,9 @@ async fn bike_can_replace_a_transit_leg() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
-    let (bike_network, pickup, dropoff) = segment_network("F-M1", "F-M2-RED");
     let m1 = stop_coordinate(&transit, "F-M1");
     let m2 = stop_coordinate(&transit, "F-M2-RED");
+    let (bike_network, pickup, dropoff) = segment_network("F-M1", "F-M2-RED", m1, m2);
     let street = FakeStreetRouter::builder()
         .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
         .path(
@@ -182,9 +182,9 @@ async fn slower_bike_segment_is_rejected() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
-    let (bike_network, pickup, dropoff) = segment_network("F-M1", "F-M2-RED");
     let m1 = stop_coordinate(&transit, "F-M1");
     let m2 = stop_coordinate(&transit, "F-M2-RED");
+    let (bike_network, pickup, dropoff) = segment_network("F-M1", "F-M2-RED", m1, m2);
     let street = FakeStreetRouter::builder()
         .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
         .path(
@@ -231,9 +231,9 @@ async fn surface_transfer_options(bikes: u32, docks: u32) -> serde_json::Value {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M3-BLUE");
-    let (bike_network, pickup, dropoff) = segment_network("F-M2-RED", "F-M2-BLUE");
     let red = stop_coordinate(&transit, "F-M2-RED");
     let blue = stop_coordinate(&transit, "F-M2-BLUE");
+    let (bike_network, pickup, dropoff) = segment_network("F-M2-RED", "F-M2-BLUE", red, blue);
     let m1 = stop_coordinate(&transit, "F-M1");
     let m3 = stop_coordinate(&transit, "F-M3-BLUE");
     let street = FakeStreetRouter::builder()

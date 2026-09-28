@@ -252,14 +252,6 @@ impl TransitPlanner {
                 .into());
         }
 
-        let (bike_realizations, mut bike_stats) =
-            match (self.bike.as_ref(), bike_snapshot.as_deref()) {
-                (Some(bike), Some(snapshot)) => {
-                    bike.movement_realizations(&corridor, snapshot, OffsetDateTime::now_utc())
-                        .await
-                }
-                _ => (Default::default(), BikePlanningStats::default()),
-            };
         let mut direct_shortcuts = Vec::new();
         let mut direct_bike_stats = BikePlanningStats::default();
         if let (Some(direct), Some(bike), Some(snapshot)) = (
@@ -275,23 +267,17 @@ impl TransitPlanner {
                     OffsetDateTime::now_utc(),
                 )
                 .await;
-            bike_stats.relevant_bike_stations += direct_stats.relevant_bike_stations;
-            bike_stats.candidate_movements += direct_stats.candidate_movements;
-            bike_stats.pickup_stations_considered += direct_stats.pickup_stations_considered;
-            bike_stats.dropoff_stations_considered += direct_stats.dropoff_stations_considered;
-            bike_stats.station_pairs += direct_stats.station_pairs;
-            bike_stats.matrix_requests += direct_stats.matrix_requests;
-            bike_stats.realizations_feasible += direct_stats.realizations_feasible;
             direct_bike_stats = direct_stats;
             direct_shortcuts = shortcuts;
         }
-        let (mut variants, mut phase2_stats) = evaluator::evaluate_with_realizations(
-            &self.network,
-            &corridor,
-            &snapshot,
-            query,
-            &bike_realizations,
-        )?;
+        let bike_context = self
+            .bike
+            .as_ref()
+            .zip(bike_snapshot.as_deref())
+            .map(|(bike, snapshot)| (bike, snapshot, OffsetDateTime::now_utc()));
+        let (mut variants, mut phase2_stats) =
+            evaluator::evaluate_with_bike(&self.network, &corridor, &snapshot, query, bike_context)
+                .await?;
         if let Some(direct) = direct_bike_journey {
             let direct_variants = direct_bike_variants(direct, direct_shortcuts);
             phase2_stats.candidates_before_pareto += direct_bike_stats.realizations_feasible;
@@ -305,13 +291,16 @@ impl TransitPlanner {
         tracing::debug!(
             target: "via_server::routing",
             bike_share_enabled = bike_enabled,
-            relevant_bike_stations = bike_stats.relevant_bike_stations,
-            bike_candidate_movements = bike_stats.candidate_movements,
-            bike_pickup_stations_considered = bike_stats.pickup_stations_considered,
-            bike_dropoff_stations_considered = bike_stats.dropoff_stations_considered,
-            bike_station_pairs = bike_stats.station_pairs,
-            bike_matrix_requests = bike_stats.matrix_requests,
-            bike_realizations_feasible = bike_stats.realizations_feasible,
+            bike_direct_candidate_movements = direct_bike_stats.candidate_movements,
+            bike_direct_station_pairs = direct_bike_stats.station_pairs,
+            bike_direct_matrix_requests = direct_bike_stats.matrix_requests,
+            bike_matrix_requests = direct_bike_stats.matrix_requests + planner_stats.phase2_evaluation.bike_matrix_requests,
+            bike_lower_bound_checks = planner_stats.phase2_evaluation.bike_lower_bound_checks,
+            bike_lower_bound_rejections = planner_stats.phase2_evaluation.bike_lower_bound_rejections,
+            bike_exact_candidates_requested = planner_stats.phase2_evaluation.bike_exact_candidates_requested,
+            bike_exact_cache_hits = planner_stats.phase2_evaluation.bike_exact_cache_hits,
+            bike_continuous_extensions = planner_stats.phase2_evaluation.bike_continuous_extensions,
+            bike_exact_candidates_retained = direct_bike_stats.realizations_feasible + planner_stats.phase2_evaluation.bike_realizations_feasible,
             bike_realizations_selected = planner_stats.phase2_evaluation.bike_realizations_selected,
             multimodal_variants = variants.len(),
             "Phase 2 corridor evaluation"

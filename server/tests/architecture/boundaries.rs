@@ -109,7 +109,7 @@ fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions()
     assert!(planner.contains("pub struct TransitPlanner"));
     assert!(planner.contains("static_search::generate"));
     assert!(planner.contains("load_snapshot"));
-    assert!(planner.contains("evaluator::evaluate_with_realizations"));
+    assert!(planner.contains("evaluator::evaluate_with_bike"));
 }
 
 #[test]
@@ -152,24 +152,26 @@ fn static_corridor_search_has_no_realtime_or_bikeshare_dependency() {
 }
 
 #[test]
-fn phase2_evaluator_is_local_and_provider_free() {
+fn phase2_evaluator_uses_request_snapshots_and_lazy_bike_routing() {
     let evaluator = source("src/routing/evaluator.rs");
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("corridor.retained()"));
+    assert!(evaluator.contains("BikeAvailabilitySnapshot"));
+    assert!(evaluator.contains("movement_candidate"));
+    assert!(evaluator.contains("realize_candidate"));
     for forbidden in [
         "TDX",
         "TdxClient",
         "reqwest",
         "get_json",
-        ".await",
         "crate::providers",
+        "TimingProvider",
         "BikeAvailabilitySource",
-        "BikeSegmentPlanner",
-        "StreetRouter",
+        "static_search::generate",
     ] {
         assert!(
             !evaluator.contains(forbidden),
-            "Phase 2 evaluator contains I/O: {forbidden}"
+            "Phase 2 evaluator bypasses its request snapshot or fixed-corridor boundary: {forbidden}"
         );
     }
 }
