@@ -1,4 +1,0 @@
-[
-  {"LineID":"BL","Direction":0,"StationID":"BL12","Timetables":[{"Sequence":1,"TrainNo":"BL-0800","ArrivalTime":"08:00","DepartureTime":"08:00"},{"Sequence":2,"TrainNo":"BL-0805","ArrivalTime":"08:05","DepartureTime":"08:05"}]},
-  {"LineID":"BL","Direction":1,"StationID":"R03","Timetables":[{"Sequence":1,"TrainNo":"BL-0900","ArrivalTime":"09:00","DepartureTime":"09:00"}]}
-]
