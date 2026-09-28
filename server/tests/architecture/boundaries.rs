@@ -157,11 +157,15 @@ fn phase2_evaluator_is_local_and_provider_free() {
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("corridor.retained()"));
     for forbidden in [
+        "TDX",
         "TdxClient",
         "reqwest",
         "get_json",
         ".await",
         "crate::providers",
+        "BikeAvailabilitySource",
+        "BikeSegmentPlanner",
+        "StreetRouter",
     ] {
         assert!(
             !evaluator.contains(forbidden),
@@ -272,7 +276,7 @@ fn routing_has_no_legacy_transit_pipeline() {
             "legacy routing symbol remains: {legacy}"
         );
     }
-    assert!(service.contains("self.transit_planner.plan_with_stats(query).await"));
+    assert!(service.contains(".plan_with_stats_and_direct(query, direct_bike_journey.take())"));
     assert!(service.contains("discover_access_points"));
     assert!(service.contains("discover_egress_points"));
 }

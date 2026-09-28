@@ -10,14 +10,16 @@ use crate::{
         DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
     },
     domain::ids::BikeStationId,
+    domain::location::RequestCoordinate,
     providers::BikeAvailabilitySource,
     street::{
-        Coordinate, MatrixCell, MatrixQuery, RoutingConstraints, StreetRouter, StreetTravelMode,
+        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
+        StreetTravelMode,
     },
 };
 
 use super::path::{BikeRide, BikeShortcut};
-use super::static_search::{CandidateCorridor, StaticCorridorStep};
+use super::static_search::{CandidateCorridor, StaticCorridor};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BikePlanningStats {
@@ -32,20 +34,18 @@ pub(crate) struct BikePlanningStats {
 
 pub(crate) const MAX_PICKUP_STATIONS_PER_ANCHOR: usize = 3;
 pub(crate) const MAX_DROPOFF_STATIONS_PER_ANCHOR: usize = 3;
+pub(crate) const MAX_BIKE_FORWARD_ANCHOR_SPAN: usize = 8;
+const MAX_DIRECT_BIKE_STATIONS_PER_ENDPOINT: usize = 3;
+const MAX_DIRECT_BIKE_WALK_SECONDS: u32 = 15 * 60;
+const MAX_BIKE_DURATION_SECONDS: u32 = 60 * 60;
+const MAX_BIKE_DISTANCE_METRES: u32 = 20_000;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct CorridorMovement {
+    pub from_anchor: usize,
+    pub to_anchor: usize,
     pub from: crate::domain::ids::BoardingPointId,
     pub to: crate::domain::ids::BoardingPointId,
-}
-
-impl CorridorMovement {
-    fn new(
-        from: crate::domain::ids::BoardingPointId,
-        to: crate::domain::ids::BoardingPointId,
-    ) -> Self {
-        Self { from, to }
-    }
 }
 
 pub(crate) type BikeMovementRealizations = HashMap<CorridorMovement, Vec<BikeShortcut>>;
@@ -87,15 +87,7 @@ impl BikeSegmentPlanner {
         let mut relevant_stations = HashSet::new();
         let mut movements = HashSet::new();
         for retained in corridor.retained() {
-            for step in &retained.steps {
-                let movement = match step {
-                    StaticCorridorStep::Transit(_) => continue,
-                    StaticCorridorStep::SurfaceTransfer { from, to, .. } => {
-                        CorridorMovement::new(from.clone(), to.clone())
-                    }
-                };
-                movements.insert(movement);
-            }
+            movements.extend(corridor_movements(retained));
         }
 
         let mut pickup_stations_considered = 0;
@@ -154,6 +146,182 @@ impl BikeSegmentPlanner {
         let realizations = self.matrix_realizations(&pair_needs, &mut stats).await;
         stats.realizations_feasible = realizations.values().map(Vec::len).sum();
         (realizations, stats)
+    }
+
+    pub(crate) async fn direct_realizations(
+        &self,
+        origin: Coordinate,
+        destination: Coordinate,
+        snapshot: &BikeAvailabilitySnapshot,
+        now: OffsetDateTime,
+    ) -> (Vec<BikeShortcut>, BikePlanningStats) {
+        let view =
+            self.network
+                .availability_view_at(snapshot, now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE);
+        let origin_point = RequestCoordinate {
+            latitude: origin.latitude(),
+            longitude: origin.longitude(),
+        };
+        let destination_point = RequestCoordinate {
+            latitude: destination.latitude(),
+            longitude: destination.longitude(),
+        };
+        let limits = self.street_router.matrix_limits();
+        let station_limit = MAX_DIRECT_BIKE_STATIONS_PER_ENDPOINT
+            .min(limits.max_sources)
+            .min(limits.max_targets);
+        if station_limit == 0 {
+            return (Vec::new(), BikePlanningStats::default());
+        }
+        let mut pickups = direct_station_choices(&self.network, &view, origin_point, true);
+        let mut dropoffs = direct_station_choices(&self.network, &view, destination_point, false);
+        pickups.truncate(station_limit);
+        dropoffs.truncate(station_limit);
+        let mut stats = BikePlanningStats {
+            relevant_bike_stations: pickups.len() + dropoffs.len(),
+            candidate_movements: usize::from(!pickups.is_empty() && !dropoffs.is_empty()),
+            pickup_stations_considered: pickups.len(),
+            dropoff_stations_considered: dropoffs.len(),
+            station_pairs: pickups.len().saturating_mul(dropoffs.len()),
+            ..BikePlanningStats::default()
+        };
+        if pickups.is_empty() || dropoffs.is_empty() {
+            return (Vec::new(), stats);
+        }
+
+        stats.matrix_requests += 1;
+        let Ok(pickup_walks) = self
+            .street_router
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::OneToMany,
+                travel_mode: StreetTravelMode::Walking,
+                sources: vec![origin],
+                targets: pickups.iter().map(|(_, coordinate)| *coordinate).collect(),
+                constraints: RoutingConstraints::default(),
+            })
+            .await
+        else {
+            return (Vec::new(), stats);
+        };
+        stats.matrix_requests += 1;
+        let Ok(dropoff_walks) = self
+            .street_router
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::ManyToOne,
+                travel_mode: StreetTravelMode::Walking,
+                sources: dropoffs.iter().map(|(_, coordinate)| *coordinate).collect(),
+                targets: vec![destination],
+                constraints: RoutingConstraints::default(),
+            })
+            .await
+        else {
+            return (Vec::new(), stats);
+        };
+        if pickup_walks.cells.len() != 1
+            || pickup_walks.cells[0].len() != pickups.len()
+            || dropoff_walks.cells.len() != dropoffs.len()
+            || dropoff_walks.cells.iter().any(|row| row.len() != 1)
+        {
+            return (Vec::new(), stats);
+        }
+        let walk_to_pickups = pickup_walks.cells[0]
+            .iter()
+            .map(|cell| match cell {
+                MatrixCell::Reachable { duration, distance }
+                    if duration.0 <= MAX_DIRECT_BIKE_WALK_SECONDS =>
+                {
+                    Some(BikeWalkingAccess::new(duration.0, distance.0))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let walk_from_dropoffs = dropoff_walks
+            .cells
+            .iter()
+            .map(|row| match row[0] {
+                MatrixCell::Reachable { duration, distance }
+                    if duration.0 <= MAX_DIRECT_BIKE_WALK_SECONDS =>
+                {
+                    Some(BikeWalkingAccess::new(duration.0, distance.0))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !walk_to_pickups.iter().any(Option::is_some)
+            || !walk_from_dropoffs.iter().any(Option::is_some)
+        {
+            return (Vec::new(), stats);
+        }
+
+        stats.matrix_requests += 1;
+        let Ok(bike_matrix) = self
+            .street_router
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::ManyToMany,
+                travel_mode: StreetTravelMode::Bicycle,
+                sources: pickups.iter().map(|(_, coordinate)| *coordinate).collect(),
+                targets: dropoffs.iter().map(|(_, coordinate)| *coordinate).collect(),
+                constraints: RoutingConstraints::default(),
+            })
+            .await
+        else {
+            return (Vec::new(), stats);
+        };
+        if bike_matrix.cells.len() != pickups.len()
+            || bike_matrix
+                .cells
+                .iter()
+                .any(|row| row.len() != dropoffs.len())
+        {
+            return (Vec::new(), stats);
+        }
+
+        let mut shortcuts = Vec::new();
+        for (pickup_index, row) in bike_matrix.cells.iter().enumerate() {
+            let Some(walk_to_pickup) = walk_to_pickups[pickup_index] else {
+                continue;
+            };
+            for (dropoff_index, cell) in row.iter().enumerate() {
+                let Some(walk_from_dropoff) = walk_from_dropoffs[dropoff_index] else {
+                    continue;
+                };
+                let MatrixCell::Reachable { duration, distance } = cell else {
+                    continue;
+                };
+                if duration.0 > MAX_BIKE_DURATION_SECONDS || distance.0 > MAX_BIKE_DISTANCE_METRES {
+                    continue;
+                }
+                if let Some(shortcut) = BikeShortcut::new(
+                    0,
+                    1,
+                    pickups[pickup_index].0.clone(),
+                    dropoffs[dropoff_index].0.clone(),
+                    walk_to_pickup,
+                    BikeRide {
+                        duration_seconds: duration.0,
+                        distance_metres: distance.0,
+                    },
+                    walk_from_dropoff,
+                ) {
+                    shortcuts.push(shortcut);
+                }
+            }
+        }
+        shortcuts.sort_by(|left, right| {
+            (
+                left.total_seconds,
+                left.pickup_station_id.as_str(),
+                left.dropoff_station_id.as_str(),
+            )
+                .cmp(&(
+                    right.total_seconds,
+                    right.pickup_station_id.as_str(),
+                    right.dropoff_station_id.as_str(),
+                ))
+        });
+        shortcuts.dedup();
+        stats.realizations_feasible = shortcuts.len();
+        (shortcuts, stats)
     }
 
     async fn matrix_realizations(
@@ -245,6 +413,11 @@ impl BikeSegmentPlanner {
                             let MatrixCell::Reachable { duration, distance } = cell else {
                                 continue;
                             };
+                            if duration.0 > MAX_BIKE_DURATION_SECONDS
+                                || distance.0 > MAX_BIKE_DISTANCE_METRES
+                            {
+                                continue;
+                            }
                             let pair = StationPair {
                                 pickup_station_id: pickup_chunk[source_index].clone(),
                                 dropoff_station_id: target_chunk[target_index].clone(),
@@ -254,8 +427,8 @@ impl BikeSegmentPlanner {
                             };
                             for need in needs {
                                 let Some(shortcut) = BikeShortcut::new(
-                                    0,
-                                    1,
+                                    need.movement.from_anchor,
+                                    need.movement.to_anchor,
                                     pair.pickup_station_id.clone(),
                                     pair.dropoff_station_id.clone(),
                                     need.walk_to_pickup,
@@ -294,6 +467,23 @@ impl BikeSegmentPlanner {
         }
         accepted
     }
+}
+
+fn corridor_movements(corridor: &StaticCorridor) -> Vec<CorridorMovement> {
+    let Some(anchors) = corridor.anchors() else {
+        return Vec::new();
+    };
+    let stops = anchors.stops();
+    anchors
+        .forward_pairs(MAX_BIKE_FORWARD_ANCHOR_SPAN)
+        .into_iter()
+        .map(|(from_anchor, to_anchor)| CorridorMovement {
+            from_anchor,
+            to_anchor,
+            from: stops[from_anchor].clone(),
+            to: stops[to_anchor].clone(),
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -366,6 +556,40 @@ fn station_choices<'a>(
     });
     relevant_stations.extend(choices.iter().map(|choice| choice.station_id.clone()));
     choices
+}
+
+fn direct_station_choices(
+    network: &BikeShareNetwork,
+    view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
+    point: RequestCoordinate,
+    pickup: bool,
+) -> Vec<(BikeStationId, Coordinate)> {
+    let mut choices = network
+        .stations
+        .iter()
+        .filter(|station| {
+            if pickup {
+                view.can_pick_up_at(&station.id)
+            } else {
+                view.can_return_at(&station.id)
+            }
+        })
+        .filter_map(|station| {
+            let coordinate = station_coordinate(network, &station.id)?;
+            let distance = point.haversine_distance_metres(station.coordinate);
+            (distance <= 1_500.0).then(|| (station.id.clone(), coordinate, distance))
+        })
+        .collect::<Vec<_>>();
+    choices.sort_by(|left, right| {
+        left.2
+            .total_cmp(&right.2)
+            .then(left.0.as_str().cmp(right.0.as_str()))
+    });
+    choices.truncate(MAX_DIRECT_BIKE_STATIONS_PER_ENDPOINT);
+    choices
+        .into_iter()
+        .map(|(id, coordinate, _)| (id, coordinate))
+        .collect()
 }
 
 fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Option<Coordinate> {
@@ -445,6 +669,71 @@ mod tests {
                 .map(|choice| choice.station_id.as_str())
                 .collect::<Vec<_>>(),
             vec!["station-0", "station-1", "station-2"]
+        );
+    }
+
+    #[test]
+    fn corridor_movements_include_bounded_forward_anchor_pairs() {
+        let a = BoardingPointId::new("a");
+        let b = BoardingPointId::new("b");
+        let c = BoardingPointId::new("c");
+        let corridor = StaticCorridor {
+            access_stop_id: a.clone(),
+            egress_stop_id: c.clone(),
+            theoretical_duration_seconds: 120,
+            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            steps: vec![
+                StaticCorridorStep::SurfaceTransfer {
+                    from: a.clone(),
+                    to: b.clone(),
+                    walking_duration_seconds: 60,
+                },
+                StaticCorridorStep::SurfaceTransfer {
+                    from: b.clone(),
+                    to: c.clone(),
+                    walking_duration_seconds: 60,
+                },
+            ],
+        };
+
+        let movements = corridor_movements(&corridor);
+
+        assert_eq!(movements.len(), 3);
+        assert!(movements.contains(&CorridorMovement {
+            from_anchor: 0,
+            to_anchor: 2,
+            from: a,
+            to: c,
+        }));
+
+        let stops = (0..=10)
+            .map(|index| BoardingPointId::new(format!("stop-{index}")))
+            .collect::<Vec<_>>();
+        let long_corridor = StaticCorridor {
+            access_stop_id: stops[0].clone(),
+            egress_stop_id: stops[10].clone(),
+            theoretical_duration_seconds: 600,
+            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            steps: stops
+                .windows(2)
+                .map(|pair| StaticCorridorStep::SurfaceTransfer {
+                    from: pair[0].clone(),
+                    to: pair[1].clone(),
+                    walking_duration_seconds: 60,
+                })
+                .collect(),
+        };
+        let long_movements = corridor_movements(&long_corridor);
+        assert!(
+            long_movements
+                .iter()
+                .all(|movement| movement.to_anchor - movement.from_anchor
+                    <= MAX_BIKE_FORWARD_ANCHOR_SPAN)
+        );
+        assert!(
+            !long_movements
+                .iter()
+                .any(|movement| { movement.from_anchor == 0 && movement.to_anchor == 9 })
         );
     }
 

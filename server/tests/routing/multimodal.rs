@@ -7,7 +7,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde_json::json;
 use time::OffsetDateTime;
 use via_server::{
     domain::{
@@ -106,7 +105,7 @@ fn segment_network(
 }
 
 #[tokio::test]
-async fn bike_does_not_replace_a_transit_leg() {
+async fn bike_can_replace_a_transit_leg() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -148,14 +147,14 @@ async fn bike_does_not_replace_a_transit_leg() {
     )
     .await;
 
-    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
     let options = body["journey_options"].as_array().unwrap();
     assert!(
         options
             .iter()
             .any(|option| leg_modes(option).contains(&"transit"))
     );
-    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
+    assert!(options.iter().any(|option| option["bike_share_uses"] == 1));
 }
 
 #[tokio::test]
@@ -351,36 +350,201 @@ async fn bike_availability_failure_keeps_the_transit_baseline() {
 }
 
 #[tokio::test]
-async fn direct_walking_does_not_gain_a_bike_share_variant() {
+async fn direct_walking_gains_a_bike_share_variant_with_the_shared_snapshot() {
+    let transit = network();
+    let origin = near_stop(&transit, "F-M1");
+    let destination = near_stop(&transit, "F-M2-RED");
+    let pickup = via_server::street::Coordinate::try_new(
+        origin.latitude() + 0.0001,
+        origin.longitude() + 0.0001,
+    )
+    .unwrap();
+    let dropoff = via_server::street::Coordinate::try_new(
+        destination.latitude() - 0.0001,
+        destination.longitude() - 0.0001,
+    )
+    .unwrap();
+    let pickup_id = BikeStationId::new("direct-pickup");
+    let dropoff_id = BikeStationId::new("direct-dropoff");
+    let bike_network = Arc::new(
+        BikeShareNetwork::new(vec![
+            BikeStation::new(
+                pickup_id,
+                "Direct pickup",
+                via_server::api::RequestCoordinate {
+                    latitude: pickup.latitude(),
+                    longitude: pickup.longitude(),
+                },
+            ),
+            BikeStation::new(
+                dropoff_id,
+                "Direct dropoff",
+                via_server::api::RequestCoordinate {
+                    latitude: dropoff.latitude(),
+                    longitude: dropoff.longitude(),
+                },
+            ),
+        ])
+        .with_revision("fixture-direct-bike"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let body = route_body_with_bike(
+        FakeStreetRouter::builder()
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                stop_coordinate(&transit, "F-M1"),
+                path(origin, stop_coordinate(&transit, "F-M1"), 60),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                stop_coordinate(&transit, "F-M2-RED"),
+                destination,
+                path(stop_coordinate(&transit, "F-M2-RED"), destination, 60),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                destination,
+                path(origin, destination, 900),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                pickup,
+                path(origin, pickup, 30),
+            )
+            .path(
+                StreetTravelMode::Bicycle,
+                pickup,
+                dropoff,
+                path(pickup, dropoff, 300),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                dropoff,
+                destination,
+                path(dropoff, destination, 30),
+            )
+            .build(),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro", "bike_share"]),
+        bike_network,
+        Arc::new(FixtureAvailabilitySource {
+            snapshot: Ok(bike_snapshot(&[
+                ("direct-pickup", 2, 0),
+                ("direct-dropoff", 0, 2),
+            ])),
+            calls: calls.clone(),
+        }),
+    )
+    .await;
+    let options = body["journey_options"].as_array().unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(options.iter().any(|option| option["bike_share_uses"] == 1));
+}
+
+#[tokio::test]
+async fn direct_walking_without_a_transit_query_can_use_bike_share() {
     let origin = via_server::street::Coordinate::try_new(25.0, 121.5).unwrap();
-    let destination = via_server::street::Coordinate::try_new(25.001, 121.501).unwrap();
+    let destination = via_server::street::Coordinate::try_new(25.01, 121.51).unwrap();
+    let pickup = via_server::street::Coordinate::try_new(25.0001, 121.5001).unwrap();
+    let dropoff = via_server::street::Coordinate::try_new(25.0099, 121.5099).unwrap();
+    let pickup_id = BikeStationId::new("direct-pickup");
+    let dropoff_id = BikeStationId::new("direct-dropoff");
+    let bike_network = Arc::new(
+        BikeShareNetwork::new(vec![
+            BikeStation::new(
+                pickup_id,
+                "Direct pickup",
+                via_server::api::RequestCoordinate {
+                    latitude: pickup.latitude(),
+                    longitude: pickup.longitude(),
+                },
+            ),
+            BikeStation::new(
+                dropoff_id,
+                "Direct dropoff",
+                via_server::api::RequestCoordinate {
+                    latitude: dropoff.latitude(),
+                    longitude: dropoff.longitude(),
+                },
+            ),
+        ])
+        .with_revision("fixture-direct-bike"),
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
     let body = route_body_with_bike(
         FakeStreetRouter::builder()
             .path(
                 StreetTravelMode::Walking,
                 origin,
                 destination,
-                path(origin, destination, 60),
+                path(origin, destination, 900),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                pickup,
+                path(origin, pickup, 30),
+            )
+            .path(
+                StreetTravelMode::Bicycle,
+                pickup,
+                dropoff,
+                path(pickup, dropoff, 300),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                dropoff,
+                destination,
+                path(dropoff, destination, 30),
             )
             .build(),
         FixtureRealtime::empty(),
         request(origin, destination, &["bike_share"]),
-        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
-        Arc::new(UnavailableBikeAvailabilitySource),
+        bike_network,
+        Arc::new(FixtureAvailabilitySource {
+            snapshot: Ok(bike_snapshot(&[
+                ("direct-pickup", 2, 0),
+                ("direct-dropoff", 0, 2),
+            ])),
+            calls: calls.clone(),
+        }),
     )
     .await;
-    let options = body["journey_options"].as_array().unwrap();
-    assert_eq!(options.len(), 1);
-    assert_eq!(options[0]["bike_share_uses"], 0);
-    assert_eq!(options[0]["travel_modes"], json!(["walking"]));
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(
+        body["journey_options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["bike_share_uses"] == 1)
+    );
 }
 
 #[test]
-fn bike_shortcut_is_adjacent_and_cannot_cross_an_anchor() {
+fn bike_shortcut_can_span_multiple_forward_anchors() {
     assert!(
         BikeShortcut::new(
             1,
             3,
+            BikeStationId::new("pickup"),
+            BikeStationId::new("dropoff"),
+            BikeWalkingAccess::new(1, 1),
+            via_server::routing::BikeRide {
+                duration_seconds: 1,
+                distance_metres: 1,
+            },
+            BikeWalkingAccess::new(1, 1),
+        )
+        .is_some()
+    );
+    assert!(
+        BikeShortcut::new(
+            3,
+            1,
             BikeStationId::new("pickup"),
             BikeStationId::new("dropoff"),
             BikeWalkingAccess::new(1, 1),

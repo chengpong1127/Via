@@ -64,7 +64,43 @@ pub struct StaticCorridor {
     pub steps: Vec<StaticCorridorStep>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CorridorAnchors {
+    stops: Vec<BoardingPointId>,
+}
+
+impl CorridorAnchors {
+    pub(crate) fn stops(&self) -> &[BoardingPointId] {
+        &self.stops
+    }
+
+    pub(crate) fn forward_pairs(&self, max_span: usize) -> Vec<(usize, usize)> {
+        let last = self.stops.len().saturating_sub(1);
+        (0..last)
+            .flat_map(|from| {
+                let end = from.saturating_add(max_span).min(last);
+                ((from + 1)..=end).map(move |to| (from, to))
+            })
+            .collect()
+    }
+}
+
 impl StaticCorridor {
+    pub(crate) fn anchors(&self) -> Option<CorridorAnchors> {
+        let mut stops = vec![self.access_stop_id.clone()];
+        for step in &self.steps {
+            let (from, to) = match step {
+                StaticCorridorStep::Transit(leg) => (&leg.board_stop_id, &leg.alight_stop_id),
+                StaticCorridorStep::SurfaceTransfer { from, to, .. } => (from, to),
+            };
+            if stops.last() != Some(from) {
+                return None;
+            }
+            stops.push(to.clone());
+        }
+        (stops.last() == Some(&self.egress_stop_id)).then_some(CorridorAnchors { stops })
+    }
+
     pub fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
         self.steps.iter().filter_map(|step| match step {
             StaticCorridorStep::Transit(leg) => Some(leg),

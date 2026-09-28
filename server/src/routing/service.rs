@@ -31,7 +31,7 @@ use super::{
     access,
     model::TransitQuery,
     path::{JourneySkeleton, JourneyVariant},
-    planner::TransitPlanner,
+    planner::{DirectBikeJourney, TransitPlanner},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
@@ -201,6 +201,7 @@ impl RoutingService {
             self.discover_direct_walking(&context).await;
         had_transient_failure |= walking_transient;
         had_global_failure |= walking_global;
+        let mut direct_bike_journey = None;
         if let Some(direct_walking) = &direct_walking {
             let departure_at = match request.departure_setting {
                 crate::api::DepartureSetting::ArriveBy { time } => {
@@ -210,6 +211,19 @@ impl RoutingService {
                 crate::api::DepartureSetting::DepartNow
                 | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
             };
+            if request.allows_bike_share()
+                && let (Ok(origin), Ok(destination)) = (
+                    to_street_coordinate(request.origin.coordinate),
+                    to_street_coordinate(request.destination.coordinate),
+                )
+            {
+                direct_bike_journey = Some(DirectBikeJourney {
+                    path: direct_walking.path.clone(),
+                    origin,
+                    destination,
+                    departure_at,
+                });
+            }
             match JourneySkeleton::from_direct_walking(direct_walking.path.clone(), departure_at) {
                 Ok(skeleton) => {
                     let variant = JourneyVariant::baseline(skeleton);
@@ -311,7 +325,11 @@ impl RoutingService {
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
                 };
                 let search_started = Instant::now();
-                match self.transit_planner.plan_with_stats(query).await {
+                match self
+                    .transit_planner
+                    .plan_with_stats_and_direct(query, direct_bike_journey.take())
+                    .await
+                {
                     Ok((candidates, planner_stats)) => {
                         stage_metrics.transit_reachable_boardings =
                             planner_stats.phase1.static_corridor_positions;
@@ -363,6 +381,22 @@ impl RoutingService {
                             super::model::RoutingError::InvalidQuery => {}
                         }
                         tracing::error!(error = %error, "transit planning failed");
+                    }
+                }
+            }
+        }
+
+        if let Some(direct) = direct_bike_journey.take() {
+            for variant in self.transit_planner.plan_direct_bike(direct).await {
+                match self
+                    .reconstruct_multimodal_variant(&request, &variant, &context)
+                    .await
+                {
+                    Ok(Some(candidate)) => generated.push(candidate),
+                    Ok(None) => {}
+                    Err(error) => {
+                        had_transient_failure |= error == PlanningError::TemporarilyUnavailable;
+                        had_global_failure |= error == PlanningError::Internal;
                     }
                 }
             }

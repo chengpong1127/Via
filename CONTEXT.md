@@ -15,9 +15,10 @@ PlanningRequest
        → Phase 1: bounded static Top-K structural corridors
        → one request-local TimingSnapshot
        → optional BikeAvailabilitySnapshot
-       → Phase 2: fixed corridor evaluation
+       → Phase 2: time-dependent multimodal realization over corridor anchors
             ├─ Transit: equivalent Pattern and departure choices
-            └─ Surface transfer: Walk or YouBike
+            ├─ Walking: retained surface movement
+            └─ YouBike: bounded forward shortcut across anchors
        → reconstruct → rank → JourneyOption
 ```
 
@@ -55,21 +56,25 @@ calling the synchronous, provider-free corridor evaluator. Bus realtime is
 fetched by unique stop and scope, then filtered locally. Other modes keep their
 provider-native batching and static fallback behavior.
 
-When BikeShare is selected and at least one retained corridor contains a
-surface transfer, one availability snapshot is loaded alongside transit timing.
-The evaluator considers walking and feasible YouBike choices only for retained
-surface transfers. A YouBike choice requires a fresh, serviceable pickup with a
-bike and a return station with a dock. It includes walks to and from the
-stations and a bicycle route. Candidate station choices are bounded to the
-three nearest usable pickups and three nearest usable dropoffs per transfer
-anchor, so each structural movement evaluates at most nine pairs. With the
-current limits of 100 retained corridors and four transit transfers, a corridor
-has at most six surface transfers (one access-side, four between transit legs,
-and one egress-side), bounding request preparation to 5,400 station-pair needs
-before deduplication. Bike availability is observed at request time; future
-DepartAt and ArriveBy inventory is not forecast, so it cannot guarantee future
-availability. BikeShare never adds transit connectivity, changes an anchor, or
-creates a direct BikeShare-only route. Direct walking remains walking-only.
+When BikeShare is selected and retained corridors or a direct walking candidate
+exist, one request-local availability snapshot is loaded alongside transit
+timing and shared with both evaluations. Phase 2 expands each corridor as a
+forward DAG: its next retained transit or walking edge, plus BikeShare shortcuts
+to up to eight later anchors. BikeShare choices require a fresh, serviceable
+pickup with a bike and a return station with a dock. Each shortcut includes
+walking access, one bicycle route, and walking from the return station. At each
+endpoint it considers no more than three pickup and three return stations.
+Intermediate anchors do not need BikeShare stations, and one shortcut is one
+continuous rental. Transit departures after a shortcut are selected from the
+timing snapshot using the new arrival time. State expansion and retained
+frontiers are bounded by the query's expansion and candidate limits.
+
+The direct walking candidate uses the same journey path representation and may
+have a direct BikeShare alternative. It considers three nearby serviceable
+stations at each endpoint and caps station access walks at 15 minutes, bicycle
+legs at 60 minutes, and bicycle distance at 20 kilometres. BikeShare never adds
+arbitrary transit stops, patterns, or connections. Availability is observed at
+request time; future DepartAt and ArriveBy inventory is not forecast.
 
 Static transfer edges are directional facts in `TransitNetwork.transfer_edges`.
 `TransferShortcutIndex` provides incoming and outgoing lookups; there is no

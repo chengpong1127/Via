@@ -93,9 +93,9 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
 `--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, `thsr`, and
-`bike_share`. BikeShare can realize a retained surface transfer when station
-metadata and fresh availability support it; it does not create a direct
-BikeShare-only route.
+`bike_share`. BikeShare can shortcut forward between anchors in a retained
+corridor or replace a direct walking journey when station metadata, street
+routes, and fresh availability support it. It does not add transit topology.
 
 ## Run the server
 

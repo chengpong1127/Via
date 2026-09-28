@@ -7,14 +7,15 @@ use crate::domain::{
     transit_runtime::TransitRuntime,
     transit_timing::{DepartureQuery, TimingSnapshotLoader},
 };
+use crate::street::{Coordinate, StreetPath};
 use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
 
 use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
     evaluator::{self, Phase2EvaluationStats},
     model::{RoutingError, TransitQuery},
-    path::JourneyVariant,
-    static_search::{self, StaticCorridorStep},
+    path::{JourneySkeleton, JourneyVariant},
+    static_search,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -33,6 +34,13 @@ pub struct TransitPlannerStats {
     pub timing_snapshot_latency_ms: u64,
     pub phase2_evaluation: Phase2EvaluationStats,
     pub phase1: static_search::StaticSearchStats,
+}
+
+pub(crate) struct DirectBikeJourney {
+    pub path: StreetPath,
+    pub origin: Coordinate,
+    pub destination: Coordinate,
+    pub departure_at: OffsetDateTime,
 }
 
 impl TransitPlanner {
@@ -67,6 +75,14 @@ impl TransitPlanner {
     pub async fn plan_with_stats(
         &self,
         query: TransitQuery,
+    ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
+        self.plan_with_stats_and_direct(query, None).await
+    }
+
+    pub(crate) async fn plan_with_stats_and_direct(
+        &self,
+        query: TransitQuery,
+        direct_bike_journey: Option<DirectBikeJourney>,
     ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
             return Err(RoutingError::InvalidQuery);
@@ -159,7 +175,7 @@ impl TransitPlanner {
             return Err(RoutingError::StaticSearchLimit);
         }
         planner_stats.phase1 = static_stats;
-        if corridor.is_empty() {
+        if corridor.is_empty() && direct_bike_journey.is_none() {
             return Ok((Vec::new(), planner_stats));
         }
 
@@ -190,13 +206,9 @@ impl TransitPlanner {
             .collect::<Vec<_>>();
         let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
-        let has_surface_transfer = corridor.retained().iter().any(|retained| {
-            retained
-                .steps
-                .iter()
-                .any(|step| matches!(step, StaticCorridorStep::SurfaceTransfer { .. }))
-        });
-        let bike_enabled = query.allow_bike_share && self.bike.is_some() && has_surface_transfer;
+        let bike_enabled = query.allow_bike_share
+            && self.bike.is_some()
+            && (!corridor.is_empty() || direct_bike_journey.is_some());
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
 
@@ -240,20 +252,55 @@ impl TransitPlanner {
                 .into());
         }
 
-        let (bike_realizations, bike_stats) = match (self.bike.as_ref(), bike_snapshot.as_deref()) {
-            (Some(bike), Some(snapshot)) => {
-                bike.movement_realizations(&corridor, snapshot, OffsetDateTime::now_utc())
-                    .await
-            }
-            _ => (Default::default(), BikePlanningStats::default()),
-        };
-        let (variants, phase2_stats) = evaluator::evaluate_with_realizations(
+        let (bike_realizations, mut bike_stats) =
+            match (self.bike.as_ref(), bike_snapshot.as_deref()) {
+                (Some(bike), Some(snapshot)) => {
+                    bike.movement_realizations(&corridor, snapshot, OffsetDateTime::now_utc())
+                        .await
+                }
+                _ => (Default::default(), BikePlanningStats::default()),
+            };
+        let mut direct_shortcuts = Vec::new();
+        let mut direct_bike_stats = BikePlanningStats::default();
+        if let (Some(direct), Some(bike), Some(snapshot)) = (
+            direct_bike_journey.as_ref(),
+            self.bike.as_ref(),
+            bike_snapshot.as_deref(),
+        ) {
+            let (shortcuts, direct_stats) = bike
+                .direct_realizations(
+                    direct.origin,
+                    direct.destination,
+                    snapshot,
+                    OffsetDateTime::now_utc(),
+                )
+                .await;
+            bike_stats.relevant_bike_stations += direct_stats.relevant_bike_stations;
+            bike_stats.candidate_movements += direct_stats.candidate_movements;
+            bike_stats.pickup_stations_considered += direct_stats.pickup_stations_considered;
+            bike_stats.dropoff_stations_considered += direct_stats.dropoff_stations_considered;
+            bike_stats.station_pairs += direct_stats.station_pairs;
+            bike_stats.matrix_requests += direct_stats.matrix_requests;
+            bike_stats.realizations_feasible += direct_stats.realizations_feasible;
+            direct_bike_stats = direct_stats;
+            direct_shortcuts = shortcuts;
+        }
+        let (mut variants, mut phase2_stats) = evaluator::evaluate_with_realizations(
             &self.network,
             &corridor,
             &snapshot,
             query,
             &bike_realizations,
         )?;
+        if let Some(direct) = direct_bike_journey {
+            let direct_variants = direct_bike_variants(direct, direct_shortcuts);
+            phase2_stats.candidates_before_pareto += direct_bike_stats.realizations_feasible;
+            phase2_stats.bike_realizations_considered += direct_bike_stats.station_pairs;
+            phase2_stats.bike_realizations_feasible += direct_bike_stats.realizations_feasible;
+            phase2_stats.bike_realizations_selected += direct_variants.len();
+            variants.extend(direct_variants);
+        }
+        phase2_stats.final_candidates = variants.len();
         planner_stats.phase2_evaluation = phase2_stats;
         tracing::debug!(
             target: "via_server::routing",
@@ -271,6 +318,48 @@ impl TransitPlanner {
         );
         Ok((variants, planner_stats))
     }
+
+    pub(crate) async fn plan_direct_bike(&self, direct: DirectBikeJourney) -> Vec<JourneyVariant> {
+        let Some(bike) = self.bike.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(snapshot) = bike.availability_source.snapshot().await else {
+            return Vec::new();
+        };
+        let (shortcuts, _) = bike
+            .direct_realizations(
+                direct.origin,
+                direct.destination,
+                &snapshot,
+                OffsetDateTime::now_utc(),
+            )
+            .await;
+        direct_bike_variants(direct, shortcuts)
+    }
+}
+
+fn direct_bike_variants(
+    direct: DirectBikeJourney,
+    shortcuts: Vec<super::path::BikeShortcut>,
+) -> Vec<JourneyVariant> {
+    let Ok(skeleton) =
+        JourneySkeleton::from_direct_walking(direct.path.clone(), direct.departure_at)
+    else {
+        return Vec::new();
+    };
+    let baseline = JourneyVariant::baseline(skeleton);
+    shortcuts
+        .into_iter()
+        .filter(|shortcut| {
+            let bike_walking_seconds = shortcut
+                .walk_to_pickup
+                .duration_seconds
+                .saturating_add(shortcut.walk_from_dropoff.duration_seconds);
+            shortcut.total_seconds < direct.path.duration.0
+                || bike_walking_seconds < direct.path.duration.0
+        })
+        .filter_map(|shortcut| JourneyVariant::with_shortcut(&baseline, shortcut))
+        .collect()
 }
 
 #[cfg(test)]
@@ -602,7 +691,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bike_availability_is_not_loaded_without_a_surface_transfer() {
+    async fn bike_availability_is_loaded_for_transit_corridor_anchors() {
         let timing = Arc::new(RecordingTimingLoader::default());
         let calls = Arc::new(AtomicUsize::new(0));
         let planner = TransitPlanner::new(network(), timing).with_bike_share(
@@ -619,6 +708,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(stats.phase1.static_corridors_retained, 1);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -10,7 +10,7 @@ use crate::domain::{
 };
 
 use super::{
-    bike::{BikeMovementRealizations, CorridorMovement},
+    bike::{BikeMovementRealizations, CorridorMovement, MAX_BIKE_FORWARD_ANCHOR_SPAN},
     model::{
         AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
     },
@@ -47,6 +47,8 @@ struct EvaluationState {
     stop_id: BoardingPointId,
     ready_at: OffsetDateTime,
     transit_legs: usize,
+    last_was_transit: bool,
+    last_was_bike: bool,
     path: EvaluationPath,
 }
 
@@ -208,16 +210,22 @@ struct EvaluatedCandidate {
 
 impl EvaluatedCandidate {
     fn dominates(&self, other: &Self) -> bool {
-        self.bike_share_uses == other.bike_share_uses
-            && self.metrics.timing_reliability == other.metrics.timing_reliability
+        (self.metrics.timing_reliability == other.metrics.timing_reliability
             && self.metrics.timing_bases == other.metrics.timing_bases
             && self.metrics.evidence == other.metrics.evidence
+            || (other.metrics.timing_reliability == TimingReliability::Reliable
+                && other.metrics.timing_bases.is_empty()
+                && other.metrics.evidence.is_empty()))
+            && self.bike_share_uses <= other.bike_share_uses
             && self.bicycle_seconds <= other.bicycle_seconds
-            && (self.metrics.dominates(&other.metrics)
-                || (self.bicycle_seconds < other.bicycle_seconds
-                    && self.metrics.arrival_time == other.metrics.arrival_time
-                    && self.metrics.walking_seconds == other.metrics.walking_seconds
-                    && self.metrics.transfer_count == other.metrics.transfer_count))
+            && self.metrics.arrival_time <= other.metrics.arrival_time
+            && self.metrics.walking_seconds <= other.metrics.walking_seconds
+            && self.metrics.transfer_count <= other.metrics.transfer_count
+            && (self.metrics.arrival_time < other.metrics.arrival_time
+                || self.metrics.walking_seconds < other.metrics.walking_seconds
+                || self.metrics.transfer_count < other.metrics.transfer_count
+                || self.bike_share_uses < other.bike_share_uses
+                || self.bicycle_seconds < other.bicycle_seconds)
     }
 }
 
@@ -233,7 +241,7 @@ fn make_variant(
         let mut shortcut = shortcut.clone();
         shortcut.from_anchor = movement.from_anchor;
         shortcut.to_anchor = movement.to_anchor;
-        variant = JourneyVariant::with_replacement(&variant, movement_index, shortcut)?;
+        variant = JourneyVariant::with_shortcut(&variant, shortcut)?;
     }
     Some(variant)
 }
@@ -312,11 +320,17 @@ pub(super) fn evaluate_with_realizations(
     'corridors: for retained in corridor.retained() {
         stats.corridors_evaluated += 1;
         let corridor_legs = retained.transit_legs().count();
-        if corridor_legs == 0 || corridor_legs > max_legs {
+        if corridor_legs > max_legs {
             stats.infeasible_transfer += 1;
             continue;
         }
-        let mut states = query
+        let Some(anchors) = retained.anchors() else {
+            stats.infeasible_transfer += 1;
+            continue;
+        };
+        let anchor_stops = anchors.stops();
+        let mut frontiers = vec![Vec::<EvaluationState>::new(); retained.steps.len() + 1];
+        frontiers[0] = query
             .origin_access
             .iter()
             .filter(|access| access.stop_id == retained.access_stop_id)
@@ -325,95 +339,68 @@ pub(super) fn evaluate_with_realizations(
                 stop_id: access.stop_id.clone(),
                 ready_at: access.available_at,
                 transit_legs: 0,
+                last_was_transit: false,
+                last_was_bike: false,
                 path: EvaluationPath::from_access(access),
             })
             .collect::<Vec<_>>();
-        if states.is_empty() {
+        if frontiers[0].is_empty() {
             stats.infeasible_access += 1;
             continue;
         }
 
         let mut saw_missing_departure = false;
         let mut transfer_mismatch = false;
-        for (step_index, step) in retained.steps.iter().enumerate() {
+        for from_anchor in 0..retained.steps.len() {
+            let states = if from_anchor == 0 {
+                std::mem::take(&mut frontiers[from_anchor])
+            } else {
+                prune_states(
+                    std::mem::take(&mut frontiers[from_anchor]),
+                    query.max_candidates,
+                )
+            };
             if states.is_empty() {
-                break;
+                continue;
             }
-            match step {
-                StaticCorridorStep::SurfaceTransfer {
-                    from,
-                    to,
-                    walking_duration_seconds,
-                } => {
-                    stats.surface_transfers_evaluated += 1;
-                    let movement = CorridorMovement {
-                        from: from.clone(),
-                        to: to.clone(),
-                    };
-                    let bike_options = bike_realizations
-                        .get(&movement)
-                        .map(Vec::as_slice)
-                        .unwrap_or_default();
-                    let mut next = Vec::with_capacity(states.len());
-                    for state in states {
+            let step = &retained.steps[from_anchor];
+            for state in states {
+                if state.stop_id != anchor_stops[from_anchor] {
+                    transfer_mismatch = true;
+                    continue;
+                }
+                match step {
+                    StaticCorridorStep::SurfaceTransfer {
+                        from,
+                        to,
+                        walking_duration_seconds,
+                    } => {
+                        stats.surface_transfers_evaluated += 1;
                         if charge_state(&mut stats, query.max_expansions) {
                             stats.expansion_limit_reached = true;
                             break 'corridors;
                         }
-                        if state.stop_id != *from {
-                            transfer_mismatch = true;
-                            continue;
-                        }
                         let ready_at = state.ready_at
                             + Duration::seconds(i64::from(*walking_duration_seconds));
-                        if !within_query_bounds(&query, ready_at) {
-                            continue;
-                        }
-                        let shortcut = TransferShortcut::new(
-                            from.clone(),
-                            to.clone(),
-                            *walking_duration_seconds,
-                        );
-                        stats.walking_realizations_considered += 1;
-                        next.push(EvaluationState {
-                            stop_id: to.clone(),
-                            ready_at,
-                            transit_legs: state.transit_legs,
-                            path: state.path.with_walking_transfer(&shortcut),
-                        });
-                        for bike in bike_options {
-                            stats.bike_realizations_considered += 1;
-                            if bike.total_seconds >= *walking_duration_seconds {
-                                continue;
-                            }
-                            if charge_state(&mut stats, query.max_expansions) {
-                                stats.expansion_limit_reached = true;
-                                break 'corridors;
-                            }
-                            let ready_at =
-                                state.ready_at + Duration::seconds(i64::from(bike.total_seconds));
-                            if !within_query_bounds(&query, ready_at) {
-                                continue;
-                            }
-                            stats.bike_realizations_feasible += 1;
-                            next.push(EvaluationState {
+                        if within_query_bounds(&query, ready_at) {
+                            let shortcut = TransferShortcut::new(
+                                from.clone(),
+                                to.clone(),
+                                *walking_duration_seconds,
+                            );
+                            stats.walking_realizations_considered += 1;
+                            frontiers[from_anchor + 1].push(EvaluationState {
                                 stop_id: to.clone(),
                                 ready_at,
                                 transit_legs: state.transit_legs,
-                                path: state.path.with_bike_transfer(&movement, bike),
+                                last_was_transit: false,
+                                last_was_bike: false,
+                                path: state.path.with_walking_transfer(&shortcut),
                             });
                         }
                     }
-                    states = prune_states(next, query.max_candidates);
-                }
-                StaticCorridorStep::Transit(leg) => {
-                    let alternatives = corridor.equivalent_legs_for(network, leg);
-                    let mut next = Vec::new();
-                    for state in states {
-                        if state.stop_id != leg.board_stop_id {
-                            transfer_mismatch = true;
-                            continue;
-                        }
+                    StaticCorridorStep::Transit(leg) => {
+                        let alternatives = corridor.equivalent_legs_for(network, leg);
                         for alternative in &alternatives {
                             if charge_state(&mut stats, query.max_expansions) {
                                 stats.expansion_limit_reached = true;
@@ -422,11 +409,22 @@ pub(super) fn evaluate_with_realizations(
                             if !valid_pattern_leg(network, corridor, leg, alternative) {
                                 continue;
                             }
+                            let boarding_ready_at = if state.last_was_transit {
+                                state.ready_at
+                                    + Duration::seconds(i64::from(
+                                        network.same_stop_transfer_seconds(),
+                                    ))
+                            } else {
+                                state.ready_at
+                            };
+                            if !within_query_bounds(&query, boarding_ready_at) {
+                                continue;
+                            }
                             stats.transit_departure_lookups += 1;
                             let departures = snapshot.departures(
                                 &alternative.pattern_id,
                                 alternative.board_index,
-                                state.ready_at,
+                                boarding_ready_at,
                                 query.max_departures_per_query,
                             );
                             if departures.is_empty() {
@@ -438,7 +436,7 @@ pub(super) fn evaluate_with_realizations(
                                     network,
                                     trip,
                                     alternative,
-                                    state.ready_at,
+                                    boarding_ready_at,
                                 ) else {
                                     stats.malformed_trips += 1;
                                     continue;
@@ -450,25 +448,12 @@ pub(super) fn evaluate_with_realizations(
                                 {
                                     continue;
                                 }
-                                let next_step_is_transit = matches!(
-                                    retained.steps.get(step_index + 1),
-                                    Some(StaticCorridorStep::Transit(_))
-                                );
-                                let ready_at = if next_step_is_transit {
-                                    arrival_at
-                                        + Duration::seconds(i64::from(
-                                            network.same_stop_transfer_seconds(),
-                                        ))
-                                } else {
-                                    arrival_at
-                                };
-                                if !within_query_bounds(&query, ready_at) {
-                                    continue;
-                                }
-                                next.push(EvaluationState {
+                                frontiers[from_anchor + 1].push(EvaluationState {
                                     stop_id: alternative.alight_stop_id.clone(),
-                                    ready_at,
+                                    ready_at: arrival_at,
                                     transit_legs: state.transit_legs + 1,
+                                    last_was_transit: true,
+                                    last_was_bike: false,
                                     path: state.path.with_ride(
                                         trip,
                                         alternative.board_index,
@@ -478,10 +463,55 @@ pub(super) fn evaluate_with_realizations(
                             }
                         }
                     }
-                    states = prune_states(next, query.max_candidates);
+                }
+
+                if state.last_was_bike {
+                    continue;
+                }
+                let last_target = from_anchor
+                    .saturating_add(MAX_BIKE_FORWARD_ANCHOR_SPAN)
+                    .min(retained.steps.len());
+                for to_anchor in from_anchor + 1..=last_target {
+                    let movement = CorridorMovement {
+                        from_anchor,
+                        to_anchor,
+                        from: anchor_stops[from_anchor].clone(),
+                        to: anchor_stops[to_anchor].clone(),
+                    };
+                    let Some(bike_options) = bike_realizations.get(&movement) else {
+                        continue;
+                    };
+                    for bike in bike_options {
+                        stats.bike_realizations_considered += 1;
+                        if bike.from_anchor != from_anchor || bike.to_anchor != to_anchor {
+                            continue;
+                        }
+                        if charge_state(&mut stats, query.max_expansions) {
+                            stats.expansion_limit_reached = true;
+                            break 'corridors;
+                        }
+                        let ready_at =
+                            state.ready_at + Duration::seconds(i64::from(bike.total_seconds));
+                        if !within_query_bounds(&query, ready_at) {
+                            continue;
+                        }
+                        stats.bike_realizations_feasible += 1;
+                        frontiers[to_anchor].push(EvaluationState {
+                            stop_id: anchor_stops[to_anchor].clone(),
+                            ready_at,
+                            transit_legs: state.transit_legs,
+                            last_was_transit: false,
+                            last_was_bike: true,
+                            path: state.path.with_bike_transfer(&movement, bike),
+                        });
+                    }
                 }
             }
         }
+        let states = prune_states(
+            std::mem::take(&mut frontiers[retained.steps.len()]),
+            query.max_candidates,
+        );
 
         let mut corridor_candidates = Vec::new();
         for state in states {
@@ -694,7 +724,9 @@ fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<Evaluatio
     let mut frontier = Vec::<EvaluationState>::new();
     for state in states {
         if frontier.iter().any(|known| {
-            known.path.bike_shortcuts.len() == state.path.bike_shortcuts.len()
+            known.path.bike_shortcuts.len() <= state.path.bike_shortcuts.len()
+                && known.last_was_transit == state.last_was_transit
+                && known.last_was_bike == state.last_was_bike
                 && known.path.same_timing_quality(&state.path)
                 && known.ready_at <= state.ready_at
                 && known.path.walking_seconds() <= state.path.walking_seconds()
@@ -704,7 +736,9 @@ fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<Evaluatio
             continue;
         }
         frontier.retain(|known| {
-            !(state.path.bike_shortcuts.len() == known.path.bike_shortcuts.len()
+            !(state.path.bike_shortcuts.len() <= known.path.bike_shortcuts.len()
+                && state.last_was_transit == known.last_was_transit
+                && state.last_was_bike == known.last_was_bike
                 && state.path.same_timing_quality(&known.path)
                 && state.ready_at <= known.ready_at
                 && state.path.walking_seconds() <= known.path.walking_seconds()
@@ -853,6 +887,36 @@ mod tests {
         })
     }
 
+    fn corridor_movement(
+        from_anchor: usize,
+        to_anchor: usize,
+        from: &str,
+        to: &str,
+    ) -> CorridorMovement {
+        CorridorMovement {
+            from_anchor,
+            to_anchor,
+            from: BoardingPointId::new(from),
+            to: BoardingPointId::new(to),
+        }
+    }
+
+    fn bike_shortcut(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShortcut {
+        BikeShortcut::new(
+            from_anchor,
+            to_anchor,
+            BikeStationId::new(format!("pickup-{from_anchor}")),
+            BikeStationId::new(format!("dropoff-{to_anchor}")),
+            BikeWalkingAccess::new(0, 0),
+            crate::routing::BikeRide {
+                duration_seconds: seconds,
+                distance_metres: seconds,
+            },
+            BikeWalkingAccess::new(0, 0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn phase2_single_leg_route() {
         let network = network(
@@ -990,12 +1054,14 @@ mod tests {
             )],
         );
         let movement = CorridorMovement {
+            from_anchor: 1,
+            to_anchor: 2,
             from: BoardingPointId::new("transfer-from"),
             to: BoardingPointId::new("transfer-to"),
         };
         let bike = BikeShortcut::new(
-            0,
             1,
+            2,
             BikeStationId::new("pickup"),
             BikeStationId::new("dropoff"),
             BikeWalkingAccess::new(60, 50),
@@ -1052,6 +1118,424 @@ mod tests {
             step.movement,
             super::super::path::JourneyPathMovement::BikeShare { .. }
         )));
+    }
+
+    #[test]
+    fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
+        let network = network(
+            vec![
+                pattern("first", TransitMode::Bus, &["origin", "middle"]),
+                pattern("second", TransitMode::Metro, &["middle", "destination"]),
+            ],
+            &["origin", "middle", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("origin"),
+                egress_stop_id: BoardingPointId::new("destination"),
+                theoretical_duration_seconds: 0,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![
+                    static_leg("first", "origin", "middle"),
+                    static_leg("second", "middle", "destination"),
+                ],
+            }],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("first"),
+            0,
+            vec![trip("first-trip", "first", &["origin", "middle"], &[1, 20])],
+        );
+        snapshot.insert(
+            TransitPatternId::new("second"),
+            0,
+            vec![
+                trip("second-17", "second", &["middle", "destination"], &[17, 27]),
+                trip("second-25", "second", &["middle", "destination"], &[25, 35]),
+            ],
+        );
+        let movement = corridor_movement(0, 1, "origin", "middle");
+        let realizations = HashMap::from([(movement, vec![bike_shortcut(0, 1, 16 * 60)])]);
+
+        let (variants, _) =
+            evaluate_with_realizations(&network, &corridor, &snapshot, query, &realizations)
+                .unwrap();
+
+        let bike_variant = variants
+            .iter()
+            .find(|variant| {
+                variant.path().iter().any(|step| {
+                    matches!(
+                        step.movement,
+                        super::super::path::JourneyPathMovement::BikeShare { .. }
+                    )
+                })
+            })
+            .unwrap();
+        assert_eq!(
+            bike_variant.evaluate_timing().unwrap().arrival_at,
+            datetime!(2026-09-21 10:27 UTC)
+        );
+        assert_eq!(
+            bike_variant.transit_pattern_sequence(),
+            vec![TransitPatternId::new("second")]
+        );
+        assert!(bike_variant.skeleton().movements().iter().any(|movement| {
+            matches!(
+                &movement.kind,
+                super::super::path::JourneyMovementKind::Transit { trip, .. }
+                    if trip.id == EffectiveTripId::new("second-17")
+            )
+        }));
+    }
+
+    #[test]
+    fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
+        let network = network(
+            vec![
+                pattern("first", TransitMode::Bus, &["origin", "middle"]),
+                pattern("second", TransitMode::Metro, &["middle", "destination"]),
+            ],
+            &["origin", "middle", "destination"],
+            Vec::new(),
+        );
+        let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("origin"),
+                egress_stop_id: BoardingPointId::new("destination"),
+                theoretical_duration_seconds: 0,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![
+                    static_leg("first", "origin", "middle"),
+                    static_leg("second", "middle", "destination"),
+                ],
+            }],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("first"),
+            0,
+            vec![trip("first-trip", "first", &["origin", "middle"], &[1, 10])],
+        );
+        snapshot.insert(
+            TransitPatternId::new("second"),
+            0,
+            vec![trip(
+                "second-trip",
+                "second",
+                &["middle", "destination"],
+                &[40, 50],
+            )],
+        );
+        let realizations = HashMap::from([
+            (
+                corridor_movement(0, 1, "origin", "middle"),
+                vec![bike_shortcut(0, 1, 12 * 60)],
+            ),
+            (
+                corridor_movement(1, 2, "middle", "destination"),
+                vec![bike_shortcut(1, 2, 12 * 60)],
+            ),
+            (
+                corridor_movement(0, 2, "origin", "destination"),
+                vec![bike_shortcut(0, 2, 15 * 60)],
+            ),
+        ]);
+
+        let (variants, _) =
+            evaluate_with_realizations(&network, &corridor, &snapshot, query, &realizations)
+                .unwrap();
+
+        let cross_anchor = variants
+            .iter()
+            .find(|variant| {
+                variant.transit_pattern_sequence().is_empty()
+                    && variant.path().iter().any(|step| {
+                        matches!(
+                            step.movement,
+                            super::super::path::JourneyPathMovement::BikeShare { .. }
+                        )
+                    })
+            })
+            .unwrap();
+        let timing = cross_anchor.evaluate_timing().unwrap();
+        assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:15 UTC));
+        assert_eq!(timing.bike_share_uses, 1);
+    }
+
+    #[test]
+    fn bike_can_replace_a_surface_walking_edge() {
+        let network = network(Vec::new(), &["a", "b"], Vec::new());
+        let query = TransitQuery::new(
+            vec![AccessPoint::new(
+                BoardingPointId::new("a"),
+                datetime!(2026-09-21 10:00 UTC),
+                datetime!(2026-09-21 10:00 UTC),
+                0,
+                0,
+            )],
+            vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
+            datetime!(2026-09-21 10:00 UTC),
+        );
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("a"),
+                egress_stop_id: BoardingPointId::new("b"),
+                theoretical_duration_seconds: 600,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![StaticCorridorStep::SurfaceTransfer {
+                    from: BoardingPointId::new("a"),
+                    to: BoardingPointId::new("b"),
+                    walking_duration_seconds: 600,
+                }],
+            }],
+        );
+        let realizations = HashMap::from([(
+            corridor_movement(0, 1, "a", "b"),
+            vec![bike_shortcut(0, 1, 300)],
+        )]);
+
+        let variants = evaluate_with_realizations(
+            &network,
+            &corridor,
+            &TimingSnapshot::default(),
+            query,
+            &realizations,
+        )
+        .unwrap()
+        .0;
+
+        assert!(variants.iter().any(|variant| {
+            variant.path().iter().any(|step| {
+                matches!(
+                    step.movement,
+                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn bike_with_no_pareto_benefit_is_pruned() {
+        let network = network(Vec::new(), &["a", "b"], Vec::new());
+        let query = TransitQuery::new(
+            vec![AccessPoint::new(
+                BoardingPointId::new("a"),
+                datetime!(2026-09-21 10:00 UTC),
+                datetime!(2026-09-21 10:00 UTC),
+                0,
+                0,
+            )],
+            vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
+            datetime!(2026-09-21 10:00 UTC),
+        );
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("a"),
+                egress_stop_id: BoardingPointId::new("b"),
+                theoretical_duration_seconds: 60,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![StaticCorridorStep::SurfaceTransfer {
+                    from: BoardingPointId::new("a"),
+                    to: BoardingPointId::new("b"),
+                    walking_duration_seconds: 60,
+                }],
+            }],
+        );
+        let bike = BikeShortcut::new(
+            0,
+            1,
+            BikeStationId::new("pickup"),
+            BikeStationId::new("dropoff"),
+            BikeWalkingAccess::new(30, 15),
+            crate::routing::BikeRide {
+                duration_seconds: 30,
+                distance_metres: 100,
+            },
+            BikeWalkingAccess::new(30, 15),
+        )
+        .unwrap();
+        let realizations = HashMap::from([(corridor_movement(0, 1, "a", "b"), vec![bike])]);
+
+        let variants = evaluate_with_realizations(
+            &network,
+            &corridor,
+            &TimingSnapshot::default(),
+            query,
+            &realizations,
+        )
+        .unwrap()
+        .0;
+
+        assert!(
+            variants
+                .iter()
+                .all(|variant| variant.path().iter().all(|step| !matches!(
+                    step.movement,
+                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                )))
+        );
+    }
+
+    #[test]
+    fn transit_remains_when_it_reaches_the_anchor_before_bike() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["a", "b"])],
+            &["a", "b"],
+            Vec::new(),
+        );
+        let query = TransitQuery::new(
+            vec![AccessPoint::new(
+                BoardingPointId::new("a"),
+                datetime!(2026-09-21 10:00 UTC),
+                datetime!(2026-09-21 10:00 UTC),
+                0,
+                0,
+            )],
+            vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
+            datetime!(2026-09-21 10:00 UTC),
+        )
+        .with_allowed_transit_modes([TransitMode::Bus]);
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![StaticCorridor {
+                access_stop_id: BoardingPointId::new("a"),
+                egress_stop_id: BoardingPointId::new("b"),
+                theoretical_duration_seconds: 0,
+                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                steps: vec![static_leg("bus", "a", "b")],
+            }],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("bus"),
+            0,
+            vec![trip("bus-trip", "bus", &["a", "b"], &[1, 5])],
+        );
+        let realizations = HashMap::from([(
+            corridor_movement(0, 1, "a", "b"),
+            vec![bike_shortcut(0, 1, 10 * 60)],
+        )]);
+
+        let variants =
+            evaluate_with_realizations(&network, &corridor, &snapshot, query, &realizations)
+                .unwrap()
+                .0;
+
+        assert_eq!(variants.len(), 1);
+        assert!(
+            variants[0]
+                .transit_pattern_sequence()
+                .contains(&TransitPatternId::new("bus"))
+        );
+        assert!(variants[0].path().iter().all(|step| !matches!(
+            step.movement,
+            super::super::path::JourneyPathMovement::BikeShare { .. }
+        )));
+    }
+
+    #[test]
+    fn pareto_keeps_a_later_route_with_less_walking() {
+        let network = network(
+            vec![
+                pattern("walky", TransitMode::Bus, &["a", "destination"]),
+                pattern("lowwalk", TransitMode::Bus, &["x", "destination"]),
+            ],
+            &["a", "x", "destination"],
+            Vec::new(),
+        );
+        let mut query = TransitQuery::new(
+            vec![
+                AccessPoint::new(
+                    BoardingPointId::new("a"),
+                    datetime!(2026-09-21 10:00 UTC),
+                    datetime!(2026-09-21 10:02 UTC),
+                    120,
+                    600,
+                ),
+                AccessPoint::new(
+                    BoardingPointId::new("x"),
+                    datetime!(2026-09-21 10:00 UTC),
+                    datetime!(2026-09-21 10:00 UTC),
+                    0,
+                    0,
+                ),
+            ],
+            vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
+            datetime!(2026-09-21 10:00 UTC),
+        );
+        query.max_candidates = 10;
+        let corridor = CandidateCorridor::from_retained_for_test(
+            &network,
+            vec![
+                StaticCorridor {
+                    access_stop_id: BoardingPointId::new("a"),
+                    egress_stop_id: BoardingPointId::new("destination"),
+                    theoretical_duration_seconds: 300,
+                    cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                    steps: vec![static_leg("walky", "a", "destination")],
+                },
+                StaticCorridor {
+                    access_stop_id: BoardingPointId::new("x"),
+                    egress_stop_id: BoardingPointId::new("destination"),
+                    theoretical_duration_seconds: 480,
+                    cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                    steps: vec![static_leg("lowwalk", "x", "destination")],
+                },
+            ],
+        );
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert(
+            TransitPatternId::new("walky"),
+            0,
+            vec![trip("walky-trip", "walky", &["a", "destination"], &[2, 5])],
+        );
+        snapshot.insert(
+            TransitPatternId::new("lowwalk"),
+            0,
+            vec![trip(
+                "lowwalk-trip",
+                "lowwalk",
+                &["x", "destination"],
+                &[4, 8],
+            )],
+        );
+
+        let variants = evaluate_with_realizations(
+            &network,
+            &corridor,
+            &snapshot,
+            query,
+            &BikeMovementRealizations::new(),
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(variants.len(), 2);
+        let metrics = variants
+            .iter()
+            .map(|variant| variant.evaluate_timing().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            metrics
+                .iter()
+                .any(|item| item.arrival_at == datetime!(2026-09-21 10:05 UTC)
+                    && item.walking_seconds == 120)
+        );
+        assert!(
+            metrics
+                .iter()
+                .any(|item| item.arrival_at == datetime!(2026-09-21 10:08 UTC)
+                    && item.walking_seconds == 0)
+        );
     }
 
     #[test]

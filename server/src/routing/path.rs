@@ -449,24 +449,35 @@ impl JourneyVariant {
         Ok(timing)
     }
 
-    pub(crate) fn with_replacement(
-        baseline: &Self,
-        movement_index: usize,
-        shortcut: BikeShortcut,
-    ) -> Option<Self> {
-        let mut path = baseline.path.clone();
-        let step_index = path.iter().position(|step| {
-            matches!(
-                step.movement,
-                JourneyPathMovement::Baseline { movement_index: index }
-                    if index == movement_index
-            )
-        })?;
-        let step = &path[step_index];
-        if step.from_anchor != shortcut.from_anchor || step.to_anchor != shortcut.to_anchor {
+    pub(crate) fn with_shortcut(baseline: &Self, shortcut: BikeShortcut) -> Option<Self> {
+        if shortcut.to_anchor <= shortcut.from_anchor {
             return None;
         }
-        path[step_index].movement = JourneyPathMovement::BikeShare { shortcut };
+        let mut path = baseline.path.clone();
+        let start = path
+            .iter()
+            .position(|step| step.from_anchor == shortcut.from_anchor)?;
+        let mut end = start;
+        let mut anchor = shortcut.from_anchor;
+        while anchor < shortcut.to_anchor {
+            let step = path.get(end)?;
+            if step.from_anchor != anchor || step.to_anchor > shortcut.to_anchor {
+                return None;
+            }
+            anchor = step.to_anchor;
+            end += 1;
+        }
+        if anchor != shortcut.to_anchor {
+            return None;
+        }
+        path.splice(
+            start..end,
+            [JourneyPathStep {
+                from_anchor: shortcut.from_anchor,
+                to_anchor: shortcut.to_anchor,
+                movement: JourneyPathMovement::BikeShare { shortcut },
+            }],
+        );
         Some(Self {
             skeleton: baseline.skeleton.clone(),
             path,
@@ -658,7 +669,7 @@ impl BikeShortcut {
         bicycle: BikeRide,
         walk_from_dropoff: BikeWalkingAccess,
     ) -> Option<Self> {
-        if pickup_station_id == dropoff_station_id || to_anchor != from_anchor.saturating_add(1) {
+        if pickup_station_id == dropoff_station_id || to_anchor <= from_anchor {
             return None;
         }
         let total_seconds = walk_to_pickup
@@ -707,4 +718,76 @@ pub enum JourneyTimingError {
     MissedTransit { movement_index: usize },
     #[error("journey variant contains an invalid bike-share shortcut")]
     InvalidBikeShortcut,
+}
+
+#[cfg(test)]
+mod tests {
+    use time::{Duration, macros::datetime};
+
+    use crate::{
+        domain::{ids::BoardingPointId, transit_timing::TimingReliability},
+        routing::{AccessPoint, EgressPoint, JourneyCandidate},
+    };
+
+    use super::*;
+
+    #[test]
+    fn shortcut_replaces_a_contiguous_interval_of_baseline_movements() {
+        let departure_at = datetime!(2026-09-21 10:00 UTC);
+        let a = BoardingPointId::new("a");
+        let b = BoardingPointId::new("b");
+        let c = BoardingPointId::new("c");
+        let candidate = JourneyCandidate {
+            access: AccessPoint::new(a.clone(), departure_at, departure_at, 0, 0),
+            egress: EgressPoint::new(c.clone(), 0, 0),
+            segments: vec![
+                JourneySegment::WalkingTransfer {
+                    shortcut: crate::routing::transfers::TransferShortcut::new(
+                        a.clone(),
+                        b.clone(),
+                        60,
+                    ),
+                },
+                JourneySegment::WalkingTransfer {
+                    shortcut: crate::routing::transfers::TransferShortcut::new(b, c, 60),
+                },
+            ],
+            departure_time: departure_at,
+            arrival_time: departure_at + Duration::seconds(120),
+            walking_seconds: 120,
+            transfer_count: 0,
+            uncertainty_seconds: None,
+            evidence: Vec::new(),
+            timing_bases: Vec::new(),
+            timing_reliability: TimingReliability::Reliable,
+        };
+        let baseline =
+            JourneyVariant::baseline(JourneySkeleton::from_candidate(candidate).unwrap());
+        let shortcut = BikeShortcut::new(
+            1,
+            3,
+            BikeStationId::new("pickup"),
+            BikeStationId::new("dropoff"),
+            BikeWalkingAccess::new(0, 0),
+            BikeRide {
+                duration_seconds: 30,
+                distance_metres: 100,
+            },
+            BikeWalkingAccess::new(0, 0),
+        )
+        .unwrap();
+
+        let variant = JourneyVariant::with_shortcut(&baseline, shortcut).unwrap();
+
+        assert_eq!(variant.path().len(), 3);
+        assert!(variant.path().iter().any(|step| {
+            step.from_anchor == 1
+                && step.to_anchor == 3
+                && matches!(step.movement, JourneyPathMovement::BikeShare { .. })
+        }));
+        assert_eq!(
+            variant.evaluate_timing().unwrap().arrival_at,
+            departure_at + Duration::seconds(30)
+        );
+    }
 }

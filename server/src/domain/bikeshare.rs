@@ -196,6 +196,14 @@ impl<'a> BikeAvailabilityView<'a> {
             .collect()
     }
 
+    pub fn can_pick_up_at(&self, station_id: &BikeStationId) -> bool {
+        self.station_usable_as_pickup(station_id)
+    }
+
+    pub fn can_return_at(&self, station_id: &BikeStationId) -> bool {
+        self.station_usable_as_dropoff(station_id)
+    }
+
     fn station_usable_as_pickup(&self, station_id: &BikeStationId) -> bool {
         self.station_is_serviceable(station_id)
             && self
