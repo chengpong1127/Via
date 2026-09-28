@@ -1,5 +1,3 @@
-//! Expand transit candidates into rider-visible walking and transit legs.
-
 use time::{Duration, OffsetDateTime};
 
 use crate::{

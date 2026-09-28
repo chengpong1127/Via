@@ -1,5 +1,3 @@
-//! BikeShare realizations for fixed surface transfers in retained corridors.
-
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -52,7 +50,6 @@ impl CorridorMovement {
 
 pub(crate) type BikeMovementRealizations = HashMap<CorridorMovement, Vec<BikeShortcut>>;
 
-/// Request-scoped BikeShare realization planning for fixed surface transfers.
 #[derive(Clone)]
 pub(crate) struct BikeSegmentPlanner {
     pub(crate) network: Arc<BikeShareNetwork>,

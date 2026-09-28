@@ -3,8 +3,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-/// Process-local operational counters. They intentionally contain only service
-/// behavior, never Planning Request fields, Journey contents, or coordinates.
 #[derive(Clone, Default)]
 pub struct OperationalMetrics {
     inner: Arc<MetricsInner>,

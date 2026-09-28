@@ -1,5 +1,3 @@
-//! Provider-neutral Via concepts shared by API, routing, and adapters.
-
 use time::{OffsetDateTime, UtcOffset};
 
 pub mod bikeshare;

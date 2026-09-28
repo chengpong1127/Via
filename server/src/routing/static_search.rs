@@ -1,10 +1,3 @@
-//! Bounded static Top-K corridor generation.
-//!
-//! This phase scans canonical Patterns and their persisted segment profiles.
-//! Preprocessing supplies exact, derived, or optimistic costs. These values
-//! rank zero-wait candidate corridors; the request-local timing snapshot
-//! remains authoritative for feasibility.
-
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
@@ -210,7 +203,6 @@ fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralStep> {
         .collect()
 }
 
-/// Phase 1's retained corridors and the exact timing inputs Phase 2 needs.
 #[derive(Clone, Debug, Default)]
 pub struct CandidateCorridor {
     retained: Vec<StaticCorridor>,
@@ -288,8 +280,6 @@ impl CandidateCorridor {
         &self.retained
     }
 
-    /// Return the same mode and endpoint-equivalent Pattern family used by
-    /// the candidate pattern family for this retained structural leg.
     pub fn equivalent_legs_for(
         &self,
         network: &TransitRuntime,

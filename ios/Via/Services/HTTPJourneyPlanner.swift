@@ -1,7 +1,5 @@
 import Foundation
 
-/// The app-facing production planner. Transport and server-shape details stay
-/// in APIClient and are mapped back into the iOS domain model here.
 actor HTTPJourneyPlanner: JourneyPlanning {
     private let client: APIClient
 
@@ -65,7 +63,7 @@ enum ViaAPIConfiguration {
             return url
         }
 #if DEBUG
-        // Localhost is intentionally available only to development builds.
+
         return URL(string: "http://127.0.0.1:3000")!
 #else
         preconditionFailure("VIA_API_BASE_URL must be configured for Release builds")

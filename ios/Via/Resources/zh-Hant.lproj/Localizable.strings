@@ -30,10 +30,8 @@
 "Via cannot use Current Location on this device. Choose another starting point." = "Via 無法在此裝置使用目前位置，請選擇其他起點。";
 "Current location unavailable" = "目前位置無法取得";
 "We couldn't get your current location. Try again or choose a starting point manually." = "無法取得目前位置，請再試一次或手動選擇起點。";
-"Your search stays on this device. Only the place you choose is sent in a Planning Request." = "搜尋內容只留在此裝置上，只有你選取的地點會隨規劃請求送出。";
 "Best now" = "目前最佳";
 "Fewer transfers" = "轉乘較少";
 "Less walking" = "步行較少";
-"Got it" = "知道了";
 "Done" = "完成";
 "Cancel" = "取消";

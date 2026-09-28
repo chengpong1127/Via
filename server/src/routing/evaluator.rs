@@ -1,5 +1,3 @@
-//! Bounded evaluation of retained Phase 1 corridors without topology search.
-
 use std::{cmp::Ordering, collections::HashMap, time::Instant};
 
 use time::{Duration, OffsetDateTime};

@@ -1,5 +1,3 @@
-//! Provider-neutral coordinates used by requests, transit artifacts, and journeys.
-
 use serde::{Deserialize, Serialize};
 
 pub(crate) const METRES_PER_DEGREE: f64 = 111_320.0;

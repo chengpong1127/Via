@@ -1,5 +1,3 @@
-//! Canonical provider-neutral journey and routing result types.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

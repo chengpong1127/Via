@@ -1,8 +1,3 @@
-//! Immutable, provider-neutral transit data consumed by the routing layer.
-//!
-//! Static adapters build validated `TransitNetwork` artifacts. Requests read one
-//! immutable revision and resolve departures through the timing boundary.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -140,9 +135,8 @@ impl TransitPattern {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduledStopTime {
-    /// Seconds from the beginning of the Service Day. Values may exceed 24 hours.
     pub arrival_seconds: u32,
-    /// Seconds from the beginning of the Service Day. Values may exceed 24 hours.
+
     pub departure_seconds: u32,
 }
 
@@ -179,8 +173,6 @@ impl TransitTrip {
     }
 }
 
-/// GTFS frequency-based service. `template_stop_times` retains the complete
-/// GTFS trip template; it is not added to the scheduled-trip collection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransitFrequency {
     pub id: TransitTripId,
@@ -243,12 +235,11 @@ pub struct TransitNetwork {
     pub trips: Vec<TransitTrip>,
     #[serde(default)]
     pub frequencies: Vec<TransitFrequency>,
-    /// Explicit movement time between distinct Boarding Points. Same-point
-    /// transfers use `default_transfer_seconds`; distinct points must be listed.
+
     #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
     pub default_transfer_seconds: u32,
-    /// Revisions are part of the artifact, not inferred from deployment time.
+
     #[serde(default)]
     pub static_network_revision: String,
     #[serde(default)]
@@ -324,7 +315,6 @@ impl TransitNetwork {
         self
     }
 
-    /// Validate an immutable network artifact before accepting traffic.
     pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
         if self.static_network_revision.trim().is_empty()
             || self.schedule_revision.trim().is_empty()
@@ -513,8 +503,6 @@ impl TransitNetwork {
         Ok(())
     }
 
-    /// Normalize outer artifact ordering before hashing, storing, or deploying
-    /// an artifact. Ordered Patterns and stop times are preserved.
     pub fn canonicalize(mut self) -> Self {
         self.stops
             .sort_by(|left, right| left.id.as_str().cmp(right.id.as_str()));

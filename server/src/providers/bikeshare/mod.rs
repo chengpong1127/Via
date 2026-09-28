@@ -1,5 +1,3 @@
-//! Provider-neutral bike-share availability source and concrete adapters.
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -36,8 +34,6 @@ pub trait BikeAvailabilitySource: Send + Sync {
     async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>;
 }
 
-/// Explicitly disabled BikeShare availability for router builders that do not
-/// load production BikeShare artifacts, such as offline test fixtures.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableBikeAvailabilitySource;
 

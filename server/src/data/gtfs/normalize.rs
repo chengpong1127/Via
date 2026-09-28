@@ -1,5 +1,3 @@
-//! Convert parsed GTFS rows into Via-owned transit values.
-
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,

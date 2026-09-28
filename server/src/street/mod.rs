@@ -82,8 +82,6 @@ pub enum MatrixOrientation {
     ManyToMany,
 }
 
-/// Maximum source and target counts accepted by a street provider's matrix
-/// endpoint. Implementations may override the conservative default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatrixLimits {
     pub max_sources: usize,

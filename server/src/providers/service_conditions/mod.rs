@@ -1,5 +1,3 @@
-//! Provider-neutral service-condition collection and caching.
-
 use std::{
     collections::HashSet,
     sync::{

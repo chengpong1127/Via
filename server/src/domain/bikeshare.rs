@@ -1,5 +1,3 @@
-//! Immutable, provider-neutral static bike-share data.
-
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
@@ -273,9 +271,6 @@ impl BikeShareNetwork {
             .access_by_boarding_point
             .get(id)
             .map_or(&[], |indices| {
-                // The indices are all into the immutable canonical access vector.
-                // A contiguous vector is returned by the canonicalizer, so this
-                // lookup remains allocation-free for the common case.
                 let Some(first) = indices.first() else {
                     return &[];
                 };

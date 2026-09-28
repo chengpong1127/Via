@@ -1,5 +1,3 @@
-//! Static YouBike station metadata sourced from local TDX station snapshots.
-
 use std::collections::HashSet;
 
 use serde::Deserialize;
@@ -42,8 +40,6 @@ struct TdxStationPosition {
     longitude: f64,
 }
 
-/// Parse Taipei and New Taipei City TDX `Bike/Station/City` JSON responses.
-/// Only the YouBike service type is retained; live counts remain request data.
 pub fn parse_tdx_station_catalog(
     taipei_json: &str,
     new_taipei_json: &str,

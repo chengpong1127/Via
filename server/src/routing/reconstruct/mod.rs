@@ -1,5 +1,3 @@
-//! Reconstruct final planner path variants into API journey options.
-
 mod evidence;
 mod geometry;
 mod legs;

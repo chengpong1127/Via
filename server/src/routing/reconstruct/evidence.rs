@@ -1,5 +1,3 @@
-//! Convert and aggregate realtime evidence used by reconstructed journeys.
-
 use crate::domain::{
     journey::{EvidenceType, JourneyMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
     ranking::TransferKind,

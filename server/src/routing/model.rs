@@ -1,5 +1,3 @@
-//! Shared data carried through transit planning and reconstruction.
-
 use time::OffsetDateTime;
 
 use crate::domain::{
@@ -60,12 +58,12 @@ pub struct TransitQuery {
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
     pub allowed_transit_modes: Vec<TransitMode>,
-    /// BikeShare is a Phase 2 movement alternative, never a transit mode.
+
     pub allow_bike_share: bool,
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
     pub max_transfers: usize,
-    /// One global Phase 1 corridor budget shared by every selected transit mode.
+
     pub max_static_corridors: usize,
     pub max_static_search_expansions: usize,
     pub max_candidates: usize,

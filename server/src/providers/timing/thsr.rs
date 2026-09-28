@@ -12,7 +12,6 @@ use crate::domain::{
 
 use super::source::TransitDepartureSource;
 
-/// Static-only THSR timing. The timetable is an authoritative, reliable source.
 pub struct ThsrDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,

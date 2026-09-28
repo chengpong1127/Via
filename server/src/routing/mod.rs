@@ -1,5 +1,3 @@
-//! Provider-neutral routing pipeline.
-
 pub(crate) mod access;
 mod bike;
 mod evaluator;

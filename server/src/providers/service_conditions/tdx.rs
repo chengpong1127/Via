@@ -21,8 +21,6 @@ use crate::{
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 
-/// TDX-backed service-condition collection. Departure timing is owned by the
-/// mode source and does not pass through this provider.
 pub struct TdxServiceConditionProvider {
     condition_path: Option<String>,
     tdx_client: Arc<TdxClient>,

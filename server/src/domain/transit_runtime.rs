@@ -1,5 +1,3 @@
-//! Runtime-only indexes over the canonical transit artifact.
-
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -20,11 +18,6 @@ use super::{
 const SPATIAL_CELL_DEGREES: f64 = 0.005;
 const MAX_SPATIAL_SEARCH_RING: i32 = 32;
 
-/// Canonical transit data paired with its request-independent runtime indexes.
-///
-/// Build this once when loading a network for server or planner use. The
-/// indexes are kept outside `TransitNetwork`, so the persisted artifact remains
-/// plain data and never owns lazy mutable state.
 #[derive(Clone, Debug)]
 pub struct TransitRuntime {
     network: Arc<TransitNetwork>,
@@ -117,7 +110,6 @@ impl TransitRuntime {
     }
 }
 
-/// Immutable spatial, ID lookup, and schedule indexes over a `TransitNetwork`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TransitRuntimeIndexes {
     spatial: SpatialStopIndex,

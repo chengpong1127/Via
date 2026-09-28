@@ -14,7 +14,6 @@ use crate::{
 
 use super::{JourneyCandidate, JourneySegment};
 
-/// The fixed anchors shared by the baseline and multimodal path choices.
 #[derive(Clone, Debug, PartialEq)]
 pub enum JourneyAnchorKind {
     Origin,
@@ -60,8 +59,6 @@ pub struct JourneyMovement {
     pub street_path: Option<Arc<StreetPath>>,
 }
 
-/// A transport-neutral baseline journey projected into ordered anchors and
-/// movements.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneySkeleton {
     anchors: Vec<JourneyAnchor>,
@@ -294,10 +291,6 @@ pub enum JourneySkeletonError {
     EgressArrivalMismatch,
 }
 
-/// One selectable path through a skeleton.
-///
-/// Path steps carry explicit anchor endpoints. BikeShare replacements are
-/// always for one baseline movement between adjacent boarding-point anchors.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneyVariant {
     skeleton: Arc<JourneySkeleton>,
@@ -375,7 +368,6 @@ impl JourneyVariant {
         format!("path:v2:{path}")
     }
 
-    /// Evaluate the path without re-running transit search.
     pub fn evaluate_timing(&self) -> Result<JourneyVariantTiming, JourneyTimingError> {
         let mut current_anchor = 0;
         let mut current_time = self.skeleton.anchors()[0].reached_at;

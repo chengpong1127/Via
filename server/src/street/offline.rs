@@ -1,5 +1,3 @@
-//! Deterministic street provider used by offline CLI fixtures.
-
 use async_trait::async_trait;
 
 use crate::domain::location::RequestCoordinate;

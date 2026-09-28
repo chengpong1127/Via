@@ -1,8 +1,3 @@
-//! Static public-transit interchange shortcuts.
-//!
-//! A transfer connects one public-transit boarding point to another through a
-//! static walking/interchange edge.
-
 use std::collections::HashMap;
 
 use crate::domain::{ids::BoardingPointId, transit::TransitNetwork};
@@ -24,7 +19,6 @@ impl TransferShortcut {
     }
 }
 
-/// The in-memory index of static public-transit interchange edges.
 #[derive(Clone, Debug, Default)]
 pub struct TransferShortcutIndex {
     by_from: HashMap<BoardingPointId, Vec<TransferShortcut>>,

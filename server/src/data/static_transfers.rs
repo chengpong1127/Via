@@ -1,5 +1,3 @@
-//! Derive directional walking links between boarding points in a GTFS network.
-
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     time::Instant,
@@ -59,7 +57,6 @@ fn mode_name(mode: TransitMode) -> &'static str {
     }
 }
 
-/// Replace transfer edges with directional walks measured by the street router.
 pub async fn enrich_network_with_static_transfers(
     network: &mut TransitNetwork,
     street: &dyn StreetRouter,
@@ -96,16 +93,13 @@ pub async fn enrich_network_with_static_transfers(
     }
     let mut best = HashMap::<(BoardingPointId, BoardingPointId), u32>::new();
 
-    // Only a small group of sources is in flight at once; nationwide builds
-    // never materialize the full candidate or matrix workload in memory.
     for source_group in indices.chunks(128) {
         let mut requests = Vec::new();
         for &source in source_group {
             let origin = network.stops[source].coordinate;
             let (row, column) = cell(origin.latitude, origin.longitude);
             let mut targets = Vec::new();
-            // At Taiwan latitudes, 500 m spans at most two of these cells in
-            // either direction. Three also covers the full coordinate range.
+
             for dy in -3..=3 {
                 for dx in -3..=3 {
                     if let Some(neighbors) = grid.get(&(row + dy, column + dx)) {

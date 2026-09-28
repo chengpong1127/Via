@@ -1,5 +1,3 @@
-//! Request-scoped transit realtime facts that remain useful after routing.
-
 use crate::{
     domain::{ids::TransitPatternId, realtime::NormalizedRealtimeValue},
     providers::service_conditions::ServiceConditionProvider,

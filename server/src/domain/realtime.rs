@@ -1,5 +1,3 @@
-//! Provider-neutral realtime facts and freshness-aware value types.
-
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time};
 
@@ -132,8 +130,6 @@ pub struct ArrivalEstimate {
     pub transmitted_at: OffsetDateTime,
 }
 
-/// A normalized provider observation. Providers may use different payloads,
-/// but routing and reconstruction consume this stable evidence shape.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RealtimeValue {
     ArrivalEstimate(ArrivalEstimate),

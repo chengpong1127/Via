@@ -399,7 +399,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
             }),
         );
     let failing = TdxBikeAvailabilitySource::new(network(), spawn_tdx_fixture(app).await);
-    // One successful city feed does not turn a failed two-city snapshot into complete inventory.
+
     assert!(matches!(
         failing.snapshot().await,
         Err(BikeAvailabilityError::TemporarilyUnavailable)

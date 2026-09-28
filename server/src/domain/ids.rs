@@ -1,5 +1,3 @@
-//! Strongly typed domain IDs.
-
 use serde::{Deserialize, Serialize};
 macro_rules! opaque_id {
     ($name:ident) => {

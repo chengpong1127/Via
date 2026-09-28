@@ -1,5 +1,3 @@
-//! Static walking access between transit boarding points and bike stations.
-
 use std::time::Instant;
 
 use futures_util::{StreamExt, stream};

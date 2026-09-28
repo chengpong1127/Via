@@ -1,5 +1,3 @@
-//! Static transit segment time profiles and Bus runtime estimates.
-
 use std::collections::HashMap;
 
 use gtfs_structures::{RawStopTime, RawTrip, Shape};

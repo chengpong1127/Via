@@ -1,8 +1,3 @@
-//! TDX Bike Availability adapter.
-//!
-//! TDX field names stop at this module. The rest of the application receives
-//! a provider-neutral, static-network-matched snapshot.
-
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -50,7 +45,7 @@ impl TdxBikeAvailabilitySource {
 
     async fn fetch_snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
         let received_at = OffsetDateTime::now_utc();
-        // A snapshot covers both service areas; do not cache partial city inventory as complete.
+
         let city_payloads = try_join_all(
             SUPPORTED_CITIES
                 .into_iter()

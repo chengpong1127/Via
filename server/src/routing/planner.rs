@@ -1,5 +1,3 @@
-//! Canonical two-phase transit and BikeShare planner.
-
 use std::{sync::Arc, time::Instant};
 
 use time::{Duration, OffsetDateTime};
@@ -201,8 +199,7 @@ impl TransitPlanner {
         let bike_enabled = query.allow_bike_share && self.bike.is_some() && has_surface_transfer;
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
-            // TODO: future DepartAt/ArriveBy inventory is undefined; this is a current-count hint,
-            // not a forecast or guarantee of future availability.
+
             let (snapshot, bike_snapshot) = tokio::join!(
                 self.timing.load_snapshot(timing_queries),
                 bike.availability_source.snapshot()

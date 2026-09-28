@@ -30,10 +30,8 @@
 "Via cannot use Current Location on this device. Choose another starting point." = "Via cannot use Current Location on this device. Choose another starting point.";
 "Current location unavailable" = "Current location unavailable";
 "We couldn't get your current location. Try again or choose a starting point manually." = "We couldn't get your current location. Try again or choose a starting point manually.";
-"Your search stays on this device. Only the place you choose is sent in a Planning Request." = "Your search stays on this device. Only the place you choose is sent in a Planning Request.";
 "Best now" = "Best now";
 "Fewer transfers" = "Fewer transfers";
 "Less walking" = "Less walking";
-"Got it" = "Got it";
 "Done" = "Done";
 "Cancel" = "Cancel";

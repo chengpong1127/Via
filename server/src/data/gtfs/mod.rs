@@ -1,5 +1,3 @@
-//! Read the local GTFS feed and translate its transit data into Via types.
-
 mod bindings;
 mod normalize;
 mod segment_profile;
@@ -43,7 +41,6 @@ pub struct GtfsBuildOutput {
     pub diagnostics: GtfsBuildDiagnostics,
 }
 
-/// Parse the local feed, normalize its transit data, and attach TDX identities.
 pub(super) fn build_network(
     input: &Path,
 ) -> Result<(TransitNetwork, TdxProviderBindings, GtfsBuildDiagnostics), DataError> {

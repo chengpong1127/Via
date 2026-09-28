@@ -1,5 +1,3 @@
-//! Static transit artifacts built from the local GTFS archive.
-
 use std::{
     collections::BTreeMap,
     fs,
@@ -95,7 +93,6 @@ pub enum DataError {
     StreetRouting(#[from] crate::street::StreetRoutingError),
 }
 
-/// Build static data from a GTFS feed, then run Via's generic transfer preprocessing.
 pub async fn build_from_gtfs_archive_with_street(
     input: &Path,
     output: &Path,
@@ -111,8 +108,6 @@ pub async fn build_from_gtfs_archive_with_street(
     .await
 }
 
-/// Build GTFS transit data and enrich a supplied local TDX Bike Station catalog
-/// with bounded walking links using the configured street router.
 pub async fn build_from_gtfs_archive_with_tdx_bike_stations(
     input: &Path,
     output: &Path,

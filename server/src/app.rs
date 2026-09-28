@@ -165,9 +165,6 @@ where
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
         .layer(middleware::from_fn(http_timeout))
-        // These layers are listed in response-path order. SetRequestId must run
-        // before TraceLayer on the request path, while propagation must run
-        // before TraceLayer observes the response.
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(
             TraceLayer::new_for_http()
@@ -210,8 +207,6 @@ fn configure_openapi(mut document: OpenApi) -> OpenApi {
     document
 }
 
-// These invariants are enforced by Serde/runtime validation but cannot be
-// expressed by utoipa's derive attributes for enum values and constants.
 fn apply_schema_constraints(document: &mut OpenApi) {
     set_schema_enum(
         document,
@@ -531,7 +526,6 @@ struct ReadinessResponse {
     )
 )]
 async fn readiness(State(state): State<AppState>) -> Response {
-    // Readiness remains deliberately independent of realtime availability.
     let street_routing = state.street_health.healthy().await;
     let revisions = state.transit_runtime.data().revisions();
     let static_network = !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty();

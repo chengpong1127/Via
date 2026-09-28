@@ -106,7 +106,6 @@ async fn realtime_errors_and_unusable_realtime_fall_back_per_query() {
         )]),
     };
     let unusable_source = FixtureSource {
-        // A mode source filters stale observations before returning this batch.
         realtime: Some(Ok(Vec::new())),
         static_result: Ok(vec![trip(
             TimingBasis::Schedule,

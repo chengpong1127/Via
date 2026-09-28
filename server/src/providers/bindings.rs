@@ -1,5 +1,3 @@
-//! TDX identity metadata kept beside, rather than inside, the Via transit network.
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

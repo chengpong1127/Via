@@ -30,12 +30,6 @@ use crate::{
 
 const MAX_REALTIME_BATCH_PAIRS: usize = 64;
 
-/// Materializes Metro departures from station-level schedules or headways.
-///
-/// GTFS schedules and frequency templates provide static Metro timing.
-/// Realtime LiveBoard observations only replace the boarding-station
-/// departure; the same static travel-time shape is retained for downstream
-/// stops.
 #[derive(Clone)]
 pub struct MetroDepartureSource {
     network: Arc<TransitRuntime>,
@@ -75,7 +69,6 @@ impl MetroDepartureSource {
         self
     }
 
-    /// Override the Metro endpoint for a fixture or a TDX deployment variant.
     pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
         self.realtime_path = path.into();
         self

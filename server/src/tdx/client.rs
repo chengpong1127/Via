@@ -1,5 +1,3 @@
-//! Shared TDX OAuth and HTTP transport.
-
 use std::{
     env, fmt,
     sync::Arc,
@@ -17,10 +15,6 @@ const DEFAULT_TDX_TOKEN_URL: &str =
     "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Credentials used to obtain a process-local TDX OAuth access token.
-///
-/// The fields intentionally have no public accessors that expose them through
-/// formatting. Providers receive the token from [`TdxClient`] instead.
 #[derive(Clone)]
 pub struct TdxCredentials {
     client_id: String,
@@ -165,7 +159,6 @@ impl TdxClient {
         })
     }
 
-    /// Return a cached process-local OAuth token, refreshing it before expiry.
     async fn access_token(&self) -> Result<String, TdxClientError> {
         let mut cached = self.token.lock().await;
         if cached
@@ -209,11 +202,6 @@ impl TdxClient {
         Ok(value)
     }
 
-    /// Fetch and decode one provider-owned JSON response.
-    ///
-    /// TDX endpoint paths and response types remain the responsibility of the
-    /// caller; this method only combines the shared HTTP and JSON transport
-    /// concerns.
     pub async fn get_json<T: DeserializeOwned>(
         &self,
         path: &str,

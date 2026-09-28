@@ -1,8 +1,3 @@
-//! Concrete external-system adapters.
-//!
-//! Routing imports provider-neutral traits from `domain`/`routing`; these
-//! modules are the only stable public entry points for concrete adapters.
-
 pub mod bikeshare;
 pub mod bindings;
 pub mod service_conditions;

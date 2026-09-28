@@ -1,5 +1,3 @@
-//! Map normalized GTFS identities to TDX provider identities.
-
 use std::collections::{HashMap, HashSet};
 
 use gtfs_structures::{RawTrip, Route};

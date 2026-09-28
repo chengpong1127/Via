@@ -1,10 +1,3 @@
-//! Provider-neutral transit departure timing.
-//!
-//! Routing asks for usable departures through this contract. Schedule, live,
-//! delay-adjusted, and estimated timing implementations all return the same
-//! normalized result and keep their source-specific decisions behind the
-//! provider boundary.
-
 use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
@@ -30,10 +23,6 @@ pub enum TimingReliability {
     Fallback,
 }
 
-/// The timing request used while preparing a request-local snapshot.
-///
-/// The caller supplies a pattern and the boarding point it has reached. It
-/// does not need to know an alighting point or a pre-selected scheduled ride.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DepartureQuery {
     pub pattern_id: TransitPatternId,
@@ -266,10 +255,6 @@ pub trait TimingSnapshotLoader: Send + Sync {
     async fn load_snapshot(&self, queries: Vec<DepartureQuery>) -> TimingSnapshot;
 }
 
-/// A concrete trip instance materialized for one routing request.
-///
-/// The stop sequence is inherited from the immutable Pattern. Runtime
-/// data may replace only its effective times and evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectiveTrip {
     pub id: EffectiveTripId,
@@ -423,7 +408,6 @@ impl DepartureError {
     }
 }
 
-/// Resolve complete scheduled trips without requiring an alighting stop.
 #[derive(Clone)]
 pub struct ScheduleTiming {
     network: Arc<TransitRuntime>,

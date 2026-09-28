@@ -37,16 +37,18 @@ enum Command {
 
 #[derive(Args, Debug)]
 struct BuildArgs {
-    /// Local GTFS .zip archive. Valhalla is queried for walking transfers.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Local GTFS .zip archive. Valhalla is queried for walking transfers."
+    )]
     input: PathBuf,
     #[arg(long)]
     output: PathBuf,
-    /// Local TDX `Bike/Station/City/Taipei` JSON snapshot.
-    #[arg(long)]
+
+    #[arg(long, help = "Local TDX `Bike/Station/City/Taipei` JSON snapshot.")]
     bike_stations_taipei: Option<PathBuf>,
-    /// Local TDX `Bike/Station/City/NewTaipei` JSON snapshot.
-    #[arg(long)]
+
+    #[arg(long, help = "Local TDX `Bike/Station/City/NewTaipei` JSON snapshot.")]
     bike_stations_new_taipei: Option<PathBuf>,
 }
 

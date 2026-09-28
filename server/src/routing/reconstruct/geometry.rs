@@ -1,5 +1,3 @@
-//! Street-path hydration and geometry assembly for reconstructed journeys.
-
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};

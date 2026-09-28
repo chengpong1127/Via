@@ -1,5 +1,3 @@
-//! Mode-aware street access and egress discovery.
-
 use time::OffsetDateTime;
 
 use crate::{

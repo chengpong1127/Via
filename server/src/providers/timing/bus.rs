@@ -59,8 +59,6 @@ impl BusDepartureSource {
         self
     }
 
-    /// Override the bus endpoint for a fixture or a TDX deployment variant.
-    /// The default endpoint still appends the pattern's validated city scope.
     pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
         self.realtime_path = path.into();
         self

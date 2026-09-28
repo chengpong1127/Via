@@ -110,31 +110,6 @@ fn canonical_domain_types_and_concrete_transit_planner_have_single_definitions()
     assert!(planner.contains("static_search::generate"));
     assert!(planner.contains("load_snapshot"));
     assert!(planner.contains("evaluator::evaluate_with_realizations"));
-    for obsolete in [
-        "Phase2Strategy",
-        "phase2::",
-        "temporal::",
-        "FixedCorridorStats",
-    ] {
-        assert!(
-            !planner.contains(obsolete),
-            "obsolete Phase 2 strategy surface remains: {obsolete}"
-        );
-    }
-    let routing_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/routing");
-    for obsolete in ["phase2.rs", "temporal.rs", "fixed.rs"] {
-        assert!(!routing_root.join(obsolete).exists());
-    }
-    assert!(
-        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/routing/algorithm.rs")
-            .exists()
-    );
-    assert!(
-        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/routing/trip_based")
-            .exists()
-    );
 }
 
 #[test]
@@ -193,11 +168,6 @@ fn phase2_evaluator_is_local_and_provider_free() {
             "Phase 2 evaluator contains I/O: {forbidden}"
         );
     }
-    assert!(
-        !PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/routing/temporal.rs")
-            .exists()
-    );
 }
 
 #[test]

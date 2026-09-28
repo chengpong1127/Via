@@ -87,7 +87,7 @@ pub struct RankingPolicy {
     pub near_duplicate_arrival_seconds: i64,
     pub material_walking_difference_seconds: u32,
     pub excessive_alternative_delay_seconds: i64,
-    /// Reliability can outweigh an arrival advantage inside this window.
+
     pub reliability_preference_window_seconds: u32,
     pub result_limit: usize,
 }

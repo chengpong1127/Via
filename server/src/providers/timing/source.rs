@@ -12,11 +12,6 @@ use crate::domain::{
     },
 };
 
-/// Owns the complete departure policy for one transit mode.
-///
-/// A source may omit realtime entirely. In that case the default resolution
-/// path uses its static implementation directly. When realtime is present,
-/// fallback is decided independently for every query in a batch.
 #[async_trait]
 pub trait TransitDepartureSource: Send + Sync {
     fn mode(&self) -> TransitMode;
@@ -40,7 +35,6 @@ pub trait TransitDepartureSource: Send + Sync {
         .await
     }
 
-    /// Returns `None` when this mode has no realtime implementation.
     async fn realtime_departures_batch(
         &self,
         _queries: Vec<DepartureQuery>,
@@ -168,7 +162,6 @@ pub trait TransitDepartureSource: Send + Sync {
     }
 }
 
-/// Adapts a mode-owned source to the algorithm-facing departure boundary.
 #[derive(Clone)]
 pub struct DepartureDispatcher {
     network: Arc<TransitRuntime>,

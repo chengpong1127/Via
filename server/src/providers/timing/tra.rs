@@ -52,7 +52,6 @@ struct TraDelayObservation {
     observed_at: OffsetDateTime,
 }
 
-/// TRA timing owned by the mode source: live train delay over static trip shape.
 pub struct TraDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
@@ -84,7 +83,6 @@ impl TraDepartureSource {
         self
     }
 
-    /// Override the TRA endpoint for a fixture or a TDX deployment variant.
     pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
         self.realtime_path = path.into();
         self

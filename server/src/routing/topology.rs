@@ -1,5 +1,3 @@
-//! Compact topology-only index used by both routing phases.
-
 use std::collections::HashMap;
 
 use crate::domain::{
