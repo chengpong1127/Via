@@ -16,6 +16,7 @@ use crate::tdx::{TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError}
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_PAGE_SIZE: &str = "1000";
+const BIKE_STATION_ORDER: &str = "StationUID asc";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,6 +213,7 @@ async fn fetch_stations(
     let mut skip = 0usize;
     let mut stations = Vec::<Box<RawValue>>::new();
     let mut page_digests = HashSet::new();
+    let mut station_ids = HashSet::new();
     loop {
         let skip_value = skip.to_string();
         let body = client
@@ -220,6 +222,7 @@ async fn fetch_stations(
                 &[
                     ("$top", BIKE_PAGE_SIZE),
                     ("$skip", skip_value.as_str()),
+                    ("$orderby", BIKE_STATION_ORDER),
                     ("$format", "JSON"),
                 ],
             )
@@ -246,6 +249,29 @@ async fn fetch_stations(
             }
             break;
         }
+        for station in &page {
+            let identity =
+                serde_json::from_str::<StationIdentity>(station.get()).map_err(|error| {
+                    FetchError::InvalidBikeResponse {
+                        city: city.to_owned(),
+                        detail: format!("station identifier could not be read: {error}"),
+                    }
+                })?;
+            let station_id = identity
+                .station_uid
+                .map(|station_id| station_id.trim().to_owned())
+                .filter(|station_id| !station_id.is_empty())
+                .ok_or_else(|| FetchError::InvalidBikeResponse {
+                    city: city.to_owned(),
+                    detail: "station record is missing StationUID".to_owned(),
+                })?;
+            if !station_ids.insert(station_id.clone()) {
+                return Err(FetchError::InvalidBikeResponse {
+                    city: city.to_owned(),
+                    detail: format!("duplicate StationUID {station_id}"),
+                });
+            }
+        }
         skip = skip.saturating_add(page.len());
         stations.extend(page);
     }
@@ -254,6 +280,12 @@ async fn fetch_stations(
         detail: error.to_string(),
     })?;
     Ok((body, skip))
+}
+
+#[derive(Deserialize)]
+struct StationIdentity {
+    #[serde(rename = "StationUID")]
+    station_uid: Option<String>,
 }
 
 fn write_station_source(
@@ -387,6 +419,7 @@ mod tests {
         requests: Arc<Mutex<Vec<String>>>,
         gtfs_body: Vec<u8>,
         fail_new_taipei: bool,
+        duplicate_taipei_station: bool,
     }
 
     fn mock_gtfs_zip() -> Vec<u8> {
@@ -448,6 +481,9 @@ mod tests {
                 (false, 0) => {
                     r#"[ {"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
                 }
+                (false, 1) if state.duplicate_taipei_station => {
+                    r#"[ {"StationUID":"TPE0001","StationID":"0009","StationName":{"Zh_tw":"Taipei 9"},"StationPosition":{"PositionLat":25.9,"PositionLon":121.9}} ]"#
+                }
                 (false, 1) => {
                     r#"[ {"StationUID":"TPE0002","StationID":"0002","StationName":{"Zh_tw":"Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}} ]"#
                 }
@@ -465,11 +501,15 @@ mod tests {
             .unwrap()
     }
 
-    async fn mock_client(fail_new_taipei: bool) -> (TdxClient, FetchSources, MockState) {
+    async fn mock_client(
+        fail_new_taipei: bool,
+        duplicate_taipei_station: bool,
+    ) -> (TdxClient, FetchSources, MockState) {
         let state = MockState {
             requests: Arc::new(Mutex::new(Vec::new())),
             gtfs_body: mock_gtfs_zip(),
             fail_new_taipei,
+            duplicate_taipei_station,
         };
         let router = Router::new()
             .fallback(any(mock_response))
@@ -510,7 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_gtfs_override_combines_city_pages_and_records_provenance() {
-        let (client, sources, state) = mock_client(false).await;
+        let (client, sources, state) = mock_client(false, false).await;
         let root = temporary_root("local");
         fs::create_dir_all(&root).unwrap();
         let local_gtfs = root.join("source.zip");
@@ -564,6 +604,16 @@ mod tests {
             ]
         );
         let requests = state.requests.lock().unwrap();
+        for path in requests
+            .iter()
+            .filter(|path| path.starts_with("/basic/v2/Bike/Station/City/"))
+        {
+            let query = path.split_once('?').unwrap().1;
+            assert!(
+                url::form_urlencoded::parse(query.as_bytes())
+                    .any(|(key, value)| key == "$orderby" && value == BIKE_STATION_ORDER)
+            );
+        }
         assert_eq!(
             requests
                 .iter()
@@ -605,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn gtfs_http_download_preserves_the_response_bytes() {
-        let (client, sources, _) = mock_client(false).await;
+        let (client, sources, _) = mock_client(false, false).await;
         let root = temporary_root("http");
         let expected = mock_gtfs_zip();
         let snapshot = fetch_snapshot_at(&root, "20260928T041531Z", None, &client, &sources)
@@ -617,7 +667,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_source_does_not_publish_a_complete_snapshot() {
-        let (client, sources, state) = mock_client(true).await;
+        let (client, sources, state) = mock_client(true, false).await;
         let root = temporary_root("failure");
         let local_gtfs = root.join("source.zip");
         fs::create_dir_all(&root).unwrap();
@@ -646,6 +696,32 @@ mod tests {
         drop(requests);
         let fetch_root = root.join("fetch");
         assert_eq!(fs::read_dir(&fetch_root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_station_identifiers_across_pages_reject_the_snapshot() {
+        let (client, sources, _) = mock_client(false, true).await;
+        let root = temporary_root("duplicate-stations");
+        fs::create_dir_all(&root).unwrap();
+        let local_gtfs = root.join("source.zip");
+        fs::write(&local_gtfs, mock_gtfs_zip()).unwrap();
+
+        let error = fetch_snapshot_at(
+            &root.join("fetch"),
+            "20260928T041533Z",
+            Some(&local_gtfs),
+            &client,
+            &sources,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FetchError::InvalidBikeResponse { city, detail }
+                if city == "Taipei" && detail.contains("duplicate StationUID TPE0001")
+        ));
+        assert_eq!(fs::read_dir(root.join("fetch")).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
     }
 }

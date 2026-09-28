@@ -178,6 +178,28 @@ fn raw_gtfs_keeps_sparse_times_and_extended_service_day_times() {
 }
 
 #[test]
+fn rejects_duplicate_gtfs_table_basenames_in_separate_directories() {
+    let input = temporary_path("duplicate-table-basename.zip");
+    let mut zip = ZipWriter::new(File::create(&input).unwrap());
+    for name in ["a/routes.txt", "b/routes.txt"] {
+        zip.start_file(name, SimpleFileOptions::default()).unwrap();
+        zip.write_all(b"route_id,route_type\nroute,3\n").unwrap();
+    }
+    zip.finish().unwrap();
+
+    let error = match super::archive::read(&input) {
+        Ok(_) => panic!("duplicate routes.txt entries should be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        crate::data::DataError::InvalidGtfsArchive { detail, .. }
+            if detail.contains("duplicate GTFS table routes.txt")
+    ));
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn allocates_bus_runtime_by_distance_without_losing_total_runtime() {
     let durations = distribute_runtime(101, &[1.0, 2.0, 3.0]).unwrap();
     assert_eq!(durations.iter().sum::<u32>(), 101);

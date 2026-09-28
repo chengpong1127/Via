@@ -13,6 +13,7 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeStation {
     pub id: BikeStationId,
     pub name: String,
@@ -30,6 +31,7 @@ impl BikeStation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeWalkingAccess {
     pub duration_seconds: u32,
     pub distance_metres: u32,
@@ -45,6 +47,7 @@ impl BikeWalkingAccess {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeStationAccess {
     pub boarding_point_id: BoardingPointId,
     pub station_id: BikeStationId,
@@ -222,6 +225,7 @@ impl<'a> BikeAvailabilityView<'a> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeShareNetwork {
     pub stations: Vec<BikeStation>,
     #[serde(default)]

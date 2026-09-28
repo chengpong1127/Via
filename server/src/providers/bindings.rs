@@ -6,6 +6,7 @@ use crate::domain::ids::{TransitPatternId, TransitTripId};
 use crate::domain::transit::{TransitMode, TransitNetwork};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TdxProviderBindings {
     pub bus_patterns: HashMap<TransitPatternId, BusPatternBinding>,
     pub metro_patterns: HashMap<TransitPatternId, MetroPatternBinding>,
@@ -13,18 +14,21 @@ pub struct TdxProviderBindings {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BusPatternBinding {
     pub tdx_service_id: String,
     pub realtime_scope: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetroPatternBinding {
     pub line_id: String,
     pub direction: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraTripBinding {
     pub train_number: String,
 }

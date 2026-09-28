@@ -40,7 +40,9 @@ where
     let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
         transit_network,
         provider_bindings: TdxProviderBindings::default(),
-        bike_share_network: BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled"),
+        bike_share_network: Arc::new(
+            BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled"),
+        ),
         street,
         tdx: None,
         service_conditions: Arc::new(NullServiceConditionProvider),

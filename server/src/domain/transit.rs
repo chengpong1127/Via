@@ -34,6 +34,7 @@ pub enum TransitMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitStop {
     pub id: BoardingPointId,
     pub name: String,
@@ -55,6 +56,7 @@ impl TransitStop {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitRoute {
     pub id: TransitRouteId,
     pub mode: TransitMode,
@@ -70,17 +72,20 @@ pub enum SegmentTimeSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SegmentTravelTime {
     pub seconds: u32,
     pub source: SegmentTimeSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SegmentProfile {
     pub segments: Vec<SegmentTravelTime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceCalendar {
     pub id: ServiceCalendarId,
     pub weekdays: Vec<Weekday>,
@@ -104,6 +109,7 @@ impl ServiceCalendar {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitPattern {
     pub id: TransitPatternId,
     pub route_id: TransitRouteId,
@@ -134,6 +140,7 @@ impl TransitPattern {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduledStopTime {
     pub arrival_seconds: u32,
 
@@ -150,6 +157,7 @@ impl ScheduledStopTime {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitTrip {
     pub id: TransitTripId,
     pub pattern_id: TransitPatternId,
@@ -174,6 +182,7 @@ impl TransitTrip {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransitFrequency {
     pub id: TransitTripId,
     pub pattern_id: TransitPatternId,
@@ -208,6 +217,7 @@ fn calendar_runs_on(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TransferEdge {
     pub from: BoardingPointId,
     pub to: BoardingPointId,

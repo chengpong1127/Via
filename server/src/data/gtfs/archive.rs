@@ -10,6 +10,18 @@ use zip::ZipArchive;
 
 use crate::data::DataError;
 
+const RECOGNIZED_TABLES: [&str; 9] = [
+    "calendar.txt",
+    "calendar_dates.txt",
+    "frequencies.txt",
+    "routes.txt",
+    "shapes.txt",
+    "stop_times.txt",
+    "stops.txt",
+    "transfers.txt",
+    "trips.txt",
+];
+
 pub(super) fn read(path: &Path) -> Result<RawGtfs, DataError> {
     let started_at = Instant::now();
     let file = File::open(path).map_err(|error| DataError::Io(path.into(), error))?;
@@ -22,6 +34,12 @@ pub(super) fn read(path: &Path) -> Result<RawGtfs, DataError> {
             .map_err(|error| invalid_archive(path, error))?;
         let name = entry.name().to_owned();
         if let Some(file_name) = Path::new(&name).file_name().and_then(|name| name.to_str()) {
+            if RECOGNIZED_TABLES.contains(&file_name) && indices.contains_key(file_name) {
+                return Err(invalid_archive(
+                    path,
+                    format!("duplicate GTFS table {file_name}"),
+                ));
+            }
             indices.entry(file_name.to_owned()).or_insert(index);
         }
         files.push(name);

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
 use crate::providers::bindings::TdxProviderBindings;
@@ -9,6 +10,7 @@ use crate::providers::bindings::TdxProviderBindings;
 pub const VIA_STATIC_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ViaStaticSource {
     pub source_id: String,
     pub source_url: Option<String>,
@@ -17,6 +19,7 @@ pub struct ViaStaticSource {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ViaStaticCounts {
     pub stops: usize,
     pub routes: usize,
@@ -30,6 +33,7 @@ pub struct ViaStaticCounts {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ViaStaticRevisions {
     pub transit_static: String,
     pub schedule: String,
@@ -37,6 +41,7 @@ pub struct ViaStaticRevisions {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ViaStatic {
     pub schema_version: u32,
     pub fetched_at: String,
@@ -54,6 +59,8 @@ pub enum ViaStaticValidationError {
     UnsupportedSchemaVersion(u32),
     #[error("fetch timestamp is missing")]
     MissingFetchTimestamp,
+    #[error("fetch timestamp is not a valid RFC3339 timestamp: {0}")]
+    InvalidFetchTimestamp(String),
     #[error("ViaStatic JSON is invalid: {0}")]
     InvalidJson(String),
     #[error("source provenance is invalid for {0}")]
@@ -83,6 +90,11 @@ impl ViaStatic {
         }
         if self.fetched_at.trim().is_empty() {
             return Err(ViaStaticValidationError::MissingFetchTimestamp);
+        }
+        if OffsetDateTime::parse(&self.fetched_at, &Rfc3339).is_err() {
+            return Err(ViaStaticValidationError::InvalidFetchTimestamp(
+                self.fetched_at.clone(),
+            ));
         }
         for (name, source) in &self.sources {
             if name.trim().is_empty()
@@ -237,6 +249,43 @@ mod tests {
         assert!(matches!(
             ViaStatic::from_json(&value.to_string()),
             Err(ViaStaticValidationError::UnsupportedSchemaVersion(2))
+        ));
+    }
+
+    #[test]
+    fn via_static_rejects_invalid_rfc3339_fetch_timestamps() {
+        let mut artifact = artifact();
+        artifact.fetched_at = "2026-99-28T00:00:00Z".to_owned();
+        assert!(matches!(
+            artifact.validate(),
+            Err(ViaStaticValidationError::InvalidFetchTimestamp(_))
+        ));
+    }
+
+    #[test]
+    fn via_static_json_rejects_unknown_top_level_fields() {
+        let mut value = serde_json::to_value(artifact()).unwrap();
+        value["stale_field"] = serde_json::Value::Bool(true);
+        assert!(matches!(
+            ViaStatic::from_json(&value.to_string()),
+            Err(ViaStaticValidationError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn via_static_json_rejects_unknown_nested_persisted_fields() {
+        let mut value = serde_json::to_value(artifact()).unwrap();
+        value["sources"]["gtfs"]["stale_source_field"] = serde_json::Value::Bool(true);
+        assert!(matches!(
+            ViaStatic::from_json(&value.to_string()),
+            Err(ViaStaticValidationError::InvalidJson(_))
+        ));
+
+        let mut value = serde_json::to_value(artifact()).unwrap();
+        value["bike_share"]["stale_network_field"] = serde_json::Value::Bool(true);
+        assert!(matches!(
+            ViaStatic::from_json(&value.to_string()),
+            Err(ViaStaticValidationError::InvalidJson(_))
         ));
     }
 

@@ -34,7 +34,7 @@ pub struct RoutingRuntime {
 pub struct RoutingRuntimeDependencies {
     pub transit_network: TransitNetwork,
     pub provider_bindings: TdxProviderBindings,
-    pub bike_share_network: BikeShareNetwork,
+    pub bike_share_network: Arc<BikeShareNetwork>,
     pub street: Arc<dyn StreetRouter>,
     pub tdx: Option<Arc<TdxClient>>,
     pub service_conditions: Arc<dyn ServiceConditionProvider>,
@@ -89,7 +89,7 @@ impl RoutingRuntime {
             transit_runtime.clone(),
             departure_resolver,
             service_conditions,
-            Arc::new(dependencies.bike_share_network),
+            dependencies.bike_share_network,
             dependencies.bike_availability,
             dependencies.limits,
         );
@@ -150,13 +150,14 @@ pub async fn build_production_runtime(
         .transpose()?
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_SERVICE_CONDITION_CACHE_TTL);
+    let bike_share_network = Arc::new(via_static.bike_share);
     let bike_availability: Arc<dyn BikeAvailabilitySource> = Arc::new(
-        TdxBikeAvailabilitySource::new(Arc::new(via_static.bike_share.clone()), tdx.clone()),
+        TdxBikeAvailabilitySource::new(bike_share_network.clone(), tdx.clone()),
     );
     let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
         transit_network: via_static.transit,
         provider_bindings: bindings,
-        bike_share_network: via_static.bike_share,
+        bike_share_network,
         street: street.clone(),
         tdx: Some(tdx),
         service_conditions: Arc::new(service_conditions),
@@ -169,4 +170,38 @@ pub async fn build_production_runtime(
 
 pub fn runtime_metrics(runtime: &RoutingRuntime) -> OperationalMetrics {
     runtime.routing.operational_metrics.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        domain::transit::TransitNetwork,
+        providers::{
+            UnavailableBikeAvailabilitySource, service_conditions::NullServiceConditionProvider,
+        },
+        street::StraightLineStreetRouter,
+    };
+
+    #[test]
+    fn runtime_keeps_the_shared_bike_network_instance() {
+        let bike_share_network =
+            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-bike-share"));
+        let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
+            transit_network: TransitNetwork::default(),
+            provider_bindings: TdxProviderBindings::default(),
+            bike_share_network: bike_share_network.clone(),
+            street: Arc::new(StraightLineStreetRouter::default()),
+            tdx: None,
+            service_conditions: Arc::new(NullServiceConditionProvider),
+            bike_availability: Arc::new(UnavailableBikeAvailabilitySource),
+            cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
+            limits: RoutingLimits::default(),
+        });
+
+        assert!(Arc::ptr_eq(
+            &runtime.routing.bike_share_network,
+            &bike_share_network
+        ));
+    }
 }
