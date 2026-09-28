@@ -1,10 +1,11 @@
 use std::{
     env, fmt,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
-use reqwest::{Client, StatusCode, header::RETRY_AFTER};
+use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -14,6 +15,8 @@ const DEFAULT_TDX_API_BASE_URL: &str = "https://tdx.transportdata.tw/api/basic/"
 const DEFAULT_TDX_TOKEN_URL: &str =
     "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_RATE_LIMIT_RETRIES: usize = 2;
 
 #[derive(Clone)]
 pub struct TdxCredentials {
@@ -85,11 +88,14 @@ pub enum TdxClientError {
     ResponseTooLarge,
     #[error("TDX API response was not valid JSON")]
     InvalidJson(#[source] serde_json::Error),
+    #[error("TDX download could not write its destination")]
+    DownloadWrite(#[source] std::io::Error),
 }
 
 #[derive(Clone)]
 pub struct TdxClient {
     client: Client,
+    download_client: Client,
     credentials: TdxCredentials,
     api_base_url: Url,
     token_url: Url,
@@ -150,8 +156,15 @@ impl TdxClient {
             .user_agent("via-data/1.0")
             .build()
             .map_err(TdxClientError::ApiRequest)?;
+        let download_client = Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(DOWNLOAD_TIMEOUT)
+            .user_agent("via-data/1.0")
+            .build()
+            .map_err(TdxClientError::ApiRequest)?;
         Ok(Self {
             client,
+            download_client,
             credentials,
             api_base_url,
             token_url,
@@ -202,30 +215,55 @@ impl TdxClient {
         Ok(value)
     }
 
-    pub async fn get_json<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> Result<T, TdxClientError> {
+    fn api_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url, TdxClientError> {
         let mut url = self
             .api_base_url
             .join(path)
             .map_err(|_| TdxClientError::InvalidConfiguration)?;
         url.query_pairs_mut().extend_pairs(query.iter().copied());
+        Ok(url)
+    }
+
+    async fn authenticated_get(&self, url: Url) -> Result<Response, TdxClientError> {
+        self.authenticated_get_with(&self.client, url).await
+    }
+
+    async fn authenticated_get_with(
+        &self,
+        client: &Client,
+        url: Url,
+    ) -> Result<Response, TdxClientError> {
         let token = self.access_token().await?;
-        let response = self
-            .client
-            .get(url.clone())
-            .bearer_auth(token)
-            .send()
-            .await
-            .map_err(TdxClientError::ApiRequest)?;
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            return Err(rate_limited(response.headers()));
+        let mut retries = 0;
+        loop {
+            let response = client
+                .get(url.clone())
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(TdxClientError::ApiRequest)?;
+            if response.status() == StatusCode::TOO_MANY_REQUESTS {
+                if let Some(delay) = retry_after(response.headers())
+                    && retries < MAX_RATE_LIMIT_RETRIES
+                {
+                    retries += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(rate_limited(response.headers()));
+            }
+            return response
+                .error_for_status()
+                .map_err(TdxClientError::ApiRequest);
         }
-        let response = response
-            .error_for_status()
-            .map_err(TdxClientError::ApiRequest)?;
+    }
+
+    pub async fn get_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<bytes::Bytes, TdxClientError> {
+        let response = self.authenticated_get(self.api_url(path, query)?).await?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -236,7 +274,44 @@ impl TdxClient {
         if body.len() > MAX_RESPONSE_BYTES {
             return Err(TdxClientError::ResponseTooLarge);
         }
+        Ok(body)
+    }
+
+    pub async fn get_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, TdxClientError> {
+        let body = self.get_bytes(path, query).await?;
         serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
+    }
+
+    pub async fn download_url_to_path(
+        &self,
+        url: &str,
+        destination: &Path,
+    ) -> Result<u64, TdxClientError> {
+        let url = Url::parse(url).map_err(|_| TdxClientError::InvalidConfiguration)?;
+        let mut response = self
+            .authenticated_get_with(&self.download_client, url)
+            .await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .await
+            .map_err(TdxClientError::DownloadWrite)?;
+        let mut bytes_written = 0u64;
+        while let Some(chunk) = response.chunk().await.map_err(TdxClientError::ApiRequest)? {
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(TdxClientError::DownloadWrite)?;
+            bytes_written = bytes_written.saturating_add(chunk.len() as u64);
+        }
+        tokio::io::AsyncWriteExt::flush(&mut file)
+            .await
+            .map_err(TdxClientError::DownloadWrite)?;
+        Ok(bytes_written)
     }
 }
 
@@ -261,7 +336,65 @@ fn rate_limited(headers: &reqwest::header::HeaderMap) -> TdxClientError {
 
 #[cfg(test)]
 mod tests {
-    use super::TdxCredentials;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use axum::{
+        Router,
+        body::Body,
+        extract::State,
+        http::{Request, Response, StatusCode},
+        routing::any,
+    };
+
+    use super::{MAX_RESPONSE_BYTES, TdxClient, TdxCredentials};
+
+    async fn mock_response(
+        State(body): State<Arc<Vec<u8>>>,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if request.uri().path() == "/token" {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"access_token":"mock-token","expires_in":300}"#,
+                ))
+                .unwrap();
+        }
+        Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(body.as_ref().clone()))
+            .unwrap()
+    }
+
+    async fn rate_limited_once(
+        State((body, requests)): State<(Arc<Vec<u8>>, Arc<AtomicUsize>)>,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if request.uri().path() == "/token" {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"access_token":"mock-token","expires_in":300}"#,
+                ))
+                .unwrap();
+        }
+        if requests.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header("retry-after", "0")
+                .body(Body::empty())
+                .unwrap();
+        }
+        Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(body.as_ref().clone()))
+            .unwrap()
+    }
 
     #[test]
     fn credentials_debug_is_redacted() {
@@ -273,5 +406,62 @@ mod tests {
         assert!(!debug.contains("client-id-value"));
         assert!(!debug.contains("client-secret-value"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[tokio::test]
+    async fn retries_rate_limited_get_after_retry_after() {
+        let expected = br#"{"available":true}"#.to_vec();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(any(rate_limited_once))
+            .with_state((Arc::new(expected.clone()), requests.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = TdxClient::with_urls(
+            TdxCredentials::from_client_credentials("client", "secret"),
+            &format!("{base_url}/api/"),
+            &format!("{base_url}/token"),
+        )
+        .unwrap();
+
+        let response = client.get_bytes("availability", &[]).await.unwrap();
+
+        assert_eq!(response.as_ref(), expected);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn streamed_download_exceeds_json_response_limit() {
+        let expected_size = MAX_RESPONSE_BYTES + 1;
+        let body = Arc::new(vec![0x5a; expected_size]);
+        let app = Router::new().fallback(any(mock_response)).with_state(body);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = TdxClient::with_urls(
+            TdxCredentials::from_client_credentials("client", "secret"),
+            &format!("{base_url}/api/"),
+            &format!("{base_url}/token"),
+        )
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "via-tdx-large-download-{}.bin",
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        let bytes_written = client
+            .download_url_to_path(&format!("{base_url}/feed"), &path)
+            .await
+            .unwrap();
+        assert_eq!(bytes_written, expected_size as u64);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), bytes_written);
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -225,6 +225,7 @@ fn map_tdx_error(error: TdxClientError) -> ServiceConditionError {
         TdxClientError::OAuthRequest(_)
         | TdxClientError::InvalidOAuthResponse(_)
         | TdxClientError::ApiRequest(_)
+        | TdxClientError::DownloadWrite(_)
         | TdxClientError::Credentials(_) => ServiceConditionError::TemporarilyUnavailable,
         TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
             ServiceConditionError::RejectedPayload

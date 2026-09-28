@@ -1,25 +1,32 @@
 # Via server
 
-The Rust/Axum server exposes Via's provider-neutral journey-planning API. TDX
-is the current transit source, Valhalla is the street-routing provider, and
-the runtime loads validated immutable `TransitNetwork` and `BikeShareNetwork`
-artifacts.
+The Rust/Axum server exposes Via's provider-neutral journey-planning API. It
+loads one validated `.via-static.json` artifact, then uses TDX for realtime
+transit timing, service conditions, and YouBike availability, and Valhalla for
+street routing.
 
 ## Run locally
 
-The static-data and route-debug workflow is in [`docs/dev-tooling.md`](../docs/dev-tooling.md).
-Copy the repository environment template, fill in TDX credentials, publish a
-network artifact, and start the complete backend development stack from the
-repository root:
+The complete static-data and routing workflow is in
+[`docs/dev-tooling.md`](../docs/dev-tooling.md). Copy the repository
+environment template, add TDX credentials, and set `VIA_STATIC` to the artifact
+created by `via-data build`:
 
 ```sh
-cp .env.example .env
-docker compose -f server/docker-compose.yml up --build
+cp server/.env.example server/.env
+```
+
+Start the backend development stack from the repository root, setting
+`VIA_STATIC` to the container path for the built artifact:
+
+```sh
+VIA_STATIC=/app/server/data/build/20260928T043000Z/.via-static.json \
+  docker compose -f server/docker-compose.yml up --build
 ```
 
 The iOS app remains a host process. The API is published at
-`http://127.0.0.1:3000` for the iOS Simulator, while Valhalla is also available
-at `http://127.0.0.1:8002` for host-side debugging.
+`http://127.0.0.1:3000`, and Valhalla is available at
+`http://127.0.0.1:8002` for host-side debugging.
 
 The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
 `GET /health/street-routing`. Planning responses are not cached.
@@ -29,14 +36,13 @@ Configuration:
 | Variable | Purpose |
 | --- | --- |
 | `VIA_ENV` | `development`, `staging`, or `production`. |
+| `VIA_STATIC` | Validated `.via-static.json` path. |
 | `VIA_VALHALLA_URL` | Valhalla base URL. |
 | `VALHALLA_TILE_URL` | OSM PBF URL used by the local scripted Valhalla container. |
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
 | `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
 | `VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS` | Service-condition cache TTL; default 45 seconds. |
-| `VIA_TRANSIT_NETWORK` | Validated `transit-network.json` path. |
-| `VIA_BIKESHARE_NETWORK` | Validated `bikeshare-network.json` path. |
 | `PORT` | Axum port; default 3000. |
 
 ## Current routing boundary
@@ -68,11 +74,10 @@ Walking remains an implicit connector, while output legs retain the coarse
 `walking`, `transit`, and `bicycle` `JourneyMode` values. Direct walking remains
 walking-only in this version.
 
-The `via-route` binary is an offline transit-debugging tool and does not
-configure BikeShare. Production HTTP assembly requires the immutable BikeShare
-artifact and its TDX availability source explicitly. Station metadata can be
-built from local TDX Taipei and New Taipei Bike Station City snapshots; absent
-those files, the station artifact remains empty.
+Both the HTTP server and `via-route` load the same `ViaStatic` artifact and use
+the same production runtime assembly. BikeShare can realize a retained surface
+transfer when station metadata and fresh availability support it; it does not
+create direct BikeShare-only routes.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and
@@ -80,13 +85,11 @@ realtime data.
 
 ## Verification
 
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test --all
-cargo run --bin export-openapi > /tmp/via-openapi.json
-```
+From the repository root:
 
-The checked-in Valhalla and street-router fixtures allow the contract and route
-tests to run without a production graph. Real static builds still require a
-reviewed TDX snapshot and a healthy Valhalla service.
+```sh
+cargo fmt --manifest-path server/Cargo.toml --check
+cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path server/Cargo.toml --all-targets --all-features
+cargo run --manifest-path server/Cargo.toml --bin export-openapi > /tmp/via-openapi.json
+```

@@ -199,6 +199,7 @@ fn map_tdx_error(error: TdxClientError) -> BikeAvailabilityError {
         | TdxClientError::OAuthRequest(_)
         | TdxClientError::InvalidOAuthResponse(_)
         | TdxClientError::ApiRequest(_)
+        | TdxClientError::DownloadWrite(_)
         | TdxClientError::ResponseTooLarge => BikeAvailabilityError::TemporarilyUnavailable,
     }
 }

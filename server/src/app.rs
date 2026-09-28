@@ -24,26 +24,15 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION, new_request_id},
     domain::{
-        bikeshare::BikeShareNetwork,
         journey::{PlanningError, PlanningOutcome},
-        transit::TransitNetwork,
         transit_runtime::TransitRuntime,
     },
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::bikeshare::BikeAvailabilitySource,
-    providers::bindings::TdxProviderBindings,
-    providers::service_conditions::{
-        CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-        ServiceConditionMetrics, ServiceConditionProvider,
-    },
-    providers::timing::{
-        BusDepartureSource, BusTimingMetrics, DepartureDispatcher, MetroDepartureSource,
-        ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
-    },
-    routing::{RoutingLimits, RoutingService},
-    street::{StreetRouter, StreetRoutingError},
-    tdx::TdxClient,
+    providers::service_conditions::ServiceConditionMetrics,
+    providers::timing::BusTimingMetrics,
+    routing::RoutingService,
+    runtime::RoutingRuntime,
 };
 
 #[derive(Clone)]
@@ -57,110 +46,21 @@ struct AppState {
     openapi: OpenApi,
 }
 
-#[derive(Clone)]
-pub struct RouterDependencies {
-    service_conditions: Arc<dyn ServiceConditionProvider>,
-    tdx: Option<Arc<TdxClient>>,
-    service_condition_cache_ttl: Duration,
-    bike_share_network: Arc<BikeShareNetwork>,
-    bike_availability_source: Arc<dyn BikeAvailabilitySource>,
-    provider_bindings: Arc<TdxProviderBindings>,
-}
-
-impl RouterDependencies {
-    pub fn new(
-        service_conditions: Arc<dyn ServiceConditionProvider>,
-        bike_share_network: Arc<BikeShareNetwork>,
-        bike_availability_source: Arc<dyn BikeAvailabilitySource>,
-    ) -> Self {
-        Self {
-            service_conditions,
-            tdx: None,
-            service_condition_cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-            bike_share_network,
-            bike_availability_source,
-            provider_bindings: Arc::new(TdxProviderBindings::default()),
-        }
-    }
-
-    pub fn with_tdx(mut self, tdx: Arc<TdxClient>) -> Self {
-        self.tdx = Some(tdx);
-        self
-    }
-
-    pub fn with_provider_bindings(mut self, bindings: TdxProviderBindings) -> Self {
-        self.provider_bindings = Arc::new(bindings);
-        self
-    }
-
-    pub fn with_service_condition_cache_ttl(mut self, ttl: Duration) -> Self {
-        self.service_condition_cache_ttl = ttl;
-        self
-    }
-}
-
-pub async fn build_router<P>(
-    provider: Arc<P>,
-    dependencies: RouterDependencies,
-    transit_network: TransitNetwork,
-) -> Result<Router, StreetRoutingError>
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    let (street_router, street_health) = provider_interfaces(provider);
-    let service_conditions = Arc::new(CachedServiceConditionProvider::with_ttl(
-        dependencies.service_conditions,
-        dependencies.service_condition_cache_ttl,
-    ));
-    let service_condition_metrics = service_conditions.metrics();
-    let bus_timing_metrics = BusTimingMetrics::default();
-    let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(transit_network)));
-    let bus = Arc::new(
-        BusDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
-            .with_bindings(dependencies.provider_bindings.clone())
-            .with_metrics(bus_timing_metrics.clone()),
-    );
-    let metro = Arc::new(
-        MetroDepartureSource::new(transit_runtime.clone())
-            .with_bindings(dependencies.provider_bindings.clone())
-            .with_tdx(dependencies.tdx.clone()),
-    );
-    let tra = Arc::new(
-        TraDepartureSource::new(transit_runtime.clone())
-            .with_bindings(dependencies.provider_bindings)
-            .with_tdx(dependencies.tdx),
-    );
-    let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
-    let departure_resolver = Arc::new(DepartureDispatcher::new(
-        transit_runtime.clone(),
-        vec![
-            bus as Arc<dyn TransitDepartureSource>,
-            metro as Arc<dyn TransitDepartureSource>,
-            tra as Arc<dyn TransitDepartureSource>,
-            thsr as Arc<dyn TransitDepartureSource>,
-        ],
-    ));
-    let routing = RoutingService::new(
-        street_router,
-        transit_runtime.clone(),
-        departure_resolver,
-        service_conditions,
-        dependencies.bike_share_network,
-        dependencies.bike_availability_source,
-        RoutingLimits::default(),
-    );
+pub fn build_router(street_health: Arc<dyn DependencyHealth>, runtime: RoutingRuntime) -> Router {
+    let routing = runtime.routing;
+    let transit_runtime = runtime.transit_runtime;
     let metrics = routing.operational_metrics.clone();
     let (router, openapi) = documented_router().split_for_parts();
     let openapi = configure_openapi(openapi);
-    Ok(router
+    router
         .route("/openapi.json", get(openapi_document_endpoint))
         .with_state(AppState {
             street_health,
             routing,
             transit_runtime,
             metrics,
-            service_condition_metrics,
-            bus_timing_metrics,
+            service_condition_metrics: runtime.service_condition_metrics,
+            bus_timing_metrics: runtime.bus_timing_metrics,
             openapi,
         })
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -172,14 +72,7 @@ where
                 .on_response(on_http_response)
                 .on_failure(()),
         )
-        .layer(SetRequestIdLayer::x_request_id(ViaMakeRequestId)))
-}
-
-fn provider_interfaces<P>(provider: Arc<P>) -> (Arc<dyn StreetRouter>, Arc<dyn DependencyHealth>)
-where
-    P: StreetRouter + DependencyHealth + 'static,
-{
-    (provider.clone(), provider)
+        .layer(SetRequestIdLayer::x_request_id(ViaMakeRequestId))
 }
 
 fn documented_router() -> OpenApiRouter<AppState> {

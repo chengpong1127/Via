@@ -7,5 +7,6 @@ pub mod health;
 pub mod observability;
 pub mod providers;
 pub mod routing;
+pub mod runtime;
 pub mod street;
 pub mod tdx;

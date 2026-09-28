@@ -2101,6 +2101,7 @@ dependencies = [
  "axum",
  "bytes",
  "clap",
+ "csv",
  "dotenvy",
  "futures-util",
  "gtfs-structures",

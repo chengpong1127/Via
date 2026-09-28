@@ -1,3 +1,4 @@
+mod archive;
 mod bindings;
 mod normalize;
 mod segment_profile;
@@ -6,7 +7,6 @@ mod tests;
 
 use std::{collections::BTreeMap, path::Path};
 
-use gtfs_structures::RawGtfs;
 use serde::Serialize;
 
 use crate::{
@@ -44,7 +44,7 @@ pub struct GtfsBuildOutput {
 pub(super) fn build_network(
     input: &Path,
 ) -> Result<(TransitNetwork, TdxProviderBindings, GtfsBuildDiagnostics), DataError> {
-    let raw = RawGtfs::from_path(input).map_err(|error| invalid_gtfs(input, error))?;
+    let raw = archive::read(input)?;
     let mut diagnostics = GtfsBuildDiagnostics::default();
     let normalized = normalize::normalize(raw, input, &mut diagnostics)?;
     let provider_bindings = bindings::build(

@@ -121,6 +121,7 @@ pub(super) fn map_tdx_error(error: TdxClientError) -> DepartureError {
         TdxClientError::OAuthRequest(_)
         | TdxClientError::InvalidOAuthResponse(_)
         | TdxClientError::ApiRequest(_)
+        | TdxClientError::DownloadWrite(_)
         | TdxClientError::Credentials(_) => DepartureError::TemporarilyUnavailable,
         TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
             DepartureError::InvalidResponse

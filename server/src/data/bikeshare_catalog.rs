@@ -44,44 +44,58 @@ pub fn parse_tdx_station_catalog(
     taipei_json: &str,
     new_taipei_json: &str,
 ) -> Result<BikeShareNetwork, DataError> {
+    parse_tdx_station_catalog_pages(&[taipei_json.to_owned()], &[new_taipei_json.to_owned()])
+}
+
+pub fn parse_tdx_station_catalog_pages(
+    taipei_pages: &[String],
+    new_taipei_pages: &[String],
+) -> Result<BikeShareNetwork, DataError> {
     let mut stations = Vec::new();
     let mut ids = HashSet::new();
-    for (city, body) in [("Taipei", taipei_json), ("NewTaipei", new_taipei_json)] {
-        let records = serde_json::from_str::<Vec<TdxStation>>(body)
-            .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
-        for record in records
-            .into_iter()
-            .filter(|record| record.service_type == 2)
-        {
-            let station_id = bike_station_id(city, record.station_uid.trim().to_owned());
-            if station_id.as_str().ends_with(':') || !ids.insert(station_id.clone()) {
-                return Err(DataError::InvalidArtifactJson(
-                    "TDX bike station catalog contains an empty or duplicate StationUID".into(),
-                ));
-            }
-            let name = record
-                .station_name
-                .traditional_chinese
-                .filter(|name| !name.trim().is_empty())
-                .or(record.station_name.english)
-                .filter(|name| !name.trim().is_empty())
-                .ok_or_else(|| {
-                    DataError::InvalidArtifactJson(format!(
-                        "TDX bike station {} has no display name",
+    for (city, pages) in [("Taipei", taipei_pages), ("NewTaipei", new_taipei_pages)] {
+        if pages.is_empty() {
+            return Err(DataError::InvalidArtifactJson(format!(
+                "TDX {city} bike station pages are missing"
+            )));
+        }
+        for body in pages {
+            let records = serde_json::from_str::<Vec<TdxStation>>(body)
+                .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
+            for record in records
+                .into_iter()
+                .filter(|record| record.service_type == 2)
+            {
+                let station_id = bike_station_id(city, record.station_uid.trim().to_owned());
+                if station_id.as_str().ends_with(':') || !ids.insert(station_id.clone()) {
+                    return Err(DataError::InvalidArtifactJson(
+                        "TDX bike station catalog contains an empty or duplicate StationUID".into(),
+                    ));
+                }
+                let name = record
+                    .station_name
+                    .traditional_chinese
+                    .filter(|name| !name.trim().is_empty())
+                    .or(record.station_name.english)
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| {
+                        DataError::InvalidArtifactJson(format!(
+                            "TDX bike station {} has no display name",
+                            station_id.as_str()
+                        ))
+                    })?;
+                let coordinate = RequestCoordinate {
+                    latitude: record.station_position.latitude,
+                    longitude: record.station_position.longitude,
+                };
+                if !coordinate.validate() {
+                    return Err(DataError::InvalidArtifactJson(format!(
+                        "TDX bike station {} has invalid coordinates",
                         station_id.as_str()
-                    ))
-                })?;
-            let coordinate = RequestCoordinate {
-                latitude: record.station_position.latitude,
-                longitude: record.station_position.longitude,
-            };
-            if !coordinate.validate() {
-                return Err(DataError::InvalidArtifactJson(format!(
-                    "TDX bike station {} has invalid coordinates",
-                    station_id.as_str()
-                )));
+                    )));
+                }
+                stations.push(BikeStation::new(station_id, name, coordinate));
             }
-            stations.push(BikeStation::new(station_id, name, coordinate));
         }
     }
     Ok(BikeShareNetwork::new(stations).canonicalize())
@@ -111,6 +125,36 @@ mod tests {
                 .is_some()
         );
         assert!(network.access_links.is_empty());
+    }
+
+    #[test]
+    fn maps_station_records_across_raw_city_pages() {
+        let taipei_pages = vec![
+            r#"[{"StationUID":"TPE-1","StationName":{"Zh_tw":"台北一站"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.5},"ServiceType":2}]"#.to_owned(),
+            r#"[{"StationUID":"TPE-2","StationName":{"Zh_tw":"台北二站"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.6},"ServiceType":2}]"#.to_owned(),
+        ];
+        let new_taipei_pages = vec![
+            r#"[{"StationUID":"NTP-1","StationName":{"Zh_tw":"新北一站"},"StationPosition":{"PositionLat":25.2,"PositionLon":121.7},"ServiceType":2}]"#.to_owned(),
+        ];
+
+        let network = parse_tdx_station_catalog_pages(&taipei_pages, &new_taipei_pages).unwrap();
+
+        assert_eq!(network.stations.len(), 3);
+        assert!(
+            network
+                .station(&bike_station_id("Taipei", "TPE-1"))
+                .is_some()
+        );
+        assert!(
+            network
+                .station(&bike_station_id("Taipei", "TPE-2"))
+                .is_some()
+        );
+        assert!(
+            network
+                .station(&bike_station_id("NewTaipei", "NTP-1"))
+                .is_some()
+        );
     }
 
     #[test]

@@ -4,7 +4,6 @@ use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
 use via_server::{
     api::{PlanningRequest, new_request_id},
-    data::load_network_artifact,
     domain::{
         bikeshare::BikeShareNetwork,
         ids::BoardingPointId,
@@ -240,7 +239,11 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
 
     let artifact_path =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/routing/network.json");
-    assert_eq!(load_network_artifact(&artifact_path).unwrap(), network);
+    let fixture = std::fs::read_to_string(artifact_path).unwrap();
+    assert_eq!(
+        TransitNetwork::from_artifact_json(&fixture).unwrap(),
+        network
+    );
 }
 
 #[test]

@@ -1,7 +1,6 @@
 use std::{
-    env,
     error::Error,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -10,18 +9,19 @@ use clap::{Args, Parser, Subcommand};
 use via_server::{
     config::load_dotenv,
     data::{
-        ArtifactCounts, GtfsBuildDiagnostics, build_from_gtfs_archive_with_street,
-        build_from_gtfs_archive_with_tdx_bike_stations, load_bikeshare_artifact, load_manifest,
-        load_network_artifact,
+        GtfsBuildDiagnostics, build_from_fetch_snapshot, fetch, fetch::fetch_snapshot,
+        load_static_artifact,
     },
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
+    health::DependencyHealth,
     providers::valhalla::{ValhallaConfig, ValhallaProvider},
+    street::StreetRouter,
 };
 
 #[derive(Parser, Debug)]
 #[command(
     name = "via-data",
-    about = "Build, validate, and inspect Via GTFS data artifacts"
+    about = "Fetch, build, validate, and inspect Via static data"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -30,32 +30,28 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    Fetch(FetchArgs),
     Build(BuildArgs),
     Validate(ValidateArgs),
     Inspect(InspectArgs),
 }
 
 #[derive(Args, Debug)]
-struct BuildArgs {
-    #[arg(
-        long,
-        help = "Local GTFS .zip archive. Valhalla is queried for walking transfers."
-    )]
-    input: PathBuf,
+struct FetchArgs {
     #[arg(long)]
-    output: PathBuf,
+    gtfs_file: Option<PathBuf>,
+}
 
-    #[arg(long, help = "Local TDX `Bike/Station/City/Taipei` JSON snapshot.")]
-    bike_stations_taipei: Option<PathBuf>,
-
-    #[arg(long, help = "Local TDX `Bike/Station/City/NewTaipei` JSON snapshot.")]
-    bike_stations_new_taipei: Option<PathBuf>,
+#[derive(Args, Debug)]
+struct BuildArgs {
+    #[arg(long)]
+    input: PathBuf,
 }
 
 #[derive(Args, Debug)]
 struct ValidateArgs {
-    #[arg(long)]
-    artifact: PathBuf,
+    #[arg(long = "static")]
+    static_path: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -64,24 +60,16 @@ struct InspectArgs {
     command: InspectCommand,
 }
 
-#[derive(Subcommand, Debug)]
-enum InspectCommand {
-    Stop(StopArgs),
-    Pattern(PatternArgs),
-    NearbyStops(NearbyArgs),
-    Stats(StatsArgs),
-}
-
 #[derive(Args, Debug)]
-struct ArtifactArgs {
-    #[arg(long)]
-    artifact: PathBuf,
+struct StaticArgs {
+    #[arg(long = "static")]
+    static_path: PathBuf,
 }
 
 #[derive(Args, Debug)]
 struct StopArgs {
     #[command(flatten)]
-    artifact: ArtifactArgs,
+    artifact: StaticArgs,
     #[arg(long)]
     query: String,
 }
@@ -89,7 +77,7 @@ struct StopArgs {
 #[derive(Args, Debug)]
 struct PatternArgs {
     #[command(flatten)]
-    artifact: ArtifactArgs,
+    artifact: StaticArgs,
     #[arg(long)]
     query: String,
 }
@@ -97,7 +85,7 @@ struct PatternArgs {
 #[derive(Args, Debug)]
 struct NearbyArgs {
     #[command(flatten)]
-    artifact: ArtifactArgs,
+    artifact: StaticArgs,
     #[arg(long)]
     lat: f64,
     #[arg(long)]
@@ -109,99 +97,78 @@ struct NearbyArgs {
 #[derive(Args, Debug)]
 struct StatsArgs {
     #[command(flatten)]
-    artifact: ArtifactArgs,
+    artifact: StaticArgs,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[derive(Subcommand, Debug)]
+enum InspectCommand {
+    Stop(StopArgs),
+    Pattern(PatternArgs),
+    NearbyStops(NearbyArgs),
+    Stats(StatsArgs),
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
-    let cli = Cli::parse();
-    match cli.command {
-        Command::Build(args) => build(args)?,
+    match Cli::parse().command {
+        Command::Fetch(args) => fetch(args).await?,
+        Command::Build(args) => build(args).await?,
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
     Ok(())
 }
 
-fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
-    let started = Instant::now();
-    let mut config = ValhallaConfig::local();
-    config.request_timeout = Duration::from_secs(15);
-    if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
-        config.base_url = url::Url::parse(&base_url)?;
+async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
+    let snapshot = fetch_snapshot(args.gtfs_file.as_deref()).await?;
+    println!("fetch snapshot: {}", snapshot.path.display());
+    println!("fetched at: {}", snapshot.manifest.fetched_at);
+    for (name, source) in &snapshot.manifest.sources {
+        println!(
+            "  {name}: source={} bytes={} sha256={}",
+            source.source_id, source.byte_size, source.sha256
+        );
     }
-    let street = ValhallaProvider::new(config)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    let result = match (&args.bike_stations_taipei, &args.bike_stations_new_taipei) {
-        (Some(taipei), Some(new_taipei)) => {
-            runtime.block_on(build_from_gtfs_archive_with_tdx_bike_stations(
-                &args.input,
-                &args.output,
-                taipei,
-                new_taipei,
-                &street,
-            ))?
-        }
-        (None, None) => runtime.block_on(build_from_gtfs_archive_with_street(
-            &args.input,
-            &args.output,
-            &street,
-        ))?,
-        _ => {
-            return Err(
-                "provide both --bike-stations-taipei and --bike-stations-new-taipei".into(),
-            );
-        }
-    };
-    println!("build latency: {} ms", started.elapsed().as_millis());
-    print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
-    print_counts(
-        "built",
-        &result.build.manifest.counts,
-        &result.build.manifest.revisions,
-    );
-    println!(
-        "network artifact: {}",
-        args.output.join("transit-network.json").display()
-    );
-    println!(
-        "TDX bindings artifact: {}",
-        args.output.join("provider-bindings.json").display()
-    );
-    println!(
-        "bike-share artifact: {}",
-        args.output.join("bikeshare-network.json").display()
-    );
-    println!("manifest: {}", args.output.join("manifest.json").display());
+    for (city, count) in snapshot.bike_station_counts {
+        println!("  {city} Bike stations: {count}");
+    }
     Ok(())
 }
 
-fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
-    let network = load_network_artifact(&args.artifact)?;
-    let bike_share_network =
-        load_bikeshare_artifact(&args.artifact.with_file_name("bikeshare-network.json"))?;
-    let counts = ArtifactCounts {
-        stops: network.stops.len(),
-        routes: network.routes.len(),
-        patterns: network.patterns.len(),
-        trips: network.trips.len(),
-        calendars: network.calendars.len(),
-        frequencies: network.frequencies.len(),
-        transfer_edges: network.transfer_edges.len(),
-        bike_stations: bike_share_network.stations.len(),
-        bike_access_links: bike_share_network.access_links.len(),
-    };
-    print_counts(
-        "validated",
-        &counts,
-        &via_server::data::ArtifactRevisions {
-            static_network_revision: network.static_network_revision.clone(),
-            schedule_revision: network.schedule_revision.clone(),
-            bike_share_network_revision: bike_share_network.static_network_revision.clone(),
-        },
+async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    let street = build_street_router().await?;
+    let output = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data/build")
+        .join(fetch::timestamp_now());
+    let result = build_from_fetch_snapshot(&args.input, &output, street.as_ref()).await?;
+    println!("build latency: {} ms", started.elapsed().as_millis());
+    print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
+    print_static_counts("built", &result.build.via_static);
+    println!(
+        "static artifact: {}",
+        output.join(".via-static.json").display()
     );
+    Ok(())
+}
+
+async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
+    let mut config = ValhallaConfig::local();
+    config.request_timeout = Duration::from_secs(15);
+    if let Ok(base_url) = std::env::var("VIA_VALHALLA_URL") {
+        config.base_url = url::Url::parse(&base_url)?;
+    }
+    let street = Arc::new(ValhallaProvider::new(config)?);
+    if !street.healthy().await {
+        return Err("Valhalla is not healthy".into());
+    }
+    Ok(street)
+}
+
+fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
+    let via_static = load_static_artifact(&args.static_path)?;
+    print_static_counts("validated", &via_static);
     Ok(())
 }
 
@@ -215,9 +182,9 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
-    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
-    let network = TransitRuntime::new(network);
-    let data = network.data();
+    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
+    let data = runtime.data();
     let query = args.query.to_lowercase();
     let mut matches = data
         .stops
@@ -242,7 +209,7 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
                 println!(
                     "  pattern={} label={:?} position={}",
                     pattern.id.as_str(),
-                    network.route_of(pattern).label,
+                    runtime.route_of(pattern).label,
                     position + 1
                 );
             }
@@ -252,16 +219,16 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
-    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
-    let network = TransitRuntime::new(network);
-    let data = network.data();
+    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
+    let data = runtime.data();
     let query = args.query.to_lowercase();
     let mut matches = data
         .patterns
         .iter()
         .filter(|pattern| {
             pattern.id.as_str() == args.query
-                || network
+                || runtime
                     .route_of(pattern)
                     .label
                     .to_lowercase()
@@ -277,8 +244,8 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         println!(
             "pattern={} label={:?} mode={} headsign={:?}",
             pattern.id.as_str(),
-            network.route_of(pattern).label,
-            mode_name(network.route_of(pattern).mode),
+            runtime.route_of(pattern).label,
+            mode_name(runtime.route_of(pattern).mode),
             pattern.headsign
         );
         println!(
@@ -309,77 +276,25 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
-    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
-    let network = TransitRuntime::new(network);
+    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     let coordinate = coordinate(args.lat, args.lon)?;
-    for stop in network.nearest_stops(coordinate, args.limit.max(1)) {
+    for stop in runtime.nearest_stops(coordinate, args.limit.max(1)) {
         println!(
             "{:.0}m  {}  {}  {}",
             coordinate.haversine_distance_metres(stop.coordinate),
             stop.id.as_str(),
             stop.name,
-            pattern_labels(&network, &stop.id)
+            pattern_labels(&runtime, &stop.id)
         );
     }
     Ok(())
 }
 
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
-    let network = Arc::new(load_network_artifact(&args.artifact.artifact)?);
-    let network = TransitRuntime::new(network);
-    let data = network.data();
-    let bike_share_network = load_bikeshare_artifact(
-        &args
-            .artifact
-            .artifact
-            .with_file_name("bikeshare-network.json"),
-    )
-    .ok();
-    let manifest_path = args.artifact.artifact.with_file_name("manifest.json");
-    let counts = load_manifest(&manifest_path)
-        .ok()
-        .map(|manifest| manifest.counts)
-        .unwrap_or_else(|| ArtifactCounts {
-            stops: data.stops.len(),
-            routes: data.routes.len(),
-            patterns: data.patterns.len(),
-            trips: data.trips.len(),
-            calendars: data.calendars.len(),
-            frequencies: data.frequencies.len(),
-            transfer_edges: data.transfer_edges.len(),
-            bike_stations: bike_share_network
-                .as_ref()
-                .map_or(0, |network| network.stations.len()),
-            bike_access_links: bike_share_network
-                .as_ref()
-                .map_or(0, |network| network.access_links.len()),
-        });
-    println!("network revision: {}", data.static_network_revision);
-    println!("schedule revision: {}", data.schedule_revision);
-    if let Some(bike_share_network) = &bike_share_network {
-        println!(
-            "bike-share artifact revision: {}",
-            bike_share_network.static_network_revision
-        );
-    }
-    println!("stop count: {}", counts.stops);
-    println!("route count: {}", counts.routes);
-    println!("pattern count: {}", counts.patterns);
-    println!("trip count: {}", counts.trips);
-    println!("calendar count: {}", counts.calendars);
-    println!("frequency count: {}", counts.frequencies);
-    println!(
-        "derived Bus Phase 1 profiles: {}",
-        data.patterns
-            .iter()
-            .filter(|pattern| pattern
-                .static_profile
-                .segments
-                .iter()
-                .all(|segment| segment.source
-                    == via_server::domain::transit::SegmentTimeSource::Derived))
-            .count()
-    );
+    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    print_static_counts("static data", &artifact);
+    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     for mode in [
         TransitMode::Bus,
         TransitMode::Metro,
@@ -389,45 +304,55 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
         println!(
             "{} pattern count: {}",
             mode_name(mode),
-            data.patterns
+            runtime
+                .data()
+                .patterns
                 .iter()
-                .filter(|pattern| network.route_of(pattern).mode == mode)
+                .filter(|pattern| runtime.route_of(pattern).mode == mode)
                 .count()
         );
     }
-    println!("transfer edge count: {}", counts.transfer_edges);
-    println!("bike station count: {}", counts.bike_stations);
-    println!("bike access link count: {}", counts.bike_access_links);
-    println!("service-day boundary: {}", data.service_day_boundary);
+    println!(
+        "derived Bus Phase 1 profiles: {}",
+        runtime
+            .data()
+            .patterns
+            .iter()
+            .filter(|pattern| pattern
+                .static_profile
+                .segments
+                .iter()
+                .all(|segment| segment.source
+                    == via_server::domain::transit::SegmentTimeSource::Derived))
+            .count()
+    );
+    println!(
+        "service-day boundary: {}",
+        runtime.data().service_day_boundary
+    );
     Ok(())
 }
 
-fn print_counts(
-    prefix: &str,
-    counts: &ArtifactCounts,
-    revisions: &via_server::data::ArtifactRevisions,
-) {
-    println!("{prefix} artifact");
+fn print_static_counts(prefix: &str, via_static: &via_server::data::ViaStatic) {
+    println!("{prefix} ViaStatic");
+    println!("  schema version: {}", via_static.schema_version);
     println!(
-        "  static network revision: {}",
-        revisions.static_network_revision
+        "  transit revision: {}",
+        via_static.revisions.transit_static
     );
-    println!("  schedule revision: {}", revisions.schedule_revision);
+    println!("  schedule revision: {}", via_static.revisions.schedule);
+    println!("  BikeShare revision: {}", via_static.revisions.bike_share);
     println!(
-        "  bike-share network revision: {}",
-        revisions.bike_share_network_revision
-    );
-    println!(
-        "  stops={} routes={} patterns={} trips={} calendars={} frequencies={} transfer_edges={} bike_stations={} bike_access_links={}",
-        counts.stops,
-        counts.routes,
-        counts.patterns,
-        counts.trips,
-        counts.calendars,
-        counts.frequencies,
-        counts.transfer_edges,
-        counts.bike_stations,
-        counts.bike_access_links
+        "  stops={} routes={} patterns={} trips={} calendars={} frequencies={} transfers={} bike_stations={} bike_access_links={}",
+        via_static.counts.stops,
+        via_static.counts.routes,
+        via_static.counts.patterns,
+        via_static.counts.trips,
+        via_static.counts.calendars,
+        via_static.counts.frequencies,
+        via_static.counts.transfers,
+        via_static.counts.bike_stations,
+        via_static.counts.bike_access_links
     );
 }
 
@@ -447,9 +372,6 @@ fn print_build_diagnostics(
             stats.removed_by_fanout,
             stats.elapsed_milliseconds
         );
-        for (modes, count) in &stats.by_mode {
-            println!("  {modes}: {count}");
-        }
     }
     if let Some(stats) = &build_diagnostics.bike_access {
         println!(
@@ -476,9 +398,6 @@ fn print_build_diagnostics(
         "GTFS trips skipped for invalid exact timing: {}",
         diagnostics.invalid_timing_trips
     );
-    for id in &diagnostics.invalid_timing_trip_examples {
-        println!("  trip: {id}");
-    }
     for mode in ["bus", "metro", "rail", "high_speed_rail"] {
         println!(
             "{mode}: routes={} patterns={}",
@@ -504,23 +423,14 @@ fn print_build_diagnostics(
         "Bus Patterns without a TDX realtime scope: {}",
         diagnostics.unresolved_bus_realtime_scope_patterns
     );
-    for id in &diagnostics.unresolved_bus_realtime_scope_examples {
-        println!("  pattern: {id}");
-    }
     println!(
         "GTFS stop IDs without current TDX ID mapping: {}",
         diagnostics.gtfs_stop_ids_without_tdx_mapping
     );
-    for id in &diagnostics.unmapped_stop_id_examples {
-        println!("  stop: {id}");
-    }
     println!(
         "Via Pattern IDs without current TDX realtime mapping: {}",
         diagnostics.gtfs_pattern_ids_without_tdx_mapping
     );
-    for id in &diagnostics.unmapped_pattern_id_examples {
-        println!("  pattern: {id}");
-    }
 }
 
 fn coordinate(

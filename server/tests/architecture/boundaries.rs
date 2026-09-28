@@ -206,9 +206,9 @@ fn departure_realtime_is_owned_by_the_mode_source() {
         );
     }
 
-    let app = source("src/app.rs");
-    assert!(app.contains("BusDepartureSource::new"));
-    assert!(!app.contains("BusRealtimeResolver"));
+    let runtime = source("src/runtime.rs");
+    assert!(runtime.contains("BusDepartureSource::new"));
+    assert!(!runtime.contains("BusRealtimeResolver"));
 }
 
 #[test]

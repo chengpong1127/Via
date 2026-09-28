@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, fs::File, io::Write, path::PathBuf};
 
 use time::macros::date;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -8,13 +8,16 @@ use super::{
     normalize::{has_unique_stops, is_chronological_times, route_headsign_fallback, via_mode},
     segment_profile::distribute_runtime,
 };
-use crate::data::build_from_gtfs_archive_with_street;
+use crate::data::{
+    build_from_fetch_snapshot,
+    fetch::{FetchManifest, FetchSource},
+};
 use crate::domain::{
     transit::{ScheduledStopTime, TransitMode},
     transit_runtime::TransitRuntime,
 };
 use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
-use gtfs_structures::{RawGtfs, RouteType};
+use gtfs_structures::RouteType;
 
 fn temporary_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -37,11 +40,11 @@ fn write_gtfs_fixture(path: &PathBuf) {
         ),
         (
             "trips.txt",
-            "\u{feff}route_id,service_id,trip_id,direction_id,trip_headsign,shape_id\nTHB123_0,weekdays,bus-1,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-2,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-branch,0,Bus end,bus-shape\nTRTC_BL_BL-1_0,weekdays,metro-frequency,0,Blue end,\n",
+            "\u{feff}route_id,service_id,trip_id,direction_id,trip_headsign,shape_id\nTHB123_0,weekdays,bus-1,eastbound,Bus end,bus-shape\nTHB123_0,weekdays,bus-2,0,Bus end,bus-shape\nTHB123_0,weekdays,bus-branch,0,Bus end,bus-shape\nTRTC_BL_BL-1_0,weekdays,metro-frequency,0,Blue end,\n",
         ),
         (
             "stop_times.txt",
-            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nbus-branch,,25:10:05,TPE001,1,0\nbus-branch,25:35:05,,TPE003,2,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\n",
+            "trip_id,arrival_time,departure_time,stop_id,stop_sequence,shape_dist_traveled\nbus-1,,08:00:00,TPE001,1,0\nbus-1,,,TPE002,2,2\nbus-1,08:30:00,,TPE003,3,10\nbus-2,,09:00:00,TPE001,1,0\nbus-2,,,TPE002,2,2\nbus-2,09:40:00,,TPE003,3,10\nbus-branch,,25:10:05,TPE001,1,0\nbus-branch,25:35:05,,TPE003,2,10\nmetro-frequency,08:00:00,08:00:00,TRTC_BL12,1,\nmetro-frequency,08:04:00,08:04:00,TRTC_BL13,2,\nmetro-frequency,08:07:00,08:07:00,TRTC_BL14,3,\ntime-probe,,10:30,TPE001,1,\ntime-probe,10:30:00,,TPE002,2,\ntime-probe,,25:30,TPE001,3,\ntime-probe,25:30:00,,TPE002,4,\n",
         ),
         (
             "calendar.txt",
@@ -70,6 +73,45 @@ fn write_gtfs_fixture(path: &PathBuf) {
     zip.finish().unwrap();
 }
 
+fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
+    std::fs::create_dir_all(snapshot).unwrap();
+    let gtfs_path = snapshot.join("gtfs.zip");
+    std::fs::copy(gtfs, &gtfs_path).unwrap();
+    let taipei_path = snapshot.join("bike-stations-taipei.json");
+    let new_taipei_path = snapshot.join("bike-stations-new-taipei.json");
+    std::fs::write(&taipei_path, "[]").unwrap();
+    std::fs::write(&new_taipei_path, "[]").unwrap();
+    let source = |path: &PathBuf, source_id: &str| {
+        let bytes = std::fs::read(path).unwrap();
+        FetchSource {
+            source_id: source_id.to_owned(),
+            url: None,
+            sha256: crate::data::sha256_hex(&bytes),
+            byte_size: bytes.len() as u64,
+        }
+    };
+    let manifest = FetchManifest {
+        manifest_version: 1,
+        fetched_at: "2026-09-28T00:00:00Z".to_owned(),
+        sources: BTreeMap::from([
+            ("gtfs".to_owned(), source(&gtfs_path, "local-gtfs-file")),
+            (
+                "bike-stations-taipei".to_owned(),
+                source(&taipei_path, "tdx-bike-station-city"),
+            ),
+            (
+                "bike-stations-new-taipei".to_owned(),
+                source(&new_taipei_path, "tdx-bike-station-city"),
+            ),
+        ]),
+    };
+    std::fs::write(
+        snapshot.join("manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn maps_gtfs_modes_and_canonical_tdx_stop_ids() {
     assert_eq!(via_mode(RouteType::Bus, "THB123_0"), Some(TransitMode::Bus));
@@ -90,7 +132,7 @@ fn raw_gtfs_keeps_sparse_times_and_extended_service_day_times() {
     let input = temporary_path("raw-parser.zip");
     write_gtfs_fixture(&input);
 
-    let raw = RawGtfs::from_path(&input).unwrap();
+    let raw = super::archive::read(&input).unwrap();
     let stop_times = raw.stop_times.unwrap();
     let sparse = stop_times
         .iter()
@@ -103,6 +145,22 @@ fn raw_gtfs_keeps_sparse_times_and_extended_service_day_times() {
         .find(|time| time.trip_id == "bus-branch" && time.stop_id == "TPE001")
         .unwrap();
     assert_eq!(extended.departure_time, Some(90_605));
+
+    let parsed_times = stop_times
+        .iter()
+        .filter(|time| time.trip_id == "time-probe")
+        .collect::<Vec<_>>();
+    assert_eq!(parsed_times[0].departure_time, Some(37_800));
+    assert_eq!(parsed_times[1].arrival_time, Some(37_800));
+    assert_eq!(parsed_times[2].departure_time, Some(91_800));
+    assert_eq!(parsed_times[3].arrival_time, Some(91_800));
+    let ignored_direction = raw
+        .trips
+        .unwrap()
+        .into_iter()
+        .find(|trip| trip.id == "bus-1")
+        .unwrap();
+    assert_eq!(ignored_direction.direction_id, None);
 
     std::fs::remove_file(input).unwrap();
 }
@@ -143,8 +201,10 @@ fn repeated_stops_are_rejected_and_headsign_falls_back_to_route_label() {
 #[tokio::test]
 async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     let input = temporary_path("input.zip");
+    let snapshot = temporary_path("fetch");
     let output = temporary_path("output");
     write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
 
     let first = Coordinate::try_new(25.0478, 121.5170).unwrap();
     let street = FakeStreetRouter::builder()
@@ -156,10 +216,10 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             Metres(50),
         )
         .build();
-    let built = build_from_gtfs_archive_with_street(&input, &output, &street)
+    let built = build_from_fetch_snapshot(&snapshot, &output, &street)
         .await
         .unwrap();
-    let network = &built.build.network;
+    let network = &built.build.via_static.transit;
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
     assert_eq!(built.diagnostics.stops_loaded, 6);
     assert_eq!(built.diagnostics.trips_loaded, 4);
@@ -215,10 +275,10 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .iter()
             .all(|segment| segment.source == crate::domain::transit::SegmentTimeSource::Derived)
     );
-    let persisted =
-        crate::data::load_network_artifact(&output.join("transit-network.json")).unwrap();
+    let persisted = crate::data::load_static_artifact(&output.join(".via-static.json")).unwrap();
     assert_eq!(
         persisted
+            .transit
             .patterns
             .iter()
             .find(|pattern| pattern.id == bus.id)
@@ -226,19 +286,31 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .static_profile,
         bus.static_profile
     );
-    assert_eq!(built.build.provider_bindings.bus_patterns.len(), 2);
-    assert_eq!(built.build.provider_bindings.metro_patterns.len(), 1);
+    assert_eq!(
+        built.build.via_static.provider_bindings.bus_patterns.len(),
+        2
+    );
+    assert_eq!(
+        built
+            .build
+            .via_static
+            .provider_bindings
+            .metro_patterns
+            .len(),
+        1
+    );
     assert!(
         network
             .stops
             .iter()
             .any(|stop| stop.id.as_str() == "TRTC-BL12")
     );
-    let bus_binding = &built.build.provider_bindings.bus_patterns[&bus.id];
+    let bus_binding = &built.build.via_static.provider_bindings.bus_patterns[&bus.id];
     assert_eq!(bus_binding.tdx_service_id, "THB123::direction=0");
     assert_eq!(bus_binding.realtime_scope, "Taipei");
     let metro_binding = built
         .build
+        .via_static
         .provider_bindings
         .metro_patterns
         .values()
@@ -279,6 +351,9 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .is_some()
     );
 
+    assert!(!output.join("provider-bindings.json").exists());
+    assert!(!output.join("manifest.json").exists());
     std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
     std::fs::remove_dir_all(output).unwrap();
 }

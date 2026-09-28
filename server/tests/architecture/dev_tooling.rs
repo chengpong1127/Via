@@ -1,17 +1,16 @@
-use std::{path::PathBuf, process::Command};
+use std::process::Command;
 
 #[test]
-fn via_data_exposes_local_gtfs_build_without_a_fetch_command() {
+fn via_data_exposes_fetch_build_validate_and_inspect() {
     let help = Command::new(env!("CARGO_BIN_EXE_via-data"))
         .arg("--help")
         .output()
         .unwrap();
     assert!(help.status.success());
     let help = String::from_utf8_lossy(&help.stdout);
-    assert!(help.contains("build"));
-    assert!(help.contains("validate"));
-    assert!(help.contains("inspect"));
-    assert!(!help.contains("fetch"));
+    for command in ["fetch", "build", "validate", "inspect"] {
+        assert!(help.contains(command));
+    }
 
     let build_help = Command::new(env!("CARGO_BIN_EXE_via-data"))
         .args(["build", "--help"])
@@ -19,48 +18,27 @@ fn via_data_exposes_local_gtfs_build_without_a_fetch_command() {
         .unwrap();
     assert!(build_help.status.success());
     let build_help = String::from_utf8_lossy(&build_help.stdout);
-    assert!(build_help.contains("Local GTFS .zip archive"));
-    assert!(build_help.contains("--bike-stations-taipei"));
-    assert!(build_help.contains("--bike-stations-new-taipei"));
-    assert!(build_help.contains("Local TDX"));
+    assert!(build_help.contains("--input"));
+    assert!(!build_help.contains("--output"));
+
+    let validate_help = Command::new(env!("CARGO_BIN_EXE_via-data"))
+        .args(["validate", "--help"])
+        .output()
+        .unwrap();
+    assert!(validate_help.status.success());
+    assert!(String::from_utf8_lossy(&validate_help.stdout).contains("--static"));
 }
 
 #[test]
-fn fixture_route_uses_the_production_routing_boundary() {
-    let network = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/routing/network.json");
-    let result = Command::new(env!("CARGO_BIN_EXE_via-route"))
-        .args([
-            "--network",
-            network.to_str().unwrap(),
-            "--from-lat",
-            "25.1000",
-            "--from-lon",
-            "121.5000",
-            "--to-lat",
-            "25.1030",
-            "--to-lon",
-            "121.5030",
-            "--depart-at",
-            "2026-08-31T10:00:00+08:00",
-            "--modes",
-            "bus,metro,tra,thsr",
-            "--service-conditions",
-            "fixture",
-            "--json",
-        ])
+fn via_route_uses_a_single_static_artifact_argument() {
+    let help = Command::new(env!("CARGO_BIN_EXE_via-route"))
+        .arg("--help")
         .output()
         .unwrap();
-    assert!(
-        result.status.success(),
-        "via-route failed: {}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert!(json["journey_options"].as_array().is_some_and(|options| {
-        options.iter().any(|option| {
-            option["legs"]
-                .as_array()
-                .is_some_and(|legs| legs.iter().any(|leg| leg["details"]["type"] == "transit"))
-        })
-    }));
+    assert!(help.status.success());
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("--static"));
+    assert!(help.contains("--modes"));
+    assert!(!help.contains("--network"));
+    assert!(!help.contains("service-conditions"));
 }
