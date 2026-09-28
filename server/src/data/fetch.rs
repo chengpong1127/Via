@@ -18,6 +18,7 @@ pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/
 const BIKE_PAGE_SIZE: &str = "1000";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FetchSource {
     pub source_id: String,
     pub url: Option<String>,
@@ -26,6 +27,7 @@ pub struct FetchSource {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FetchManifest {
     pub manifest_version: u32,
     pub fetched_at: String,
@@ -158,9 +160,9 @@ async fn populate_snapshot(
 
     let taipei_url = station_url(&sources.bike_api_base_url, "Taipei")?;
     let new_taipei_url = station_url(&sources.bike_api_base_url, "NewTaipei")?;
-    let (taipei_pages, taipei_count) = fetch_station_pages(client, &taipei_url, "Taipei").await?;
-    let (new_taipei_pages, new_taipei_count) =
-        fetch_station_pages(client, &new_taipei_url, "NewTaipei").await?;
+    let (taipei_body, taipei_count) = fetch_stations(client, &taipei_url, "Taipei").await?;
+    let (new_taipei_body, new_taipei_count) =
+        fetch_stations(client, &new_taipei_url, "NewTaipei").await?;
 
     let mut manifest = FetchManifest {
         manifest_version: 1,
@@ -170,17 +172,17 @@ async fn populate_snapshot(
         sources: BTreeMap::new(),
     };
     manifest.sources.insert("gtfs".to_owned(), gtfs_source);
-    write_station_pages(
+    write_station_source(
         temporary,
         "bike-stations-taipei",
-        &taipei_pages,
+        &taipei_body,
         &taipei_url,
         &mut manifest.sources,
     )?;
-    write_station_pages(
+    write_station_source(
         temporary,
         "bike-stations-new-taipei",
-        &new_taipei_pages,
+        &new_taipei_body,
         &new_taipei_url,
         &mut manifest.sources,
     )?;
@@ -202,13 +204,13 @@ async fn populate_snapshot(
     })
 }
 
-async fn fetch_station_pages(
+async fn fetch_stations(
     client: &TdxClient,
     url: &str,
     city: &str,
-) -> Result<(Vec<Vec<u8>>, usize), FetchError> {
+) -> Result<(Vec<u8>, usize), FetchError> {
     let mut skip = 0usize;
-    let mut pages = Vec::new();
+    let mut stations = Vec::<Box<RawValue>>::new();
     let mut page_digests = HashSet::new();
     loop {
         let skip_value = skip.to_string();
@@ -235,7 +237,6 @@ async fn fetch_station_pages(
                 detail: "TDX repeated a non-empty station page".to_owned(),
             });
         }
-        pages.push(body.to_vec());
         if page.is_empty() {
             if skip == 0 {
                 return Err(FetchError::InvalidBikeResponse {
@@ -246,49 +247,42 @@ async fn fetch_station_pages(
             break;
         }
         skip = skip.saturating_add(page.len());
+        stations.extend(page);
     }
-    Ok((pages, skip))
+    let body = serde_json::to_vec(&stations).map_err(|error| FetchError::InvalidBikeResponse {
+        city: city.to_owned(),
+        detail: error.to_string(),
+    })?;
+    Ok((body, skip))
 }
 
-fn write_station_pages(
+fn write_station_source(
     root: &Path,
-    source_prefix: &str,
-    pages: &[Vec<u8>],
+    source_name: &str,
+    body: &[u8],
     url: &str,
     manifest_sources: &mut BTreeMap<String, FetchSource>,
 ) -> Result<(), FetchError> {
-    for (index, body) in pages.iter().enumerate() {
-        let source_name = if index == 0 {
-            source_prefix.to_owned()
-        } else {
-            format!("{source_prefix}-page-{:04}", index + 1)
-        };
-        let filename =
-            source_file_name(&source_name).ok_or_else(|| FetchError::InvalidBikeResponse {
-                city: source_prefix.to_owned(),
-                detail: "invalid station page name".to_owned(),
-            })?;
-        let path = root.join(filename);
-        fs::write(&path, body).map_err(|error| FetchError::Io(path.clone(), error))?;
-        manifest_sources.insert(
-            source_name,
-            source_metadata("tdx-bike-station-city", url.to_owned(), &path)?,
-        );
-    }
+    let filename =
+        source_file_name(source_name).ok_or_else(|| FetchError::InvalidBikeResponse {
+            city: source_name.to_owned(),
+            detail: "invalid station source name".to_owned(),
+        })?;
+    let path = root.join(filename);
+    fs::write(&path, body).map_err(|error| FetchError::Io(path.clone(), error))?;
+    manifest_sources.insert(
+        source_name.to_owned(),
+        source_metadata("tdx-bike-station-city", url.to_owned(), &path)?,
+    );
     Ok(())
 }
 
 pub fn source_file_name(source_name: &str) -> Option<String> {
     match source_name {
         "gtfs" => Some("gtfs.zip".to_owned()),
-        "bike-stations-taipei" | "bike-stations-new-taipei" => Some(format!("{source_name}.json")),
-        _ => ["bike-stations-taipei", "bike-stations-new-taipei"]
-            .into_iter()
-            .find_map(|prefix| {
-                let suffix = source_name.strip_prefix(&format!("{prefix}-page-"))?;
-                (suffix.len() == 4 && suffix.bytes().all(|byte| byte.is_ascii_digit()))
-                    .then(|| format!("{source_name}.json"))
-            }),
+        "bike-stations-taipei" => Some("bike-stations-taipei.json".to_owned()),
+        "bike-stations-new-taipei" => Some("bike-stations-new-taipei.json".to_owned()),
+        _ => None,
     }
 }
 
@@ -437,19 +431,27 @@ mod tests {
                 .body(Body::from(state.gtfs_body))
                 .unwrap();
         }
-        if path.contains("NewTaipei") && state.fail_new_taipei {
+        if path.contains("NewTaipei") && state.fail_new_taipei && skip >= 2 {
             return Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .body(Body::empty())
                 .unwrap();
         }
         if path.contains("Taipei") {
-            let body = if skip > 0 {
-                "[]"
-            } else if path.contains("NewTaipei") {
-                r#"[ {"StationUID":"NTP0001","StationID":"0001","StationName":{"Zh_tw":"New Taipei"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
-            } else {
-                r#"[ {"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
+            let body = match (path.contains("NewTaipei"), skip) {
+                (true, 0) => {
+                    r#"[ {"StationUID":"NTP0001","StationID":"0001","StationName":{"Zh_tw":"New Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
+                }
+                (true, 1) => {
+                    r#"[ {"StationUID":"NTP0002","StationID":"0002","StationName":{"Zh_tw":"New Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}} ]"#
+                }
+                (false, 0) => {
+                    r#"[ {"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
+                }
+                (false, 1) => {
+                    r#"[ {"StationUID":"TPE0002","StationID":"0002","StationName":{"Zh_tw":"Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}} ]"#
+                }
+                (_, _) => "[]",
             };
             return Response::builder()
                 .status(StatusCode::OK)
@@ -507,7 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_gtfs_override_copies_bytes_and_skips_the_gtfs_request() {
+    async fn local_gtfs_override_combines_city_pages_and_records_provenance() {
         let (client, sources, state) = mock_client(false).await;
         let root = temporary_root("local");
         fs::create_dir_all(&root).unwrap();
@@ -537,46 +539,67 @@ mod tests {
                 .iter()
                 .any(|path| path == "/gtfs")
         );
-        assert_eq!(snapshot.bike_station_counts["Taipei"], 1);
-        assert_eq!(snapshot.bike_station_counts["NewTaipei"], 1);
+        assert_eq!(snapshot.bike_station_counts["Taipei"], 2);
+        assert_eq!(snapshot.bike_station_counts["NewTaipei"], 2);
         assert_eq!(
             fs::read(snapshot.path.join("bike-stations-taipei.json")).unwrap(),
-            br#"[ {"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
-        );
-        assert!(
-            snapshot
-                .path
-                .join("bike-stations-new-taipei.json")
-                .is_file()
+            br#"[{"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}},{"StationUID":"TPE0002","StationID":"0002","StationName":{"Zh_tw":"Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}}]"#
         );
         assert_eq!(
             fs::read(snapshot.path.join("bike-stations-new-taipei.json")).unwrap(),
-            br#"[ {"StationUID":"NTP0001","StationID":"0001","StationName":{"Zh_tw":"New Taipei"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
+            br#"[{"StationUID":"NTP0001","StationID":"0001","StationName":{"Zh_tw":"New Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}},{"StationUID":"NTP0002","StationID":"0002","StationName":{"Zh_tw":"New Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}}]"#
+        );
+        let mut filenames = fs::read_dir(&snapshot.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        filenames.sort();
+        assert_eq!(
+            filenames,
+            [
+                "bike-stations-new-taipei.json",
+                "bike-stations-taipei.json",
+                "gtfs.zip",
+                "manifest.json",
+            ]
+        );
+        let requests = state.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|path| path.starts_with("/basic/v2/Bike/Station/City/Taipei?"))
+                .count(),
+            3
         );
         assert_eq!(
-            fs::read(snapshot.path.join("bike-stations-taipei-page-0002.json")).unwrap(),
-            b"[]"
+            requests
+                .iter()
+                .filter(|path| path.starts_with("/basic/v2/Bike/Station/City/NewTaipei?"))
+                .count(),
+            3
         );
-        assert_eq!(
-            fs::read(
-                snapshot
-                    .path
-                    .join("bike-stations-new-taipei-page-0002.json")
-            )
-            .unwrap(),
-            b"[]"
-        );
+        assert!(!requests.iter().any(|path| path == "/gtfs"));
+        drop(requests);
         assert!(snapshot.path.join("manifest.json").is_file());
         let manifest = serde_json::from_slice::<FetchManifest>(
             &fs::read(snapshot.path.join("manifest.json")).unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            manifest
+                .sources
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["bike-stations-new-taipei", "bike-stations-taipei", "gtfs"]
+        );
         for (name, source) in manifest.sources {
             let filename = source_file_name(&name).unwrap();
             let path = snapshot.path.join(filename);
             assert_eq!(source.byte_size, fs::metadata(&path).unwrap().len());
             assert_eq!(source.sha256, hash_file(&path).unwrap());
         }
+        assert!(source_file_name("bike-stations-taipei-page-0002").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -594,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_source_does_not_publish_a_complete_snapshot() {
-        let (client, sources, _) = mock_client(true).await;
+        let (client, sources, state) = mock_client(true).await;
         let root = temporary_root("failure");
         let local_gtfs = root.join("source.zip");
         fs::create_dir_all(&root).unwrap();
@@ -611,6 +634,16 @@ mod tests {
             .await
             .is_err()
         );
+        let requests = state.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|path| path.starts_with("/basic/v2/Bike/Station/City/NewTaipei?"))
+                .count(),
+            3
+        );
+        assert!(!requests.iter().any(|path| path == "/gtfs"));
+        drop(requests);
         let fetch_root = root.join("fetch");
         assert_eq!(fs::read_dir(&fetch_root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs::File, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, fs::File, io::Write, path::Path, path::PathBuf};
 
 use time::macros::date;
 use zip::{ZipWriter, write::SimpleFileOptions};
@@ -110,6 +110,18 @@ fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
         serde_json::to_vec_pretty(&manifest).unwrap(),
     )
     .unwrap();
+}
+
+fn refresh_fetch_source(snapshot: &Path, source_name: &str) {
+    let manifest_path = snapshot.join("manifest.json");
+    let mut manifest =
+        serde_json::from_slice::<FetchManifest>(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let source = manifest.sources.get_mut(source_name).unwrap();
+    let source_path = snapshot.join(crate::data::fetch::source_file_name(source_name).unwrap());
+    let bytes = std::fs::read(source_path).unwrap();
+    source.sha256 = crate::data::sha256_hex(&bytes);
+    source.byte_size = bytes.len() as u64;
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 }
 
 #[test]
@@ -353,7 +365,104 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
 
     assert!(!output.join("provider-bindings.json").exists());
     assert!(!output.join("manifest.json").exists());
+    assert_eq!(
+        std::fs::read_dir(&output)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        [".via-static.json"]
+    );
     std::fs::remove_file(input).unwrap();
     std::fs::remove_dir_all(snapshot).unwrap();
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
+async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
+    let input = temporary_path("strict-input.zip");
+    write_gtfs_fixture(&input);
+    let street = FakeStreetRouter::builder().build();
+
+    let untracked = temporary_path("untracked-fetch");
+    write_fetch_snapshot(&input, &untracked);
+    std::fs::write(untracked.join("bike-stations-taipei-page-0002.json"), "[]").unwrap();
+    assert!(
+        build_from_fetch_snapshot(&untracked, &temporary_path("untracked-output"), &street)
+            .await
+            .is_err()
+    );
+    std::fs::remove_dir_all(untracked).unwrap();
+
+    let incomplete = temporary_path("incomplete-fetch");
+    write_fetch_snapshot(&input, &incomplete);
+    std::fs::remove_file(incomplete.join("bike-stations-taipei.json")).unwrap();
+    assert!(
+        build_from_fetch_snapshot(&incomplete, &temporary_path("incomplete-output"), &street)
+            .await
+            .is_err()
+    );
+    std::fs::remove_dir_all(incomplete).unwrap();
+
+    let mismatched = temporary_path("mismatched-fetch");
+    write_fetch_snapshot(&input, &mismatched);
+    std::fs::write(mismatched.join("bike-stations-taipei.json"), "[ ]").unwrap();
+    assert!(
+        build_from_fetch_snapshot(&mismatched, &temporary_path("mismatched-output"), &street)
+            .await
+            .is_err()
+    );
+    std::fs::remove_dir_all(mismatched).unwrap();
+    std::fs::remove_file(input).unwrap();
+}
+
+#[tokio::test]
+async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
+    let input = temporary_path("malformed-input.zip");
+    write_gtfs_fixture(&input);
+    let street = FakeStreetRouter::builder().build();
+
+    let malformed_manifest = temporary_path("malformed-manifest-fetch");
+    write_fetch_snapshot(&input, &malformed_manifest);
+    std::fs::write(malformed_manifest.join("manifest.json"), "{").unwrap();
+    assert!(
+        build_from_fetch_snapshot(
+            &malformed_manifest,
+            &temporary_path("malformed-manifest-output"),
+            &street,
+        )
+        .await
+        .is_err()
+    );
+    std::fs::remove_dir_all(malformed_manifest).unwrap();
+
+    let malformed_bike = temporary_path("malformed-bike-fetch");
+    write_fetch_snapshot(&input, &malformed_bike);
+    std::fs::write(malformed_bike.join("bike-stations-taipei.json"), "{").unwrap();
+    refresh_fetch_source(&malformed_bike, "bike-stations-taipei");
+    assert!(
+        build_from_fetch_snapshot(
+            &malformed_bike,
+            &temporary_path("malformed-bike-output"),
+            &street,
+        )
+        .await
+        .is_err()
+    );
+    std::fs::remove_dir_all(malformed_bike).unwrap();
+
+    let malformed_gtfs = temporary_path("malformed-gtfs-fetch");
+    write_fetch_snapshot(&input, &malformed_gtfs);
+    std::fs::write(malformed_gtfs.join("gtfs.zip"), b"not a zip archive").unwrap();
+    refresh_fetch_source(&malformed_gtfs, "gtfs");
+    assert!(
+        build_from_fetch_snapshot(
+            &malformed_gtfs,
+            &temporary_path("malformed-gtfs-output"),
+            &street,
+        )
+        .await
+        .is_err()
+    );
+    std::fs::remove_dir_all(malformed_gtfs).unwrap();
+    std::fs::remove_file(input).unwrap();
 }

@@ -8,6 +8,7 @@ use std::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use time::format_description::well_known::Rfc3339;
 
 use crate::data::via_static::{ViaStaticCounts, ViaStaticRevisions, ViaStaticSource};
 use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
@@ -57,56 +58,13 @@ pub async fn build_from_fetch_snapshot(
     output: &Path,
     street: &dyn StreetRouter,
 ) -> Result<GtfsBuildOutput, DataError> {
-    let fetch_manifest_path = input.join("manifest.json");
-    let fetch_manifest_body = fs::read_to_string(&fetch_manifest_path)
-        .map_err(|error| DataError::Io(fetch_manifest_path.clone(), error))?;
-    let fetch_manifest = serde_json::from_str::<fetch::FetchManifest>(&fetch_manifest_body)
-        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?;
-    if fetch_manifest.manifest_version != 1 || fetch_manifest.fetched_at.trim().is_empty() {
-        return Err(DataError::InvalidFetchSnapshot(
-            "unsupported manifest version or missing fetch timestamp".to_owned(),
-        ));
-    }
-    for required in ["gtfs", "bike-stations-taipei", "bike-stations-new-taipei"] {
-        if !fetch_manifest.sources.contains_key(required) {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "missing {required} provenance"
-            )));
-        }
-    }
-    let mut expected_files = std::collections::HashSet::from(["manifest.json".to_owned()]);
-    for (source_name, source) in &fetch_manifest.sources {
-        let filename = fetch::source_file_name(source_name).ok_or_else(|| {
-            DataError::InvalidFetchSnapshot(format!("unknown source {source_name}"))
-        })?;
-        expected_files.insert(filename.clone());
-        let source_path = input.join(filename);
-        if source.byte_size
-            != fs::metadata(&source_path)
-                .map_err(|error| DataError::Io(source_path.clone(), error))?
-                .len()
-            || source.sha256 != sha256_file(&source_path)?
-        {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "{source_name} does not match its fetch provenance"
-            )));
-        }
-    }
-    for entry in fs::read_dir(input).map_err(|error| DataError::Io(input.into(), error))? {
-        let entry = entry.map_err(|error| DataError::Io(input.into(), error))?;
-        let filename = entry.file_name().to_string_lossy().into_owned();
-        if !expected_files.contains(&filename) {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "untracked source file {filename}"
-            )));
-        }
-    }
-    let gtfs_path = input.join("gtfs.zip");
-    let taipei_pages = read_station_pages(input, &fetch_manifest, "bike-stations-taipei")?;
-    let new_taipei_pages = read_station_pages(input, &fetch_manifest, "bike-stations-new-taipei")?;
-    let bike_share =
-        bikeshare_catalog::parse_tdx_station_catalog_pages(&taipei_pages, &new_taipei_pages)?;
-    let sources = fetch_manifest
+    let fetch_inputs = read_fetch_inputs(input)?;
+    let bike_share = bikeshare_catalog::parse_tdx_station_catalog(
+        &fetch_inputs.taipei_stations,
+        &fetch_inputs.new_taipei_stations,
+    )?;
+    let sources = fetch_inputs
+        .manifest
         .sources
         .iter()
         .map(|(name, source)| {
@@ -122,7 +80,8 @@ pub async fn build_from_fetch_snapshot(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let (mut network, provider_bindings, diagnostics) = gtfs::build_network(&gtfs_path)?;
+    let (mut network, provider_bindings, diagnostics) =
+        gtfs::build_network(&fetch_inputs.gtfs_path)?;
     let static_transfers =
         static_transfers::enrich_network_with_static_transfers(&mut network, street).await?;
     let (bike_share, bike_access) = if bike_share.stations.is_empty() {
@@ -142,7 +101,7 @@ pub async fn build_from_fetch_snapshot(
         network,
         provider_bindings,
         bike_share,
-        fetch_manifest.fetched_at,
+        fetch_inputs.manifest.fetched_at,
         sources,
         BuildDiagnostics {
             static_transfers: Some(static_transfers),
@@ -152,38 +111,112 @@ pub async fn build_from_fetch_snapshot(
     Ok(GtfsBuildOutput { build, diagnostics })
 }
 
-fn read_station_pages(
-    input: &Path,
-    manifest: &fetch::FetchManifest,
-    source_prefix: &str,
-) -> Result<Vec<String>, DataError> {
-    let mut source_names = manifest
-        .sources
-        .keys()
-        .filter(|name| {
-            *name == source_prefix || name.starts_with(&format!("{source_prefix}-page-"))
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    source_names.sort();
-    if source_names
-        .first()
-        .is_none_or(|name| name != source_prefix)
-    {
+struct FetchInputs {
+    manifest: fetch::FetchManifest,
+    gtfs_path: PathBuf,
+    taipei_stations: String,
+    new_taipei_stations: String,
+}
+
+fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
+    let required_files = [
+        "gtfs.zip",
+        "bike-stations-taipei.json",
+        "bike-stations-new-taipei.json",
+        "manifest.json",
+    ];
+    let required_files = required_files
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut actual_files = std::collections::HashSet::new();
+    for entry in fs::read_dir(input).map_err(|error| DataError::Io(input.into(), error))? {
+        let entry = entry.map_err(|error| DataError::Io(input.into(), error))?;
+        let filename = entry.file_name().into_string().map_err(|_| {
+            DataError::InvalidFetchSnapshot("snapshot contains a non-UTF-8 filename".to_owned())
+        })?;
+        if !required_files.contains(filename.as_str()) {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "untracked source file {filename}"
+            )));
+        }
+        if !entry
+            .file_type()
+            .map_err(|error| DataError::Io(input.into(), error))?
+            .is_file()
+        {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "snapshot entry {filename} is not a regular file"
+            )));
+        }
+        actual_files.insert(filename);
+    }
+    if actual_files.len() != required_files.len() {
+        let missing = required_files
+            .iter()
+            .filter(|filename| !actual_files.contains(**filename))
+            .copied()
+            .collect::<Vec<_>>();
         return Err(DataError::InvalidFetchSnapshot(format!(
-            "missing {source_prefix} source data"
+            "snapshot is missing required files: {}",
+            missing.join(", ")
         )));
     }
-    source_names
-        .iter()
-        .map(|source_name| {
-            let filename = fetch::source_file_name(source_name).ok_or_else(|| {
-                DataError::InvalidFetchSnapshot(format!("invalid source {source_name}"))
-            })?;
-            let path = input.join(filename);
-            fs::read_to_string(&path).map_err(|error| DataError::Io(path, error))
-        })
-        .collect()
+
+    let manifest_path = input.join("manifest.json");
+    let manifest_body = fs::read_to_string(&manifest_path)
+        .map_err(|error| DataError::Io(manifest_path.clone(), error))?;
+    let manifest = serde_json::from_str::<fetch::FetchManifest>(&manifest_body)
+        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?;
+    if manifest.manifest_version != 1
+        || time::OffsetDateTime::parse(&manifest.fetched_at, &Rfc3339).is_err()
+    {
+        return Err(DataError::InvalidFetchSnapshot(
+            "unsupported manifest version or invalid fetch timestamp".to_owned(),
+        ));
+    }
+    let required_sources = ["gtfs", "bike-stations-taipei", "bike-stations-new-taipei"];
+    if manifest.sources.len() != required_sources.len()
+        || required_sources
+            .iter()
+            .any(|name| !manifest.sources.contains_key(*name))
+    {
+        return Err(DataError::InvalidFetchSnapshot(
+            "manifest must contain exactly the gtfs, Taipei, and NewTaipei sources".to_owned(),
+        ));
+    }
+    for (source_name, source) in &manifest.sources {
+        if source.source_id.trim().is_empty()
+            || source.sha256.len() != 64
+            || !source.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "{source_name} has invalid provenance metadata"
+            )));
+        }
+        let filename = fetch::source_file_name(source_name).ok_or_else(|| {
+            DataError::InvalidFetchSnapshot(format!("unknown source {source_name}"))
+        })?;
+        let source_path = input.join(filename);
+        let metadata = fs::metadata(&source_path)
+            .map_err(|error| DataError::Io(source_path.clone(), error))?;
+        if source.byte_size != metadata.len() || source.sha256 != sha256_file(&source_path)? {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "{source_name} does not match its fetch provenance"
+            )));
+        }
+    }
+
+    let gtfs_path = input.join("gtfs.zip");
+    let taipei_path = input.join("bike-stations-taipei.json");
+    let new_taipei_path = input.join("bike-stations-new-taipei.json");
+    Ok(FetchInputs {
+        manifest,
+        gtfs_path,
+        taipei_stations: fs::read_to_string(&taipei_path)
+            .map_err(|error| DataError::Io(taipei_path, error))?,
+        new_taipei_stations: fs::read_to_string(&new_taipei_path)
+            .map_err(|error| DataError::Io(new_taipei_path, error))?,
+    })
 }
 
 fn finish_gtfs_build(
