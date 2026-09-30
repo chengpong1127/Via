@@ -461,6 +461,9 @@ async fn evaluate_inner(
     #[cfg(test)] bike_realizations: Option<&TestBikeRoutes>,
 ) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
     let started_at = Instant::now();
+    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        return Err(RoutingError::DeadlineExceeded);
+    }
     if query.origin_access.is_empty() || query.destination_egress.is_empty() {
         return Err(RoutingError::InvalidQuery);
     }
@@ -473,6 +476,9 @@ async fn evaluate_inner(
         HashMap::<(BoardingPointId, BoardingPointId), Vec<BikeShortcut>>::new();
 
     'corridors: for retained in corridor.retained() {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return Err(RoutingError::DeadlineExceeded);
+        }
         stats.corridors_evaluated += 1;
         let corridor_legs = retained.transit_legs().count();
         if corridor_legs > max_legs {
@@ -508,6 +514,9 @@ async fn evaluate_inner(
         let mut saw_missing_departure = false;
         let mut transfer_mismatch = false;
         for from_anchor in 0..retained.steps.len() {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                return Err(RoutingError::DeadlineExceeded);
+            }
             let states = if from_anchor == 0 {
                 std::mem::take(&mut frontiers[from_anchor])
             } else {
@@ -521,6 +530,9 @@ async fn evaluate_inner(
             }
             let step = &retained.steps[from_anchor];
             for state in states {
+                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    return Err(RoutingError::DeadlineExceeded);
+                }
                 if state.stop_id != anchor_stops[from_anchor] {
                     transfer_mismatch = true;
                     continue;
@@ -558,6 +570,9 @@ async fn evaluate_inner(
                     StaticCorridorStep::Transit(leg) => {
                         let alternatives = corridor.equivalent_legs_for(network, leg);
                         for alternative in &alternatives {
+                            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                                return Err(RoutingError::DeadlineExceeded);
+                            }
                             if charge_state(&mut stats, query.max_expansions) {
                                 stats.expansion_limit_reached = true;
                                 break 'corridors;
@@ -588,6 +603,9 @@ async fn evaluate_inner(
                             }
                             stats.effective_trips_examined += departures.len();
                             for trip in departures {
+                                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                                    return Err(RoutingError::DeadlineExceeded);
+                                }
                                 let Some(arrival_at) = retained_alight_time(
                                     network,
                                     trip,
@@ -709,6 +727,10 @@ async fn evaluate_inner(
                                 {
                                     let (items, bike_stats) =
                                         planner.realize_candidate(candidate, 0, 1).await;
+                                    if query.deadline.is_some_and(|deadline| deadline.is_elapsed())
+                                    {
+                                        return Err(RoutingError::DeadlineExceeded);
+                                    }
                                     stats.bike_matrix_requests += bike_stats.matrix_requests;
                                     items
                                 } else {
@@ -723,6 +745,10 @@ async fn evaluate_inner(
                                 {
                                     let (items, bike_stats) =
                                         planner.realize_candidate(candidate, 0, 1).await;
+                                    if query.deadline.is_some_and(|deadline| deadline.is_elapsed())
+                                    {
+                                        return Err(RoutingError::DeadlineExceeded);
+                                    }
                                     stats.bike_matrix_requests += bike_stats.matrix_requests;
                                     items
                                 } else {
@@ -821,6 +847,9 @@ async fn evaluate_inner(
 
         let mut corridor_candidates = Vec::new();
         for state in states {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                return Err(RoutingError::DeadlineExceeded);
+            }
             if state.stop_id != retained.egress_stop_id {
                 transfer_mismatch = true;
                 continue;
@@ -830,6 +859,9 @@ async fn evaluate_inner(
                 .into_iter()
                 .flatten()
             {
+                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    return Err(RoutingError::DeadlineExceeded);
+                }
                 let arrival_at =
                     state.ready_at + Duration::seconds(i64::from(egress.walking_seconds));
                 if !within_query_bounds(&query, arrival_at)
@@ -887,6 +919,10 @@ async fn evaluate_inner(
             "Phase 2 hit its safety bound; rejecting the incomplete candidate set"
         );
         return Err(RoutingError::Phase2EvaluationLimit);
+    }
+
+    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        return Err(RoutingError::DeadlineExceeded);
     }
 
     stats.candidates_before_pareto = candidates.len();
@@ -2824,5 +2860,18 @@ mod tests {
                     ]
         }));
         assert!(!candidates.is_empty());
+    }
+
+    #[test]
+    fn expired_deadline_stops_phase2_before_evaluating_corridors() {
+        let network = network(Vec::new(), &["origin", "destination"], Vec::new());
+        let corridor = CandidateCorridor::default();
+        let snapshot = TimingSnapshot::default();
+        let query = query(&[TransitMode::Bus], 0, 1)
+            .with_deadline(super::super::model::PlanningDeadline::elapsed_for_test());
+
+        let result = evaluate_with_stats(&network, &corridor, &snapshot, query);
+
+        assert_eq!(result.unwrap_err(), RoutingError::DeadlineExceeded);
     }
 }

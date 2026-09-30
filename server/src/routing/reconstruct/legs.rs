@@ -100,6 +100,7 @@ pub(crate) async fn assemble(
     let steps = variant.path();
     let mut skip_next_step = false;
     for (step_index, step) in steps.iter().enumerate() {
+        context.ensure_before_deadline()?;
         if skip_next_step {
             skip_next_step = false;
             continue;

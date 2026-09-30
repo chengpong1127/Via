@@ -13,7 +13,7 @@ use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
 use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
     evaluator::{self, Phase2EvaluationStats},
-    model::{RoutingError, TransitQuery},
+    model::{PlanningDeadline, RoutingError, TransitQuery},
     path::{JourneySkeleton, JourneyVariant},
     static_search,
     topology::TransitTopologyIndex,
@@ -84,12 +84,20 @@ impl TransitPlanner {
         query: TransitQuery,
         direct_bike_journey: Option<DirectBikeJourney>,
     ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return Err(RoutingError::DeadlineExceeded);
+        }
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
             return Err(RoutingError::InvalidQuery);
         }
         let max_legs = query.max_transfers.saturating_add(1);
         let (corridor, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
+        if static_stats.deadline_exceeded
+            || query.deadline.is_some_and(|deadline| deadline.is_elapsed())
+        {
+            return Err(RoutingError::DeadlineExceeded);
+        }
         let mut planner_stats = TransitPlannerStats::default();
 
         tracing::debug!(
@@ -232,6 +240,9 @@ impl TransitPlanner {
         } else {
             (self.timing.load_snapshot(timing_queries).await, None)
         };
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return Err(RoutingError::DeadlineExceeded);
+        }
         tracing::debug!(
             target: "via_server::routing",
             positions_requested = timing_positions_requested,
@@ -268,6 +279,9 @@ impl TransitPlanner {
                     OffsetDateTime::now_utc(),
                 )
                 .await;
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                return Err(RoutingError::DeadlineExceeded);
+            }
             direct_bike_stats = direct_stats;
             direct_shortcuts = shortcuts;
         }
@@ -276,6 +290,9 @@ impl TransitPlanner {
             .as_ref()
             .zip(bike_snapshot.as_deref())
             .map(|(bike, snapshot)| (bike, snapshot, OffsetDateTime::now_utc()));
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return Err(RoutingError::DeadlineExceeded);
+        }
         let (mut variants, mut phase2_stats) =
             evaluator::evaluate_with_bike(&self.network, &corridor, &snapshot, query, bike_context)
                 .await?;
@@ -309,13 +326,23 @@ impl TransitPlanner {
         Ok((variants, planner_stats))
     }
 
-    pub(crate) async fn plan_direct_bike(&self, direct: DirectBikeJourney) -> Vec<JourneyVariant> {
+    pub(crate) async fn plan_direct_bike(
+        &self,
+        direct: DirectBikeJourney,
+        deadline: PlanningDeadline,
+    ) -> Vec<JourneyVariant> {
+        if deadline.is_elapsed() {
+            return Vec::new();
+        }
         let Some(bike) = self.bike.as_ref() else {
             return Vec::new();
         };
         let Ok(snapshot) = bike.availability_source.snapshot().await else {
             return Vec::new();
         };
+        if deadline.is_elapsed() {
+            return Vec::new();
+        }
         let (shortcuts, _) = bike
             .direct_realizations(
                 direct.origin,
@@ -324,6 +351,9 @@ impl TransitPlanner {
                 OffsetDateTime::now_utc(),
             )
             .await;
+        if deadline.is_elapsed() {
+            return Vec::new();
+        }
         direct_bike_variants(direct, shortcuts)
     }
 }
@@ -607,6 +637,19 @@ mod tests {
         );
         assert_eq!(stats.phase1.static_corridor_positions, 2);
         assert_eq!(stats.phase1.static_corridors_retained, 1);
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_stops_before_loading_timing_snapshot() {
+        let loader = Arc::new(RecordingTimingLoader::default());
+        let planner = TransitPlanner::new(network(), loader.clone());
+        let query =
+            query(1).with_deadline(super::super::model::PlanningDeadline::elapsed_for_test());
+
+        let result = planner.plan_with_stats(query).await;
+
+        assert_eq!(result.unwrap_err(), RoutingError::DeadlineExceeded);
+        assert_eq!(loader.calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

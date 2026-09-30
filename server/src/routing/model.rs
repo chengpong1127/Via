@@ -1,4 +1,5 @@
 use time::OffsetDateTime;
+use tokio::time::Instant;
 
 use crate::domain::{
     ids::BoardingPointId,
@@ -8,6 +9,34 @@ use crate::domain::{
 };
 
 use super::transfers::TransferShortcut;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanningDeadline {
+    expires_at: Instant,
+}
+
+impl PlanningDeadline {
+    pub fn after(timeout: std::time::Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + timeout,
+        }
+    }
+
+    pub fn is_elapsed(self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    pub(crate) fn instant(self) -> Instant {
+        self.expires_at
+    }
+
+    #[cfg(test)]
+    pub(crate) fn elapsed_for_test() -> Self {
+        Self {
+            expires_at: Instant::now(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPoint {
@@ -70,6 +99,7 @@ pub struct TransitQuery {
     pub max_expansions: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
+    pub deadline: Option<PlanningDeadline>,
 }
 
 impl TransitQuery {
@@ -97,6 +127,7 @@ impl TransitQuery {
             max_expansions: 2_000,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            deadline: None,
         }
     }
 
@@ -133,6 +164,11 @@ impl TransitQuery {
 
     pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
         self.max_static_corridors = max_static_corridors.max(1);
+        self
+    }
+
+    pub fn with_deadline(mut self, deadline: PlanningDeadline) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 }
@@ -245,6 +281,8 @@ pub enum RoutingError {
     StaticSearchLimit,
     #[error("fixed-corridor evaluation exceeded its safety expansion bound")]
     Phase2EvaluationLimit,
+    #[error("routing request deadline elapsed")]
+    DeadlineExceeded,
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
 }

@@ -406,6 +406,7 @@ pub struct StaticSearchStats {
     pub mixed_cost: usize,
     pub static_search_limit_reached: bool,
     pub static_top_k_early_terminated: bool,
+    pub deadline_exceeded: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -598,9 +599,14 @@ impl StaticPhase1PatternIndex {
         network: &TransitRuntime,
         allowed_modes: &[TransitMode],
         stats: &mut StaticSearchStats,
+        deadline: Option<super::model::PlanningDeadline>,
     ) -> Self {
         let mut index = Self::default();
         for pattern in &network.data().patterns {
+            if deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                stats.deadline_exceeded = true;
+                break;
+            }
             let mode = network.route_of(pattern).mode;
             if !allowed_modes.contains(&mode) {
                 continue;
@@ -637,6 +643,7 @@ impl StaticPhase1PatternIndex {
         board_index: usize,
         stats: &mut StaticSearchStats,
         equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+        deadline: Option<super::model::PlanningDeadline>,
     ) -> bool {
         let group = &mut self.groups[group_index];
         if group.rides_by_board_index.contains_key(&board_index) {
@@ -650,6 +657,10 @@ impl StaticPhase1PatternIndex {
             let mut first_source = None;
             let mut mixed_source = false;
             for alight_index in (board_index + 1)..group.stops.len() {
+                if deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    stats.deadline_exceeded = true;
+                    return false;
+                }
                 stats.static_ride_profile_positions_scanned += 1;
                 let Some(segment) = group.segments.get(alight_index - 1) else {
                     continue;
@@ -744,10 +755,26 @@ pub fn generate(
     let limit = query.max_static_corridors.max(1);
     let max_legs = query.max_transfers.saturating_add(1);
     let mut stats = StaticSearchStats::default();
+    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        stats.deadline_exceeded = true;
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (CandidateCorridor::default(), stats);
+    }
     let pattern_index_started = Instant::now();
-    let mut patterns =
-        StaticPhase1PatternIndex::new(network, &query.allowed_transit_modes, &mut stats);
+    let mut patterns = StaticPhase1PatternIndex::new(
+        network,
+        &query.allowed_transit_modes,
+        &mut stats,
+        query.deadline,
+    );
     stats.static_pattern_index_build_latency_us = elapsed_microseconds(pattern_index_started);
+    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        stats.deadline_exceeded = true;
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (CandidateCorridor::default(), stats);
+    }
     let egress_by_stop = query.destination_egress.iter().fold(
         HashMap::<BoardingPointId, Vec<u32>>::new(),
         |mut by_stop, egress| {
@@ -767,6 +794,12 @@ pub fn generate(
     let destination_lower_bounds =
         destination_lower_bounds(&patterns, topology, transfers, query, &mut stats);
     stats.static_lower_bound_latency_us = elapsed_microseconds(lower_bound_started);
+    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        stats.deadline_exceeded = true;
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (CandidateCorridor::default(), stats);
+    }
     let required_mode_pairs = reachable_endpoint_mode_pairs(
         network,
         topology,
@@ -774,6 +807,12 @@ pub fn generate(
         query,
         &destination_lower_bounds,
     );
+    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        stats.deadline_exceeded = true;
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (CandidateCorridor::default(), stats);
+    }
     stats.static_required_endpoint_mode_pairs = sorted_mode_pairs(&required_mode_pairs);
     let mut frontier = BinaryHeap::new();
     let mut known = HashMap::<DominanceKey, Vec<KnownState>>::new();
@@ -818,7 +857,11 @@ pub fn generate(
     let mut expanded_states_by_leg_count = HashMap::<usize, usize>::new();
     let mut expanded_stops = HashMap::<BoardingPointId, usize>::new();
     let mut mode_accumulators = HashMap::<TransitMode, ModeSearchAccumulator>::new();
-    while let Some(entry) = frontier.pop() {
+    'search: while let Some(entry) = frontier.pop() {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            stats.deadline_exceeded = true;
+            break;
+        }
         if kth_duration(&retained, limit).is_some_and(|kth| entry.state.priority_seconds > kth) {
             stats.static_top_k_early_terminated = true;
             break;
@@ -865,6 +908,10 @@ pub fn generate(
 
         if !state.transfer_ready {
             for shortcut in transfers.transfers_from(&state.stop_id) {
+                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    stats.deadline_exceeded = true;
+                    break 'search;
+                }
                 stats.static_walking_transfer_expansions += 1;
                 let elapsed_seconds = state
                     .elapsed_seconds
@@ -920,6 +967,10 @@ pub fn generate(
         }
 
         for position in pattern_occurrences {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                stats.deadline_exceeded = true;
+                break 'search;
+            }
             let group_index = patterns
                 .group_index(&position.pattern_id)
                 .expect("indexed pattern");
@@ -941,10 +992,14 @@ pub fn generate(
                 position.stop_index,
                 &mut stats,
                 &mut equivalent_legs,
+                query.deadline,
             ) {
                 stats.static_ride_profile_build_latency_us = stats
                     .static_ride_profile_build_latency_us
                     .saturating_add(elapsed_microseconds(profile_started));
+            }
+            if stats.deadline_exceeded {
+                break 'search;
             }
             let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
                 network.same_stop_transfer_seconds()
@@ -952,6 +1007,10 @@ pub fn generate(
                 0
             };
             for ride_option in patterns.ride_options(group_index, position.stop_index) {
+                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    stats.deadline_exceeded = true;
+                    break 'search;
+                }
                 stats.static_positions_scanned += 1;
                 mode_accumulators
                     .entry(mode)
@@ -1020,6 +1079,14 @@ pub fn generate(
                 );
             }
         }
+    }
+
+    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        stats.deadline_exceeded = true;
+        stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (CandidateCorridor::default(), stats);
     }
 
     stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
@@ -1388,12 +1455,20 @@ fn destination_lower_bounds(
         sequence = sequence.saturating_add(1);
     }
 
-    while let Some(entry) = frontier.pop() {
+    'lower_bounds: while let Some(entry) = frontier.pop() {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            stats.deadline_exceeded = true;
+            break;
+        }
         if lower_bounds.get(&entry.stop_id) != Some(&entry.seconds) {
             continue;
         }
         stats.static_lower_bound_nodes_settled += 1;
         for position in topology.occurrences_at(&entry.stop_id) {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                stats.deadline_exceeded = true;
+                break 'lower_bounds;
+            }
             stats.static_lower_bound_pattern_edges_scanned += 1;
             let Some(predecessor_index) = position.stop_index.checked_sub(1) else {
                 continue;
@@ -1422,6 +1497,10 @@ fn destination_lower_bounds(
             );
         }
         for shortcut in transfers.transfers_to(&entry.stop_id) {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                stats.deadline_exceeded = true;
+                break 'lower_bounds;
+            }
             stats.static_lower_bound_transfer_edges_scanned += 1;
             relax_lower_bound(
                 &shortcut.from,
@@ -2142,5 +2221,24 @@ mod tests {
         let (_, stats) = generate(&runtime, &topology, &transfers, &query);
 
         assert!(stats.static_search_limit_reached);
+    }
+
+    #[test]
+    fn expired_deadline_stops_phase1_before_expanding_a_state() {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["o", "d"])],
+            vec![trip("bus-trip", "bus", &[0, 100])],
+        );
+        let topology = TransitTopologyIndex::new(&network);
+        let transfers = TransferShortcutIndex::from_network(&network);
+        let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
+        query.deadline = Some(super::super::model::PlanningDeadline::elapsed_for_test());
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+
+        let (corridors, stats) = generate(&runtime, &topology, &transfers, &query);
+
+        assert!(stats.deadline_exceeded);
+        assert_eq!(stats.static_search_states_expanded, 0);
+        assert!(corridors.is_empty());
     }
 }

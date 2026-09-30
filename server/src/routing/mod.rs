@@ -12,7 +12,8 @@ pub mod transfers;
 pub(crate) mod service;
 pub use evaluator::Phase2EvaluationStats;
 pub use model::{
-    AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
+    AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, PlanningDeadline, RoutingError,
+    TransitQuery,
 };
 pub use path::{
     BikeRide, BikeShortcut, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,

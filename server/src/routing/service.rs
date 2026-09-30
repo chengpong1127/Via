@@ -29,7 +29,7 @@ use crate::{
 
 use super::{
     access,
-    model::TransitQuery,
+    model::{PlanningDeadline, TransitQuery},
     path::{JourneySkeleton, JourneyVariant},
     planner::{DirectBikeJourney, TransitPlanner},
     reconstruct::{
@@ -142,7 +142,8 @@ impl RoutingService {
         request_id: String,
     ) -> Result<PlanningOutcome, PlanningError> {
         let timeout = self.limits.request_timeout;
-        match tokio::time::timeout(timeout, async {
+        let deadline = PlanningDeadline::after(timeout);
+        match tokio::time::timeout_at(deadline.instant(), async {
             let _permit = match self.request_slots.clone().try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -153,7 +154,8 @@ impl RoutingService {
                     return Err(PlanningError::TemporarilyUnavailable);
                 }
             };
-            self.plan_multimodal_inner(request, request_id).await
+            self.plan_multimodal_inner(request, request_id, deadline)
+                .await
         })
         .await
         {
@@ -173,6 +175,7 @@ impl RoutingService {
         &self,
         request: PlanningRequest,
         request_id: String,
+        deadline: PlanningDeadline,
     ) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
         let metadata = ResultMetadata::new(
@@ -187,7 +190,9 @@ impl RoutingService {
             &request,
             request_started_at,
             self.limits.max_journey_duration_seconds,
+            deadline,
         )?;
+        context.ensure_before_deadline()?;
         let mut generated = Vec::new();
         let mut had_transient_failure = false;
         let mut had_global_failure = false;
@@ -195,6 +200,7 @@ impl RoutingService {
 
         let (direct_walking, walking_transient, walking_global) =
             self.discover_direct_walking(&context).await;
+        context.ensure_before_deadline()?;
         had_transient_failure |= walking_transient;
         had_global_failure |= walking_global;
         let mut direct_bike_journey = None;
@@ -258,6 +264,7 @@ impl RoutingService {
                 &self.limits,
             )
             .await;
+            context.ensure_before_deadline()?;
             let egress = access::discover_egress_points(
                 self.street_routing.as_ref(),
                 access::AccessNetwork {
@@ -270,6 +277,7 @@ impl RoutingService {
                 &self.limits,
             )
             .await;
+            context.ensure_before_deadline()?;
             stage_metrics.candidate_discovery_duration_ms =
                 access_started.elapsed().as_millis() as u64;
             let (access, egress) = match (access, egress) {
@@ -319,6 +327,7 @@ impl RoutingService {
                     max_expansions: self.limits.max_search_expansions,
                     max_departures_per_query: self.limits.max_departures_per_query,
                     max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
+                    deadline: Some(deadline),
                 };
                 let search_started = Instant::now();
                 match self
@@ -327,6 +336,7 @@ impl RoutingService {
                     .await
                 {
                     Ok((candidates, planner_stats)) => {
+                        context.ensure_before_deadline()?;
                         stage_metrics.transit_reachable_boardings =
                             planner_stats.phase1.static_corridor_positions;
                         stage_metrics.transit_reachable_patterns =
@@ -365,6 +375,9 @@ impl RoutingService {
                             | super::model::RoutingError::Phase2EvaluationLimit => {
                                 had_global_failure = true;
                             }
+                            super::model::RoutingError::DeadlineExceeded => {
+                                return Err(PlanningError::TemporarilyUnavailable);
+                            }
                             super::model::RoutingError::InvalidQuery => {}
                         }
                         tracing::error!(error = %error, "transit planning failed");
@@ -374,7 +387,13 @@ impl RoutingService {
         }
 
         if let Some(direct) = direct_bike_journey.take() {
-            for variant in self.transit_planner.plan_direct_bike(direct).await {
+            context.ensure_before_deadline()?;
+            for variant in self
+                .transit_planner
+                .plan_direct_bike(direct, deadline)
+                .await
+            {
+                context.ensure_before_deadline()?;
                 match self
                     .reconstruct_multimodal_variant(&request, &variant, &context)
                     .await
@@ -417,6 +436,7 @@ impl RoutingService {
             );
             return Err(PlanningError::TemporarilyUnavailable);
         }
+        context.ensure_before_deadline()?;
         self.rank_generated(metadata, request, generated)
     }
 
@@ -480,6 +500,7 @@ pub(crate) struct PlanningContext {
     pub(crate) request: PlanningRequest,
     pub(crate) search_start: OffsetDateTime,
     pub(crate) latest_arrival: Option<OffsetDateTime>,
+    pub(crate) deadline: PlanningDeadline,
 }
 
 impl PlanningContext {
@@ -487,6 +508,7 @@ impl PlanningContext {
         request: &PlanningRequest,
         request_started_at: OffsetDateTime,
         max_journey_duration_seconds: u32,
+        deadline: PlanningDeadline,
     ) -> Result<Self, PlanningError> {
         let effective_search_time = request
             .departure_setting
@@ -503,7 +525,16 @@ impl PlanningContext {
             request: request.clone(),
             search_start,
             latest_arrival,
+            deadline,
         })
+    }
+
+    pub(crate) fn ensure_before_deadline(&self) -> Result<(), PlanningError> {
+        if self.deadline.is_elapsed() {
+            Err(PlanningError::TemporarilyUnavailable)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) fn local_time(&self, instant: OffsetDateTime) -> time::PrimitiveDateTime {
