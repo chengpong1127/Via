@@ -10,7 +10,7 @@ struct JourneyPlanRequestDTO: Encodable, Sendable {
     init(request: PlanningRequest) {
         origin = PlaceDTO(place: request.origin)
         destination = PlaceDTO(place: request.destination)
-        selectedModes = TransportMode.selectable
+        selectedModes = PlanningMode.selectable
             .filter(request.selectedModes.contains)
             .map(\.rawValue)
         locale = LocaleNormalization.bcp47(request.locale)

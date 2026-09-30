@@ -28,7 +28,7 @@ fn network(id: &str, first: &str, second: &str) -> TransitNetwork {
                 TransitStop::new(
                     BoardingPointId::new(id),
                     id,
-                    via_server::api::RequestCoordinate {
+                    via_server::api::GeoCoordinate {
                         latitude: 25.0 + index as f64 * 0.001,
                         longitude: 121.5,
                     },

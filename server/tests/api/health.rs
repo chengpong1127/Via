@@ -10,7 +10,7 @@ use tower::ServiceExt;
 use via_server::{
     domain::ids::BoardingPointId,
     domain::{
-        location::RequestCoordinate,
+        location::GeoCoordinate,
         transit::{TransitNetwork, TransitStop},
     },
     street::FakeStreetRouter,
@@ -70,7 +70,7 @@ async fn readiness_uses_the_immutable_static_network_without_a_snapshot() {
         vec![TransitStop::new(
             BoardingPointId::new("stop-1"),
             "Stop",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },

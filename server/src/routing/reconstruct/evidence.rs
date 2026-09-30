@@ -1,5 +1,5 @@
 use crate::domain::{
-    journey::{EvidenceType, JourneyMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
+    journey::{EvidenceType, LegMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
     ranking::TransferKind,
     realtime::{FreshnessState, NormalizedRealtimeValue, RealtimeValue},
     transit::TransitMode,
@@ -31,7 +31,7 @@ pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatu
     }
 }
 
-pub(crate) fn push_unique_mode(modes: &mut Vec<JourneyMode>, mode: JourneyMode) {
+pub(crate) fn push_unique_mode(modes: &mut Vec<LegMode>, mode: LegMode) {
     if !modes.contains(&mode) {
         modes.push(mode);
     }

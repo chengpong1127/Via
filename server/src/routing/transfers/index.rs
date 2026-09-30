@@ -96,7 +96,7 @@ impl TransferShortcutIndex {
 mod tests {
     use super::*;
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::transit::{TransferEdge, TransitNetwork, TransitStop},
     };
 
@@ -104,7 +104,7 @@ mod tests {
         TransitStop::new(
             BoardingPointId::new(id),
             id,
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },

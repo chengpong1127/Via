@@ -6,7 +6,7 @@ use time::{Date, Time, Weekday};
 use super::ids::{
     BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
 };
-use super::location::RequestCoordinate;
+use super::location::GeoCoordinate;
 
 pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")
@@ -38,15 +38,11 @@ pub enum TransitMode {
 pub struct TransitStop {
     pub id: BoardingPointId,
     pub name: String,
-    pub coordinate: RequestCoordinate,
+    pub coordinate: GeoCoordinate,
 }
 
 impl TransitStop {
-    pub fn new(
-        id: BoardingPointId,
-        name: impl Into<String>,
-        coordinate: RequestCoordinate,
-    ) -> Self {
+    pub fn new(id: BoardingPointId, name: impl Into<String>, coordinate: GeoCoordinate) -> Self {
         Self {
             id,
             name: name.into(),

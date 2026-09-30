@@ -7,7 +7,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::{domain::transit::TransitMode as DomainTransitMode, street::Coordinate};
 
-pub use crate::domain::location::RequestCoordinate;
+pub use crate::domain::location::GeoCoordinate;
 
 pub const API_VERSION: &str = "1.0";
 pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
@@ -25,7 +25,7 @@ pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
     #[schema(min_items = 1)]
-    pub selected_modes: Vec<TransportMode>,
+    pub selected_modes: Vec<PlanningMode>,
     #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
     pub locale: String,
     pub departure_setting: DepartureSetting,
@@ -60,21 +60,21 @@ impl PlanningRequest {
         modes
     }
 
-    pub fn canonical_selected_modes(&self) -> Vec<TransportMode> {
+    pub fn canonical_selected_modes(&self) -> Vec<PlanningMode> {
         let mut modes = self.selected_modes.clone();
         modes.sort();
         modes
     }
 
     pub fn allows_bike_share(&self) -> bool {
-        self.selected_modes.contains(&TransportMode::BikeShare)
+        self.selected_modes.contains(&PlanningMode::BikeShare)
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedPlace {
-    pub coordinate: RequestCoordinate,
+    pub coordinate: GeoCoordinate,
     #[schema(min_length = 1, max_length = 200)]
     pub display_text: String,
 }
@@ -111,16 +111,16 @@ impl SelectedPlace {
     }
 }
 
-impl TryFrom<RequestCoordinate> for Coordinate {
+impl TryFrom<GeoCoordinate> for Coordinate {
     type Error = RequestValidationError;
 
-    fn try_from(value: RequestCoordinate) -> Result<Self, Self::Error> {
+    fn try_from(value: GeoCoordinate) -> Result<Self, Self::Error> {
         Coordinate::try_new(value.latitude, value.longitude)
             .map_err(|_| RequestValidationError::new("invalid_coordinate", "/coordinate"))
     }
 }
 
-pub use crate::domain::journey::JourneyMode;
+pub use crate::domain::journey::LegMode;
 
 #[derive(
     Clone,
@@ -136,7 +136,8 @@ pub use crate::domain::journey::JourneyMode;
     utoipa::ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum TransportMode {
+#[schema(as = TransportMode)]
+pub enum PlanningMode {
     Bus,
     Metro,
     Tra,
@@ -144,7 +145,7 @@ pub enum TransportMode {
     BikeShare,
 }
 
-impl TransportMode {
+impl PlanningMode {
     fn transit_mode(self) -> Option<DomainTransitMode> {
         match self {
             Self::Bus => Some(DomainTransitMode::Bus),

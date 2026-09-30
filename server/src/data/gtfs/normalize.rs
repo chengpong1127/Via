@@ -15,7 +15,7 @@ use crate::{
         ids::{
             BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
         },
-        location::RequestCoordinate,
+        location::GeoCoordinate,
         transit::{
             ScheduledStopTime, SegmentTimeSource, ServiceCalendar, TransitFrequency, TransitMode,
             TransitNetwork, TransitPattern, TransitRoute, TransitStop, TransitTrip,
@@ -616,7 +616,7 @@ fn via_stops(source: Vec<gtfs_structures::Stop>) -> Result<ViaStops, DataError> 
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
                 .unwrap_or(id),
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude,
                 longitude,
             },
@@ -633,7 +633,7 @@ fn via_stops(source: Vec<gtfs_structures::Stop>) -> Result<ViaStops, DataError> 
 }
 
 fn valid_coordinate(latitude: f64, longitude: f64) -> bool {
-    RequestCoordinate {
+    GeoCoordinate {
         latitude,
         longitude,
     }

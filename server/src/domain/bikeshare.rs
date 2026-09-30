@@ -9,7 +9,7 @@ use time::{Duration, OffsetDateTime};
 
 use super::{
     ids::{BikeStationId, BoardingPointId},
-    location::RequestCoordinate,
+    location::GeoCoordinate,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,11 +17,11 @@ use super::{
 pub struct BikeStation {
     pub id: BikeStationId,
     pub name: String,
-    pub coordinate: RequestCoordinate,
+    pub coordinate: GeoCoordinate,
 }
 
 impl BikeStation {
-    pub fn new(id: BikeStationId, name: impl Into<String>, coordinate: RequestCoordinate) -> Self {
+    pub fn new(id: BikeStationId, name: impl Into<String>, coordinate: GeoCoordinate) -> Self {
         Self {
             id,
             name: name.into(),
@@ -529,8 +529,8 @@ mod tests {
 
     use super::*;
 
-    fn coordinate(latitude: f64, longitude: f64) -> RequestCoordinate {
-        RequestCoordinate {
+    fn coordinate(latitude: f64, longitude: f64) -> GeoCoordinate {
+        GeoCoordinate {
             latitude,
             longitude,
         }

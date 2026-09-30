@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ModeBadge: View {
-    let mode: JourneyMode
+    let mode: LegMode
     var compact = false
 
     var body: some View {

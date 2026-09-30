@@ -344,7 +344,7 @@ fn best_rank(
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             bikeshare::{BikeShareNetwork, BikeStation, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId},
@@ -355,8 +355,8 @@ mod tests {
 
     use super::{BikeAccessPolicy, precompute_bike_access};
 
-    fn coordinate(latitude: f64, longitude: f64) -> RequestCoordinate {
-        RequestCoordinate {
+    fn coordinate(latitude: f64, longitude: f64) -> GeoCoordinate {
+        GeoCoordinate {
             latitude,
             longitude,
         }

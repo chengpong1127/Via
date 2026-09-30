@@ -7,7 +7,7 @@ use crate::{
         DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
     },
     domain::ids::BikeStationId,
-    domain::location::RequestCoordinate,
+    domain::location::GeoCoordinate,
     providers::BikeAvailabilitySource,
     street::{
         Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
@@ -237,11 +237,11 @@ impl BikeSegmentPlanner {
         let view =
             self.network
                 .availability_view_at(snapshot, now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE);
-        let origin_point = RequestCoordinate {
+        let origin_point = GeoCoordinate {
             latitude: origin.latitude(),
             longitude: origin.longitude(),
         };
-        let destination_point = RequestCoordinate {
+        let destination_point = GeoCoordinate {
             latitude: destination.latitude(),
             longitude: destination.longitude(),
         };
@@ -465,7 +465,7 @@ fn station_choices<'a>(
 fn direct_station_choices(
     network: &BikeShareNetwork,
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
-    point: RequestCoordinate,
+    point: GeoCoordinate,
     pickup: bool,
 ) -> Vec<(BikeStationId, Coordinate)> {
     let mut choices = network
@@ -506,7 +506,7 @@ mod tests {
     use time::macros::datetime;
 
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             bikeshare::{
                 BikeAvailabilitySnapshot, BikeShareNetwork, BikeStation, BikeStationAccess,
@@ -528,7 +528,7 @@ mod tests {
                 BikeStation::new(
                     BikeStationId::new(format!("station-{index}")),
                     format!("Station {index}"),
-                    RequestCoordinate {
+                    GeoCoordinate {
                         latitude: 25.0,
                         longitude: 121.5,
                     },
@@ -571,7 +571,7 @@ mod tests {
                 BikeStation::new(
                     pickup_id.clone(),
                     "Pickup",
-                    RequestCoordinate {
+                    GeoCoordinate {
                         latitude: 25.0,
                         longitude: 121.5,
                     },
@@ -579,7 +579,7 @@ mod tests {
                 BikeStation::new(
                     dropoff_id.clone(),
                     "Dropoff",
-                    RequestCoordinate {
+                    GeoCoordinate {
                         latitude: 25.001,
                         longitude: 121.501,
                     },
@@ -625,11 +625,11 @@ mod tests {
         let candidate = planner
             .movement_candidate(&from, &to, &snapshot, received_at)
             .unwrap();
-        let station_distance = RequestCoordinate {
+        let station_distance = GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         }
-        .haversine_distance_metres(RequestCoordinate {
+        .haversine_distance_metres(GeoCoordinate {
             latitude: 25.001,
             longitude: 121.501,
         });

@@ -69,7 +69,7 @@ struct DirectionsPanel: View {
     private var modeFilters: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(TransportMode.selectable) { mode in
+                ForEach(PlanningMode.selectable) { mode in
                     Button {
                         session.toggle(mode)
                         session.returnToEditing()

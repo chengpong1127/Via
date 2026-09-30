@@ -29,7 +29,7 @@ enum JourneyEndpoint: Hashable, Sendable {
     case place(Place)
 }
 
-enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
+enum LegMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case walking
     case transit
     case bicycle
@@ -53,7 +53,7 @@ enum JourneyMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     }
 }
 
-enum TransportMode: String, CaseIterable, Hashable, Identifiable, Sendable {
+enum PlanningMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case bus
     case metro
     case tra
@@ -62,7 +62,7 @@ enum TransportMode: String, CaseIterable, Hashable, Identifiable, Sendable {
 
     var id: Self { self }
 
-    static let selectable: [TransportMode] = [.bus, .metro, .tra, .thsr, .bikeShare]
+    static let selectable: [PlanningMode] = [.bus, .metro, .tra, .thsr, .bikeShare]
 
     var titleKey: String {
         switch self {
@@ -118,7 +118,7 @@ enum DepartureSetting: Hashable, Sendable {
 struct PlanningRequest: Hashable, Sendable {
     let origin: Place
     let destination: Place
-    let selectedModes: Set<TransportMode>
+    let selectedModes: Set<PlanningMode>
     let departureSetting: DepartureSetting
     let locale: String
 }
@@ -178,7 +178,7 @@ struct BikeShareLegMetadata: Sendable {
 
 struct JourneyLeg: Identifiable, Sendable {
     let id: String
-    let mode: JourneyMode
+    let mode: LegMode
     let title: String
     let subtitle: String
     let durationSeconds: Int
@@ -188,7 +188,7 @@ struct JourneyLeg: Identifiable, Sendable {
 
     init(
         id: String,
-        mode: JourneyMode,
+        mode: LegMode,
         title: String,
         subtitle: String,
         durationSeconds: Int,
@@ -226,7 +226,7 @@ struct JourneyOption: Identifiable, Sendable {
     let bicycleSeconds: Int
     let bikeShareUses: Int
     let transferCount: Int
-    let travelModes: [JourneyMode]
+    let travelModes: [LegMode]
     let liveStatusSummary: LiveStatusSummary
     let overview: [Coordinate]
     let legs: [JourneyLeg]
@@ -243,7 +243,7 @@ struct JourneyOption: Identifiable, Sendable {
         bicycleSeconds: Int = 0,
         bikeShareUses: Int = 0,
         transferCount: Int,
-        travelModes: [JourneyMode],
+        travelModes: [LegMode],
         liveStatusSummary: LiveStatusSummary,
         overview: [Coordinate],
         legs: [JourneyLeg]

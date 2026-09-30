@@ -1,14 +1,14 @@
 use via_server::domain::{
     ranking::{
-        CandidateJourney, JourneyClass, JourneyLabel, RankingPolicy, RankingReason,
+        JourneyClass, JourneyLabel, RankingCandidate, RankingPolicy, RankingReason,
         TransferEvidence, TransferKind,
     },
     realtime::FreshnessState,
     transit_timing::{TimingBasis, TimingReliability},
 };
 
-fn candidate(key: &str, arrival: i64) -> CandidateJourney {
-    CandidateJourney {
+fn candidate(key: &str, arrival: i64) -> RankingCandidate {
+    RankingCandidate {
         stable_key: key.into(),
         departure_epoch_seconds: 1_000,
         arrival_epoch_seconds: arrival,

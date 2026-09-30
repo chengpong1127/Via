@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::RequestCoordinate,
+    api::GeoCoordinate,
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
     street::{Coordinate, Maneuver, ManeuverKind},
 };
@@ -32,7 +32,7 @@ pub(crate) fn overview_geometry(legs: &[Leg]) -> Geometry {
     }
 }
 
-pub(crate) fn straight_geometry(from: RequestCoordinate, to: RequestCoordinate) -> Geometry {
+pub(crate) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geometry {
     let from = Coordinate::try_new(from.latitude, from.longitude).expect("validated coordinate");
     let to = Coordinate::try_new(to.latitude, to.longitude).expect("validated coordinate");
     Geometry {
@@ -41,7 +41,7 @@ pub(crate) fn straight_geometry(from: RequestCoordinate, to: RequestCoordinate) 
     }
 }
 
-pub(crate) fn transit_leg_distance_metres(from: RequestCoordinate, to: RequestCoordinate) -> u32 {
+pub(crate) fn transit_leg_distance_metres(from: GeoCoordinate, to: GeoCoordinate) -> u32 {
     from.planar_distance_metres(to) as u32
 }
 
@@ -144,9 +144,7 @@ pub(crate) fn short_digest(value: &str) -> String {
     format!("match_{:x}", digest.finalize())[..22].to_owned()
 }
 
-pub(crate) fn to_street_coordinate(
-    coordinate: RequestCoordinate,
-) -> Result<Coordinate, PlanningError> {
+pub(crate) fn to_street_coordinate(coordinate: GeoCoordinate) -> Result<Coordinate, PlanningError> {
     Coordinate::try_new(coordinate.latitude, coordinate.longitude).map_err(PlanningError::from)
 }
 

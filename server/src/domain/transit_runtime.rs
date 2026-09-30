@@ -7,7 +7,7 @@ use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 
 use super::{
     ids::{BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
-    location::{METRES_PER_DEGREE, RequestCoordinate},
+    location::{GeoCoordinate, METRES_PER_DEGREE},
     normalize_to_taipei, taipei_offset,
     transit::{
         ServiceCalendar, TransitFrequency, TransitNetwork, TransitPattern, TransitRoute,
@@ -34,13 +34,13 @@ impl TransitRuntime {
         &self.network
     }
 
-    pub fn nearest_stops(&self, coordinate: RequestCoordinate, limit: usize) -> Vec<&TransitStop> {
+    pub fn nearest_stops(&self, coordinate: GeoCoordinate, limit: usize) -> Vec<&TransitStop> {
         self.indexes.nearest_stops(&self.network, coordinate, limit)
     }
 
     pub fn stops_within_radius(
         &self,
-        coordinate: RequestCoordinate,
+        coordinate: GeoCoordinate,
         radius_metres: u32,
     ) -> Vec<&TransitStop> {
         self.indexes
@@ -187,7 +187,7 @@ impl TransitRuntimeIndexes {
     fn nearest_stops<'a>(
         &self,
         network: &'a TransitNetwork,
-        coordinate: RequestCoordinate,
+        coordinate: GeoCoordinate,
         limit: usize,
     ) -> Vec<&'a TransitStop> {
         nearest_from_grid(&self.spatial.stop_grid, &network.stops, coordinate, limit)
@@ -196,7 +196,7 @@ impl TransitRuntimeIndexes {
     fn stops_within_radius<'a>(
         &self,
         network: &'a TransitNetwork,
-        coordinate: RequestCoordinate,
+        coordinate: GeoCoordinate,
         radius_metres: u32,
     ) -> Vec<&'a TransitStop> {
         points_within_radius_from_grid(
@@ -323,7 +323,7 @@ struct SpatialCell {
 }
 
 impl SpatialGrid {
-    fn insert(&mut self, coordinate: RequestCoordinate, index: usize) {
+    fn insert(&mut self, coordinate: GeoCoordinate, index: usize) {
         self.cells
             .entry(SpatialCell::from_coordinate(coordinate))
             .or_default()
@@ -332,7 +332,7 @@ impl SpatialGrid {
 }
 
 impl SpatialCell {
-    fn from_coordinate(coordinate: RequestCoordinate) -> Self {
+    fn from_coordinate(coordinate: GeoCoordinate) -> Self {
         Self {
             latitude: (coordinate.latitude / SPATIAL_CELL_DEGREES).floor() as i32,
             longitude: (coordinate.longitude / SPATIAL_CELL_DEGREES).floor() as i32,
@@ -341,12 +341,12 @@ impl SpatialCell {
 }
 
 trait SpatialPoint {
-    fn coordinate(&self) -> RequestCoordinate;
+    fn coordinate(&self) -> GeoCoordinate;
     fn stable_id(&self) -> &str;
 }
 
 impl SpatialPoint for TransitStop {
-    fn coordinate(&self) -> RequestCoordinate {
+    fn coordinate(&self) -> GeoCoordinate {
         self.coordinate
     }
 
@@ -358,7 +358,7 @@ impl SpatialPoint for TransitStop {
 fn nearest_from_grid<'a, T: SpatialPoint>(
     grid: &SpatialGrid,
     points: &'a [T],
-    coordinate: RequestCoordinate,
+    coordinate: GeoCoordinate,
     limit: usize,
 ) -> Vec<&'a T> {
     if limit == 0 || points.is_empty() {
@@ -433,7 +433,7 @@ fn nearest_from_grid<'a, T: SpatialPoint>(
 fn points_within_radius_from_grid<'a, T: SpatialPoint>(
     grid: &SpatialGrid,
     points: &'a [T],
-    coordinate: RequestCoordinate,
+    coordinate: GeoCoordinate,
     radius_metres: u32,
 ) -> Vec<&'a T> {
     if points.is_empty() {
@@ -444,22 +444,22 @@ fn points_within_radius_from_grid<'a, T: SpatialPoint>(
     let longitude_scale =
         METRES_PER_DEGREE * coordinate.latitude.to_radians().cos().abs().max(0.01);
     let longitude_delta = f64::from(radius_metres) / longitude_scale;
-    let latitude_min = SpatialCell::from_coordinate(RequestCoordinate {
+    let latitude_min = SpatialCell::from_coordinate(GeoCoordinate {
         latitude: coordinate.latitude - latitude_delta,
         longitude: coordinate.longitude,
     })
     .latitude;
-    let latitude_max = SpatialCell::from_coordinate(RequestCoordinate {
+    let latitude_max = SpatialCell::from_coordinate(GeoCoordinate {
         latitude: coordinate.latitude + latitude_delta,
         longitude: coordinate.longitude,
     })
     .latitude;
-    let longitude_min = SpatialCell::from_coordinate(RequestCoordinate {
+    let longitude_min = SpatialCell::from_coordinate(GeoCoordinate {
         latitude: coordinate.latitude,
         longitude: coordinate.longitude - longitude_delta,
     })
     .longitude;
-    let longitude_max = SpatialCell::from_coordinate(RequestCoordinate {
+    let longitude_max = SpatialCell::from_coordinate(GeoCoordinate {
         latitude: coordinate.latitude,
         longitude: coordinate.longitude + longitude_delta,
     })
@@ -492,14 +492,14 @@ fn points_within_radius_from_grid<'a, T: SpatialPoint>(
     nearby
 }
 
-fn cell_lower_bound_metres(coordinate: RequestCoordinate, cell: SpatialCell) -> u64 {
+fn cell_lower_bound_metres(coordinate: GeoCoordinate, cell: SpatialCell) -> u64 {
     let latitude_min = f64::from(cell.latitude) * SPATIAL_CELL_DEGREES;
     let latitude_max = latitude_min + SPATIAL_CELL_DEGREES;
     let longitude_min = f64::from(cell.longitude) * SPATIAL_CELL_DEGREES;
     let longitude_max = longitude_min + SPATIAL_CELL_DEGREES;
     let latitude = coordinate.latitude.clamp(latitude_min, latitude_max);
     let longitude = coordinate.longitude.clamp(longitude_min, longitude_max);
-    coordinate.planar_distance_metres(RequestCoordinate {
+    coordinate.planar_distance_metres(GeoCoordinate {
         latitude,
         longitude,
     })

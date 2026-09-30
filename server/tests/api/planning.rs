@@ -2,7 +2,7 @@ use serde_json::json;
 use time::macros::{date, datetime};
 use via_server::{
     api::{
-        DepartureSetting, PlanningRequest, RequestValidationError, TransportMode,
+        DepartureSetting, PlanningMode, PlanningRequest, RequestValidationError,
         normalize_to_taipei,
     },
     domain::realtime::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
@@ -86,9 +86,9 @@ fn planning_request_accepts_the_provider_neutral_contract() {
     assert_eq!(
         request.selected_modes,
         vec![
-            TransportMode::Bus,
-            TransportMode::Metro,
-            TransportMode::BikeShare
+            PlanningMode::Bus,
+            PlanningMode::Metro,
+            PlanningMode::BikeShare
         ]
     );
     assert_eq!(

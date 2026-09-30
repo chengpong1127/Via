@@ -48,7 +48,7 @@ pub struct TransferEvidence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CandidateJourney {
+pub struct RankingCandidate {
     pub stable_key: String,
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
@@ -108,7 +108,7 @@ impl Default for RankingPolicy {
 }
 
 impl RankingPolicy {
-    pub fn rank(&self, candidates: Vec<CandidateJourney>) -> Vec<RankedJourney> {
+    pub fn rank(&self, candidates: Vec<RankingCandidate>) -> Vec<RankedJourney> {
         let mut eligible: Vec<_> = candidates
             .into_iter()
             .filter_map(|candidate| self.classify(candidate))
@@ -134,7 +134,7 @@ impl RankingPolicy {
         selected
     }
 
-    fn classify(&self, candidate: CandidateJourney) -> Option<RankedJourney> {
+    fn classify(&self, candidate: RankingCandidate) -> Option<RankedJourney> {
         if candidate.blocking_condition
             || candidate
                 .required_live_status

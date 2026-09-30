@@ -13,11 +13,11 @@ use crate::domain::{
 use super::{
     bike::BikeSegmentPlanner,
     model::{
-        AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
+        AccessPoint, EgressPoint, JourneySegment, RealizedJourney, RoutingError, TransitQuery,
         physical_transfer_count,
     },
     path::{BikeShortcut, JourneySkeleton, JourneyVariant},
-    static_search::{CandidateCorridor, StaticCorridorStep, StaticTransitLeg},
+    static_search::{RetainedCorridorSet, StaticCorridorStep, StaticTransitLeg},
     transfers::TransferShortcut,
 };
 
@@ -288,8 +288,8 @@ fn make_candidate(
     path: &EvaluationPath,
     egress: &EgressPoint,
     arrival_time: OffsetDateTime,
-) -> JourneyCandidate {
-    JourneyCandidate {
+) -> RealizedJourney {
+    RealizedJourney {
         access: path.access.clone(),
         egress: egress.clone(),
         segments: path.segments.clone(),
@@ -305,7 +305,7 @@ fn make_candidate(
 }
 
 struct EvaluatedCandidate {
-    metrics: JourneyCandidate,
+    metrics: RealizedJourney,
     variant: JourneyVariant,
     bike_share_uses: usize,
     bicycle_seconds: u32,
@@ -333,7 +333,7 @@ impl EvaluatedCandidate {
 }
 
 fn make_variant(
-    candidate: JourneyCandidate,
+    candidate: RealizedJourney,
     bike_shortcuts: &[(usize, BikeShortcut)],
 ) -> Option<JourneyVariant> {
     let skeleton = JourneySkeleton::from_candidate(candidate).ok()?;
@@ -369,7 +369,7 @@ fn pareto_candidates(
     pareto
 }
 
-fn candidate_order(left: &JourneyCandidate, right: &JourneyCandidate) -> Ordering {
+fn candidate_order(left: &RealizedJourney, right: &RealizedJourney) -> Ordering {
     left.arrival_time
         .cmp(&right.arrival_time)
         .then(left.transfer_count.cmp(&right.transfer_count))
@@ -380,7 +380,7 @@ fn candidate_order(left: &JourneyCandidate, right: &JourneyCandidate) -> Orderin
 #[cfg(test)]
 fn evaluate(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
 ) -> Result<Vec<JourneyVariant>, RoutingError> {
@@ -390,7 +390,7 @@ fn evaluate(
 #[cfg(test)]
 fn evaluate_with_stats(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
 ) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
@@ -400,7 +400,7 @@ fn evaluate_with_stats(
 #[cfg(test)]
 fn evaluate_with_test_bike_routes(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
     bike_realizations: &TestBikeRoutes,
@@ -411,7 +411,7 @@ fn evaluate_with_test_bike_routes(
 #[cfg(test)]
 fn run_test_evaluation(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
     bike_realizations: Option<&TestBikeRoutes>,
@@ -431,7 +431,7 @@ fn run_test_evaluation(
 
 pub(super) async fn evaluate_with_bike(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
     bike: Option<(
@@ -452,7 +452,7 @@ pub(super) async fn evaluate_with_bike(
 
 async fn evaluate_inner(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: TransitQuery,
     bike_context: Option<(
@@ -991,7 +991,7 @@ fn charge_state(stats: &mut Phase2EvaluationStats, max_expansions: usize) -> boo
 
 fn valid_pattern_leg(
     network: &TransitRuntime,
-    corridor: &CandidateCorridor,
+    corridor: &RetainedCorridorSet,
     retained: &StaticTransitLeg,
     alternative: &StaticTransitLeg,
 ) -> bool {
@@ -1138,7 +1138,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             bikeshare::BikeWalkingAccess,
             ids::{BikeStationId, EffectiveTripId, TransitPatternId},
@@ -1158,7 +1158,7 @@ mod tests {
         TransitStop::new(
             BoardingPointId::new(id),
             id,
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },
@@ -1211,7 +1211,7 @@ mod tests {
         .with_max_static_corridors(max_corridors)
     }
 
-    fn candidate_corridor(network: &TransitRuntime, query: &TransitQuery) -> CandidateCorridor {
+    fn candidate_corridor(network: &TransitRuntime, query: &TransitQuery) -> RetainedCorridorSet {
         let topology = TransitTopologyIndex::new(network.data());
         let transfers = TransferShortcutIndex::from_network(network.data());
         generate(network, &topology, &transfers, query).0
@@ -1458,7 +1458,7 @@ mod tests {
             Vec::new(),
         );
         let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("origin"),
@@ -1576,7 +1576,7 @@ mod tests {
             Vec::new(),
         );
         let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("origin"),
@@ -1649,7 +1649,7 @@ mod tests {
             Vec::new(),
         );
         let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("origin"),
@@ -1726,7 +1726,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -1780,7 +1780,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -1830,7 +1830,7 @@ mod tests {
             Vec::new(),
         );
         let query = query(&[TransitMode::Bus], 0, 1);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("origin"),
@@ -1883,7 +1883,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -1947,7 +1947,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -2003,7 +2003,7 @@ mod tests {
             )],
             departure_at,
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new(&stop_names[0]),
@@ -2071,7 +2071,7 @@ mod tests {
         )
         .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
         .with_limits(2, 16, 2_000, 3, 4 * 60 * 60);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -2184,7 +2184,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -2253,7 +2253,7 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         )
         .with_allowed_transit_modes([TransitMode::Bus]);
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
                 access_stop_id: BoardingPointId::new("a"),
@@ -2322,7 +2322,7 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         );
         query.max_candidates = 10;
-        let corridor = CandidateCorridor::from_retained_for_test(
+        let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![
                 StaticCorridor {
@@ -2815,7 +2815,7 @@ mod tests {
                 ],
             },
         ];
-        let corridor = CandidateCorridor::from_retained_for_test(&network, retained);
+        let corridor = RetainedCorridorSet::from_retained_for_test(&network, retained);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
             TransitPatternId::new("a-bus-prefix"),
@@ -2879,7 +2879,7 @@ mod tests {
     #[test]
     fn expired_deadline_stops_phase2_before_evaluating_corridors() {
         let network = network(Vec::new(), &["origin", "destination"], Vec::new());
-        let corridor = CandidateCorridor::default();
+        let corridor = RetainedCorridorSet::default();
         let snapshot = TimingSnapshot::default();
         let query = query(&[TransitMode::Bus], 0, 1)
             .with_deadline(super::super::model::PlanningDeadline::elapsed_for_test());

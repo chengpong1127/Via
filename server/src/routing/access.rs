@@ -1,7 +1,7 @@
 use time::OffsetDateTime;
 
 use crate::{
-    api::RequestCoordinate,
+    api::GeoCoordinate,
     domain::{transit::TransitMode, transit_runtime::TransitRuntime},
     street::{
         Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
@@ -30,7 +30,7 @@ pub(crate) struct AccessNetwork<'a> {
 pub(crate) async fn discover_access_points(
     street: &dyn StreetRouter,
     data: AccessNetwork<'_>,
-    origin: RequestCoordinate,
+    origin: GeoCoordinate,
     departure_time: OffsetDateTime,
     constraints: RoutingConstraints,
     allowed_transit_modes: &[TransitMode],
@@ -94,7 +94,7 @@ pub(crate) async fn discover_access_points(
 pub(crate) async fn discover_egress_points(
     street: &dyn StreetRouter,
     data: AccessNetwork<'_>,
-    destination: RequestCoordinate,
+    destination: GeoCoordinate,
     constraints: RoutingConstraints,
     allowed_transit_modes: &[TransitMode],
     limits: &RoutingLimits,
@@ -212,7 +212,7 @@ fn nearby_stops(
     limit: usize,
     limits: &RoutingLimits,
 ) -> Vec<(crate::domain::ids::BoardingPointId, Coordinate)> {
-    let request_coordinate = RequestCoordinate {
+    let request_coordinate = GeoCoordinate {
         latitude: coordinate.latitude(),
         longitude: coordinate.longitude(),
     };
@@ -306,7 +306,7 @@ mod tests {
     use super::{RoutingLimits, nearby_stops, stop_coverage_dominates};
     use crate::routing::topology::TransitTopologyIndex;
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             ids::BoardingPointId,
             transit::{TransitMode, TransitNetwork, TransitPattern, TransitStop},
@@ -319,14 +319,14 @@ mod tests {
         TransitStop::new(
             BoardingPointId::new(id),
             id,
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },
         )
     }
 
-    fn stop_at(id: &str, coordinate: RequestCoordinate) -> TransitStop {
+    fn stop_at(id: &str, coordinate: GeoCoordinate) -> TransitStop {
         TransitStop::new(BoardingPointId::new(id), id, coordinate)
     }
 
@@ -368,11 +368,11 @@ mod tests {
 
     #[test]
     fn nearby_stops_reserves_a_transit_mode_before_the_nearest_stop_limit() {
-        let origin = RequestCoordinate {
+        let origin = GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         };
-        let metro_coordinate = RequestCoordinate {
+        let metro_coordinate = GeoCoordinate {
             latitude: 25.0004,
             longitude: 121.5,
         };
@@ -382,7 +382,7 @@ mod tests {
         stops.push(stop_at("metro-stop", metro_coordinate));
         stops.push(stop_at(
             "other-metro-stop",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0005,
                 longitude: 121.5,
             },
@@ -403,7 +403,7 @@ mod tests {
         stops.extend((0..24).map(|index| {
             stop_at(
                 &format!("bus-end-{index}"),
-                RequestCoordinate {
+                GeoCoordinate {
                     latitude: 25.1,
                     longitude: 121.5,
                 },
@@ -431,7 +431,7 @@ mod tests {
         ));
         stops.push(stop_at(
             "metro-end",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.1,
                 longitude: 121.5,
             },
@@ -474,11 +474,11 @@ mod tests {
 
     #[test]
     fn nearby_stops_filters_access_and_egress_candidates_by_mode_before_selection() {
-        let origin = RequestCoordinate {
+        let origin = GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         };
-        let far_away = RequestCoordinate {
+        let far_away = GeoCoordinate {
             latitude: 25.1,
             longitude: 121.5,
         };

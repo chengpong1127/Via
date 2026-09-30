@@ -3,7 +3,7 @@ use std::{error::Error, path::PathBuf, time::Duration};
 use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    api::{DepartureSetting, PlanningRequest, SelectedPlace, TransportMode, new_request_id},
+    api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace, new_request_id},
     config::load_dotenv,
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
@@ -126,14 +126,14 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
     };
     let request = PlanningRequest {
         origin: SelectedPlace {
-            coordinate: via_server::api::RequestCoordinate {
+            coordinate: via_server::api::GeoCoordinate {
                 latitude: cli.from_lat,
                 longitude: cli.from_lon,
             },
             display_text: "origin".into(),
         },
         destination: SelectedPlace {
-            coordinate: via_server::api::RequestCoordinate {
+            coordinate: via_server::api::GeoCoordinate {
                 latitude: cli.to_lat,
                 longitude: cli.to_lon,
             },
@@ -149,16 +149,16 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
     Ok(request)
 }
 
-fn parse_modes(value: &str) -> Result<Vec<TransportMode>, Box<dyn Error>> {
+fn parse_modes(value: &str) -> Result<Vec<PlanningMode>, Box<dyn Error>> {
     let mut modes = value
         .split(',')
         .map(str::trim)
         .map(|mode| match mode {
-            "bus" => Ok(TransportMode::Bus),
-            "metro" => Ok(TransportMode::Metro),
-            "tra" => Ok(TransportMode::Tra),
-            "thsr" => Ok(TransportMode::Thsr),
-            "bike_share" => Ok(TransportMode::BikeShare),
+            "bus" => Ok(PlanningMode::Bus),
+            "metro" => Ok(PlanningMode::Metro),
+            "tra" => Ok(PlanningMode::Tra),
+            "thsr" => Ok(PlanningMode::Thsr),
+            "bike_share" => Ok(PlanningMode::BikeShare),
             _ => Err(format!(
                 "unsupported mode {mode:?}; use bus, metro, tra, thsr, or bike_share"
             )),
@@ -280,12 +280,12 @@ fn print_trace(result: &PlanningOutcome) {
 #[cfg(test)]
 mod tests {
     use super::parse_modes;
-    use via_server::api::TransportMode;
+    use via_server::api::PlanningMode;
 
     #[test]
     fn accepts_bike_share_with_transit_modes() {
         let modes = parse_modes("bus,metro,bike_share").unwrap();
         assert_eq!(modes.len(), 3);
-        assert!(modes.contains(&TransportMode::BikeShare));
+        assert!(modes.contains(&PlanningMode::BikeShare));
     }
 }

@@ -396,7 +396,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             bikeshare::{BikeAvailabilitySnapshot, BikeShareNetwork},
             ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
@@ -460,7 +460,7 @@ mod tests {
         TransitStop::new(
             BoardingPointId::new(value),
             value,
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },

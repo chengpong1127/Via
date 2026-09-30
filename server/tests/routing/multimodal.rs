@@ -71,7 +71,7 @@ fn segment_network(
         BikeStation::new(
             pickup_id.clone(),
             "Fixture Pickup",
-            via_server::api::RequestCoordinate {
+            via_server::api::GeoCoordinate {
                 latitude: pickup.latitude(),
                 longitude: pickup.longitude(),
             },
@@ -79,7 +79,7 @@ fn segment_network(
         BikeStation::new(
             dropoff_id.clone(),
             "Fixture Dropoff",
-            via_server::api::RequestCoordinate {
+            via_server::api::GeoCoordinate {
                 latitude: dropoff.latitude(),
                 longitude: dropoff.longitude(),
             },
@@ -370,7 +370,7 @@ async fn direct_walking_gains_a_bike_share_variant_with_the_shared_snapshot() {
             BikeStation::new(
                 pickup_id,
                 "Direct pickup",
-                via_server::api::RequestCoordinate {
+                via_server::api::GeoCoordinate {
                     latitude: pickup.latitude(),
                     longitude: pickup.longitude(),
                 },
@@ -378,7 +378,7 @@ async fn direct_walking_gains_a_bike_share_variant_with_the_shared_snapshot() {
             BikeStation::new(
                 dropoff_id,
                 "Direct dropoff",
-                via_server::api::RequestCoordinate {
+                via_server::api::GeoCoordinate {
                     latitude: dropoff.latitude(),
                     longitude: dropoff.longitude(),
                 },
@@ -456,7 +456,7 @@ async fn direct_walking_without_a_transit_query_can_use_bike_share() {
             BikeStation::new(
                 pickup_id,
                 "Direct pickup",
-                via_server::api::RequestCoordinate {
+                via_server::api::GeoCoordinate {
                     latitude: pickup.latitude(),
                     longitude: pickup.longitude(),
                 },
@@ -464,7 +464,7 @@ async fn direct_walking_without_a_transit_query_can_use_bike_share() {
             BikeStation::new(
                 dropoff_id,
                 "Direct dropoff",
-                via_server::api::RequestCoordinate {
+                via_server::api::GeoCoordinate {
                     latitude: dropoff.latitude(),
                     longitude: dropoff.longitude(),
                 },

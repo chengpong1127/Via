@@ -12,7 +12,7 @@ pub mod transfers;
 pub(crate) mod service;
 pub use evaluator::Phase2EvaluationStats;
 pub use model::{
-    AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, PlanningDeadline, RoutingError,
+    AccessPoint, EgressPoint, JourneySegment, PlanningDeadline, RealizedJourney, RoutingError,
     TransitQuery,
 };
 pub use path::{
@@ -22,5 +22,5 @@ pub use path::{
 };
 pub use planner::{TransitPlanner, TransitPlannerStats};
 pub use service::{RoutingLimits, RoutingService};
-pub use static_search::{CandidateCorridor, StaticCorridor, StaticCostSource, StaticSearchStats};
+pub use static_search::{RetainedCorridorSet, StaticCorridor, StaticCostSource, StaticSearchStats};
 pub use transfers::{TransferShortcut, TransferShortcutIndex};

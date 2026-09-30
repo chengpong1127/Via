@@ -15,7 +15,7 @@ use crate::{
             ResultMetadata, SemanticObject,
         },
         normalize_to_taipei,
-        ranking::{CandidateJourney, RankingPolicy},
+        ranking::{RankingCandidate, RankingPolicy},
         transit_runtime::TransitRuntime,
         transit_timing::TimingSnapshotLoader,
     },
@@ -444,7 +444,7 @@ impl RoutingService {
         &self,
         metadata: ResultMetadata,
         request: PlanningRequest,
-        generated: Vec<GeneratedCandidate>,
+        generated: Vec<ReconstructedCandidate>,
     ) -> Result<PlanningOutcome, PlanningError> {
         let mut seen_keys = HashSet::new();
         let generated = generated
@@ -568,8 +568,8 @@ impl PlanningContext {
     }
 }
 
-pub(crate) struct GeneratedCandidate {
-    pub(crate) ranking: CandidateJourney,
+pub(crate) struct ReconstructedCandidate {
+    pub(crate) ranking: RankingCandidate,
     pub(crate) option: JourneyOption,
 }
 

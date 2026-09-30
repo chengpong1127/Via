@@ -183,7 +183,7 @@ mod tests {
         domain::{
             bikeshare::{BikeStation, BikeStationAccess, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId, TransitPatternId},
-            location::RequestCoordinate,
+            location::GeoCoordinate,
             transit::{TransitStop, default_service_day_boundary},
         },
         providers::bindings::{BusPatternBinding, TdxProviderBindings},
@@ -195,7 +195,7 @@ mod tests {
             vec![TransitStop::new(
                 BoardingPointId::new("stop"),
                 "Stop",
-                RequestCoordinate {
+                GeoCoordinate {
                     latitude: 25.0,
                     longitude: 121.0,
                 },
@@ -322,7 +322,7 @@ mod tests {
         invalid_access.bike_share = BikeShareNetwork::new(vec![BikeStation::new(
             station_id.clone(),
             "Station",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.0,
             },

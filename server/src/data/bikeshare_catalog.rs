@@ -5,7 +5,7 @@ use serde::Deserialize;
 use crate::{
     domain::{
         bikeshare::{BikeShareNetwork, BikeStation},
-        location::RequestCoordinate,
+        location::GeoCoordinate,
     },
     tdx::bike_station_id,
 };
@@ -71,7 +71,7 @@ pub fn parse_tdx_station_catalog(
                         station_id.as_str()
                     ))
                 })?;
-            let coordinate = RequestCoordinate {
+            let coordinate = GeoCoordinate {
                 latitude: record.station_position.latitude,
                 longitude: record.station_position.longitude,
             };

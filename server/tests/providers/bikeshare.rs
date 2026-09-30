@@ -15,7 +15,7 @@ use via_server::{
     domain::{
         bikeshare::{BikeShareNetwork, BikeStation, BikeStationAccess, BikeWalkingAccess},
         ids::{BikeStationId, BoardingPointId},
-        location::RequestCoordinate,
+        location::GeoCoordinate,
     },
     providers::{BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource},
 };
@@ -24,7 +24,7 @@ fn station(id: &str) -> BikeStation {
     BikeStation::new(
         BikeStationId::new(id),
         id,
-        RequestCoordinate {
+        GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         },

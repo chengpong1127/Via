@@ -26,7 +26,7 @@ actor DemoJourneyPlanner: JourneyPlanning {
         )
     }
 
-    private func transportMode(for mode: TransitMode) -> TransportMode {
+    private func transportMode(for mode: TransitMode) -> PlanningMode {
         switch mode {
         case .bus: .bus
         case .metro: .metro

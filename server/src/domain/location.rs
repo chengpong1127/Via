@@ -6,14 +6,14 @@ const EARTH_RADIUS_METRES: f64 = 6_371_000.0;
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[schema(as = Coordinate)]
 #[serde(deny_unknown_fields)]
-pub struct RequestCoordinate {
+pub struct GeoCoordinate {
     #[schema(minimum = -90.0, maximum = 90.0)]
     pub latitude: f64,
     #[schema(minimum = -180.0, maximum = 180.0)]
     pub longitude: f64,
 }
 
-impl RequestCoordinate {
+impl GeoCoordinate {
     pub fn validate(&self) -> bool {
         self.latitude.is_finite()
             && (-90.0..=90.0).contains(&self.latitude)
@@ -41,15 +41,15 @@ impl RequestCoordinate {
 
 #[cfg(test)]
 mod tests {
-    use super::RequestCoordinate;
+    use super::GeoCoordinate;
 
     #[test]
     fn distance_helpers_preserve_the_two_coordinate_semantics() {
-        let origin = RequestCoordinate {
+        let origin = GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         };
-        let destination = RequestCoordinate {
+        let destination = GeoCoordinate {
             latitude: 25.001,
             longitude: 121.501,
         };

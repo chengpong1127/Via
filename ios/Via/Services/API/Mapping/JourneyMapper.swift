@@ -42,8 +42,8 @@ private extension ServerJourneyOptionDTO {
         else {
             throw JourneyPlanningError.unsupportedResponse
         }
-        let travelModes = try travelModes.map { rawValue -> JourneyMode in
-            guard let mode = JourneyMode(rawValue: rawValue) else {
+        let travelModes = try travelModes.map { rawValue -> LegMode in
+            guard let mode = LegMode(rawValue: rawValue) else {
                 throw JourneyPlanningError.unsupportedResponse
             }
             return mode
@@ -84,7 +84,7 @@ private extension ServerGeometry {
 
 private extension ServerLegDTO {
     func domainValue() throws -> JourneyLeg {
-        guard let mode = JourneyMode(rawValue: mode) else {
+        guard let mode = LegMode(rawValue: mode) else {
             throw JourneyPlanningError.unsupportedResponse
         }
         let title: String

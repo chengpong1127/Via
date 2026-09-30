@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use super::{
-    location::RequestCoordinate,
+    location::GeoCoordinate,
     realtime::{Freshness, FreshnessReason, FreshnessState},
     transit::{NetworkRevision, TransitMode},
 };
@@ -25,7 +25,8 @@ pub use super::ranking::{JourneyClass, JourneyLabel, RankingReason};
     utoipa::ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum JourneyMode {
+#[schema(as = JourneyMode)]
+pub enum LegMode {
     Walking,
     Transit,
     Bicycle,
@@ -118,7 +119,7 @@ pub struct JourneyOption {
     pub bicycle_seconds: u32,
     pub bike_share_uses: u32,
     pub transfer_count: u32,
-    pub travel_modes: Vec<JourneyMode>,
+    pub travel_modes: Vec<LegMode>,
     pub live_status_summary: LiveStatusSummary,
     pub overview_geometry: Geometry,
     pub legs: Vec<Leg>,
@@ -135,7 +136,7 @@ pub struct Geometry {
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Leg {
     pub id: String,
-    pub mode: JourneyMode,
+    pub mode: LegMode,
     pub from: Place,
     pub to: Place,
     #[serde(with = "time::serde::rfc3339")]
@@ -159,7 +160,7 @@ pub struct Leg {
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Place {
     pub display_name: String,
-    pub coordinate: RequestCoordinate,
+    pub coordinate: GeoCoordinate,
     pub kind: &'static str,
     pub via_id: Option<String>,
 }

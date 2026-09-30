@@ -212,7 +212,7 @@ pub(crate) fn physical_transfer_count(segments: &[JourneySegment]) -> u32 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JourneyCandidate {
+pub struct RealizedJourney {
     pub access: AccessPoint,
     pub egress: EgressPoint,
     pub segments: Vec<JourneySegment>,
@@ -226,7 +226,7 @@ pub struct JourneyCandidate {
     pub timing_reliability: TimingReliability,
 }
 
-impl JourneyCandidate {
+impl RealizedJourney {
     pub fn dominates(&self, other: &Self) -> bool {
         let no_worse = self.arrival_time <= other.arrival_time
             && self.walking_seconds <= other.walking_seconds

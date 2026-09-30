@@ -1,6 +1,6 @@
 use via_server::domain::{
     ids::{BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
-    location::RequestCoordinate,
+    location::GeoCoordinate,
     transit::{
         ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
         TransitMode, TransitNetwork, TransitNetworkValidationError, TransitPattern, TransitRoute,
@@ -12,7 +12,7 @@ fn stop(id: &str) -> TransitStop {
     TransitStop::new(
         BoardingPointId::new(id),
         id,
-        RequestCoordinate {
+        GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         },

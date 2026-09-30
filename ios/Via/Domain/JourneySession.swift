@@ -26,7 +26,7 @@ final class JourneySession {
     private(set) var selectedOptionID: String?
     private(set) var refreshMessage: String?
 
-    var selectedModes: Set<TransportMode> {
+    var selectedModes: Set<PlanningMode> {
         didSet { persistSelectedModes() }
     }
 
@@ -49,9 +49,9 @@ final class JourneySession {
         self.destination = destination
 
         let stored = defaults.array(forKey: "selectedTransportModes") as? [String] ?? []
-        let restored = Set(stored.compactMap(TransportMode.init(rawValue:)))
-            .intersection(Set(TransportMode.selectable))
-        selectedModes = restored.isEmpty ? Set(TransportMode.selectable) : restored
+        let restored = Set(stored.compactMap(PlanningMode.init(rawValue:)))
+            .intersection(Set(PlanningMode.selectable))
+        selectedModes = restored.isEmpty ? Set(PlanningMode.selectable) : restored
     }
 
     var selectedOption: JourneyOption? {
@@ -63,8 +63,8 @@ final class JourneySession {
         destination != nil && !selectedModes.isEmpty
     }
 
-    func toggle(_ mode: TransportMode) {
-        guard TransportMode.selectable.contains(mode) else { return }
+    func toggle(_ mode: PlanningMode) {
+        guard PlanningMode.selectable.contains(mode) else { return }
         if selectedModes.contains(mode) {
             guard selectedModes.count > 1 else { return }
             selectedModes.remove(mode)
@@ -201,7 +201,7 @@ final class JourneySession {
     }
 
     private func persistSelectedModes() {
-        let rawValues = TransportMode.selectable
+        let rawValues = PlanningMode.selectable
             .filter(selectedModes.contains)
             .map(\.rawValue)
         defaults.set(rawValues, forKey: "selectedTransportModes")

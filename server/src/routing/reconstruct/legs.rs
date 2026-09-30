@@ -5,8 +5,8 @@ use crate::{
     domain::{
         ids::EffectiveTripId,
         journey::{
-            Geometry, Guidance, JourneyClass, JourneyMode, Leg, LegDetails, LiveStatusEvidence,
-            Place, PlanningError, RankingReason, Transfer,
+            Geometry, Guidance, JourneyClass, Leg, LegDetails, LegMode, LiveStatusEvidence, Place,
+            PlanningError, RankingReason, Transfer,
         },
         ranking::TransferEvidence,
         realtime::FreshnessState,
@@ -44,7 +44,7 @@ pub(crate) struct ReconstructedLegs {
     pub(crate) arrival_time: OffsetDateTime,
     pub(crate) live_evidence: Vec<LiveStatusEvidence>,
     pub(crate) required_states: Vec<FreshnessState>,
-    pub(crate) travel_modes: Vec<JourneyMode>,
+    pub(crate) travel_modes: Vec<LegMode>,
     pub(crate) main_pattern_sequence: Vec<String>,
     pub(crate) transfer_evidence: Vec<TransferEvidence>,
     pub(crate) walking_seconds: u32,
@@ -333,7 +333,7 @@ pub(crate) async fn assemble(
                         if trip.timing_reliability == TimingReliability::Fallback {
                             result.timing_reliability = TimingReliability::Fallback;
                         }
-                        evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Transit);
+                        evidence::push_unique_mode(&mut result.travel_modes, LegMode::Transit);
                         result
                             .main_pattern_sequence
                             .push(pattern_data.id.as_str().to_owned());
@@ -469,7 +469,7 @@ fn register_pending_transfer(
         .legs
         .iter()
         .rev()
-        .find(|leg| leg.mode == JourneyMode::Transit)
+        .find(|leg| leg.mode == LegMode::Transit)
     else {
         return;
     };
@@ -587,7 +587,7 @@ fn append_routed_walking(
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
     result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
     result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
 }
 
 fn append_bicycle(
@@ -601,7 +601,7 @@ fn append_bicycle(
     let leg_id = format!("candidate_leg_{}", result.legs.len());
     result.legs.push(Leg {
         id: leg_id,
-        mode: JourneyMode::Bicycle,
+        mode: LegMode::Bicycle,
         from: pickup.clone(),
         to: dropoff.clone(),
         departure_time: departure,
@@ -640,7 +640,7 @@ fn append_bicycle(
     });
     result.bicycle_seconds = result.bicycle_seconds.saturating_add(path.duration.0);
     result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Bicycle);
+    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Bicycle);
 }
 
 async fn append_hydrated_walking(
@@ -670,7 +670,7 @@ async fn append_hydrated_walking(
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
     result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
     result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
     Ok(())
 }
 
@@ -690,7 +690,7 @@ fn append_static_walking(
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
     result.walking_seconds = result.walking_seconds.saturating_add(duration_seconds);
     result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, JourneyMode::Walking);
+    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
 }
 
 async fn hydrated_or_synthetic(
@@ -803,7 +803,7 @@ fn walking_leg(
 ) -> Leg {
     Leg {
         id,
-        mode: JourneyMode::Walking,
+        mode: LegMode::Walking,
         from: from.clone(),
         to: to.clone(),
         departure_time,
@@ -845,7 +845,7 @@ fn transit_leg(
     let schedule = matches!(timing_basis, TimingBasis::Schedule);
     Leg {
         id,
-        mode: JourneyMode::Transit,
+        mode: LegMode::Transit,
         from: transit_place(boarding),
         to: transit_place(alighting),
         departure_time: effective.departure,

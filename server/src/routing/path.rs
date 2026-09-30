@@ -12,7 +12,7 @@ use crate::{
     street::StreetPath,
 };
 
-use super::{JourneyCandidate, JourneySegment};
+use super::{JourneySegment, RealizedJourney};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JourneyAnchorKind {
@@ -67,7 +67,7 @@ pub struct JourneySkeleton {
 }
 
 impl JourneySkeleton {
-    pub fn from_candidate(candidate: JourneyCandidate) -> Result<Self, JourneySkeletonError> {
+    pub fn from_candidate(candidate: RealizedJourney) -> Result<Self, JourneySkeletonError> {
         if candidate.segments.is_empty() {
             return Err(JourneySkeletonError::NoSegments);
         }
@@ -736,7 +736,7 @@ mod tests {
 
     use crate::{
         domain::{ids::BoardingPointId, transit_timing::TimingReliability},
-        routing::{AccessPoint, EgressPoint, JourneyCandidate},
+        routing::{AccessPoint, EgressPoint, RealizedJourney},
     };
 
     use super::*;
@@ -747,7 +747,7 @@ mod tests {
         let a = BoardingPointId::new("a");
         let b = BoardingPointId::new("b");
         let c = BoardingPointId::new("c");
-        let candidate = JourneyCandidate {
+        let candidate = RealizedJourney {
             access: AccessPoint::new(a.clone(), departure_at, departure_at, 0, 0),
             egress: EgressPoint::new(c.clone(), 0, 0),
             segments: vec![

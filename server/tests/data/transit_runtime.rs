@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use via_server::domain::{
     ids::BoardingPointId,
-    location::RequestCoordinate,
+    location::GeoCoordinate,
     transit::{TransitNetwork, TransitStop},
     transit_runtime::TransitRuntime,
 };
@@ -11,7 +11,7 @@ fn stop(id: &str, latitude: f64, longitude: f64) -> TransitStop {
     TransitStop::new(
         BoardingPointId::new(id),
         id,
-        RequestCoordinate {
+        GeoCoordinate {
             latitude,
             longitude,
         },
@@ -33,7 +33,7 @@ fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
 
     let runtime = TransitRuntime::new(Arc::new(network));
     let nearest = runtime.nearest_stops(
-        RequestCoordinate {
+        GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
         },

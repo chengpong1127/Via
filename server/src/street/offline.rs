@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::domain::location::RequestCoordinate;
+use crate::domain::location::GeoCoordinate;
 
 use super::{
     Coordinate, Maneuver, MatrixCell, MatrixQuery, MatrixResult, Metres, RouteQuery, Seconds,
@@ -29,11 +29,11 @@ impl StraightLineStreetRouter {
         origin: Coordinate,
         destination: Coordinate,
     ) -> (Seconds, Metres) {
-        let distance = RequestCoordinate {
+        let distance = GeoCoordinate {
             latitude: origin.latitude(),
             longitude: origin.longitude(),
         }
-        .haversine_distance_metres(RequestCoordinate {
+        .haversine_distance_metres(GeoCoordinate {
             latitude: destination.latitude(),
             longitude: destination.longitude(),
         })

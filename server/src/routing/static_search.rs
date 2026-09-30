@@ -231,13 +231,13 @@ fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralStep> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct CandidateCorridor {
+pub struct RetainedCorridorSet {
     retained: Vec<StaticCorridor>,
     equivalent_legs: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     timing_positions: Vec<PatternPosition>,
 }
 
-impl CandidateCorridor {
+impl RetainedCorridorSet {
     #[cfg(test)]
     pub(super) fn from_retained_for_test(
         network: &TransitRuntime,
@@ -751,7 +751,7 @@ pub fn generate(
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
     query: &TransitQuery,
-) -> (CandidateCorridor, StaticSearchStats) {
+) -> (RetainedCorridorSet, StaticSearchStats) {
     let started = Instant::now();
     let limit = query.max_static_corridors.max(1);
     let max_legs = query.max_transfers.saturating_add(1);
@@ -760,7 +760,7 @@ pub fn generate(
         stats.deadline_exceeded = true;
         stats.static_search_latency_ms =
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (CandidateCorridor::default(), stats);
+        return (RetainedCorridorSet::default(), stats);
     }
     let pattern_index_started = Instant::now();
     let mut patterns = StaticPhase1PatternIndex::new(
@@ -774,7 +774,7 @@ pub fn generate(
         stats.deadline_exceeded = true;
         stats.static_search_latency_ms =
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (CandidateCorridor::default(), stats);
+        return (RetainedCorridorSet::default(), stats);
     }
     let egress_by_stop = query.destination_egress.iter().fold(
         HashMap::<BoardingPointId, Vec<u32>>::new(),
@@ -799,7 +799,7 @@ pub fn generate(
         stats.deadline_exceeded = true;
         stats.static_search_latency_ms =
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (CandidateCorridor::default(), stats);
+        return (RetainedCorridorSet::default(), stats);
     }
     let required_mode_pairs = reachable_endpoint_mode_pairs(
         network,
@@ -812,7 +812,7 @@ pub fn generate(
         stats.deadline_exceeded = true;
         stats.static_search_latency_ms =
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (CandidateCorridor::default(), stats);
+        return (RetainedCorridorSet::default(), stats);
     }
     stats.static_required_endpoint_mode_pairs = sorted_mode_pairs(&required_mode_pairs);
     let mut frontier = BinaryHeap::new();
@@ -1088,7 +1088,7 @@ pub fn generate(
         stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
         stats.static_search_latency_ms =
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (CandidateCorridor::default(), stats);
+        return (RetainedCorridorSet::default(), stats);
     }
 
     stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
@@ -1160,7 +1160,7 @@ pub fn generate(
     }
     retained.sort_by(corridor_order);
     let (surface, pattern_count, bus_stop_count) =
-        CandidateCorridor::from_retained(network, &equivalent_legs, retained);
+        RetainedCorridorSet::from_retained(network, &equivalent_legs, retained);
     stats.static_retained_pattern_sequence_groups =
         retained_pattern_sequence_groups(network, surface.retained());
     stats.static_retained_mode_sequence_groups =
@@ -1661,7 +1661,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::RequestCoordinate,
+        api::GeoCoordinate,
         domain::{
             ids::TransitTripId,
             transit::{
@@ -1720,7 +1720,7 @@ mod tests {
                     TransitStop::new(
                         stop_id.clone(),
                         stop_id.as_str(),
-                        RequestCoordinate {
+                        GeoCoordinate {
                             latitude: 25.0 + index as f64 * 0.00001,
                             longitude: 121.5,
                         },
@@ -1755,7 +1755,7 @@ mod tests {
         .with_max_static_corridors(k)
     }
 
-    fn run(network: &TransitNetwork, query: &TransitQuery) -> CandidateCorridor {
+    fn run(network: &TransitNetwork, query: &TransitQuery) -> RetainedCorridorSet {
         let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
         let topology = TransitTopologyIndex::new(runtime.data());
         let transfers = TransferShortcutIndex::from_network(runtime.data());
@@ -2162,7 +2162,7 @@ mod tests {
         network.stops.push(TransitStop::new(
             id("access"),
             "access",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },
@@ -2191,7 +2191,7 @@ mod tests {
         network.stops.push(TransitStop::new(
             id("d"),
             "d",
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },

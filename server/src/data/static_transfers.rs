@@ -253,7 +253,7 @@ mod tests {
     use crate::{
         domain::{
             ids::TransitPatternId,
-            location::RequestCoordinate,
+            location::GeoCoordinate,
             transit::{TransitPattern, TransitStop, default_service_day_boundary},
         },
         routing::transfers::TransferShortcutIndex,
@@ -264,7 +264,7 @@ mod tests {
         TransitStop::new(
             BoardingPointId::new(id),
             id,
-            RequestCoordinate {
+            GeoCoordinate {
                 latitude,
                 longitude: 121.5,
             },

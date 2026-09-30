@@ -472,7 +472,7 @@ fn warning_line(label: &str, count: usize, examples: &[String]) -> Option<String
 fn coordinate(
     latitude: f64,
     longitude: f64,
-) -> Result<via_server::api::RequestCoordinate, Box<dyn Error>> {
+) -> Result<via_server::api::GeoCoordinate, Box<dyn Error>> {
     if !latitude.is_finite()
         || !(-90.0..=90.0).contains(&latitude)
         || !longitude.is_finite()
@@ -484,7 +484,7 @@ fn coordinate(
         )
         .into());
     }
-    Ok(via_server::api::RequestCoordinate {
+    Ok(via_server::api::GeoCoordinate {
         latitude,
         longitude,
     })

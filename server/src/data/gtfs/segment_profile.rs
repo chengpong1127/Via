@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use gtfs_structures::{RawStopTime, RawTrip, Shape};
 
 use crate::domain::{
-    location::RequestCoordinate,
+    location::GeoCoordinate,
     transit::{
         SegmentProfile, SegmentTimeSource, SegmentTravelTime, TransitFrequency, TransitMode,
         TransitStop, TransitTrip,
@@ -168,19 +168,19 @@ fn stop_distances_on_shape(
     valid_distances(&segments).then_some(segments)
 }
 
-fn point_distance(stop: RequestCoordinate, point: &Shape) -> f64 {
-    stop.haversine_distance_metres(RequestCoordinate {
+fn point_distance(stop: GeoCoordinate, point: &Shape) -> f64 {
+    stop.haversine_distance_metres(GeoCoordinate {
         latitude: point.latitude,
         longitude: point.longitude,
     })
 }
 
 fn geographic_distance_metres(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    RequestCoordinate {
+    GeoCoordinate {
         latitude: lat1,
         longitude: lon1,
     }
-    .haversine_distance_metres(RequestCoordinate {
+    .haversine_distance_metres(GeoCoordinate {
         latitude: lat2,
         longitude: lon2,
     })

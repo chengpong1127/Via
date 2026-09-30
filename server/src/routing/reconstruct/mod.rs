@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     path::JourneyVariant,
-    service::{GeneratedCandidate, PlanningContext, RoutingService},
+    service::{PlanningContext, ReconstructedCandidate, RoutingService},
 };
 
 pub(crate) use geometry::{taipei_now, to_street_coordinate};
@@ -25,7 +25,7 @@ impl RoutingService {
         request: &PlanningRequest,
         variant: &JourneyVariant,
         context: &PlanningContext,
-    ) -> Result<Option<GeneratedCandidate>, PlanningError> {
+    ) -> Result<Option<ReconstructedCandidate>, PlanningError> {
         let Some(assembled) = legs::assemble(self, request, variant, context).await? else {
             return Ok(None);
         };
@@ -69,8 +69,8 @@ impl RoutingService {
             matching_key,
             variant.skeleton().departure_at().unix_timestamp()
         );
-        Ok(Some(GeneratedCandidate {
-            ranking: crate::domain::ranking::CandidateJourney {
+        Ok(Some(ReconstructedCandidate {
+            ranking: crate::domain::ranking::RankingCandidate {
                 stable_key,
                 departure_epoch_seconds: variant.skeleton().departure_at().unix_timestamp(),
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),

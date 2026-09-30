@@ -109,7 +109,7 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitRuntime> {
                 TransitStop::new(
                     first.clone(),
                     "Taipei Main Station",
-                    via_server::api::RequestCoordinate {
+                    via_server::api::GeoCoordinate {
                         latitude: 25.0478,
                         longitude: 121.5170,
                     },
@@ -117,7 +117,7 @@ fn network_for(static_departure: OffsetDateTime) -> Arc<TransitRuntime> {
                 TransitStop::new(
                     second.clone(),
                     "Longshan Temple",
-                    via_server::api::RequestCoordinate {
+                    via_server::api::GeoCoordinate {
                         latitude: 25.0354,
                         longitude: 121.4998,
                     },
