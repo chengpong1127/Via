@@ -141,6 +141,7 @@ impl TransitPlanner {
             estimated_cost = static_stats.estimated_cost,
             mixed_cost = static_stats.mixed_cost,
             static_search_limit_reached = static_stats.static_search_limit_reached,
+            static_top_k_early_terminated = static_stats.static_top_k_early_terminated,
             max_legs,
             "static Top-K corridor search"
         );

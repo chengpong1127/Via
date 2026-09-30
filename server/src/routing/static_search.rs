@@ -405,6 +405,7 @@ pub struct StaticSearchStats {
     pub estimated_cost: usize,
     pub mixed_cost: usize,
     pub static_search_limit_reached: bool,
+    pub static_top_k_early_terminated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -816,24 +817,10 @@ pub fn generate(
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
     let mut expanded_states_by_leg_count = HashMap::<usize, usize>::new();
     let mut expanded_stops = HashMap::<BoardingPointId, usize>::new();
-    let requires_endpoint_pair_coverage = query.allowed_transit_modes.len() <= 2;
     let mut mode_accumulators = HashMap::<TransitMode, ModeSearchAccumulator>::new();
     while let Some(entry) = frontier.pop() {
-        if kth_duration(&retained, limit).is_some_and(|kth| {
-            let has_multi_mode_family = best_by_mode_transition_sequence
-                .keys()
-                .any(|mode_sequence| mode_sequence.len() > 1);
-            let structural_coverage_complete = if requires_endpoint_pair_coverage {
-                complete_mode_pairs.is_superset(&required_mode_pairs)
-            } else {
-                has_multi_mode_family
-            };
-            structural_coverage_complete
-                && entry.state.lower_bound_seconds > kth
-                && frontier
-                    .iter()
-                    .all(|queued| queued.state.lower_bound_seconds > kth)
-        }) {
+        if kth_duration(&retained, limit).is_some_and(|kth| entry.state.priority_seconds > kth) {
+            stats.static_top_k_early_terminated = true;
             break;
         }
         if !is_current(&known, &entry.state) {
@@ -1720,6 +1707,42 @@ mod tests {
     }
 
     #[test]
+    fn top_k_does_not_require_every_endpoint_mode_pair() {
+        let network = network(
+            vec![
+                pattern("bus", TransitMode::Bus, &["o", "d"]),
+                pattern("metro", TransitMode::Metro, &["o", "d"]),
+                pattern("slow-first", TransitMode::Bus, &["o", "slow-hub"]),
+                pattern("slow-last", TransitMode::Bus, &["slow-hub", "d"]),
+            ],
+            vec![
+                trip("bus-trip", "bus", &[0, 100]),
+                trip("metro-trip", "metro", &[0, 200]),
+                trip("slow-first-trip", "slow-first", &[0, 500]),
+                trip("slow-last-trip", "slow-last", &[0, 500]),
+            ],
+        );
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+
+        let (surface, stats) = generate(
+            &runtime,
+            &TransitTopologyIndex::new(&network),
+            &TransferShortcutIndex::from_network(&network),
+            &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 1),
+        );
+
+        assert_eq!(surface.retained().len(), 1);
+        assert_eq!(
+            surface.retained()[0].pattern_sequence(),
+            vec![TransitPatternId::new("bus")]
+        );
+        assert_eq!(stats.static_required_endpoint_mode_pairs.len(), 4);
+        assert_eq!(stats.static_complete_endpoint_mode_pairs.len(), 2);
+        assert_eq!(stats.static_search_states_expanded, 2);
+        assert!(stats.static_top_k_early_terminated);
+    }
+
+    #[test]
     fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
         let network = network(
             vec![
@@ -1804,6 +1827,35 @@ mod tests {
     }
 
     #[test]
+    fn top_k_stops_when_best_frontier_bound_exceeds_kth_duration() {
+        let mut patterns = vec![pattern("direct", TransitMode::Bus, &["o", "d"])];
+        let mut trips = vec![trip("direct-trip", "direct", &[0, 3])];
+        for index in 0..64 {
+            let first_id = format!("first-{index}");
+            let second_id = format!("second-{index}");
+            let feeder_stop = format!("feeder-{index}");
+            patterns.push(pattern(&first_id, TransitMode::Bus, &["o", &feeder_stop]));
+            patterns.push(pattern(&second_id, TransitMode::Bus, &[&feeder_stop, "d"]));
+            trips.push(trip(&format!("{first_id}-trip"), &first_id, &[0, 10]));
+            trips.push(trip(&format!("{second_id}-trip"), &second_id, &[0, 10]));
+        }
+        let network = network(patterns, trips);
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+
+        let (surface, stats) = generate(
+            &runtime,
+            &TransitTopologyIndex::new(&network),
+            &TransferShortcutIndex::from_network(&network),
+            &query("o", "d", &[TransitMode::Bus], 1, 1),
+        );
+
+        assert_eq!(surface.retained().len(), 1);
+        assert_eq!(stats.kth_static_duration_seconds, Some(3));
+        assert_eq!(stats.static_search_states_expanded, 2);
+        assert!(stats.static_top_k_early_terminated);
+    }
+
+    #[test]
     fn equivalent_patterns_share_one_phase1_scan_and_remain_available_for_timing() {
         let network = network(
             vec![
@@ -1880,7 +1932,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_mode_transition_families_survive_a_bus_dominated_global_top_k() {
+    fn competitive_metro_to_bus_corridor_is_found_in_global_top_k() {
         let network = network(
             vec![
                 pattern("bus-direct-a", TransitMode::Bus, &["o", "a", "d"]),
@@ -1891,8 +1943,8 @@ mod tests {
             vec![
                 trip("a", "bus-direct-a", &[0, 40, 100]),
                 trip("b", "bus-direct-b", &[0, 45, 110]),
-                trip("m", "metro", &[0, 80]),
-                trip("last", "bus-after-metro", &[0, 80]),
+                trip("m", "metro", &[0, 30]),
+                trip("last", "bus-after-metro", &[0, 45]),
             ],
         )
         .with_transfer_edges(vec![TransferEdge::new(id("m"), id("x"), 30)]);
