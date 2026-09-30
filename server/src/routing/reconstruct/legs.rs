@@ -3,6 +3,7 @@ use time::{Duration, OffsetDateTime};
 use crate::{
     api::PlanningRequest,
     domain::{
+        ids::EffectiveTripId,
         journey::{
             Geometry, Guidance, JourneyClass, JourneyMode, Leg, LegDetails, LiveStatusEvidence,
             Place, PlanningError, RankingReason, Transfer,
@@ -18,8 +19,8 @@ use crate::{
 use super::{
     super::{
         path::{
-            JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyVariant,
-            WalkingMovementKind,
+            JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyPathStep,
+            JourneyVariant, WalkingMovementKind,
         },
         service::{
             PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
@@ -61,6 +62,13 @@ struct PendingTransfer {
     from_mode: Option<TransitMode>,
 }
 
+struct PreviousTransit {
+    leg_id: String,
+    trip_id: EffectiveTripId,
+    arrival: OffsetDateTime,
+    mode: TransitMode,
+}
+
 pub(crate) async fn assemble(
     service: &RoutingService,
     request: &PlanningRequest,
@@ -85,12 +93,43 @@ pub(crate) async fn assemble(
     let origin = service.origin_place(request);
     let destination = service.destination_place(request);
     let mut pending_transfer = None;
+    let mut previous_transit: Option<PreviousTransit> = None;
     let mut current_stop = None;
     let mut current_anchor = 0;
     let final_anchor = variant.skeleton().anchors().len().saturating_sub(1);
-    for step in variant.path() {
+    let steps = variant.path();
+    let mut skip_next_step = false;
+    for (step_index, step) in steps.iter().enumerate() {
+        if skip_next_step {
+            skip_next_step = false;
+            continue;
+        }
         if step.from_anchor != current_anchor || step.to_anchor <= step.from_anchor {
             return Ok(None);
+        }
+        if let Some((from_stop, egress_stop, duration_seconds)) =
+            terminal_surface_transfer_egress(variant, steps, step_index, final_anchor)
+        {
+            if current_stop.as_ref() != Some(&from_stop) {
+                return Ok(None);
+            }
+            let from = service
+                .stop_place(&from_stop)
+                .ok_or(PlanningError::Internal)?;
+            append_hydrated_walking(
+                service,
+                context,
+                &from,
+                &destination,
+                duration_seconds,
+                0,
+                &mut result,
+            )
+            .await?;
+            current_stop = Some(egress_stop);
+            current_anchor = steps[step_index + 1].to_anchor;
+            skip_next_step = true;
+            continue;
         }
         match &step.movement {
             JourneyPathMovement::Baseline { movement_index } => {
@@ -253,11 +292,35 @@ pub(crate) async fn assemble(
                             add_transfer(
                                 &mut result,
                                 pending,
-                                leg_id,
+                                leg_id.clone(),
+                                route_data.mode,
+                                board.departure_at,
+                            );
+                        } else if let Some(previous) = &previous_transit
+                            && previous.trip_id != trip.id
+                        {
+                            add_transfer(
+                                &mut result,
+                                PendingTransfer {
+                                    from_leg_id: previous.leg_id.clone(),
+                                    from_arrival: previous.arrival,
+                                    duration_seconds: service
+                                        .transit_runtime
+                                        .same_stop_transfer_seconds(),
+                                    connector_leg_ids: Vec::new(),
+                                    from_mode: Some(previous.mode),
+                                },
+                                leg_id.clone(),
                                 route_data.mode,
                                 board.departure_at,
                             );
                         }
+                        previous_transit = Some(PreviousTransit {
+                            leg_id,
+                            trip_id: trip.id.clone(),
+                            arrival: alight.arrival_at,
+                            mode: route_data.mode,
+                        });
                         result.arrival_time = alight.arrival_at;
                         result.timing_bases.push(trip.timing_basis);
                         if trip.timing_reliability == TimingReliability::Fallback {
@@ -313,6 +376,58 @@ pub(crate) async fn assemble(
         return Ok(None);
     }
     Ok((!result.legs.is_empty()).then_some(result))
+}
+
+fn terminal_surface_transfer_egress(
+    variant: &JourneyVariant,
+    steps: &[JourneyPathStep],
+    index: usize,
+    final_anchor: usize,
+) -> Option<(
+    crate::domain::ids::BoardingPointId,
+    crate::domain::ids::BoardingPointId,
+    u32,
+)> {
+    let transfer_step = steps.get(index)?;
+    let egress_step = steps.get(index + 1)?;
+    let JourneyPathMovement::Baseline {
+        movement_index: transfer_index,
+    } = &transfer_step.movement
+    else {
+        return None;
+    };
+    let JourneyPathMovement::Baseline {
+        movement_index: egress_index,
+    } = &egress_step.movement
+    else {
+        return None;
+    };
+    let transfer_movement = variant.skeleton().movements().get(*transfer_index)?;
+    let egress_movement = variant.skeleton().movements().get(*egress_index)?;
+    let JourneyMovementKind::Walking {
+        kind: WalkingMovementKind::Transfer,
+        duration_seconds: transfer_seconds,
+        ..
+    } = &transfer_movement.kind
+    else {
+        return None;
+    };
+    let JourneyMovementKind::Walking {
+        kind: WalkingMovementKind::Egress,
+        duration_seconds: egress_seconds,
+        ..
+    } = &egress_movement.kind
+    else {
+        return None;
+    };
+    if transfer_step.to_anchor != egress_step.from_anchor || egress_step.to_anchor != final_anchor {
+        return None;
+    }
+    Some((
+        anchor_boarding_point(variant, transfer_step.from_anchor)?,
+        anchor_boarding_point(variant, transfer_step.to_anchor)?,
+        (*transfer_seconds).saturating_add(*egress_seconds),
+    ))
 }
 
 fn anchor_boarding_point(

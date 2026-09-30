@@ -149,6 +149,32 @@ pub enum JourneySegment {
     },
 }
 
+pub(crate) fn physical_transfer_count(segments: &[JourneySegment]) -> u32 {
+    let mut last_trip_id = None;
+    let mut walked_since_last_ride = false;
+    let mut transfers = 0_u32;
+
+    for segment in segments {
+        match segment {
+            JourneySegment::Transit { trip, .. } => {
+                if let Some(previous_trip_id) = &last_trip_id
+                    && (walked_since_last_ride || previous_trip_id != &trip.id)
+                {
+                    transfers = transfers.saturating_add(1);
+                }
+                last_trip_id = Some(trip.id.clone());
+                walked_since_last_ride = false;
+            }
+            JourneySegment::WalkingTransfer { .. } if last_trip_id.is_some() => {
+                walked_since_last_ride = true;
+            }
+            JourneySegment::WalkingTransfer { .. } => {}
+        }
+    }
+
+    transfers
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JourneyCandidate {
     pub access: AccessPoint,

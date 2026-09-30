@@ -14,6 +14,7 @@ use super::{
     bike::BikeSegmentPlanner,
     model::{
         AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
+        physical_transfer_count,
     },
     path::{BikeShortcut, JourneySkeleton, JourneyVariant},
     static_search::{CandidateCorridor, StaticCorridorStep, StaticTransitLeg},
@@ -262,16 +263,29 @@ impl EvaluationPath {
 
     fn same_timing_quality(&self, other: &Self) -> bool {
         self.timing_reliability == other.timing_reliability
-            && self.timing_bases == other.timing_bases
+            && same_timing_bases(&self.timing_bases, &other.timing_bases)
             && self.evidence == other.evidence
     }
+}
+
+fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> bool {
+    fn consecutive_unique(bases: &[TimingBasis]) -> Vec<TimingBasis> {
+        let mut normalized = Vec::with_capacity(bases.len());
+        for basis in bases {
+            if normalized.last() != Some(basis) {
+                normalized.push(*basis);
+            }
+        }
+        normalized
+    }
+
+    consecutive_unique(left) == consecutive_unique(right)
 }
 
 fn make_candidate(
     path: &EvaluationPath,
     egress: &EgressPoint,
     arrival_time: OffsetDateTime,
-    transit_legs: usize,
 ) -> JourneyCandidate {
     JourneyCandidate {
         access: path.access.clone(),
@@ -280,7 +294,7 @@ fn make_candidate(
         departure_time: path.access.departure_at,
         arrival_time,
         walking_seconds: path.walking_seconds.saturating_add(egress.walking_seconds),
-        transfer_count: u32::try_from(transit_legs.saturating_sub(1)).unwrap_or(u32::MAX),
+        transfer_count: physical_transfer_count(&path.segments),
         uncertainty_seconds: path.uncertainty_seconds,
         evidence: path.evidence.clone(),
         timing_bases: path.timing_bases.clone(),
@@ -298,7 +312,7 @@ struct EvaluatedCandidate {
 impl EvaluatedCandidate {
     fn dominates(&self, other: &Self) -> bool {
         (self.metrics.timing_reliability == other.metrics.timing_reliability
-            && self.metrics.timing_bases == other.metrics.timing_bases
+            && same_timing_bases(&self.metrics.timing_bases, &other.metrics.timing_bases)
             && self.metrics.evidence == other.metrics.evidence
             || (other.metrics.timing_reliability == TimingReliability::Reliable
                 && other.metrics.timing_bases.is_empty()
@@ -825,7 +839,7 @@ async fn evaluate_inner(
                 {
                     continue;
                 }
-                let candidate = make_candidate(&state.path, egress, arrival_at, state.transit_legs);
+                let candidate = make_candidate(&state.path, egress, arrival_at);
                 let Some(variant) = make_variant(candidate.clone(), &state.path.bike_shortcuts)
                 else {
                     stats.malformed_trips += 1;
@@ -1184,6 +1198,84 @@ mod tests {
             uncertainty_seconds: None,
             evidence: Vec::new(),
         }
+    }
+
+    #[test]
+    fn physical_reboarding_counts_distinct_effective_trips_but_through_service_does_not() {
+        let trip_a = trip("trip-a", "red-short", &["R10", "R09"], &[2, 4]);
+        let trip_b = trip("trip-b", "red-full", &["R09", "R03"], &[7, 16]);
+        let access_at = datetime!(2026-09-21 10:00 UTC);
+        let access = AccessPoint::new(BoardingPointId::new("R10"), access_at, access_at, 0, 0);
+        let egress = EgressPoint::new(BoardingPointId::new("destination"), 0, 0);
+        let boarded_twice = EvaluationPath::from_access(access.clone())
+            .with_ride(&trip_a, 0, 1)
+            .with_ride(&trip_b, 0, 1);
+
+        let reboarding = make_candidate(&boarded_twice, &egress, datetime!(2026-09-21 10:16 UTC));
+        assert_eq!(reboarding.transfer_count, 1);
+
+        let same_physical_trip = trip("through-trip", "red-short", &["R10", "R09"], &[2, 4]);
+        let continued_trip = trip("through-trip", "red-full", &["R09", "R03"], &[4, 16]);
+        let stayed_aboard = EvaluationPath::from_access(access)
+            .with_ride(&same_physical_trip, 0, 1)
+            .with_ride(&continued_trip, 0, 1);
+
+        let through = make_candidate(&stayed_aboard, &egress, datetime!(2026-09-21 10:16 UTC));
+        assert_eq!(through.transfer_count, 0);
+    }
+
+    #[test]
+    fn repeated_schedule_basis_does_not_prevent_direct_route_from_dominating_reboarding() {
+        let start = datetime!(2026-09-21 10:00 UTC);
+        let access = AccessPoint::new(BoardingPointId::new("R10"), start, start, 223, 0);
+        let egress = EgressPoint::new(BoardingPointId::new("egress"), 116, 0);
+        let terminal_walk = TransferShortcut::new(
+            BoardingPointId::new("R03"),
+            BoardingPointId::new("egress"),
+            86,
+        );
+        let arrival = datetime!(2026-09-21 10:19:22 UTC);
+
+        let mut direct_trip = trip("through", "red-full", &["R10", "R03"], &[2, 16]);
+        direct_trip.timing_basis = TimingBasis::Schedule;
+        direct_trip.timing_reliability = TimingReliability::Fallback;
+        let direct_path = EvaluationPath::from_access(access.clone())
+            .with_ride(&direct_trip, 0, 1)
+            .with_walking_transfer(&terminal_walk);
+        let direct_candidate = make_candidate(&direct_path, &egress, arrival);
+        let direct = EvaluatedCandidate {
+            variant: make_variant(direct_candidate.clone(), &[]).unwrap(),
+            metrics: direct_candidate,
+            bike_share_uses: 0,
+            bicycle_seconds: 0,
+        };
+
+        let mut first_trip = trip("first", "red-short", &["R10", "R09"], &[2, 4]);
+        first_trip.timing_basis = TimingBasis::Schedule;
+        first_trip.timing_reliability = TimingReliability::Fallback;
+        let mut second_trip = trip("second", "red-full", &["R09", "R03"], &[7, 16]);
+        second_trip.timing_basis = TimingBasis::Schedule;
+        second_trip.timing_reliability = TimingReliability::Fallback;
+        let split_path = EvaluationPath::from_access(access)
+            .with_ride(&first_trip, 0, 1)
+            .with_ride(&second_trip, 0, 1)
+            .with_walking_transfer(&terminal_walk);
+        let split_candidate = make_candidate(&split_path, &egress, arrival);
+        let split = EvaluatedCandidate {
+            variant: make_variant(split_candidate.clone(), &[]).unwrap(),
+            metrics: split_candidate,
+            bike_share_uses: 0,
+            bicycle_seconds: 0,
+        };
+
+        assert_eq!(direct.metrics.arrival_time, split.metrics.arrival_time);
+        assert_eq!(
+            direct.metrics.walking_seconds,
+            split.metrics.walking_seconds
+        );
+        assert_eq!(direct.metrics.transfer_count, 0);
+        assert_eq!(split.metrics.transfer_count, 1);
+        assert!(direct.dominates(&split));
     }
 
     fn static_leg(pattern_id: &str, board: &str, alight: &str) -> StaticCorridorStep {

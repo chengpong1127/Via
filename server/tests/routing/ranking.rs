@@ -125,6 +125,29 @@ fn dominance_near_duplicates_and_labels_are_server_owned() {
 }
 
 #[test]
+fn direct_through_journey_dominates_same_arrival_reboarding_route() {
+    let mut direct = candidate("red-through", 2_000);
+    direct.transfer_count = 0;
+    direct.main_pattern_sequence = vec!["red-full".into()];
+    direct.timing_bases = vec![TimingBasis::Schedule];
+    direct.timing_reliability = TimingReliability::Fallback;
+
+    let mut reboarding = candidate("red-reboard", 2_000);
+    reboarding.transfer_count = 1;
+    reboarding.main_pattern_sequence = vec!["red-short", "red-full"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    reboarding.timing_bases = vec![TimingBasis::Schedule, TimingBasis::Schedule];
+    reboarding.timing_reliability = TimingReliability::Fallback;
+
+    let ranked = RankingPolicy::default().rank(vec![reboarding, direct]);
+
+    assert_eq!(ranked.len(), 1);
+    assert_eq!(ranked[0].stable_key, "red-through");
+}
+
+#[test]
 fn ranking_replay_is_deterministic() {
     let input = vec![candidate("b", 2_000), candidate("a", 2_000)];
     let first = serde_json::to_vec(&RankingPolicy::default().rank(input.clone())).unwrap();

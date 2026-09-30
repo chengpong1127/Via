@@ -2,15 +2,19 @@ use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use via_server::{
     domain::journey::PlanningError,
+    domain::{
+        ids::BoardingPointId,
+        transit::{TransferEdge, TransitNetwork},
+    },
     routing::RoutingLimits,
     street::{FakeStreetRouter, StreetTravelMode},
 };
 
 use super::fixtures::{
     FixtureRealtime, leg_modes, near_stop, network, option_for_patterns, request, route_body,
-    route_body_with_limits, transit_street,
+    route_body_with_limits, route_body_with_network, transit_street,
 };
-use crate::support::routing::{coordinate, path};
+use crate::support::routing::{coordinate, path, stop_coordinate};
 
 fn current_minute_in_taipei() -> OffsetDateTime {
     OffsetDateTime::now_utc()
@@ -23,6 +27,63 @@ fn current_minute_in_taipei() -> OffsetDateTime {
 
 fn format_fixture_time(time: OffsetDateTime) -> String {
     time.format(&Rfc3339).expect("timestamp should format")
+}
+
+fn red_line_fixture_network() -> TransitNetwork {
+    let mut network = network();
+    network
+        .patterns
+        .retain(|pattern| matches!(pattern.id.as_str(), "fixture-mrt-red" | "fixture-mrt-blue"));
+    network.trips.retain(|trip| {
+        matches!(
+            trip.pattern_id.as_str(),
+            "fixture-mrt-red" | "fixture-mrt-blue"
+        )
+    });
+    network
+        .routes
+        .retain(|route| matches!(route.id.as_str(), "fixture-mrt-red" | "fixture-mrt-blue"));
+    network.stops.retain(|stop| {
+        matches!(
+            stop.id.as_str(),
+            "F-M1" | "F-M2-RED" | "F-M2-BLUE" | "F-M3-BLUE"
+        )
+    });
+    network.transfer_edges.clear();
+    network
+}
+
+fn same_line_reboarding_network() -> TransitNetwork {
+    let mut network = red_line_fixture_network();
+    let red_route = network
+        .patterns
+        .iter()
+        .find(|pattern| pattern.id.as_str() == "fixture-mrt-red")
+        .unwrap()
+        .route_id
+        .clone();
+    let continuation = network
+        .patterns
+        .iter_mut()
+        .find(|pattern| pattern.id.as_str() == "fixture-mrt-blue")
+        .unwrap();
+    continuation.route_id = red_route.clone();
+    continuation.stops[0] = BoardingPointId::new("F-M2-RED");
+    network.routes.retain(|route| route.id == red_route);
+    network
+}
+
+fn terminal_transfer_network() -> TransitNetwork {
+    let mut network = red_line_fixture_network();
+    network
+        .trips
+        .retain(|trip| trip.pattern_id.as_str() == "fixture-mrt-red");
+    network.transfer_edges = vec![TransferEdge::new(
+        BoardingPointId::new("F-M2-RED"),
+        BoardingPointId::new("F-M2-BLUE"),
+        30,
+    )];
+    network
 }
 
 #[tokio::test]
@@ -59,6 +120,79 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
         option["legs"][1]["arrival_time"],
         "2026-08-31T10:07:00+08:00"
     );
+}
+
+#[tokio::test]
+async fn same_line_reboarding_counts_a_transfer_between_effective_trips() {
+    let network = same_line_reboarding_network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M3-BLUE");
+    let body = route_body_with_network(
+        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro"]),
+        network,
+    )
+    .await;
+    let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
+
+    assert_eq!(option["transfer_count"], 1);
+    assert_eq!(option["transfers"].as_array().unwrap().len(), 1);
+    assert_eq!(option["transfers"][0]["duration_seconds"], 120);
+    assert_eq!(option["transfers"][0]["available_seconds"], 120);
+    assert!(
+        option["transfers"][0]["connector_leg_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(option["legs"][1]["details"]["service_label"], "R");
+    assert_eq!(option["legs"][2]["details"]["service_label"], "R");
+}
+
+#[tokio::test]
+async fn terminal_surface_transfer_and_egress_are_one_routed_walk() {
+    let network = terminal_transfer_network();
+    let origin = near_stop(&network, "F-M1");
+    let from_transfer = stop_coordinate(&network, "F-M2-RED");
+    let egress = stop_coordinate(&network, "F-M2-BLUE");
+    let destination = near_stop(&network, "F-M2-BLUE");
+    let street = FakeStreetRouter::builder()
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            stop_coordinate(&network, "F-M1"),
+            path(origin, stop_coordinate(&network, "F-M1"), 60),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            from_transfer,
+            destination,
+            path(from_transfer, destination, 120),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            egress,
+            destination,
+            path(egress, destination, 60),
+        )
+        .build();
+    let body = route_body_with_network(
+        street,
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro"]),
+        network,
+    )
+    .await;
+    let option = option_for_patterns(&body, &["fixture-mrt-red"]);
+    let legs = option["legs"].as_array().unwrap();
+
+    assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
+    assert_eq!(legs[2]["from"]["via_id"], "F-M2-RED");
+    assert_eq!(legs[2]["to"]["display_name"], "Fixture destination");
+    assert_eq!(legs[2]["duration_seconds"], 120);
+    assert_eq!(legs[2]["distance_metres"], 600);
+    assert!(!legs[2]["geometry"]["points"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]

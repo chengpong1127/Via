@@ -96,24 +96,50 @@ pub(crate) async fn route_body(
     realtime: FixtureRealtime,
     body: Value,
 ) -> Value {
-    route_body_inner(street, realtime, body, None, RoutingLimits::default())
-        .await
-        .unwrap()
+    route_body_inner(
+        street,
+        realtime,
+        body,
+        None,
+        RoutingLimits::default(),
+        network(),
+    )
+    .await
+    .unwrap()
+}
+
+pub(crate) async fn route_body_with_network(
+    street: FakeStreetRouter,
+    realtime: FixtureRealtime,
+    body: Value,
+    network: TransitNetwork,
+) -> Value {
+    route_body_inner(
+        street,
+        realtime,
+        body,
+        None,
+        RoutingLimits::default(),
+        network,
+    )
+    .await
+    .unwrap()
 }
 
 pub(crate) async fn route_body_with_bike(
     street: FakeStreetRouter,
     realtime: FixtureRealtime,
     body: Value,
-    network: Arc<BikeShareNetwork>,
+    bike_network: Arc<BikeShareNetwork>,
     availability_source: Arc<dyn BikeAvailabilitySource>,
 ) -> Value {
     route_body_inner(
         street,
         realtime,
         body,
-        Some((network, availability_source)),
+        Some((bike_network, availability_source)),
         RoutingLimits::default(),
+        network(),
     )
     .await
     .unwrap()
@@ -125,7 +151,7 @@ pub(crate) async fn route_body_with_limits(
     body: Value,
     limits: RoutingLimits,
 ) -> Result<Value, PlanningError> {
-    route_body_inner(street, realtime, body, None, limits).await
+    route_body_inner(street, realtime, body, None, limits, network()).await
 }
 
 async fn route_body_inner(
@@ -134,10 +160,11 @@ async fn route_body_inner(
     body: Value,
     bike: Option<(Arc<BikeShareNetwork>, Arc<dyn BikeAvailabilitySource>)>,
     limits: RoutingLimits,
+    transit_network: TransitNetwork,
 ) -> Result<Value, PlanningError> {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
     request.validate().unwrap();
-    let network = Arc::new(TransitRuntime::new(Arc::new(network())));
+    let network = Arc::new(TransitRuntime::new(Arc::new(transit_network)));
     let bindings: TdxProviderBindings = serde_json::from_str(BINDINGS_JSON).unwrap();
     let tdx = if let Some(updated_at) = realtime.bus_updated_at {
         Some(fixture_tdx_client(bus_tdx_payload(updated_at)).await)
