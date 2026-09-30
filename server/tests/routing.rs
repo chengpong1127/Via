@@ -1,3 +1,5 @@
+#[path = "routing/benchmarks.rs"]
+mod benchmarks;
 #[path = "routing/fixtures.rs"]
 mod fixtures;
 #[path = "routing/journeys.rs"]
