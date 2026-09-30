@@ -21,8 +21,7 @@ struct JourneyMapView: View {
 
             DirectionsPanel(
                 searchRegion: LocationSearchRegion.preferred(
-                    mapViewport: mapViewport,
-                    userCoordinate: nil
+                    mapViewport: mapViewport
                 ),
                 onShowDetails: { detailsOption = $0 }
             )

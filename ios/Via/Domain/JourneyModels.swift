@@ -1,33 +1,4 @@
-import CoreLocation
 import Foundation
-
-struct Coordinate: Hashable, Sendable {
-    let latitude: Double
-    let longitude: Double
-
-    var clLocationCoordinate: CLLocationCoordinate2D {
-        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-    }
-}
-
-struct Place: Hashable, Sendable {
-    let name: String
-    let subtitle: String?
-    let coordinate: Coordinate
-
-    init(name: String, subtitle: String? = nil, coordinate: Coordinate) {
-        self.name = name
-        self.subtitle = subtitle
-        self.coordinate = coordinate
-    }
-
-    var displayText: String { name }
-}
-
-enum JourneyEndpoint: Hashable, Sendable {
-    case currentLocation
-    case place(Place)
-}
 
 enum LegMode: String, CaseIterable, Hashable, Identifiable, Sendable {
     case walking
@@ -49,37 +20,6 @@ enum LegMode: String, CaseIterable, Hashable, Identifiable, Sendable {
         case .transit: "tram.fill"
         case .walking: "figure.walk"
         case .bicycle: "bicycle"
-        }
-    }
-}
-
-enum PlanningMode: String, CaseIterable, Hashable, Identifiable, Sendable {
-    case bus
-    case metro
-    case tra
-    case thsr
-    case bikeShare = "bike_share"
-
-    var id: Self { self }
-
-    static let selectable: [PlanningMode] = [.bus, .metro, .tra, .thsr, .bikeShare]
-
-    var titleKey: String {
-        switch self {
-        case .bus: "Bus"
-        case .metro: "Metro"
-        case .tra: "TRA"
-        case .thsr: "THSR"
-        case .bikeShare: "Bike Share"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .bus: "bus.fill"
-        case .metro: "tram.fill"
-        case .tra, .thsr: "train.side.front.car"
-        case .bikeShare: "bicycle"
         }
     }
 }
@@ -107,20 +47,6 @@ enum TransitMode: String, CaseIterable, Hashable, Sendable {
         case .highSpeedRail: "train.side.front.car"
         }
     }
-}
-
-enum DepartureSetting: Hashable, Sendable {
-    case departNow
-    case departAt(Date)
-    case arriveBy(Date)
-}
-
-struct PlanningRequest: Hashable, Sendable {
-    let origin: Place
-    let destination: Place
-    let selectedModes: Set<PlanningMode>
-    let departureSetting: DepartureSetting
-    let locale: String
 }
 
 enum JourneyClass: String, Equatable, Sendable {
@@ -277,29 +203,4 @@ struct JourneyResult: Sendable {
     let generatedAt: Date
     let networkRevision: NetworkRevision
     let options: [JourneyOption]
-}
-
-enum JourneyPlanningError: Error, Equatable, Sendable {
-    case invalidRequest(field: String)
-    case temporarilyUnavailable
-    case unsupportedResponse
-    case unexpectedFailure
-}
-
-enum LocationProvidingError: Error, Equatable, Sendable {
-    case permissionDenied
-    case restricted
-    case unavailable
-}
-
-@MainActor
-protocol LocationProviding {
-    var authorizationStatus: CLAuthorizationStatus { get }
-
-    func requestWhenInUseAuthorization()
-    func currentLocation() async throws -> Coordinate
-}
-
-protocol JourneyPlanning: Sendable {
-    func plan(_ request: PlanningRequest) async throws -> JourneyResult
 }

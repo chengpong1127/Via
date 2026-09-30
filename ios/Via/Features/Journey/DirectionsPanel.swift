@@ -22,7 +22,17 @@ struct DirectionsPanel: View {
                     modeFilters
                     locationFields
                     departureRow
-                    stateContent
+                    JourneyPlanningStateContent(
+                        state: session.state,
+                        canSubmit: session.canSubmit,
+                        refreshMessage: session.refreshMessage,
+                        options: session.result?.options ?? [],
+                        selectedOptionID: session.selectedOptionID,
+                        onSelect: session.select,
+                        onShowDetails: onShowDetails,
+                        onEdit: session.returnToEditing,
+                        onSubmit: { Task { await session.submit() } }
+                    )
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 28)
@@ -168,88 +178,6 @@ struct DirectionsPanel: View {
                     .background(.green.opacity(0.14), in: Circle())
                     .accessibilityLabel("Live Status available")
             }
-        }
-    }
-
-    @ViewBuilder
-    private var stateContent: some View {
-        switch session.state {
-        case .editing:
-            primaryAction
-        case .loading:
-            LoadingView()
-        case .results, .refreshing:
-            if let message = session.refreshMessage {
-                Label(message, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            Text("Journey Options")
-                .font(.subheadline.bold())
-            ForEach(session.result?.options ?? []) { option in
-                JourneyOptionCard(
-                    option: option,
-                    isSelected: session.selectedOptionID == option.id,
-                    onSelect: { session.select(option) },
-                    onShowDetails: { onShowDetails(option) }
-                )
-            }
-        case .empty:
-            MessageStateView(
-                symbol: "signpost.right.and.left",
-                title: "No matching Journey Options",
-                message: "Try another transit combination.",
-                actionTitle: "Edit request",
-                action: session.returnToEditing
-            )
-        case .invalidRequest(let field):
-            MessageStateView(
-                symbol: "exclamationmark.circle",
-                title: "Check your request",
-                message: "A required field needs attention: \(field).",
-                actionTitle: "Edit request",
-                action: session.returnToEditing
-            )
-        case .locationPermissionDenied:
-            MessageStateView(
-                symbol: "location.slash",
-                title: "Location access is turned off",
-                message: "Via needs your location to plan from Current Location. Choose another starting point or allow location access in Settings.",
-                actionTitle: "Edit request",
-                action: session.returnToEditing
-            )
-        case .locationRestricted:
-            MessageStateView(
-                symbol: "location.slash",
-                title: "Location access is unavailable",
-                message: "Via cannot use Current Location on this device. Choose another starting point.",
-                actionTitle: "Edit request",
-                action: session.returnToEditing
-            )
-        case .locationUnavailable:
-            MessageStateView(
-                symbol: "location.slash",
-                title: "Current location unavailable",
-                message: "We couldn't get your current location. Try again or choose a starting point manually.",
-                actionTitle: "Try again",
-                action: { Task { await session.submit() } }
-            )
-        case .temporarilyUnavailable:
-            MessageStateView(
-                symbol: "wifi.exclamationmark",
-                title: "Journey Planning is temporarily unavailable",
-                message: "Via could not get current realtime information. Try again.",
-                actionTitle: "Try again",
-                action: { Task { await session.submit() } }
-            )
-        case .unexpectedFailure:
-            MessageStateView(
-                symbol: "exclamationmark.triangle",
-                title: "Something went wrong",
-                message: "No partial result was shown because it could not be trusted.",
-                actionTitle: "Try again",
-                action: { Task { await session.submit() } }
-            )
         }
     }
 
