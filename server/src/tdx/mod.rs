@@ -1,6 +1,8 @@
 mod client;
 
-pub use client::{TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError};
+pub use client::{
+    DEFAULT_TDX_API_BASE_URL, TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError,
+};
 
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 

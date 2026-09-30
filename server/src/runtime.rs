@@ -1,6 +1,7 @@
-use std::{env, error::Error, sync::Arc, time::Duration};
+use std::{error::Error, sync::Arc, time::Duration};
 
 use crate::{
+    config::ProductionRuntimeConfig,
     data::ViaStatic,
     domain::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
@@ -16,7 +17,7 @@ use crate::{
     },
     routing::{RoutingLimits, RoutingService},
     street::StreetRouter,
-    tdx::{TdxClient, TdxCredentials},
+    tdx::TdxClient,
 };
 
 pub struct RoutingRuntime {
@@ -90,19 +91,14 @@ impl RoutingRuntime {
 pub async fn build_production_runtime(
     via_static: ViaStatic,
     options: ProductionRuntimeOptions,
+    config: ProductionRuntimeConfig,
 ) -> Result<(Arc<ValhallaProvider>, RoutingRuntime), Box<dyn Error>> {
     via_static.validate()?;
-    let environment = env::var("VIA_ENV").unwrap_or_else(|_| "development".to_owned());
     let mut valhalla_config = ValhallaConfig::local();
     if let Some(timeout) = options.valhalla_request_timeout {
         valhalla_config.request_timeout = timeout;
     }
-    if let Ok(base_url) = env::var("VIA_VALHALLA_URL") {
-        valhalla_config.base_url = url::Url::parse(&base_url)?;
-    }
-    if environment == "production" && valhalla_config.base_url.scheme() != "https" {
-        return Err("VIA_VALHALLA_URL must use HTTPS in production".into());
-    }
+    valhalla_config.base_url = config.valhalla.base_url;
     let street = Arc::new(ValhallaProvider::with_observer(
         valhalla_config,
         Arc::new(TracingOperationalEventObserver),
@@ -111,15 +107,9 @@ pub async fn build_production_runtime(
         return Err("Valhalla is not healthy".into());
     }
 
-    let tdx_base_url = env::var("VIA_TDX_BASE_URL")
-        .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".to_owned());
-    let parsed_tdx_url = url::Url::parse(&tdx_base_url)?;
-    if environment == "production" && parsed_tdx_url.scheme() != "https" {
-        return Err("VIA_TDX_BASE_URL must use HTTPS in production".into());
-    }
     let tdx = Arc::new(TdxClient::with_api_base_url(
-        TdxCredentials::from_env()?,
-        parsed_tdx_url.as_str(),
+        config.tdx.credentials,
+        config.tdx.api_base_url.as_str(),
     )?);
     let bindings = via_static.provider_bindings.clone();
     let bike_share_network = Arc::new(via_static.bike_share);

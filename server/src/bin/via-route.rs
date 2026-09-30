@@ -4,7 +4,7 @@ use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace, new_request_id},
-    config::load_dotenv,
+    config::{Environment, ProductionRuntimeConfig, load_dotenv},
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
     routing::RoutingLimits,
@@ -73,7 +73,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         limits,
         valhalla_request_timeout: valhalla_timeout,
     };
-    let (_, runtime) = build_production_runtime(via_static, options).await?;
+    let runtime_config =
+        ProductionRuntimeConfig::from_env(Environment::from_env_or_development()?)?;
+    let (_, runtime) = build_production_runtime(via_static, options, runtime_config).await?;
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("  max static corridors={max_static_corridors}");
@@ -181,7 +183,6 @@ fn parse_time(value: &str) -> Result<OffsetDateTime, Box<dyn Error>> {
 fn print_summary(result: &PlanningOutcome, network_revision: &str, schedule_revision: &str) {
     println!("network revision: {network_revision}");
     println!("schedule revision: {schedule_revision}");
-    println!("service-condition mode: live");
     match result {
         PlanningOutcome::Empty(empty) => {
             println!("no feasible journey option ({})", empty.empty.code)

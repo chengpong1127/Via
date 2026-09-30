@@ -1,5 +1,5 @@
 use std::{
-    env, fmt,
+    fmt,
     path::Path,
     sync::Arc,
     time::{Duration, Instant, SystemTime},
@@ -11,7 +11,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
 
-const DEFAULT_TDX_API_BASE_URL: &str = "https://tdx.transportdata.tw/api/basic/";
+pub const DEFAULT_TDX_API_BASE_URL: &str = "https://tdx.transportdata.tw/api/basic/";
 const DEFAULT_TDX_TOKEN_URL: &str =
     "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -34,15 +34,6 @@ impl TdxCredentials {
             client_secret: client_secret.into(),
         }
     }
-
-    pub fn from_env() -> Result<Self, TdxCredentialsError> {
-        let client_id = required_env("TDX_CLIENT_ID")?;
-        let client_secret = required_env("TDX_CLIENT_SECRET")?;
-        Ok(Self {
-            client_id,
-            client_secret,
-        })
-    }
 }
 
 impl fmt::Debug for TdxCredentials {
@@ -52,13 +43,6 @@ impl fmt::Debug for TdxCredentials {
             .field("client_id", &"<redacted>")
             .field("client_secret", &"<redacted>")
             .finish()
-    }
-}
-
-fn required_env(name: &'static str) -> Result<String, TdxCredentialsError> {
-    match env::var(name) {
-        Ok(value) if !value.trim().is_empty() => Ok(value),
-        _ => Err(TdxCredentialsError::Missing(name)),
     }
 }
 

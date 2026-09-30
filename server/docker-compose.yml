@@ -6,7 +6,8 @@ services:
     env_file:
       - .env
     environment:
-      VIA_VALHALLA_URL: http://valhalla:8002/
+      VIA_ENV: ${VIA_ENV:-development}
+      VIA_VALHALLA_URL: ${VIA_VALHALLA_URL:-http://valhalla:8002/}
       VIA_STATIC: ${VIA_STATIC:?Set VIA_STATIC to the .via-static.json path before starting Compose}
     volumes:
       - ./data:/app/server/data:ro

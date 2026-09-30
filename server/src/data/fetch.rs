@@ -12,7 +12,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
-use crate::tdx::{TdxClient, TdxClientError, TdxCredentials, TdxCredentialsError};
+use crate::tdx::{TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_PAGE_SIZE: &str = "1000";
@@ -48,8 +48,6 @@ pub enum FetchError {
     Io(PathBuf, #[source] std::io::Error),
     #[error("TDX fetch failed: {0}")]
     Tdx(#[from] TdxClientError),
-    #[error("TDX credentials are unavailable: {0}")]
-    Credentials(#[from] TdxCredentialsError),
     #[error("TDX Bike Station response for {city} was invalid: {detail}")]
     InvalidBikeResponse { city: String, detail: String },
     #[error("downloaded GTFS data is not a valid ZIP archive")]
@@ -75,20 +73,13 @@ impl FetchSources {
     }
 }
 
-pub async fn fetch_snapshot(gtfs_file: Option<&Path>) -> Result<FetchSnapshot, FetchError> {
-    let credentials = TdxCredentials::from_env()?;
-    let base_url = std::env::var("VIA_TDX_BASE_URL")
-        .unwrap_or_else(|_| "https://tdx.transportdata.tw/api/basic/".to_owned());
-    let client = TdxClient::with_api_base_url(credentials, &base_url)?;
+pub async fn fetch_snapshot(
+    gtfs_file: Option<&Path>,
+    client: &TdxClient,
+    sources: &FetchSources,
+) -> Result<FetchSnapshot, FetchError> {
     let snapshot_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/fetch");
-    fetch_snapshot_at(
-        &snapshot_root,
-        &timestamp_now(),
-        gtfs_file,
-        &client,
-        &FetchSources::production(base_url),
-    )
-    .await
+    fetch_snapshot_at(&snapshot_root, &timestamp_now(), gtfs_file, client, sources).await
 }
 
 pub async fn fetch_snapshot_at(
@@ -411,6 +402,8 @@ mod tests {
         routing::any,
     };
     use zip::{ZipWriter, write::SimpleFileOptions};
+
+    use crate::tdx::TdxCredentials;
 
     use super::*;
 

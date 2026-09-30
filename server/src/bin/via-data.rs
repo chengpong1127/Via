@@ -7,15 +7,18 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use via_server::{
-    config::load_dotenv,
+    config::{TdxRuntimeConfig, ValhallaRuntimeConfig, load_dotenv},
     data::{
         GtfsBuildDiagnostics, GtfsModeCoverage, build_from_fetch_snapshot, fetch,
-        fetch::fetch_snapshot, gtfs::measure_mode_coverage, load_static_artifact,
+        fetch::{FetchSources, fetch_snapshot},
+        gtfs::measure_mode_coverage,
+        load_static_artifact,
     },
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     health::DependencyHealth,
     providers::valhalla::{ValhallaConfig, ValhallaProvider},
     street::StreetRouter,
+    tdx::TdxClient,
 };
 
 #[derive(Parser, Debug)]
@@ -121,7 +124,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
-    let snapshot = fetch_snapshot(args.gtfs_file.as_deref()).await?;
+    let tdx = TdxRuntimeConfig::from_env()?;
+    let client = TdxClient::with_api_base_url(tdx.credentials, tdx.api_base_url.as_str())?;
+    let sources = FetchSources::production(tdx.api_base_url.as_str());
+    let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
     println!("fetch snapshot: {}", snapshot.path.display());
     println!("fetched at: {}", snapshot.manifest.fetched_at);
     for (name, source) in &snapshot.manifest.sources {
@@ -138,7 +144,7 @@ async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
 
 async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
-    let street = build_street_router().await?;
+    let street = build_street_router(ValhallaRuntimeConfig::from_env()?).await?;
     let output = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("data/build")
         .join(fetch::timestamp_now());
@@ -153,13 +159,13 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn build_street_router() -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    let mut config = ValhallaConfig::local();
-    config.request_timeout = Duration::from_secs(15);
-    if let Ok(base_url) = std::env::var("VIA_VALHALLA_URL") {
-        config.base_url = url::Url::parse(&base_url)?;
-    }
-    let street = Arc::new(ValhallaProvider::new(config)?);
+async fn build_street_router(
+    provider_config: ValhallaRuntimeConfig,
+) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
+    let mut valhalla_config = ValhallaConfig::local();
+    valhalla_config.request_timeout = Duration::from_secs(15);
+    valhalla_config.base_url = provider_config.base_url;
+    let street = Arc::new(ValhallaProvider::new(valhalla_config)?);
     if !street.healthy().await {
         return Err("Valhalla is not healthy".into());
     }
