@@ -10,14 +10,9 @@ use crate::{
     providers::bindings::TdxProviderBindings,
     providers::{
         BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxBikeAvailabilitySource,
-        TdxServiceConditionProvider, ThsrDepartureSource, TraDepartureSource,
-        TracingOperationalEventObserver, TransitDepartureSource, ValhallaConfig, ValhallaProvider,
-        bikeshare::BikeAvailabilitySource,
-        service_conditions::{
-            CachedServiceConditionProvider, DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-            ServiceConditionMetrics, ServiceConditionProvider,
-        },
-        timing::BusTimingMetrics,
+        ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
+        TransitDepartureSource, ValhallaConfig, ValhallaProvider,
+        bikeshare::BikeAvailabilitySource, timing::BusTimingMetrics,
     },
     routing::{RoutingLimits, RoutingService},
     street::StreetRouter,
@@ -27,7 +22,6 @@ use crate::{
 pub struct RoutingRuntime {
     pub routing: RoutingService,
     pub transit_runtime: Arc<TransitRuntime>,
-    pub service_condition_metrics: ServiceConditionMetrics,
     pub bus_timing_metrics: BusTimingMetrics,
 }
 
@@ -37,9 +31,7 @@ pub struct RoutingRuntimeDependencies {
     pub bike_share_network: Arc<BikeShareNetwork>,
     pub street: Arc<dyn StreetRouter>,
     pub tdx: Option<Arc<TdxClient>>,
-    pub service_conditions: Arc<dyn ServiceConditionProvider>,
     pub bike_availability: Arc<dyn BikeAvailabilitySource>,
-    pub cache_ttl: Duration,
     pub limits: RoutingLimits,
 }
 
@@ -51,11 +43,6 @@ pub struct ProductionRuntimeOptions {
 
 impl RoutingRuntime {
     pub fn from_dependencies(dependencies: RoutingRuntimeDependencies) -> Self {
-        let service_conditions = Arc::new(CachedServiceConditionProvider::with_ttl(
-            dependencies.service_conditions,
-            dependencies.cache_ttl,
-        ));
-        let service_condition_metrics = service_conditions.metrics();
         let bus_timing_metrics = BusTimingMetrics::default();
         let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
         let provider_bindings = Arc::new(dependencies.provider_bindings);
@@ -88,7 +75,6 @@ impl RoutingRuntime {
             dependencies.street,
             transit_runtime.clone(),
             departure_resolver,
-            service_conditions,
             dependencies.bike_share_network,
             dependencies.bike_availability,
             dependencies.limits,
@@ -96,7 +82,6 @@ impl RoutingRuntime {
         Self {
             routing,
             transit_runtime,
-            service_condition_metrics,
             bus_timing_metrics,
         }
     }
@@ -137,19 +122,6 @@ pub async fn build_production_runtime(
         parsed_tdx_url.as_str(),
     )?);
     let bindings = via_static.provider_bindings.clone();
-    let service_conditions =
-        TdxServiceConditionProvider::new(tdx.clone()).with_bindings(Arc::new(bindings.clone()));
-    let service_conditions = if let Ok(path) = env::var("VIA_TDX_SERVICE_CONDITION_PATH") {
-        service_conditions.with_service_condition_path(path)
-    } else {
-        service_conditions
-    };
-    let cache_ttl = env::var("VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS")
-        .ok()
-        .map(|value| value.parse::<u64>())
-        .transpose()?
-        .map(Duration::from_secs)
-        .unwrap_or(DEFAULT_SERVICE_CONDITION_CACHE_TTL);
     let bike_share_network = Arc::new(via_static.bike_share);
     let bike_availability: Arc<dyn BikeAvailabilitySource> = Arc::new(
         TdxBikeAvailabilitySource::new(bike_share_network.clone(), tdx.clone()),
@@ -160,9 +132,7 @@ pub async fn build_production_runtime(
         bike_share_network,
         street: street.clone(),
         tdx: Some(tdx),
-        service_conditions: Arc::new(service_conditions),
         bike_availability,
-        cache_ttl,
         limits: options.limits,
     });
     Ok((street, runtime))

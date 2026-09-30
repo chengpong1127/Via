@@ -6,11 +6,8 @@ use via_server::{
     app::build_router,
     domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
     health::DependencyHealth,
+    providers::bindings::TdxProviderBindings,
     providers::{BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
-    providers::{
-        bindings::TdxProviderBindings,
-        service_conditions::{DEFAULT_SERVICE_CONDITION_CACHE_TTL, NullServiceConditionProvider},
-    },
     routing::RoutingLimits,
     runtime::{RoutingRuntime, RoutingRuntimeDependencies},
     street::{StreetRouter, StreetRoutingError},
@@ -45,9 +42,7 @@ where
         ),
         street,
         tdx: None,
-        service_conditions: Arc::new(NullServiceConditionProvider),
         bike_availability: bike_availability_source,
-        cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
         limits: RoutingLimits::default(),
     });
     Ok(build_router(provider, runtime))

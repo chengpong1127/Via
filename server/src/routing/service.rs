@@ -20,7 +20,7 @@ use crate::{
         transit_timing::TimingSnapshotLoader,
     },
     observability::{OperationalMetrics, PlannerStageMetrics},
-    providers::{BikeAvailabilitySource, service_conditions::ServiceConditionProvider},
+    providers::BikeAvailabilitySource,
     street::{
         Coordinate, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetPath,
         StreetRouter, StreetRoutingError, StreetTravelMode,
@@ -35,14 +35,12 @@ use super::{
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
-    status,
 };
 
 #[derive(Clone)]
 pub struct RoutingService {
     pub(crate) street_routing: Arc<dyn StreetRouter>,
     pub(crate) transit_planner: TransitPlanner,
-    pub(crate) service_conditions: Arc<dyn ServiceConditionProvider>,
     pub(crate) transit_runtime: Arc<TransitRuntime>,
     pub(crate) bike_share_network: Arc<BikeShareNetwork>,
     pub(crate) ranking: RankingPolicy,
@@ -93,7 +91,6 @@ impl RoutingService {
         street_routing: Arc<dyn StreetRouter>,
         transit_runtime: Arc<TransitRuntime>,
         timing: Arc<dyn TimingSnapshotLoader>,
-        service_conditions: Arc<dyn ServiceConditionProvider>,
         bike_share_network: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: RoutingLimits,
@@ -107,7 +104,6 @@ impl RoutingService {
         Self {
             street_routing: street_routing.clone(),
             transit_planner,
-            service_conditions,
             transit_runtime,
             bike_share_network,
             ranking: RankingPolicy::default(),
@@ -345,15 +341,6 @@ impl RoutingService {
                             .sum();
                         stage_metrics.multimodal_search_duration_ms =
                             search_started.elapsed().as_millis() as u64;
-                        let service_ids = candidates
-                            .iter()
-                            .flat_map(JourneyVariant::transit_pattern_sequence);
-                        let (_, condition_failed) = status::collect_service_conditions(
-                            self.service_conditions.as_ref(),
-                            service_ids,
-                        )
-                        .await;
-                        had_transient_failure |= condition_failed;
                         for variant in candidates {
                             match self
                                 .reconstruct_multimodal_variant(&request, &variant, &context)

@@ -29,7 +29,6 @@ use crate::{
     },
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::service_conditions::ServiceConditionMetrics,
     providers::timing::BusTimingMetrics,
     routing::RoutingService,
     runtime::RoutingRuntime,
@@ -41,7 +40,6 @@ struct AppState {
     routing: RoutingService,
     transit_runtime: Arc<TransitRuntime>,
     metrics: OperationalMetrics,
-    service_condition_metrics: ServiceConditionMetrics,
     bus_timing_metrics: BusTimingMetrics,
     openapi: OpenApi,
 }
@@ -59,7 +57,6 @@ pub fn build_router(street_health: Arc<dyn DependencyHealth>, runtime: RoutingRu
             routing,
             transit_runtime,
             metrics,
-            service_condition_metrics: runtime.service_condition_metrics,
             bus_timing_metrics: runtime.bus_timing_metrics,
             openapi,
         })
@@ -389,9 +386,8 @@ async fn metrics(State(state): State<AppState>) -> Response {
             ("cache-control", "no-store"),
         ],
         format!(
-            "{}{}{}",
+            "{}{}",
             state.metrics.prometheus(),
-            state.service_condition_metrics.prometheus(),
             state.bus_timing_metrics.prometheus()
         ),
     ))

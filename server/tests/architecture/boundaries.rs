@@ -134,3 +134,14 @@ fn service_conditions_do_not_own_departure_timing() {
     assert!(provider.contains("Arc<TdxClient>"));
     assert!(provider.contains("impl ServiceConditionProvider"));
 }
+
+#[test]
+fn routing_does_not_fetch_unconsumed_service_conditions() {
+    let routing_service = source("src/routing/service.rs");
+    for forbidden in ["ServiceConditionProvider", "collect_service_conditions"] {
+        assert!(
+            !routing_service.contains(forbidden),
+            "routing service must not fetch unused service conditions: {forbidden}"
+        );
+    }
+}

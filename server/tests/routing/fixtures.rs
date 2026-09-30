@@ -15,7 +15,6 @@ use via_server::{
     },
     providers::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
-        service_conditions::{CachedServiceConditionProvider, NullServiceConditionProvider},
         timing::{
             BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxProviderBindings,
             ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
@@ -193,9 +192,6 @@ async fn route_body_inner(
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let cached = Arc::new(CachedServiceConditionProvider::new(Arc::new(
-        NullServiceConditionProvider,
-    )));
     let service_street = Arc::new(street);
     let (bike_network, availability_source) = bike.unwrap_or_else(|| {
         (
@@ -207,7 +203,6 @@ async fn route_body_inner(
         service_street,
         network,
         departure,
-        cached,
         bike_network,
         availability_source,
         limits,

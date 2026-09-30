@@ -10,8 +10,6 @@ pub mod topology;
 pub mod transfers;
 
 pub(crate) mod service;
-pub(crate) mod status;
-
 pub use evaluator::Phase2EvaluationStats;
 pub use model::{
     AccessPoint, EgressPoint, JourneyCandidate, JourneySegment, RoutingError, TransitQuery,
