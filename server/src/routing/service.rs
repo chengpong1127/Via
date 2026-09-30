@@ -174,17 +174,29 @@ impl RoutingService {
             deadline,
         )?;
         context.ensure_before_deadline()?;
-        let mut generated = Vec::new();
-        let mut failures = PlanningFailures::default();
-        let mut stage_metrics = PlannerStageMetrics::default();
+        let mut state = PlanningState::default();
+        self.discover_direct_alternatives(&context, &mut state)
+            .await?;
+        let transit_query = self
+            .discover_transit_endpoints(&context, &mut state)
+            .await?;
+        self.plan_and_reconstruct(transit_query, &context, &mut state)
+            .await?;
+        self.finalize_plan(metadata, request, &context, state)
+    }
 
+    async fn discover_direct_alternatives(
+        &self,
+        context: &PlanningContext,
+        state: &mut PlanningState,
+    ) -> Result<(), PlanningError> {
+        let request = &context.request;
         let DirectWalkingOutcome {
             walking: direct_walking,
             failures: walking_failures,
-        } = self.discover_direct_walking(&context).await;
+        } = self.discover_direct_walking(context).await;
         context.ensure_before_deadline()?;
-        failures.merge(walking_failures);
-        let mut direct_bike_journey = None;
+        state.failures.merge(walking_failures);
         if let Some(direct_walking) = &direct_walking {
             let departure_at = match request.departure_setting {
                 crate::api::DepartureSetting::ArriveBy { time } => {
@@ -200,7 +212,7 @@ impl RoutingService {
                     to_street_coordinate(request.destination.coordinate),
                 )
             {
-                direct_bike_journey = Some(DirectBikeJourney {
+                state.direct_bike = Some(DirectBikeJourney {
                     path: direct_walking.path.clone(),
                     origin,
                     destination,
@@ -211,23 +223,32 @@ impl RoutingService {
                 Ok(skeleton) => {
                     let variant = JourneyVariant::baseline(skeleton);
                     match self
-                        .reconstruct_multimodal_variant(&request, &variant, &context)
+                        .reconstruct_multimodal_variant(request, &variant, context)
                         .await
                     {
-                        Ok(Some(candidate)) => generated.push(candidate),
+                        Ok(Some(candidate)) => state.candidates.push(candidate),
                         Ok(None) => {}
                         Err(error) => {
-                            failures.record_planning(&error);
+                            state.failures.record_planning(&error);
                         }
                     }
                 }
                 Err(error) => {
                     tracing::error!(error = %error, "direct walking path could not be skeletonized");
-                    failures.internal = true;
+                    state.failures.internal = true;
                 }
             }
         }
 
+        Ok(())
+    }
+
+    async fn discover_transit_endpoints(
+        &self,
+        context: &PlanningContext,
+        state: &mut PlanningState,
+    ) -> Result<Option<TransitQuery>, PlanningError> {
+        let request = &context.request;
         let allowed_transit_modes = request.allowed_transit_modes();
         if !allowed_transit_modes.is_empty() {
             let access_started = Instant::now();
@@ -258,16 +279,16 @@ impl RoutingService {
             )
             .await;
             context.ensure_before_deadline()?;
-            stage_metrics.candidate_discovery_duration_ms =
+            state.metrics.candidate_discovery_duration_ms =
                 access_started.elapsed().as_millis() as u64;
             let (access, egress) = match (access, egress) {
                 (Ok(access), Ok(egress)) => (access, egress),
                 (Err(error), _) | (_, Err(error)) => {
-                    failures.record_provider(&error);
+                    state.failures.record_provider(&error);
                     (Vec::new(), Vec::new())
                 }
             };
-            stage_metrics.transit_candidate_stops = access.len() + egress.len();
+            state.metrics.transit_candidate_stops = access.len() + egress.len();
             tracing::debug!(
                 target: "via_server::routing",
                 access = ?access.iter().map(|point| (
@@ -292,7 +313,7 @@ impl RoutingService {
             );
 
             if !access.is_empty() && !egress.is_empty() {
-                let query = TransitQuery {
+                return Ok(Some(TransitQuery {
                     origin_access: access,
                     destination_egress: egress,
                     allowed_transit_modes,
@@ -300,106 +321,127 @@ impl RoutingService {
                     departure_time: context.search_start,
                     latest_arrival: context.latest_arrival,
                     limits: self.limits.planner,
-                    deadline: Some(deadline),
-                };
-                let search_started = Instant::now();
-                match self
-                    .transit_planner
-                    .plan_with_stats_and_direct(query, direct_bike_journey.take())
-                    .await
-                {
-                    Ok((candidates, planner_stats)) => {
-                        context.ensure_before_deadline()?;
-                        stage_metrics.transit_reachable_boardings =
-                            planner_stats.phase1.static_corridor_positions;
-                        stage_metrics.transit_reachable_patterns =
-                            planner_stats.phase1.static_corridor_patterns;
-                        stage_metrics.transit_realtime_stops_requested =
-                            planner_stats.phase1.static_corridor_bus_stops;
-                        stage_metrics.transit_departure_lookups =
-                            planner_stats.phase2_evaluation.transit_departure_lookups;
-                        stage_metrics.transit_realtime_evidence_values = candidates
-                            .iter()
-                            .map(JourneyVariant::realtime_evidence_count)
-                            .sum();
-                        stage_metrics.multimodal_search_duration_ms =
-                            search_started.elapsed().as_millis() as u64;
-                        for variant in candidates {
-                            match self
-                                .reconstruct_multimodal_variant(&request, &variant, &context)
-                                .await
-                            {
-                                Ok(Some(candidate)) => generated.push(candidate),
-                                Ok(None) => {}
-                                Err(error) => {
-                                    failures.record_planning(&error);
-                                }
+                    deadline: Some(context.deadline),
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn plan_and_reconstruct(
+        &self,
+        query: Option<TransitQuery>,
+        context: &PlanningContext,
+        state: &mut PlanningState,
+    ) -> Result<(), PlanningError> {
+        let request = &context.request;
+        if let Some(query) = query {
+            let search_started = Instant::now();
+            match self
+                .transit_planner
+                .plan_with_stats_and_direct(query, state.direct_bike.take())
+                .await
+            {
+                Ok((candidates, planner_stats)) => {
+                    context.ensure_before_deadline()?;
+                    state.metrics.transit_reachable_boardings =
+                        planner_stats.phase1.static_corridor_positions;
+                    state.metrics.transit_reachable_patterns =
+                        planner_stats.phase1.static_corridor_patterns;
+                    state.metrics.transit_realtime_stops_requested =
+                        planner_stats.phase1.static_corridor_bus_stops;
+                    state.metrics.transit_departure_lookups =
+                        planner_stats.phase2_evaluation.transit_departure_lookups;
+                    state.metrics.transit_realtime_evidence_values = candidates
+                        .iter()
+                        .map(JourneyVariant::realtime_evidence_count)
+                        .sum();
+                    state.metrics.multimodal_search_duration_ms =
+                        search_started.elapsed().as_millis() as u64;
+                    for variant in candidates {
+                        match self
+                            .reconstruct_multimodal_variant(request, &variant, context)
+                            .await
+                        {
+                            Ok(Some(candidate)) => state.candidates.push(candidate),
+                            Ok(None) => {}
+                            Err(error) => {
+                                state.failures.record_planning(&error);
                             }
                         }
                     }
-                    Err(error) => {
-                        match &error {
-                            super::model::RoutingError::Timing(timing) => {
-                                failures.transient |= timing.is_transient();
-                            }
-                            super::model::RoutingError::StaticSearchLimit
-                            | super::model::RoutingError::Phase2EvaluationLimit => {
-                                failures.internal = true;
-                            }
-                            super::model::RoutingError::DeadlineExceeded => {
-                                return Err(PlanningError::TemporarilyUnavailable);
-                            }
-                            super::model::RoutingError::InvalidQuery => {}
+                }
+                Err(error) => {
+                    match &error {
+                        super::model::RoutingError::Timing(timing) => {
+                            state.failures.transient |= timing.is_transient();
                         }
-                        tracing::error!(error = %error, "transit planning failed");
+                        super::model::RoutingError::StaticSearchLimit
+                        | super::model::RoutingError::Phase2EvaluationLimit => {
+                            state.failures.internal = true;
+                        }
+                        super::model::RoutingError::DeadlineExceeded => {
+                            return Err(PlanningError::TemporarilyUnavailable);
+                        }
+                        super::model::RoutingError::InvalidQuery => {}
                     }
+                    tracing::error!(error = %error, "transit planning failed");
                 }
             }
         }
-
-        if let Some(direct) = direct_bike_journey.take() {
+        if let Some(direct) = state.direct_bike.take() {
             context.ensure_before_deadline()?;
             for variant in self
                 .transit_planner
-                .plan_direct_bike(direct, deadline)
+                .plan_direct_bike(direct, context.deadline)
                 .await
             {
                 context.ensure_before_deadline()?;
                 match self
-                    .reconstruct_multimodal_variant(&request, &variant, &context)
+                    .reconstruct_multimodal_variant(request, &variant, context)
                     .await
                 {
-                    Ok(Some(candidate)) => generated.push(candidate),
+                    Ok(Some(candidate)) => state.candidates.push(candidate),
                     Ok(None) => {}
                     Err(error) => {
-                        failures.record_planning(&error);
+                        state.failures.record_planning(&error);
                     }
                 }
             }
         }
 
-        self.operational_metrics.record_planner_stage(stage_metrics);
+        Ok(())
+    }
+
+    fn finalize_plan(
+        &self,
+        metadata: ResultMetadata,
+        request: PlanningRequest,
+        context: &PlanningContext,
+        state: PlanningState,
+    ) -> Result<PlanningOutcome, PlanningError> {
+        self.operational_metrics.record_planner_stage(state.metrics);
         tracing::debug!(
             target: "via_server::routing",
-            candidate_discovery_ms = stage_metrics.candidate_discovery_duration_ms,
-            multimodal_search_ms = stage_metrics.multimodal_search_duration_ms,
-            transit_candidate_stops = stage_metrics.transit_candidate_stops,
-            reachable_boardings = stage_metrics.transit_reachable_boardings,
-            reachable_patterns = stage_metrics.transit_reachable_patterns,
-            realtime_stops_requested = stage_metrics.transit_realtime_stops_requested,
-            transit_departure_lookups = stage_metrics.transit_departure_lookups,
-            realtime_evidence_values = stage_metrics.transit_realtime_evidence_values,
-            generated_candidates = generated.len(),
+            candidate_discovery_ms = state.metrics.candidate_discovery_duration_ms,
+            multimodal_search_ms = state.metrics.multimodal_search_duration_ms,
+            transit_candidate_stops = state.metrics.transit_candidate_stops,
+            reachable_boardings = state.metrics.transit_reachable_boardings,
+            reachable_patterns = state.metrics.transit_reachable_patterns,
+            realtime_stops_requested = state.metrics.transit_realtime_stops_requested,
+            transit_departure_lookups = state.metrics.transit_departure_lookups,
+            realtime_evidence_values = state.metrics.transit_realtime_evidence_values,
+            generated_candidates = state.candidates.len(),
             "journey planning routing stages"
         );
-        if failures.internal {
+        if state.failures.internal {
             tracing::error!(
                 target: "via_server::routing",
                 "journey planning failed due to an internal routing error"
             );
             return Err(PlanningError::Internal);
         }
-        if generated.is_empty() && failures.transient {
+        if state.candidates.is_empty() && state.failures.transient {
             tracing::warn!(
                 target: "via_server::routing",
                 "journey planning has no result because a dependency was temporarily unavailable"
@@ -407,7 +449,7 @@ impl RoutingService {
             return Err(PlanningError::TemporarilyUnavailable);
         }
         context.ensure_before_deadline()?;
-        self.rank_generated(metadata, request, generated)
+        self.rank_generated(metadata, request, state.candidates)
     }
 
     fn rank_generated(
@@ -536,6 +578,14 @@ impl PlanningContext {
             None => self.constraints(self.search_start, RoutingTimeKind::DepartAt),
         }
     }
+}
+
+#[derive(Default)]
+struct PlanningState {
+    candidates: Vec<ReconstructedCandidate>,
+    failures: PlanningFailures,
+    metrics: PlannerStageMetrics,
+    direct_bike: Option<DirectBikeJourney>,
 }
 
 pub(crate) struct ReconstructedCandidate {
