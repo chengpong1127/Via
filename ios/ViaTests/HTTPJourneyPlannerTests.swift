@@ -170,7 +170,8 @@ struct HTTPJourneyPlannerTests {
         return try Data(contentsOf: fixtureURL)
     }
 
-    private static let emptyResult = Data(#"{
+    private static let emptyResult = Data(#"""
+    {
       "api_version":"1.0",
       "semantic_catalog_version":"1.0",
       "request_id":"req_test",
@@ -184,14 +185,17 @@ struct HTTPJourneyPlannerTests {
       "policy_versions":{"freshness":"1","ranking":"1","transfer_safety":"1"},
       "warnings":[],
       "empty":{"code":"no_feasible_journey_option","required":true,"parameters":{}}
-    }"#.utf8)
+    }
+    """#.utf8)
 
-    private static let errorBody = Data(#"{
+    private static let errorBody = Data(#"""
+    {
       "api_version":"1.0",
       "semantic_catalog_version":"1.0",
       "request_id":"req_test",
       "error":{"code":"invalid_request","required":true,"field":"/origin","parameters":{}}
-    }"#.utf8)
+    }
+    """#.utf8)
 }
 
 private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
