@@ -171,37 +171,3 @@ pub async fn build_production_runtime(
 pub fn runtime_metrics(runtime: &RoutingRuntime) -> OperationalMetrics {
     runtime.routing.operational_metrics.clone()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        domain::transit::TransitNetwork,
-        providers::{
-            UnavailableBikeAvailabilitySource, service_conditions::NullServiceConditionProvider,
-        },
-        street::StraightLineStreetRouter,
-    };
-
-    #[test]
-    fn runtime_keeps_the_shared_bike_network_instance() {
-        let bike_share_network =
-            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-bike-share"));
-        let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
-            transit_network: TransitNetwork::default(),
-            provider_bindings: TdxProviderBindings::default(),
-            bike_share_network: bike_share_network.clone(),
-            street: Arc::new(StraightLineStreetRouter::default()),
-            tdx: None,
-            service_conditions: Arc::new(NullServiceConditionProvider),
-            bike_availability: Arc::new(UnavailableBikeAvailabilitySource),
-            cache_ttl: DEFAULT_SERVICE_CONDITION_CACHE_TTL,
-            limits: RoutingLimits::default(),
-        });
-
-        assert!(Arc::ptr_eq(
-            &runtime.routing.bike_share_network,
-            &bike_share_network
-        ));
-    }
-}

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{PlanningRequest, new_request_id},
     domain::{
@@ -35,8 +36,16 @@ pub(crate) fn network() -> TransitNetwork {
     TransitNetwork::from_artifact_json(NETWORK_JSON).unwrap()
 }
 
-fn bus_tdx_payload() -> Value {
-    serde_json::from_str(include_str!("../../fixtures/routing/realtime/bus.json")).unwrap()
+fn bus_tdx_payload(updated_at: OffsetDateTime) -> Value {
+    let mut payload: Value =
+        serde_json::from_str(include_str!("../../fixtures/routing/realtime/bus.json")).unwrap();
+    let updated_at = updated_at
+        .format(&Rfc3339)
+        .expect("timestamp should format");
+    for record in payload.as_array_mut().expect("fixture should be an array") {
+        record["UpdateTime"] = Value::String(updated_at.clone());
+    }
+    payload
 }
 
 async fn fixture_tdx_client(payload: Value) -> Arc<TdxClient> {
@@ -55,19 +64,19 @@ async fn fixture_tdx_client(payload: Value) -> Arc<TdxClient> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct FixtureRealtime {
-    arrivals_available: bool,
+    bus_updated_at: Option<OffsetDateTime>,
 }
 
 impl FixtureRealtime {
     pub(crate) fn empty() -> Self {
         Self {
-            arrivals_available: false,
+            bus_updated_at: None,
         }
     }
 
-    pub(crate) fn bus() -> Self {
+    pub(crate) fn bus_at(updated_at: OffsetDateTime) -> Self {
         Self {
-            arrivals_available: true,
+            bus_updated_at: Some(updated_at),
         }
     }
 }
@@ -130,8 +139,8 @@ async fn route_body_inner(
     request.validate().unwrap();
     let network = Arc::new(TransitRuntime::new(Arc::new(network())));
     let bindings: TdxProviderBindings = serde_json::from_str(BINDINGS_JSON).unwrap();
-    let tdx = if realtime.arrivals_available {
-        Some(fixture_tdx_client(bus_tdx_payload()).await)
+    let tdx = if let Some(updated_at) = realtime.bus_updated_at {
+        Some(fixture_tdx_client(bus_tdx_payload(updated_at)).await)
     } else {
         None
     };

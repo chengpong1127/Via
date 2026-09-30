@@ -657,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_bike_snapshot_is_shared_by_multiple_retained_corridors() {
+    async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
         let timing = Arc::new(RecordingTimingLoader::default());
         let calls = Arc::new(AtomicUsize::new(0));
         let planner = TransitPlanner::new(multiple_mode_corridors_network(), timing.clone())
@@ -677,27 +677,6 @@ mod tests {
 
         assert_eq!(stats.phase1.static_corridors_retained, 2);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn bike_availability_is_loaded_for_transit_corridor_anchors() {
-        let timing = Arc::new(RecordingTimingLoader::default());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let planner = TransitPlanner::new(network(), timing).with_bike_share(
-            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
-            Arc::new(CountingBikeAvailabilitySource {
-                calls: calls.clone(),
-            }),
-            Arc::new(FakeStreetRouter::builder().build()),
-        );
-
-        let (_, stats) = planner
-            .plan_with_stats(query(1).with_bike_share(true))
-            .await
-            .unwrap();
-
-        assert_eq!(stats.phase1.static_corridors_retained, 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

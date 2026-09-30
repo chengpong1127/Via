@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use via_server::{
     domain::journey::PlanningError,
     routing::RoutingLimits,
@@ -10,6 +11,19 @@ use super::fixtures::{
     route_body_with_limits, transit_street,
 };
 use crate::support::routing::{coordinate, path};
+
+fn current_minute_in_taipei() -> OffsetDateTime {
+    OffsetDateTime::now_utc()
+        .to_offset(UtcOffset::from_hms(8, 0, 0).expect("valid Taipei offset"))
+        .replace_second(0)
+        .expect("valid second")
+        .replace_nanosecond(0)
+        .expect("valid nanosecond")
+}
+
+fn format_fixture_time(time: OffsetDateTime) -> String {
+    time.format(&Rfc3339).expect("timestamp should format")
+}
 
 #[tokio::test]
 async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
@@ -52,10 +66,13 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
     let network = network();
     let origin = near_stop(&network, "F-BUS-A");
     let destination = near_stop(&network, "F-BUS-B");
+    let updated_at = current_minute_in_taipei();
+    let mut request = request(origin, destination, &["bus"]);
+    request["departure_setting"]["time"] = json!(format_fixture_time(updated_at));
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
-        FixtureRealtime::bus(),
-        request(origin, destination, &["bus"]),
+        FixtureRealtime::bus_at(updated_at),
+        request,
     )
     .await;
     let option = option_for_patterns(&body, &["fixture-bus-main"]);
@@ -68,11 +85,11 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
     );
     assert_eq!(
         option["legs"][1]["departure_time"],
-        "2026-08-31T10:04:00+08:00"
+        json!(format_fixture_time(updated_at + Duration::minutes(4)))
     );
     assert_eq!(
         option["legs"][1]["arrival_time"],
-        "2026-08-31T10:14:00+08:00"
+        json!(format_fixture_time(updated_at + Duration::minutes(14)))
     );
     assert_eq!(option["legs"][1]["scheduled_departure_time"], Value::Null);
     assert_eq!(option["live_status_summary"]["state"], "fresh");
@@ -470,20 +487,23 @@ async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
     let network = network();
     let origin = near_stop(&network, "F-BUS-A");
     let destination = near_stop(&network, "F-BUS-B");
+    let updated_at = current_minute_in_taipei();
+    let mut request = request(origin, destination, &["bus", "metro", "tra", "thsr"]);
+    request["departure_setting"]["time"] = json!(format_fixture_time(updated_at));
     let body = route_body(
         transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
-        FixtureRealtime::bus(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
+        FixtureRealtime::bus_at(updated_at),
+        request,
     )
     .await;
     let option = option_for_patterns(&body, &["fixture-bus-main"]);
 
     assert_eq!(
         option["legs"][1]["departure_time"],
-        "2026-08-31T10:04:00+08:00"
+        json!(format_fixture_time(updated_at + Duration::minutes(4)))
     );
     assert_eq!(
         option["legs"][1]["arrival_time"],
-        "2026-08-31T10:14:00+08:00"
+        json!(format_fixture_time(updated_at + Duration::minutes(14)))
     );
 }

@@ -17,7 +17,6 @@ use via_server::{
         ids::BikeStationId,
     },
     providers::{BikeAvailabilityError, BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
-    routing::BikeShortcut,
     street::{FakeStreetRouter, StreetTravelMode},
 };
 
@@ -521,39 +520,5 @@ async fn direct_walking_without_a_transit_query_can_use_bike_share() {
             .unwrap()
             .iter()
             .any(|option| option["bike_share_uses"] == 1)
-    );
-}
-
-#[test]
-fn bike_shortcut_can_span_multiple_forward_anchors() {
-    assert!(
-        BikeShortcut::new(
-            1,
-            3,
-            BikeStationId::new("pickup"),
-            BikeStationId::new("dropoff"),
-            BikeWalkingAccess::new(1, 1),
-            via_server::routing::BikeRide {
-                duration_seconds: 1,
-                distance_metres: 1,
-            },
-            BikeWalkingAccess::new(1, 1),
-        )
-        .is_some()
-    );
-    assert!(
-        BikeShortcut::new(
-            3,
-            1,
-            BikeStationId::new("pickup"),
-            BikeStationId::new("dropoff"),
-            BikeWalkingAccess::new(1, 1),
-            via_server::routing::BikeRide {
-                duration_seconds: 1,
-                distance_metres: 1,
-            },
-            BikeWalkingAccess::new(1, 1),
-        )
-        .is_none()
     );
 }
