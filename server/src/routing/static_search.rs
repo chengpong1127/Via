@@ -801,13 +801,18 @@ pub fn generate(
             started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         return (RetainedCorridorSet::default(), stats);
     }
-    let required_mode_pairs = reachable_endpoint_mode_pairs(
+    let Some(required_mode_pairs) = reachable_endpoint_mode_pairs(
         network,
         topology,
         transfers,
         query,
         &destination_lower_bounds,
-    );
+    ) else {
+        stats.deadline_exceeded = true;
+        stats.static_search_latency_ms =
+            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        return (RetainedCorridorSet::default(), stats);
+    };
     if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
         stats.deadline_exceeded = true;
         stats.static_search_latency_ms =
@@ -1575,9 +1580,15 @@ fn reachable_endpoint_mode_pairs(
     transfers: &TransferShortcutIndex,
     query: &TransitQuery,
     destination_lower_bounds: &HashMap<BoardingPointId, u32>,
-) -> HashSet<EndpointModePair> {
+) -> Option<HashSet<EndpointModePair>> {
+    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        return None;
+    }
     let mut origin_modes = HashSet::new();
     for access in &query.origin_access {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return None;
+        }
         let mut boarding_stops = vec![access.stop_id.clone()];
         boarding_stops.extend(
             transfers
@@ -1586,10 +1597,16 @@ fn reachable_endpoint_mode_pairs(
                 .map(|shortcut| shortcut.to.clone()),
         );
         for stop_id in boarding_stops {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                return None;
+            }
             if !destination_lower_bounds.contains_key(&stop_id) {
                 continue;
             }
-            for position in topology.occurrences_at(&stop_id) {
+            for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
+                if index % 64 == 0 && query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    return None;
+                }
                 let Some(pattern) = network.pattern(&position.pattern_id) else {
                     continue;
                 };
@@ -1605,6 +1622,9 @@ fn reachable_endpoint_mode_pairs(
 
     let mut destination_modes = HashSet::new();
     for egress in &query.destination_egress {
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return None;
+        }
         let mut alighting_stops = vec![egress.stop_id.clone()];
         alighting_stops.extend(
             transfers
@@ -1613,7 +1633,13 @@ fn reachable_endpoint_mode_pairs(
                 .map(|shortcut| shortcut.from.clone()),
         );
         for stop_id in alighting_stops {
-            for position in topology.occurrences_at(&stop_id) {
+            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                return None;
+            }
+            for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
+                if index % 64 == 0 && query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                    return None;
+                }
                 let Some(pattern) = network.pattern(&position.pattern_id) else {
                     continue;
                 };
@@ -1627,15 +1653,17 @@ fn reachable_endpoint_mode_pairs(
         }
     }
 
-    origin_modes
-        .into_iter()
-        .flat_map(|first| {
-            destination_modes
-                .iter()
-                .copied()
-                .map(move |last| EndpointModePair { first, last })
-        })
-        .collect()
+    Some(
+        origin_modes
+            .into_iter()
+            .flat_map(|first| {
+                destination_modes
+                    .iter()
+                    .copied()
+                    .map(move |last| EndpointModePair { first, last })
+            })
+            .collect(),
+    )
 }
 
 fn sorted_mode_pairs(pairs: &HashSet<EndpointModePair>) -> Vec<(TransitMode, TransitMode)> {
@@ -2254,5 +2282,31 @@ mod tests {
         assert!(stats.deadline_exceeded);
         assert_eq!(stats.static_search_states_expanded, 0);
         assert!(corridors.is_empty());
+    }
+    #[test]
+    fn endpoint_mode_discovery_cancels_expired_queries_without_partial_results() {
+        let network = network(
+            (0..256)
+                .map(|index| pattern(&format!("bus-{index}"), TransitMode::Bus, &["o", "d"]))
+                .collect(),
+            Vec::new(),
+        );
+        let topology = TransitTopologyIndex::new(&network);
+        let transfers = TransferShortcutIndex::from_network(&network);
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+        let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
+        let lower_bounds = HashMap::from([(id("o"), 100), (id("d"), 0)]);
+        assert_eq!(
+            reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
+            Some(HashSet::from([EndpointModePair {
+                first: TransitMode::Bus,
+                last: TransitMode::Bus
+            }])),
+        );
+        query.deadline = Some(super::super::model::PlanningDeadline::elapsed_for_test());
+        assert_eq!(
+            reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
+            None
+        );
     }
 }
