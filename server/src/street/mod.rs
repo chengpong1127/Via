@@ -16,6 +16,14 @@ pub struct Coordinate {
     longitude: f64,
 }
 
+impl TryFrom<crate::domain::location::GeoCoordinate> for Coordinate {
+    type Error = StreetRoutingError;
+
+    fn try_from(value: crate::domain::location::GeoCoordinate) -> Result<Self, Self::Error> {
+        Self::try_new(value.latitude, value.longitude)
+    }
+}
+
 impl Coordinate {
     pub fn try_new(latitude: f64, longitude: f64) -> Result<Self, StreetRoutingError> {
         if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
@@ -226,4 +234,32 @@ pub trait StreetRouter: Send + Sync {
     async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError>;
 
     async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError>;
+}
+
+#[cfg(test)]
+mod coordinate_tests {
+    use super::*;
+    use crate::domain::location::GeoCoordinate;
+
+    #[test]
+    fn domain_conversion_preserves_coordinates_and_rejects_invalid_values() {
+        for (latitude, longitude) in [(25.0, 121.5), (-90.0, -180.0), (90.0, 180.0)] {
+            let coordinate = Coordinate::try_from(GeoCoordinate {
+                latitude,
+                longitude,
+            })
+            .unwrap();
+            assert_eq!(coordinate.latitude(), latitude);
+            assert_eq!(coordinate.longitude(), longitude);
+        }
+        for (latitude, longitude) in [(f64::NAN, 121.5), (91.0, 121.5), (25.0, 181.0)] {
+            assert!(matches!(
+                Coordinate::try_from(GeoCoordinate {
+                    latitude,
+                    longitude
+                }),
+                Err(StreetRoutingError::InvalidRequest { .. })
+            ));
+        }
+    }
 }

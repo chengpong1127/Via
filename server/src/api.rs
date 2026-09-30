@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use unicode_normalization::UnicodeNormalization;
 
-use crate::{domain::transit::TransitMode as DomainTransitMode, street::Coordinate};
+use crate::domain::transit::TransitMode as DomainTransitMode;
 
 pub use crate::domain::location::GeoCoordinate;
 
@@ -108,15 +108,6 @@ impl SelectedPlace {
             ));
         }
         Ok(())
-    }
-}
-
-impl TryFrom<GeoCoordinate> for Coordinate {
-    type Error = RequestValidationError;
-
-    fn try_from(value: GeoCoordinate) -> Result<Self, Self::Error> {
-        Coordinate::try_new(value.latitude, value.longitude)
-            .map_err(|_| RequestValidationError::new("invalid_coordinate", "/coordinate"))
     }
 }
 
