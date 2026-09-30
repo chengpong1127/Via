@@ -82,6 +82,45 @@ impl EgressPoint {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlannerLimits {
+    pub max_transfers: usize,
+    pub max_static_corridors: usize,
+    pub max_phase1_expansions: usize,
+    pub max_candidates: usize,
+    pub max_phase2_expansions: usize,
+    pub max_departures_per_query: usize,
+    pub max_journey_duration_seconds: u32,
+}
+
+impl Default for PlannerLimits {
+    fn default() -> Self {
+        Self {
+            max_transfers: 4,
+            max_static_corridors: 100,
+            max_phase1_expansions: 20_000,
+            max_candidates: 16,
+            max_phase2_expansions: 2_000,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+        }
+    }
+}
+
+impl PlannerLimits {
+    pub(crate) fn normalized(self) -> Self {
+        Self {
+            max_transfers: self.max_transfers,
+            max_static_corridors: self.max_static_corridors.max(1),
+            max_phase1_expansions: self.max_phase1_expansions.max(1),
+            max_candidates: self.max_candidates.max(1),
+            max_phase2_expansions: self.max_phase2_expansions.max(1),
+            max_departures_per_query: self.max_departures_per_query.max(1),
+            max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransitQuery {
     pub origin_access: Vec<AccessPoint>,
@@ -91,14 +130,7 @@ pub struct TransitQuery {
     pub allow_bike_share: bool,
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
-    pub max_transfers: usize,
-
-    pub max_static_corridors: usize,
-    pub max_static_search_expansions: usize,
-    pub max_candidates: usize,
-    pub max_expansions: usize,
-    pub max_departures_per_query: usize,
-    pub max_journey_duration_seconds: u32,
+    pub limits: PlannerLimits,
     pub deadline: Option<PlanningDeadline>,
 }
 
@@ -120,13 +152,7 @@ impl TransitQuery {
             allow_bike_share: false,
             departure_time,
             latest_arrival: None,
-            max_transfers: 4,
-            max_static_corridors: 100,
-            max_static_search_expansions: 20_000,
-            max_candidates: 16,
-            max_expansions: 2_000,
-            max_departures_per_query: 3,
-            max_journey_duration_seconds: 4 * 60 * 60,
+            limits: PlannerLimits::default(),
             deadline: None,
         }
     }
@@ -146,24 +172,13 @@ impl TransitQuery {
         self
     }
 
-    pub fn with_limits(
-        mut self,
-        max_transfers: usize,
-        max_candidates: usize,
-        max_expansions: usize,
-        max_departures_per_query: usize,
-        max_journey_duration_seconds: u32,
-    ) -> Self {
-        self.max_transfers = max_transfers;
-        self.max_candidates = max_candidates;
-        self.max_expansions = max_expansions;
-        self.max_departures_per_query = max_departures_per_query;
-        self.max_journey_duration_seconds = max_journey_duration_seconds;
+    pub fn with_limits(mut self, limits: PlannerLimits) -> Self {
+        self.limits = limits;
         self
     }
 
     pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
-        self.max_static_corridors = max_static_corridors.max(1);
+        self.limits.max_static_corridors = max_static_corridors.max(1);
         self
     }
 

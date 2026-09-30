@@ -90,7 +90,7 @@ impl TransitPlanner {
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
             return Err(RoutingError::InvalidQuery);
         }
-        let max_legs = query.max_transfers.saturating_add(1);
+        let max_legs = query.limits.max_transfers.saturating_add(1);
         let (corridor, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, &query);
         if static_stats.deadline_exceeded
@@ -178,7 +178,7 @@ impl TransitPlanner {
         if static_stats.static_search_limit_reached {
             tracing::warn!(
                 target: "via_server::routing",
-                max_static_search_expansions = query.max_static_search_expansions,
+                max_static_search_expansions = query.limits.max_phase1_expansions,
                 "static Top-K search hit its safety bound; rejecting the partial corridor set"
             );
             return Err(RoutingError::StaticSearchLimit);
@@ -189,10 +189,10 @@ impl TransitPlanner {
         }
 
         let positions = corridor.timing_positions().collect::<Vec<_>>();
-        let snapshot_limit = usize::try_from(query.max_journey_duration_seconds)
+        let snapshot_limit = usize::try_from(query.limits.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
             .saturating_add(1)
-            .max(query.max_departures_per_query);
+            .max(query.limits.max_departures_per_query);
         let timing_queries = positions
             .into_iter()
             .filter_map(|position| {
@@ -208,7 +208,9 @@ impl TransitPlanner {
                     )
                     .until(
                         query.departure_time
-                            + Duration::seconds(i64::from(query.max_journey_duration_seconds)),
+                            + Duration::seconds(i64::from(
+                                query.limits.max_journey_duration_seconds,
+                            )),
                     ),
                 )
             })
@@ -602,7 +604,14 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         )
         .with_allowed_transit_modes([TransitMode::Bus])
-        .with_limits(0, 16, 2_000, 3, 4 * 60 * 60)
+        .with_limits(crate::routing::PlannerLimits {
+            max_transfers: 0,
+            max_candidates: 16,
+            max_phase2_expansions: 2_000,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        })
         .with_max_static_corridors(k)
     }
 
@@ -693,7 +702,7 @@ mod tests {
         let planner = TransitPlanner::new(network(), loader);
         let mut query = query(1);
         query.origin_access.push(query.origin_access[0].clone());
-        query.max_expansions = 1;
+        query.limits.max_phase2_expansions = 1;
 
         assert!(matches!(
             planner.plan_with_stats(query).await,
@@ -715,7 +724,14 @@ mod tests {
             );
         let query = query(2)
             .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
-            .with_limits(1, 16, 2_000, 3, 4 * 60 * 60)
+            .with_limits(crate::routing::PlannerLimits {
+                max_transfers: 1,
+                max_candidates: 16,
+                max_phase2_expansions: 2_000,
+                max_departures_per_query: 3,
+                max_journey_duration_seconds: 4 * 60 * 60,
+                ..crate::routing::PlannerLimits::default()
+            })
             .with_bike_share(true);
 
         let (_, stats) = planner.plan_with_stats(query).await.unwrap();

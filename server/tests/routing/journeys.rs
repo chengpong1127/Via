@@ -314,12 +314,56 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
 }
 
 #[tokio::test]
+async fn zero_transfer_configuration_excludes_interchange_journeys() {
+    let network = network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M3-BLUE");
+    let limits = RoutingLimits {
+        planner: via_server::routing::PlannerLimits {
+            max_transfers: 0,
+            ..via_server::routing::PlannerLimits::default()
+        },
+        ..RoutingLimits::default()
+    };
+    let body = route_body_with_limits(
+        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro"]),
+        limits.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
+
+    let single_ride_destination = near_stop(&network, "F-M2-RED");
+    let single_ride_body = route_body_with_limits(
+        transit_street(
+            &network,
+            origin,
+            "F-M1",
+            single_ride_destination,
+            "F-M2-RED",
+        ),
+        FixtureRealtime::empty(),
+        request(origin, single_ride_destination, &["metro"]),
+        limits,
+    )
+    .await
+    .unwrap();
+    let option = option_for_patterns(&single_ride_body, &["fixture-mrt-red"]);
+    assert_eq!(option["transfer_count"], 0);
+}
+
+#[tokio::test]
 async fn phase2_safety_limit_is_returned_as_a_planning_error() {
     let network = network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
     let limits = RoutingLimits {
-        max_search_expansions: 1,
+        planner: via_server::routing::PlannerLimits {
+            max_phase2_expansions: 1,
+            ..via_server::routing::PlannerLimits::default()
+        },
         ..RoutingLimits::default()
     };
 
@@ -340,7 +384,10 @@ async fn phase1_safety_limit_is_not_reported_as_an_empty_result() {
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
     let limits = RoutingLimits {
-        max_static_search_expansions: 1,
+        planner: via_server::routing::PlannerLimits {
+            max_phase1_expansions: 1,
+            ..via_server::routing::PlannerLimits::default()
+        },
         ..RoutingLimits::default()
     };
 

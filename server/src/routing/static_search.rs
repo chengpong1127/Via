@@ -753,8 +753,8 @@ pub fn generate(
     query: &TransitQuery,
 ) -> (RetainedCorridorSet, StaticSearchStats) {
     let started = Instant::now();
-    let limit = query.max_static_corridors.max(1);
-    let max_legs = query.max_transfers.saturating_add(1);
+    let limit = query.limits.max_static_corridors.max(1);
+    let max_legs = query.limits.max_transfers.saturating_add(1);
     let mut stats = StaticSearchStats::default();
     if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
         stats.deadline_exceeded = true;
@@ -870,7 +870,7 @@ pub fn generate(
         if !is_current(&known, &entry.state) {
             continue;
         }
-        if stats.static_search_states_expanded >= query.max_static_search_expansions {
+        if stats.static_search_states_expanded >= query.limits.max_phase1_expansions {
             stats.static_search_limit_reached = true;
             break;
         }
@@ -917,7 +917,7 @@ pub fn generate(
                 let elapsed_seconds = state
                     .elapsed_seconds
                     .saturating_add(shortcut.duration_seconds);
-                if elapsed_seconds > query.max_journey_duration_seconds {
+                if elapsed_seconds > query.limits.max_journey_duration_seconds {
                     continue;
                 }
                 let mut next = state.clone();
@@ -940,7 +940,7 @@ pub fn generate(
                     record_complete_corridors(
                         &next,
                         &egress_by_stop,
-                        query.max_journey_duration_seconds,
+                        query.limits.max_journey_duration_seconds,
                         limit,
                         &mut stats,
                         &mut retained,
@@ -1029,7 +1029,7 @@ pub fn generate(
                     .elapsed_seconds
                     .saturating_add(transfer_seconds)
                     .saturating_add(ride_seconds);
-                if elapsed_seconds > query.max_journey_duration_seconds {
+                if elapsed_seconds > query.limits.max_journey_duration_seconds {
                     continue;
                 }
                 let alight_stop_id = ride_option.alight_stop_id.clone();
@@ -1061,7 +1061,7 @@ pub fn generate(
                 record_complete_corridors(
                     &next,
                     &egress_by_stop,
-                    query.max_journey_duration_seconds,
+                    query.limits.max_journey_duration_seconds,
                     limit,
                     &mut stats,
                     &mut retained,
@@ -1439,7 +1439,7 @@ fn destination_lower_bounds(
     let mut frontier = BinaryHeap::new();
     let mut sequence = 0_u64;
     for egress in &query.destination_egress {
-        if egress.walking_seconds > query.max_journey_duration_seconds {
+        if egress.walking_seconds > query.limits.max_journey_duration_seconds {
             continue;
         }
         if lower_bounds
@@ -1495,7 +1495,7 @@ fn destination_lower_bounds(
                 &mut lower_bounds,
                 &mut frontier,
                 &mut sequence,
-                query.max_journey_duration_seconds,
+                query.limits.max_journey_duration_seconds,
             );
         }
         for shortcut in transfers.transfers_to(&entry.stop_id) {
@@ -1510,7 +1510,7 @@ fn destination_lower_bounds(
                 &mut lower_bounds,
                 &mut frontier,
                 &mut sequence,
-                query.max_journey_duration_seconds,
+                query.limits.max_journey_duration_seconds,
             );
         }
     }
@@ -1751,7 +1751,14 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         )
         .with_allowed_transit_modes(modes.iter().copied())
-        .with_limits(max_transfers, 16, 2_000, 3, 4 * 60 * 60)
+        .with_limits(crate::routing::PlannerLimits {
+            max_transfers,
+            max_candidates: 16,
+            max_phase2_expansions: 2_000,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        })
         .with_max_static_corridors(k)
     }
 
@@ -2222,7 +2229,7 @@ mod tests {
         let topology = TransitTopologyIndex::new(&network);
         let transfers = TransferShortcutIndex::from_network(&network);
         let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
-        query.max_static_search_expansions = 1;
+        query.limits.max_phase1_expansions = 1;
         let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
         let (_, stats) = generate(&runtime, &topology, &transfers, &query);

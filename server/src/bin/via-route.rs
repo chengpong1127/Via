@@ -59,16 +59,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let schedule_revision = via_static.revisions.schedule.clone();
     let mut limits = RoutingLimits::default();
     if let Some(max_departures) = cli.max_departures_per_query {
-        limits.max_departures_per_query = max_departures;
+        limits.planner.max_departures_per_query = max_departures;
     }
     if let Some(max_static_corridors) = cli.max_static_corridors {
-        limits.max_static_corridors = max_static_corridors.max(1);
+        limits.planner.max_static_corridors = max_static_corridors.max(1);
     }
     let valhalla_timeout = cli.valhalla_timeout_ms.map(Duration::from_millis);
     if let Some(timeout) = valhalla_timeout {
         limits.request_timeout = timeout.saturating_mul(5);
     }
-    let max_static_corridors = limits.max_static_corridors;
+    let max_static_corridors = limits.planner.max_static_corridors;
     let options = ProductionRuntimeOptions {
         limits,
         valhalla_request_timeout: valhalla_timeout,

@@ -29,7 +29,7 @@ use crate::{
 
 use super::{
     access,
-    model::{PlanningDeadline, TransitQuery},
+    model::{PlannerLimits, PlanningDeadline, TransitQuery},
     path::{JourneySkeleton, JourneyVariant},
     planner::{DirectBikeJourney, TransitPlanner},
     reconstruct::{
@@ -51,37 +51,25 @@ pub struct RoutingService {
 
 #[derive(Clone, Debug)]
 pub struct RoutingLimits {
+    pub planner: PlannerLimits,
     pub request_timeout: std::time::Duration,
     pub max_concurrent_requests: usize,
     pub max_transit_access_stops: usize,
     pub max_transit_egress_stops: usize,
-    pub max_candidates: usize,
     pub max_walking_radius_metres: u32,
     pub max_walking_seconds: u32,
-    pub max_transfer_count: u32,
-    pub max_static_corridors: usize,
-    pub max_static_search_expansions: usize,
-    pub max_search_expansions: usize,
-    pub max_departures_per_query: usize,
-    pub max_journey_duration_seconds: u32,
 }
 
 impl Default for RoutingLimits {
     fn default() -> Self {
         Self {
+            planner: PlannerLimits::default(),
             request_timeout: std::time::Duration::from_secs(5),
             max_concurrent_requests: 32,
             max_transit_access_stops: 24,
             max_transit_egress_stops: 24,
-            max_candidates: 16,
             max_walking_radius_metres: 2_000,
             max_walking_seconds: 30 * 60,
-            max_transfer_count: 4,
-            max_static_corridors: 100,
-            max_static_search_expansions: 20_000,
-            max_search_expansions: 2_000,
-            max_departures_per_query: 3,
-            max_journey_duration_seconds: 4 * 60 * 60,
         }
     }
 }
@@ -116,21 +104,14 @@ impl RoutingService {
 
 impl RoutingLimits {
     fn normalized(self) -> Self {
-        let max_candidates = self.max_candidates.max(1);
         Self {
+            planner: self.planner.normalized(),
             request_timeout: self.request_timeout,
             max_concurrent_requests: self.max_concurrent_requests.max(1),
             max_transit_access_stops: self.max_transit_access_stops.max(1),
             max_transit_egress_stops: self.max_transit_egress_stops.max(1),
-            max_candidates,
             max_walking_radius_metres: self.max_walking_radius_metres.max(1),
             max_walking_seconds: self.max_walking_seconds.max(1),
-            max_transfer_count: self.max_transfer_count.max(1),
-            max_static_corridors: self.max_static_corridors.max(1),
-            max_static_search_expansions: self.max_static_search_expansions.max(1),
-            max_search_expansions: self.max_search_expansions.max(1),
-            max_departures_per_query: self.max_departures_per_query.max(1),
-            max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
         }
     }
 }
@@ -189,7 +170,7 @@ impl RoutingService {
         let context = PlanningContext::new(
             &request,
             request_started_at,
-            self.limits.max_journey_duration_seconds,
+            self.limits.planner.max_journey_duration_seconds,
             deadline,
         )?;
         context.ensure_before_deadline()?;
@@ -320,13 +301,7 @@ impl RoutingService {
                     allow_bike_share: request.allows_bike_share(),
                     departure_time: context.search_start,
                     latest_arrival: context.latest_arrival,
-                    max_transfers: self.limits.max_transfer_count as usize,
-                    max_static_corridors: self.limits.max_static_corridors,
-                    max_static_search_expansions: self.limits.max_static_search_expansions,
-                    max_candidates: self.limits.max_candidates,
-                    max_expansions: self.limits.max_search_expansions,
-                    max_departures_per_query: self.limits.max_departures_per_query,
-                    max_journey_duration_seconds: self.limits.max_journey_duration_seconds,
+                    limits: self.limits.planner,
                     deadline: Some(deadline),
                 };
                 let search_started = Instant::now();
@@ -692,4 +667,48 @@ impl From<StreetRoutingError> for PlanningError {
 
 fn unreachable_is_handled_before_conversion() -> ! {
     panic!("unreachable street route must be handled before conversion")
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    #[test]
+    fn routing_configuration_preserves_zero_transfers() {
+        let limits = RoutingLimits {
+            planner: PlannerLimits {
+                max_transfers: 0,
+                ..PlannerLimits::default()
+            },
+            ..RoutingLimits::default()
+        };
+        assert_eq!(limits.normalized().planner.max_transfers, 0);
+    }
+    #[test]
+    fn routing_and_query_share_planner_defaults() {
+        let query = TransitQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc());
+        assert_eq!(RoutingLimits::default().planner, query.limits);
+        assert_eq!(query.limits, PlannerLimits::default());
+    }
+
+    #[test]
+    fn direct_query_limits_preserve_explicit_zero_safety_bounds() {
+        let limits = PlannerLimits {
+            max_phase2_expansions: 0,
+            ..PlannerLimits::default()
+        };
+        let query = TransitQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc())
+            .with_limits(limits);
+        assert_eq!(query.limits.max_phase2_expansions, 0);
+        assert_eq!(
+            RoutingLimits {
+                planner: limits,
+                ..RoutingLimits::default()
+            }
+            .normalized()
+            .planner
+            .max_phase2_expansions,
+            1
+        );
+    }
 }

@@ -471,7 +471,7 @@ async fn evaluate_inner(
     }
 
     let egress_by_stop = index_egress(&query.destination_egress);
-    let max_legs = query.max_transfers.saturating_add(1);
+    let max_legs = query.limits.max_transfers.saturating_add(1);
     let mut stats = Phase2EvaluationStats::default();
     let mut candidates = Vec::<EvaluatedCandidate>::new();
     let mut bike_route_cache =
@@ -524,7 +524,7 @@ async fn evaluate_inner(
             } else {
                 prune_states(
                     std::mem::take(&mut frontiers[from_anchor]),
-                    query.max_candidates,
+                    query.limits.max_candidates,
                 )
             };
             if states.is_empty() {
@@ -548,7 +548,7 @@ async fn evaluate_inner(
                         walking_distance_metres,
                     } => {
                         stats.surface_transfers_evaluated += 1;
-                        if charge_state(&mut stats, query.max_expansions) {
+                        if charge_state(&mut stats, query.limits.max_phase2_expansions) {
                             stats.expansion_limit_reached = true;
                             break 'corridors;
                         }
@@ -577,7 +577,7 @@ async fn evaluate_inner(
                             if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
                                 return Err(RoutingError::DeadlineExceeded);
                             }
-                            if charge_state(&mut stats, query.max_expansions) {
+                            if charge_state(&mut stats, query.limits.max_phase2_expansions) {
                                 stats.expansion_limit_reached = true;
                                 break 'corridors;
                             }
@@ -600,7 +600,7 @@ async fn evaluate_inner(
                                 &alternative.pattern_id,
                                 alternative.board_index,
                                 boarding_ready_at,
-                                query.max_departures_per_query,
+                                query.limits.max_departures_per_query,
                             );
                             if departures.is_empty() {
                                 saw_missing_departure = true;
@@ -713,7 +713,7 @@ async fn evaluate_inner(
                             bike_started_at + Duration::seconds(i64::from(lower_bound_seconds));
                         if best_normal_arrival.is_some_and(|normal| optimistic_arrival >= normal) {
                             stats.bike_lower_bound_rejections += 1;
-                        } else if !charge_state(&mut stats, query.max_expansions) {
+                        } else if !charge_state(&mut stats, query.limits.max_phase2_expansions) {
                             let route_key = (
                                 bike_start_stop.clone(),
                                 anchor_stops[from_anchor + 1].clone(),
@@ -846,7 +846,7 @@ async fn evaluate_inner(
         }
         let states = prune_states(
             std::mem::take(&mut frontiers[retained.steps.len()]),
-            query.max_candidates,
+            query.limits.max_candidates,
         );
 
         let mut corridor_candidates = Vec::new();
@@ -918,7 +918,7 @@ async fn evaluate_inner(
             target: "via_server::routing",
             corridors_evaluated = stats.corridors_evaluated,
             corridor_states_evaluated = stats.corridor_states_evaluated,
-            max_expansions = query.max_expansions,
+            max_expansions = query.limits.max_phase2_expansions,
             phase2_latency_us = stats.phase2_latency_us,
             "Phase 2 hit its safety bound; rejecting the incomplete candidate set"
         );
@@ -930,7 +930,7 @@ async fn evaluate_inner(
     }
 
     stats.candidates_before_pareto = candidates.len();
-    let candidates = pareto_candidates(candidates, query.max_candidates);
+    let candidates = pareto_candidates(candidates, query.limits.max_candidates);
     stats.final_candidates = candidates.len();
     stats.bike_realizations_selected = candidates
         .iter()
@@ -981,8 +981,8 @@ async fn evaluate_inner(
     ))
 }
 
-fn charge_state(stats: &mut Phase2EvaluationStats, max_expansions: usize) -> bool {
-    if stats.corridor_states_evaluated >= max_expansions {
+fn charge_state(stats: &mut Phase2EvaluationStats, max_phase2_expansions: usize) -> bool {
+    if stats.corridor_states_evaluated >= max_phase2_expansions {
         return true;
     }
     stats.corridor_states_evaluated += 1;
@@ -1048,7 +1048,7 @@ fn retained_alight_time(
 fn within_query_bounds(query: &TransitQuery, time: OffsetDateTime) -> bool {
     time >= query.departure_time
         && time - query.departure_time
-            <= Duration::seconds(i64::from(query.max_journey_duration_seconds))
+            <= Duration::seconds(i64::from(query.limits.max_journey_duration_seconds))
 }
 
 fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
@@ -1207,7 +1207,14 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         )
         .with_allowed_transit_modes(modes.iter().copied())
-        .with_limits(max_transfers, 16, 2_000, 3, 4 * 60 * 60)
+        .with_limits(crate::routing::PlannerLimits {
+            max_transfers,
+            max_candidates: 16,
+            max_phase2_expansions: 2_000,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        })
         .with_max_static_corridors(max_corridors)
     }
 
@@ -2070,7 +2077,14 @@ mod tests {
             datetime!(2026-09-21 10:00 UTC),
         )
         .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
-        .with_limits(2, 16, 2_000, 3, 4 * 60 * 60);
+        .with_limits(crate::routing::PlannerLimits {
+            max_transfers: 2,
+            max_candidates: 16,
+            max_phase2_expansions: 2_000,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        });
         let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![StaticCorridor {
@@ -2321,7 +2335,7 @@ mod tests {
             vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
         );
-        query.max_candidates = 10;
+        query.limits.max_candidates = 10;
         let corridor = RetainedCorridorSet::from_retained_for_test(
             &network,
             vec![
@@ -2564,7 +2578,17 @@ mod tests {
             )],
         );
 
-        let short_duration_query = corridor_query.clone().with_limits(0, 16, 2_000, 3, 10 * 60);
+        let short_duration_query =
+            corridor_query
+                .clone()
+                .with_limits(crate::routing::PlannerLimits {
+                    max_transfers: 0,
+                    max_candidates: 16,
+                    max_phase2_expansions: 2_000,
+                    max_departures_per_query: 3,
+                    max_journey_duration_seconds: 10 * 60,
+                    ..crate::routing::PlannerLimits::default()
+                });
         assert!(
             evaluate(&network, &corridor, &snapshot, short_duration_query)
                 .unwrap()
@@ -2603,7 +2627,7 @@ mod tests {
             0,
             0,
         ));
-        query.max_candidates = 2;
+        query.limits.max_candidates = 2;
         let corridor = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
@@ -2639,7 +2663,7 @@ mod tests {
             0,
             0,
         ));
-        query.max_expansions = 1;
+        query.limits.max_phase2_expansions = 1;
         let corridor = candidate_corridor(&network, &query);
         let mut snapshot = TimingSnapshot::default();
         snapshot.insert(
