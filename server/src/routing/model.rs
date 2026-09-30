@@ -242,17 +242,8 @@ pub struct RealizedJourney {
 }
 
 impl RealizedJourney {
-    pub fn dominates(&self, other: &Self) -> bool {
-        let no_worse = self.arrival_time <= other.arrival_time
-            && self.walking_seconds <= other.walking_seconds
-            && self.transfer_count <= other.transfer_count;
-        let strictly_better = self.arrival_time < other.arrival_time
-            || self.walking_seconds < other.walking_seconds
-            || self.transfer_count < other.transfer_count;
-        no_worse && strictly_better
-    }
-
-    pub fn signature(&self) -> String {
+    // This key preserves legacy lexical tie ordering; typed identity is used for equality.
+    pub(crate) fn deterministic_order_key(&self) -> String {
         let mut parts = vec![format!(
             "access:{}:{}",
             self.access.stop_id.as_str(),

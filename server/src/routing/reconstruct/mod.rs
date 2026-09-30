@@ -17,6 +17,9 @@ use super::{
     service::{PlanningContext, ReconstructedCandidate, RoutingService},
 };
 
+const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
+const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
+
 pub(crate) use geometry::{taipei_now, to_street_coordinate};
 
 impl RoutingService {
@@ -39,11 +42,7 @@ impl RoutingService {
             legs::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
         let transfer_count = assembled.transfers.len() as u32;
-        let matching_key = if variant.is_baseline() {
-            geometry::short_digest(&format!("candidate:v2:{}", variant.signature()))
-        } else {
-            geometry::short_digest(&format!("candidate:bike:v1:{}", variant.signature()))
-        };
+        let matching_key = variant_matching_key(variant);
         let option = JourneyOption {
             id: "candidate".into(),
             matching_key: matching_key.clone(),
@@ -129,6 +128,18 @@ impl RoutingService {
     }
 }
 
+fn variant_matching_key(variant: &JourneyVariant) -> String {
+    let version = if variant.is_baseline() {
+        BASELINE_MATCHING_KEY_VERSION
+    } else {
+        BIKE_MATCHING_KEY_VERSION
+    };
+    geometry::short_digest(&format!(
+        "{version}:{}",
+        variant.identity().canonical_signature()
+    ))
+}
+
 pub(crate) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {
     option.class = ranked.class;
     option.label = ranked.label;
@@ -156,5 +167,28 @@ pub(crate) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) 
             .iter()
             .filter_map(|id| ids.get(id).cloned())
             .collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BASELINE_MATCHING_KEY_VERSION, BIKE_MATCHING_KEY_VERSION};
+    use crate::routing::reconstruct::geometry::short_digest;
+
+    #[test]
+    fn matching_key_versions_remain_stable() {
+        let baseline_signature = "access:a:0|transfer:a:b:60|transfer:b:c:60|egress:c:0";
+        let bike_signature = "path:v2:baseline:walking:Access:origin:boarding_point:a:0:0|bike:boarding_point:a:boarding_point:c:pickup:dropoff:0:0:30:100:0:0:0:30|baseline:walking:Egress:boarding_point:c:destination:0:0";
+
+        assert_eq!(
+            short_digest(&format!(
+                "{BASELINE_MATCHING_KEY_VERSION}:{baseline_signature}"
+            )),
+            "match_60a8b9c214a735ea"
+        );
+        assert_eq!(
+            short_digest(&format!("{BIKE_MATCHING_KEY_VERSION}:{bike_signature}")),
+            "match_15eae0d1afa8b091"
+        );
     }
 }

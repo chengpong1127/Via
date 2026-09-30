@@ -4,7 +4,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::domain::{
     bikeshare::BikeAvailabilitySnapshot,
-    ids::BoardingPointId,
+    ids::{BikeStationId, BoardingPointId, EffectiveTripId},
     realtime::NormalizedRealtimeValue,
     transit_runtime::TransitRuntime,
     transit_timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
@@ -16,7 +16,7 @@ use super::{
         AccessPoint, EgressPoint, JourneySegment, RealizedJourney, RoutingError, TransitQuery,
         physical_transfer_count,
     },
-    path::{BikeShortcut, JourneySkeleton, JourneyVariant},
+    path::{BikeShortcut, JourneySkeleton, JourneyVariant, JourneyVariantIdentity},
     static_search::{RetainedCorridorSet, StaticCorridor, StaticCorridorStep, StaticTransitLeg},
     transfers::TransferShortcut,
 };
@@ -151,6 +151,33 @@ struct EvaluationPath {
     bike_shortcuts: Vec<(usize, BikeShortcut)>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EvaluationPathIdentity {
+    segments: Vec<EvaluationSegmentIdentity>,
+    bike_shortcuts: Vec<EvaluationBikeIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum EvaluationSegmentIdentity {
+    Transit {
+        trip_id: EffectiveTripId,
+        board_index: usize,
+        alight_index: usize,
+    },
+    WalkingTransfer {
+        from: BoardingPointId,
+        to: BoardingPointId,
+        duration_seconds: u32,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct EvaluationBikeIdentity {
+    segment_index: usize,
+    pickup_station_id: BikeStationId,
+    dropoff_station_id: BikeStationId,
+}
+
 impl EvaluationPath {
     fn from_access(access: AccessPoint) -> Self {
         Self {
@@ -216,7 +243,7 @@ impl EvaluationPath {
         next
     }
 
-    fn stable_signature(&self) -> String {
+    fn identity(&self) -> EvaluationPathIdentity {
         let segments = self
             .segments
             .iter()
@@ -225,9 +252,46 @@ impl EvaluationPath {
                     trip,
                     board_index,
                     alight_index,
-                } => {
-                    format!("transit:{}:{board_index}:{alight_index}", trip.id.as_str())
+                } => EvaluationSegmentIdentity::Transit {
+                    trip_id: trip.id.clone(),
+                    board_index: *board_index,
+                    alight_index: *alight_index,
+                },
+                JourneySegment::WalkingTransfer { shortcut } => {
+                    EvaluationSegmentIdentity::WalkingTransfer {
+                        from: shortcut.from.clone(),
+                        to: shortcut.to.clone(),
+                        duration_seconds: shortcut.duration_seconds,
+                    }
                 }
+            })
+            .collect();
+        let bike_shortcuts = self
+            .bike_shortcuts
+            .iter()
+            .map(|(index, shortcut)| EvaluationBikeIdentity {
+                segment_index: *index,
+                pickup_station_id: shortcut.pickup_station_id.clone(),
+                dropoff_station_id: shortcut.dropoff_station_id.clone(),
+            })
+            .collect();
+        EvaluationPathIdentity {
+            segments,
+            bike_shortcuts,
+        }
+    }
+
+    // Keep the previous lexical tie order while typed identity handles equality.
+    fn deterministic_order_key(&self) -> String {
+        let segments = self
+            .segments
+            .iter()
+            .map(|segment| match segment {
+                JourneySegment::Transit {
+                    trip,
+                    board_index,
+                    alight_index,
+                } => format!("transit:{}:{board_index}:{alight_index}", trip.id.as_str()),
                 JourneySegment::WalkingTransfer { shortcut } => format!(
                     "transfer:{}:{}:{}",
                     shortcut.from.as_str(),
@@ -306,7 +370,9 @@ fn make_candidate(
 
 struct EvaluatedCandidate {
     metrics: RealizedJourney,
+    journey_order_key: String,
     variant: JourneyVariant,
+    variant_identity: JourneyVariantIdentity,
     bike_share_uses: usize,
     bicycle_seconds: u32,
 }
@@ -353,11 +419,18 @@ fn pareto_candidates(
     mut candidates: Vec<EvaluatedCandidate>,
     limit: usize,
 ) -> Vec<EvaluatedCandidate> {
-    candidates.sort_by(|left, right| candidate_order(&left.metrics, &right.metrics));
+    candidates.sort_by(|left, right| {
+        candidate_order(
+            &left.metrics,
+            &left.journey_order_key,
+            &right.metrics,
+            &right.journey_order_key,
+        )
+    });
     let mut pareto = Vec::new();
     for candidate in candidates {
         if pareto.iter().any(|existing: &EvaluatedCandidate| {
-            existing.variant.signature() == candidate.variant.signature()
+            existing.variant_identity == candidate.variant_identity
                 || existing.dominates(&candidate)
         }) {
             continue;
@@ -369,12 +442,17 @@ fn pareto_candidates(
     pareto
 }
 
-fn candidate_order(left: &RealizedJourney, right: &RealizedJourney) -> Ordering {
+fn candidate_order(
+    left: &RealizedJourney,
+    left_order_key: &str,
+    right: &RealizedJourney,
+    right_order_key: &str,
+) -> Ordering {
     left.arrival_time
         .cmp(&right.arrival_time)
         .then(left.transfer_count.cmp(&right.transfer_count))
         .then(left.walking_seconds.cmp(&right.walking_seconds))
-        .then(left.signature().cmp(&right.signature()))
+        .then(left_order_key.cmp(right_order_key))
 }
 
 #[cfg(test)]
@@ -1039,8 +1117,11 @@ impl FixedCorridorEvaluator<'_> {
                     self.stats.malformed_trips += 1;
                     continue;
                 };
+                let journey_order_key = candidate.deterministic_order_key();
+                let variant_identity = variant.identity();
                 corridor_candidates.push(EvaluatedCandidate {
                     metrics: candidate,
+                    journey_order_key,
                     bike_share_uses: variant
                         .path()
                         .iter()
@@ -1053,6 +1134,7 @@ impl FixedCorridorEvaluator<'_> {
                         .count(),
                     bicycle_seconds: state.path.bicycle_seconds(),
                     variant,
+                    variant_identity,
                 });
             }
         }
@@ -1210,20 +1292,13 @@ fn within_query_bounds(query: &TransitQuery, time: OffsetDateTime) -> bool {
 }
 
 fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
-    states.sort_by(|left, right| {
-        left.ready_at
-            .cmp(&right.ready_at)
-            .then(
-                left.path
-                    .walking_seconds()
-                    .cmp(&right.path.walking_seconds()),
-            )
-            .then(left.transit_legs.cmp(&right.transit_legs))
-            .then(
-                left.path
-                    .stable_signature()
-                    .cmp(&right.path.stable_signature()),
-            )
+    states.sort_by_cached_key(|state| {
+        (
+            state.ready_at,
+            state.path.walking_seconds(),
+            state.transit_legs,
+            state.path.deterministic_order_key(),
+        )
     });
     let mut frontier = Vec::<EvaluationState>::new();
     for state in states {
@@ -1266,7 +1341,7 @@ fn same_bike_capability(left: &EvaluationState, right: &EvaluationState) -> bool
                 && left.start_stop_id == right.start_stop_id
                 && left.started_at == right.started_at
                 && left.shortcut == right.shortcut
-                && left.prefix_path.stable_signature() == right.prefix_path.stable_signature()
+                && left.prefix_path.identity() == right.prefix_path.identity()
                 && left.prefix_path.same_timing_quality(&right.prefix_path)
         }
         _ => false,
@@ -1449,8 +1524,11 @@ mod tests {
             .with_ride(&direct_trip, 0, 1)
             .with_walking_transfer(&terminal_walk);
         let direct_candidate = make_candidate(&direct_path, &egress, arrival);
+        let direct_variant = make_variant(direct_candidate.clone(), &[]).unwrap();
         let direct = EvaluatedCandidate {
-            variant: make_variant(direct_candidate.clone(), &[]).unwrap(),
+            journey_order_key: direct_candidate.deterministic_order_key(),
+            variant_identity: direct_variant.identity(),
+            variant: direct_variant,
             metrics: direct_candidate,
             bike_share_uses: 0,
             bicycle_seconds: 0,
@@ -1467,8 +1545,11 @@ mod tests {
             .with_ride(&second_trip, 0, 1)
             .with_walking_transfer(&terminal_walk);
         let split_candidate = make_candidate(&split_path, &egress, arrival);
+        let split_variant = make_variant(split_candidate.clone(), &[]).unwrap();
         let split = EvaluatedCandidate {
-            variant: make_variant(split_candidate.clone(), &[]).unwrap(),
+            journey_order_key: split_candidate.deterministic_order_key(),
+            variant_identity: split_variant.identity(),
+            variant: split_variant,
             metrics: split_candidate,
             bike_share_uses: 0,
             bicycle_seconds: 0,
@@ -2317,7 +2398,7 @@ mod tests {
                     stats,
                     variants
                         .iter()
-                        .map(JourneyVariant::signature)
+                        .map(|variant| variant.identity().canonical_signature())
                         .collect::<Vec<_>>()
                 )
             });
