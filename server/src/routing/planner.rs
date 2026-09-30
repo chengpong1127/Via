@@ -43,6 +43,13 @@ pub(crate) struct DirectBikeJourney {
     pub departure_at: OffsetDateTime,
 }
 
+struct RequestSnapshots {
+    timing: crate::domain::transit_timing::TimingSnapshot,
+    bike: Option<Arc<crate::domain::bikeshare::BikeAvailabilitySnapshot>>,
+    bike_enabled: bool,
+    latency_ms: u64,
+}
+
 impl TransitPlanner {
     pub(crate) fn topology(&self) -> &TransitTopologyIndex {
         &self.topology
@@ -84,6 +91,75 @@ impl TransitPlanner {
         query: TransitQuery,
         direct_bike_journey: Option<DirectBikeJourney>,
     ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
+        let (corridor, static_stats) = self.execute_phase1(&query)?;
+        let mut planner_stats = TransitPlannerStats {
+            phase1: static_stats,
+            ..TransitPlannerStats::default()
+        };
+        if corridor.is_empty() && direct_bike_journey.is_none() {
+            return Ok((Vec::new(), planner_stats));
+        }
+        let RequestSnapshots {
+            timing: snapshot,
+            bike: bike_snapshot,
+            bike_enabled,
+            latency_ms,
+        } = self
+            .load_request_snapshots(
+                &query,
+                &corridor,
+                &planner_stats.phase1,
+                direct_bike_journey.is_some(),
+            )
+            .await?;
+        planner_stats.timing_snapshot_latency_ms = latency_ms;
+        let (direct_shortcuts, direct_bike_stats) = self
+            .realize_direct_bike(
+                &query,
+                direct_bike_journey.as_ref(),
+                bike_snapshot.as_deref(),
+            )
+            .await?;
+        let bike_context = self
+            .bike
+            .as_ref()
+            .zip(bike_snapshot.as_deref())
+            .map(|(bike, snapshot)| (bike, snapshot, OffsetDateTime::now_utc()));
+        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            return Err(RoutingError::DeadlineExceeded);
+        }
+        let (mut variants, mut phase2_stats) =
+            evaluator::evaluate_with_bike(&self.network, &corridor, &snapshot, query, bike_context)
+                .await?;
+        if let Some(direct) = direct_bike_journey {
+            let direct_variants = direct_bike_variants(direct, direct_shortcuts);
+            phase2_stats.candidates_before_pareto += direct_bike_stats.realizations_feasible;
+            phase2_stats.bike_realizations_considered += direct_bike_stats.station_pairs;
+            phase2_stats.bike_realizations_feasible += direct_bike_stats.realizations_feasible;
+            phase2_stats.bike_realizations_selected += direct_variants.len();
+            variants.extend(direct_variants);
+        }
+        phase2_stats.final_candidates = variants.len();
+        planner_stats.phase2_evaluation = phase2_stats;
+        log_phase2_metrics(
+            bike_enabled,
+            &direct_bike_stats,
+            &planner_stats.phase2_evaluation,
+            variants.len(),
+        );
+        Ok((variants, planner_stats))
+    }
+
+    fn execute_phase1(
+        &self,
+        query: &TransitQuery,
+    ) -> Result<
+        (
+            static_search::RetainedCorridorSet,
+            static_search::StaticSearchStats,
+        ),
+        RoutingError,
+    > {
         if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
             return Err(RoutingError::DeadlineExceeded);
         }
@@ -92,13 +168,12 @@ impl TransitPlanner {
         }
         let max_legs = query.limits.max_transfers.saturating_add(1);
         let (corridor, static_stats) =
-            static_search::generate(&self.network, &self.topology, &self.transfers, &query);
+            static_search::generate(&self.network, &self.topology, &self.transfers, query);
         if static_stats.deadline_exceeded
             || query.deadline.is_some_and(|deadline| deadline.is_elapsed())
         {
             return Err(RoutingError::DeadlineExceeded);
         }
-        let mut planner_stats = TransitPlannerStats::default();
 
         tracing::debug!(
             target: "via_server::routing",
@@ -183,11 +258,16 @@ impl TransitPlanner {
             );
             return Err(RoutingError::StaticSearchLimit);
         }
-        planner_stats.phase1 = static_stats;
-        if corridor.is_empty() && direct_bike_journey.is_none() {
-            return Ok((Vec::new(), planner_stats));
-        }
+        Ok((corridor, static_stats))
+    }
 
+    async fn load_request_snapshots(
+        &self,
+        query: &TransitQuery,
+        corridor: &static_search::RetainedCorridorSet,
+        static_stats: &static_search::StaticSearchStats,
+        has_direct_bike: bool,
+    ) -> Result<RequestSnapshots, RoutingError> {
         let positions = corridor.timing_positions().collect::<Vec<_>>();
         let snapshot_limit = usize::try_from(query.limits.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
@@ -219,7 +299,7 @@ impl TransitPlanner {
         let snapshot_started = Instant::now();
         let bike_enabled = query.allow_bike_share
             && self.bike.is_some()
-            && (!corridor.is_empty() || direct_bike_journey.is_some());
+            && (!corridor.is_empty() || has_direct_bike);
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
 
@@ -249,12 +329,12 @@ impl TransitPlanner {
             target: "via_server::routing",
             positions_requested = timing_positions_requested,
             snapshot_summary = ?snapshot.trace_summary(),
-            relevant_bus_stops = planner_stats.phase1.static_corridor_bus_stops,
+            relevant_bus_stops = static_stats.static_corridor_bus_stops,
             bike_share_enabled = bike_enabled,
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "timing snapshot"
         );
-        planner_stats.timing_snapshot_latency_ms = snapshot_started
+        let latency_ms = snapshot_started
             .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64;
@@ -265,14 +345,25 @@ impl TransitPlanner {
                 .unwrap_or(crate::domain::transit_timing::DepartureError::TemporarilyUnavailable)
                 .into());
         }
+        Ok(RequestSnapshots {
+            timing: snapshot,
+            bike: bike_snapshot,
+            bike_enabled,
+            latency_ms,
+        })
+    }
 
+    async fn realize_direct_bike(
+        &self,
+        query: &TransitQuery,
+        direct: Option<&DirectBikeJourney>,
+        bike_snapshot: Option<&crate::domain::bikeshare::BikeAvailabilitySnapshot>,
+    ) -> Result<(Vec<super::path::BikeShortcut>, BikePlanningStats), RoutingError> {
         let mut direct_shortcuts = Vec::new();
         let mut direct_bike_stats = BikePlanningStats::default();
-        if let (Some(direct), Some(bike), Some(snapshot)) = (
-            direct_bike_journey.as_ref(),
-            self.bike.as_ref(),
-            bike_snapshot.as_deref(),
-        ) {
+        if let (Some(direct), Some(bike), Some(snapshot)) =
+            (direct, self.bike.as_ref(), bike_snapshot)
+        {
             let (shortcuts, direct_stats) = bike
                 .direct_realizations(
                     direct.origin,
@@ -287,45 +378,7 @@ impl TransitPlanner {
             direct_bike_stats = direct_stats;
             direct_shortcuts = shortcuts;
         }
-        let bike_context = self
-            .bike
-            .as_ref()
-            .zip(bike_snapshot.as_deref())
-            .map(|(bike, snapshot)| (bike, snapshot, OffsetDateTime::now_utc()));
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-            return Err(RoutingError::DeadlineExceeded);
-        }
-        let (mut variants, mut phase2_stats) =
-            evaluator::evaluate_with_bike(&self.network, &corridor, &snapshot, query, bike_context)
-                .await?;
-        if let Some(direct) = direct_bike_journey {
-            let direct_variants = direct_bike_variants(direct, direct_shortcuts);
-            phase2_stats.candidates_before_pareto += direct_bike_stats.realizations_feasible;
-            phase2_stats.bike_realizations_considered += direct_bike_stats.station_pairs;
-            phase2_stats.bike_realizations_feasible += direct_bike_stats.realizations_feasible;
-            phase2_stats.bike_realizations_selected += direct_variants.len();
-            variants.extend(direct_variants);
-        }
-        phase2_stats.final_candidates = variants.len();
-        planner_stats.phase2_evaluation = phase2_stats;
-        tracing::debug!(
-            target: "via_server::routing",
-            bike_share_enabled = bike_enabled,
-            bike_direct_candidate_movements = direct_bike_stats.candidate_movements,
-            bike_direct_station_pairs = direct_bike_stats.station_pairs,
-            bike_direct_matrix_requests = direct_bike_stats.matrix_requests,
-            bike_matrix_requests = direct_bike_stats.matrix_requests + planner_stats.phase2_evaluation.bike_matrix_requests,
-            bike_lower_bound_checks = planner_stats.phase2_evaluation.bike_lower_bound_checks,
-            bike_lower_bound_rejections = planner_stats.phase2_evaluation.bike_lower_bound_rejections,
-            bike_exact_candidates_requested = planner_stats.phase2_evaluation.bike_exact_candidates_requested,
-            bike_exact_cache_hits = planner_stats.phase2_evaluation.bike_exact_cache_hits,
-            bike_continuous_extensions = planner_stats.phase2_evaluation.bike_continuous_extensions,
-            bike_exact_candidates_retained = direct_bike_stats.realizations_feasible + planner_stats.phase2_evaluation.bike_realizations_feasible,
-            bike_realizations_selected = planner_stats.phase2_evaluation.bike_realizations_selected,
-            multimodal_variants = variants.len(),
-            "Phase 2 corridor evaluation"
-        );
-        Ok((variants, planner_stats))
+        Ok((direct_shortcuts, direct_bike_stats))
     }
 
     pub(crate) async fn plan_direct_bike(
@@ -358,6 +411,31 @@ impl TransitPlanner {
         }
         direct_bike_variants(direct, shortcuts)
     }
+}
+
+fn log_phase2_metrics(
+    bike_enabled: bool,
+    direct_bike_stats: &BikePlanningStats,
+    phase2_stats: &Phase2EvaluationStats,
+    variant_count: usize,
+) {
+    tracing::debug!(
+        target: "via_server::routing",
+        bike_share_enabled = bike_enabled,
+        bike_direct_candidate_movements = direct_bike_stats.candidate_movements,
+        bike_direct_station_pairs = direct_bike_stats.station_pairs,
+        bike_direct_matrix_requests = direct_bike_stats.matrix_requests,
+        bike_matrix_requests = direct_bike_stats.matrix_requests + phase2_stats.bike_matrix_requests,
+        bike_lower_bound_checks = phase2_stats.bike_lower_bound_checks,
+        bike_lower_bound_rejections = phase2_stats.bike_lower_bound_rejections,
+        bike_exact_candidates_requested = phase2_stats.bike_exact_candidates_requested,
+        bike_exact_cache_hits = phase2_stats.bike_exact_cache_hits,
+        bike_continuous_extensions = phase2_stats.bike_continuous_extensions,
+        bike_exact_candidates_retained = direct_bike_stats.realizations_feasible + phase2_stats.bike_realizations_feasible,
+        bike_realizations_selected = phase2_stats.bike_realizations_selected,
+        multimodal_variants = variant_count,
+        "Phase 2 corridor evaluation"
+    );
 }
 
 fn direct_bike_variants(
