@@ -101,7 +101,7 @@ private extension ServerLegDTO {
         case .transit:
             guard details.type == "transit",
                   let transitMode = details.transitMode.flatMap({ TransitMode(rawValue: $0) }),
-                  let serviceID = details.serviceID,
+                  let patternID = details.patternID,
                   let boardingPointID = details.boardingPointID,
                   let alightingPointID = details.alightingPointID
             else {
@@ -110,7 +110,7 @@ private extension ServerLegDTO {
             title = details.serviceLabel ?? transitMode.titleKey
             transit = TransitLegMetadata(
                 mode: transitMode,
-                serviceID: serviceID,
+                patternID: patternID,
                 serviceLabel: details.serviceLabel ?? transitMode.titleKey,
                 headsign: details.headsign ?? "",
                 boardingPointID: boardingPointID,

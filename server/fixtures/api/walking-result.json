@@ -37,7 +37,7 @@
       },
       "overview_geometry": {
         "encoding": "polyline6",
-        "points": "_fixture_polyline6_"
+        "points": "_lxwn@g_ywfF~qLgl}A"
       },
       "legs": [
         {
@@ -61,7 +61,7 @@
           "scheduled_arrival_time": null,
           "duration_seconds": 620,
           "distance_metres": 3900,
-          "geometry": {"encoding": "polyline6", "points": "_fixture_polyline6_"},
+          "geometry": {"encoding": "polyline6", "points": "_lxwn@g_ywfF~qLgl}A"},
           "guidance": [
             {"code": "depart", "required": true, "parameters": {}},
             {"code": "arrive", "required": true, "parameters": {}}

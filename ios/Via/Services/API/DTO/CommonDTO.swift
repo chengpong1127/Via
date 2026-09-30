@@ -48,7 +48,7 @@ struct ServerPlace: Decodable, Sendable {
 struct ServerDetails: Decodable, Sendable {
     let type: String
     let transitMode: String?
-    let serviceID: String?
+    let patternID: String?
     let boardingPointID: String?
     let alightingPointID: String?
     let serviceLabel: String?
@@ -61,7 +61,7 @@ struct ServerDetails: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type
         case transitMode = "transit_mode"
-        case serviceID = "via_service_id"
+        case patternID = "via_pattern_id"
         case boardingPointID = "via_boarding_point_id"
         case alightingPointID = "via_alighting_point_id"
         case serviceLabel = "service_label"

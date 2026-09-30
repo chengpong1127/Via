@@ -1,0 +1,85 @@
+{
+  "api_version": "1.0",
+  "semantic_catalog_version": "1.0",
+  "request_id": "req_fixture_bikeshare",
+  "generated_at": "2026-08-31T12:00:00+08:00",
+  "effective_search_time": "2026-08-31T12:00:00+08:00",
+  "time_zone": "Asia/Taipei",
+  "network_revision": {
+    "static_network_revision": "static-1",
+    "schedule_revision": "schedule-1"
+  },
+  "policy_versions": {
+    "freshness": "1",
+    "ranking": "1",
+    "transfer_safety": "1"
+  },
+  "warnings": [],
+  "journey_options": [
+    {
+      "id": "option_fixture_bikeshare",
+      "matching_key": "match_fixture_bikeshare",
+      "class": "reliable",
+      "label": "best_now",
+      "ranking_reasons": ["earliest_reliable_arrival"],
+      "departure_time": "2026-08-31T12:00:00+08:00",
+      "arrival_time": "2026-08-31T12:10:00+08:00",
+      "duration_seconds": 600,
+      "walking_seconds": 0,
+      "bicycle_seconds": 600,
+      "bike_share_uses": 1,
+      "transfer_count": 0,
+      "travel_modes": ["bicycle"],
+      "live_status_summary": {
+        "state": "not_applicable",
+        "reasons": [],
+        "observed_at": null
+      },
+      "overview_geometry": {
+        "encoding": "polyline6",
+        "points": "_lxwn@g_ywfF~qLgl}A"
+      },
+      "legs": [
+        {
+          "id": "leg_fixture_bikeshare",
+          "mode": "bicycle",
+          "from": {
+            "display_name": "Taipei Main Station YouBike",
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "kind": "bike_share_station",
+            "via_id": "youbike-pickup"
+          },
+          "to": {
+            "display_name": "Taipei 101 YouBike",
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "kind": "bike_share_station",
+            "via_id": "youbike-dropoff"
+          },
+          "departure_time": "2026-08-31T12:00:00+08:00",
+          "arrival_time": "2026-08-31T12:10:00+08:00",
+          "scheduled_departure_time": null,
+          "scheduled_arrival_time": null,
+          "duration_seconds": 600,
+          "distance_metres": 3700,
+          "geometry": {"encoding": "polyline6", "points": "_lxwn@g_ywfF~qLgl}A"},
+          "guidance": [
+            {"code": "pickup_bike", "required": true, "parameters": {"pickup_station_name": "Taipei Main Station YouBike"}},
+            {"code": "return_bike", "required": true, "parameters": {"return_station_name": "Taipei 101 YouBike"}}
+          ],
+          "details": {
+            "type": "bike_share",
+            "pickup_station_id": "youbike-pickup",
+            "pickup_station_name": "Taipei Main Station YouBike",
+            "dropoff_station_id": "youbike-dropoff",
+            "dropoff_station_name": "Taipei 101 YouBike"
+          },
+          "live_status": [],
+          "warnings": [],
+          "attribution": []
+        }
+      ],
+      "transfers": [],
+      "warnings": []
+    }
+  ]
+}

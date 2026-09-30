@@ -140,10 +140,13 @@ fn generated_openapi_covers_the_http_contract() {
     let request: PlanningRequest =
         serde_json::from_str(include_str!("../../fixtures/api/planning-request.json")).unwrap();
     request.validate().unwrap();
-    let _: Value = serde_json::from_str(include_str!(
-        "../../fixtures/api/journey-options-result.json"
-    ))
-    .unwrap();
+    for fixture in [
+        include_str!("../../fixtures/api/walking-result.json"),
+        include_str!("../../fixtures/api/transit-result.json"),
+        include_str!("../../fixtures/api/bike-share-result.json"),
+    ] {
+        let _: Value = serde_json::from_str(fixture).unwrap();
+    }
     let _: Value =
         serde_json::from_str(include_str!("../../fixtures/api/empty-result.json")).unwrap();
     let _: Value = serde_json::from_str(include_str!(
@@ -192,7 +195,15 @@ fn representative_payload_serialization_remains_compatible_with_generated_schema
     for (schema, fixture) in [
         (
             "JourneyOptionsResult",
-            include_str!("../../fixtures/api/journey-options-result.json"),
+            include_str!("../../fixtures/api/walking-result.json"),
+        ),
+        (
+            "JourneyOptionsResult",
+            include_str!("../../fixtures/api/transit-result.json"),
+        ),
+        (
+            "JourneyOptionsResult",
+            include_str!("../../fixtures/api/bike-share-result.json"),
         ),
         (
             "EmptyResult",

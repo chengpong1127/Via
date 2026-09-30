@@ -59,7 +59,7 @@ actor DemoJourneyPlanner: JourneyPlanning {
                 overview: interpolate([taipeiMain, shandao, cityHall, xinyi, destination]),
                 legs: [
                     JourneyLeg(id: "walk-main", mode: .walking, title: "Walk to Taipei Main Station", subtitle: "Enter through M8", durationSeconds: 240, guidance: [GuidanceInstruction(title: "Walk toward the Blue Line", detail: "Use entrance M8 and follow signs for Bannan Line.")]),
-                    JourneyLeg(id: "metro-blue", mode: .transit, title: "Bannan Line toward Nangang Exhibition Center", subtitle: "Taipei Main Station → Taipei City Hall · 5 stops", durationSeconds: 900, guidance: [GuidanceInstruction(title: "Board the Bannan Line", detail: "Ride toward Nangang Exhibition Center and leave at Taipei City Hall.")], transit: TransitLegMetadata(mode: .metro, serviceID: "demo-blue", serviceLabel: "Bannan Line", headsign: "Nangang Exhibition Center", boardingPointID: "taipei-main", alightingPointID: "city-hall")),
+                    JourneyLeg(id: "metro-blue", mode: .transit, title: "Bannan Line toward Nangang Exhibition Center", subtitle: "Taipei Main Station → Taipei City Hall · 5 stops", durationSeconds: 900, guidance: [GuidanceInstruction(title: "Board the Bannan Line", detail: "Ride toward Nangang Exhibition Center and leave at Taipei City Hall.")], transit: TransitLegMetadata(mode: .metro, patternID: "demo-blue", serviceLabel: "Bannan Line", headsign: "Nangang Exhibition Center", boardingPointID: "taipei-main", alightingPointID: "city-hall")),
                     JourneyLeg(id: "walk-xinyi", mode: .walking, title: "Walk to the destination", subtitle: "About 3 minutes", durationSeconds: 180, guidance: [GuidanceInstruction(title: "Leave from Exit 2", detail: "Continue southeast toward the destination.")])
                 ]
             ),
@@ -78,7 +78,7 @@ actor DemoJourneyPlanner: JourneyPlanning {
                 overview: interpolate([taipeiMain, Coordinate(latitude: 25.0440, longitude: 121.5360), Coordinate(latitude: 25.0390, longitude: 121.5520), destination]),
                 legs: [
                     JourneyLeg(id: "walk-bus", mode: .walking, title: "Walk to the 307 bus stop", subtitle: "Zhongxiao West Road", durationSeconds: 180, guidance: [GuidanceInstruction(title: "Walk to the bus stop", detail: "Board from the eastbound stop.")]),
-                    JourneyLeg(id: "bus-307", mode: .transit, title: "Bus 307 toward Xinyi District", subtitle: "8 stops", durationSeconds: 1_320, guidance: [GuidanceInstruction(title: "Board bus 307", detail: "Get off near Taipei 101.")], transit: TransitLegMetadata(mode: .bus, serviceID: "demo-307", serviceLabel: "Bus 307", headsign: "Xinyi District", boardingPointID: "bus-stop-origin", alightingPointID: "bus-stop-destination")),
+                    JourneyLeg(id: "bus-307", mode: .transit, title: "Bus 307 toward Xinyi District", subtitle: "8 stops", durationSeconds: 1_320, guidance: [GuidanceInstruction(title: "Board bus 307", detail: "Get off near Taipei 101.")], transit: TransitLegMetadata(mode: .bus, patternID: "demo-307", serviceLabel: "Bus 307", headsign: "Xinyi District", boardingPointID: "bus-stop-origin", alightingPointID: "bus-stop-destination")),
                     JourneyLeg(id: "walk-arrive", mode: .walking, title: "Walk to the destination", subtitle: "About 3 minutes", durationSeconds: 180, guidance: [GuidanceInstruction(title: "Continue to the destination", detail: nil)])
                 ]
             ),

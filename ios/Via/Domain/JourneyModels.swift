@@ -162,7 +162,7 @@ struct GuidanceInstruction: Identifiable, Sendable {
 
 struct TransitLegMetadata: Sendable {
     let mode: TransitMode
-    let serviceID: String
+    let patternID: String
     let serviceLabel: String
     let headsign: String
     let boardingPointID: String

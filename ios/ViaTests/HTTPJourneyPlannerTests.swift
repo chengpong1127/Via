@@ -47,22 +47,39 @@ struct HTTPJourneyPlannerTests {
         #expect(StubURLProtocol.lastRequest?.url?.path == "/v1/journey-plans")
     }
 
-    @Test("HTTP planner decodes a normal server-authoritative Journey Option")
-    func decodesNormalResult() async throws {
-        StubURLProtocol.reset(statusCode: 200, body: Self.normalResult)
+    @Test("HTTP planner decodes and maps the shared server journey fixtures")
+    func decodesSharedResultFixtures() async throws {
         let planner = HTTPJourneyPlanner(
             baseURL: URL(string: "https://api.example.test")!,
             urlSession: Self.stubSession()
         )
 
-        let result = try await planner.plan(Self.request())
+        let walkingResult = try await Self.plan(planner, fixture: "walking-result.json")
+        let walkingOption = try #require(walkingResult.options.first)
+        #expect(walkingOption.id == "option_01_fixture_match")
+        #expect(walkingOption.legs.map(\.mode) == [.walking])
 
-        #expect(result.options.count == 1)
-        #expect(result.options[0].id == "option_01_fixture_match")
-        #expect(result.options[0].journeyClass == .reliable)
-        #expect(result.options[0].travelModes == [.walking, .transit])
-        #expect(result.options[0].legs[0].mode == .transit)
-        #expect(result.options[0].legs[0].transit?.mode == .metro)
+        let transitResult = try await Self.plan(planner, fixture: "transit-result.json")
+        let transitOption = try #require(transitResult.options.first)
+        let transitLeg = try #require(transitOption.legs.first { $0.mode == .transit })
+        let transit = try #require(transitLeg.transit)
+        #expect(transitLeg.mode == .transit)
+        #expect(transit.mode == .metro)
+        #expect(transit.patternID == "metro-pattern-1")
+        #expect(transit.serviceLabel == "Blue Line")
+        #expect(transit.headsign == "Nangang Exhibition Center")
+        #expect(transit.boardingPointID == "metro-stop-1")
+        #expect(transit.alightingPointID == "metro-stop-2")
+
+        let bikeShareResult = try await Self.plan(planner, fixture: "bike-share-result.json")
+        let bikeShareOption = try #require(bikeShareResult.options.first)
+        let bikeShareLeg = try #require(bikeShareOption.legs.first { $0.mode == .bicycle })
+        let bikeShare = try #require(bikeShareLeg.bikeShare)
+        #expect(bikeShareLeg.mode == .bicycle)
+        #expect(bikeShare.pickupStationID == "youbike-pickup")
+        #expect(bikeShare.pickupStationName == "Taipei Main Station YouBike")
+        #expect(bikeShare.dropoffStationID == "youbike-dropoff")
+        #expect(bikeShare.dropoffStationName == "Taipei 101 YouBike")
     }
 
     @Test("HTTP planner maps the shared error statuses")
@@ -132,6 +149,27 @@ struct HTTPJourneyPlannerTests {
         )
     }
 
+    private static func plan(
+        _ planner: HTTPJourneyPlanner,
+        fixture name: String
+    ) async throws -> JourneyResult {
+        StubURLProtocol.reset(statusCode: 200, body: try apiFixture(named: name))
+        return try await planner.plan(request())
+    }
+
+    private static func apiFixture(named name: String) throws -> Data {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let fixtureURL = repositoryRoot
+            .appendingPathComponent("server", isDirectory: true)
+            .appendingPathComponent("fixtures", isDirectory: true)
+            .appendingPathComponent("api", isDirectory: true)
+            .appendingPathComponent(name)
+        return try Data(contentsOf: fixtureURL)
+    }
+
     private static let emptyResult = Data(#"{
       "api_version":"1.0",
       "semantic_catalog_version":"1.0",
@@ -146,39 +184,6 @@ struct HTTPJourneyPlannerTests {
       "policy_versions":{"freshness":"1","ranking":"1","transfer_safety":"1"},
       "warnings":[],
       "empty":{"code":"no_feasible_journey_option","required":true,"parameters":{}}
-    }"#.utf8)
-
-    private static let normalResult = Data(#"{
-      "api_version":"1.0",
-      "semantic_catalog_version":"1.0",
-      "generated_at":"2026-08-29T10:08:00+08:00",
-      "network_revision":{
-        "static_network_revision":"static_test",
-        "schedule_revision":"schedule_test"
-      },
-      "journey_options":[{
-        "id":"option_01_fixture_match",
-        "matching_key":"match_fixture",
-        "class":"reliable",
-        "label":"best_now",
-        "departure_time":"2026-08-29T10:08:00+08:00",
-        "arrival_time":"2026-08-29T10:18:00+08:00",
-        "duration_seconds":600,
-        "walking_seconds":600,
-        "transfer_count":0,
-        "travel_modes":["walking","transit"],
-        "live_status_summary":{"state":"not_applicable","observed_at":null},
-        "overview_geometry":{"encoding":"polyline6","points":"??"},
-        "legs":[{
-          "id":"leg_01_1_fixture_match",
-          "mode":"transit",
-          "from":{"display_name":"Origin"},
-          "to":{"display_name":"Destination"},
-          "duration_seconds":600,
-          "guidance":[],
-          "details":{"type":"transit","transit_mode":"metro","via_service_id":"metro-1","via_boarding_point_id":"stop-1","via_alighting_point_id":"stop-2","service_label":"Blue Line","headsign":"Taipei City Hall"}
-        }]
-      }]
     }"#.utf8)
 
     private static let errorBody = Data(#"{
