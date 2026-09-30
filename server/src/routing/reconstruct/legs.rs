@@ -173,7 +173,7 @@ pub(crate) async fn assemble(
                     JourneyMovementKind::Walking {
                         kind: WalkingMovementKind::Transfer,
                         duration_seconds,
-                        ..
+                        distance_metres,
                     } => {
                         let from_stop = current_stop
                             .clone()
@@ -191,7 +191,13 @@ pub(crate) async fn assemble(
                             .stop_place(&to_stop)
                             .ok_or(PlanningError::Internal)?;
                         let connector_start = result.legs.len();
-                        append_static_walking(&from, &to, *duration_seconds, &mut result);
+                        append_static_walking(
+                            &from,
+                            &to,
+                            *duration_seconds,
+                            *distance_metres,
+                            &mut result,
+                        );
                         register_pending_transfer(&result, &mut pending_transfer, connector_start);
                         current_stop = Some(to_stop);
                     }
@@ -672,9 +678,10 @@ fn append_static_walking(
     from: &Place,
     to: &Place,
     duration_seconds: u32,
+    distance_metres: u32,
     result: &mut ReconstructedLegs,
 ) {
-    let path = synthetic_street_path(from, to, duration_seconds, 0);
+    let path = synthetic_street_path(from, to, duration_seconds, distance_metres);
     let departure = result.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(duration_seconds));
     let leg_id = format!("candidate_leg_{}", result.legs.len());

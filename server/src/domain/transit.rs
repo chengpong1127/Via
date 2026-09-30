@@ -222,14 +222,21 @@ pub struct TransferEdge {
     pub from: BoardingPointId,
     pub to: BoardingPointId,
     pub duration_seconds: u32,
+    pub distance_metres: u32,
 }
 
 impl TransferEdge {
-    pub fn new(from: BoardingPointId, to: BoardingPointId, duration_seconds: u32) -> Self {
+    pub fn new(
+        from: BoardingPointId,
+        to: BoardingPointId,
+        duration_seconds: u32,
+        distance_metres: u32,
+    ) -> Self {
         Self {
             from,
             to,
             duration_seconds,
+            distance_metres,
         }
     }
 }

@@ -23,6 +23,12 @@ const MAX_OUTGOING: usize = 12;
 const CELL_DEGREES: f64 = 0.004;
 const CONCURRENCY: usize = 8;
 
+#[derive(Clone, Copy)]
+struct WalkingTransferMetrics {
+    duration_seconds: u32,
+    distance_metres: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransferStatistics {
     pub boarding_points: usize,
@@ -91,7 +97,7 @@ pub async fn enrich_network_with_static_transfers(
             reason: "street matrix limits must be positive".into(),
         });
     }
-    let mut best = HashMap::<(BoardingPointId, BoardingPointId), u32>::new();
+    let mut best = HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
 
     for source_group in indices.chunks(128) {
         let mut requests = Vec::new();
@@ -165,24 +171,38 @@ pub async fn enrich_network_with_static_transfers(
                         network.stops[source].id.clone(),
                         network.stops[target].id.clone(),
                     );
-                    best.insert(key, duration.0);
+                    best.insert(
+                        key,
+                        WalkingTransferMetrics {
+                            duration_seconds: duration.0,
+                            distance_metres: distance.0,
+                        },
+                    );
                 }
             }
         }
     }
 
-    let mut by_source = HashMap::<BoardingPointId, Vec<(BoardingPointId, u32)>>::new();
-    for ((from, to), duration) in best {
-        by_source.entry(from).or_default().push((to, duration));
+    let mut by_source =
+        HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
+    for ((from, to), metrics) in best {
+        by_source.entry(from).or_default().push((to, metrics));
     }
     network.transfer_edges.clear();
     for (from, mut targets) in by_source {
-        targets.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+        targets.sort_by(|a, b| {
+            a.1.duration_seconds
+                .cmp(&b.1.duration_seconds)
+                .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+        });
         stats.removed_by_fanout += targets.len().saturating_sub(MAX_OUTGOING);
-        for (to, duration) in targets.into_iter().take(MAX_OUTGOING) {
-            network
-                .transfer_edges
-                .push(TransferEdge::new(from.clone(), to, duration));
+        for (to, metrics) in targets.into_iter().take(MAX_OUTGOING) {
+            network.transfer_edges.push(TransferEdge::new(
+                from.clone(),
+                to,
+                metrics.duration_seconds,
+                metrics.distance_metres,
+            ));
         }
     }
     network.transfer_edges.sort_by(|a, b| {
@@ -307,12 +327,32 @@ mod tests {
             vec![TransferEdge::new(
                 BoardingPointId::new("a"),
                 BoardingPointId::new("b"),
-                75
+                75,
+                90
             )]
         );
         let index = TransferShortcutIndex::from_network(&network);
         assert_eq!(index.transfers_from(&BoardingPointId::new("a")).len(), 1);
         assert_eq!(index.transfers_to(&BoardingPointId::new("b")).len(), 1);
+        assert_eq!(
+            index.transfers_from(&BoardingPointId::new("a"))[0].distance_metres,
+            90
+        );
+        assert_eq!(
+            index.transfers_to(&BoardingPointId::new("b"))[0].distance_metres,
+            90
+        );
+        network.static_network_revision = "fixture".to_owned();
+        network.schedule_revision = "fixture".to_owned();
+        let restored =
+            TransitNetwork::from_artifact_json(&serde_json::to_string(&network).unwrap()).unwrap();
+        assert_eq!(restored.transfer_edges[0].distance_metres, 90);
+        let mut legacy = serde_json::to_value(&network).unwrap();
+        legacy["transfer_edges"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("distance_metres");
+        assert!(TransitNetwork::from_artifact_json(&legacy.to_string()).is_err());
         assert!(index.transfers_from(&BoardingPointId::new("b")).is_empty());
     }
 
@@ -324,9 +364,24 @@ mod tests {
             point("c", 25.001),
         ]);
         network.transfer_edges = vec![
-            TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 150),
-            TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 180),
-            TransferEdge::new(BoardingPointId::new("b"), BoardingPointId::new("a"), 60),
+            TransferEdge::new(
+                BoardingPointId::new("a"),
+                BoardingPointId::new("b"),
+                150,
+                100,
+            ),
+            TransferEdge::new(
+                BoardingPointId::new("a"),
+                BoardingPointId::new("b"),
+                180,
+                100,
+            ),
+            TransferEdge::new(
+                BoardingPointId::new("b"),
+                BoardingPointId::new("a"),
+                60,
+                100,
+            ),
         ];
         let street = FakeStreetRouter::builder()
             .matrix_leg(
@@ -364,8 +419,13 @@ mod tests {
         assert_eq!(
             network.transfer_edges,
             vec![
-                TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 75),
-                TransferEdge::new(BoardingPointId::new("b"), BoardingPointId::new("a"), 200),
+                TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 75, 90),
+                TransferEdge::new(
+                    BoardingPointId::new("b"),
+                    BoardingPointId::new("a"),
+                    200,
+                    90
+                ),
             ]
         );
         assert_eq!(stats.removed_by_limits, 1);

@@ -7,7 +7,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
 use crate::providers::bindings::TdxProviderBindings;
 
-pub const VIA_STATIC_SCHEMA_VERSION: u32 = 1;
+pub const VIA_STATIC_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -248,7 +248,17 @@ mod tests {
         value["schema_version"] = serde_json::Value::from(VIA_STATIC_SCHEMA_VERSION + 1);
         assert!(matches!(
             ViaStatic::from_json(&value.to_string()),
-            Err(ViaStaticValidationError::UnsupportedSchemaVersion(2))
+            Err(ViaStaticValidationError::UnsupportedSchemaVersion(3))
+        ));
+    }
+
+    #[test]
+    fn via_static_rejects_legacy_schema_without_transfer_distances() {
+        let mut value = serde_json::to_value(artifact()).unwrap();
+        value["schema_version"] = serde_json::Value::from(1);
+        assert!(matches!(
+            ViaStatic::from_json(&value.to_string()),
+            Err(ViaStaticValidationError::UnsupportedSchemaVersion(1))
         ));
     }
 

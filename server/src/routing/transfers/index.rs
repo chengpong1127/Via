@@ -7,14 +7,21 @@ pub struct TransferShortcut {
     pub from: BoardingPointId,
     pub to: BoardingPointId,
     pub duration_seconds: u32,
+    pub distance_metres: u32,
 }
 
 impl TransferShortcut {
-    pub fn new(from: BoardingPointId, to: BoardingPointId, duration_seconds: u32) -> Self {
+    pub fn new(
+        from: BoardingPointId,
+        to: BoardingPointId,
+        duration_seconds: u32,
+        distance_metres: u32,
+    ) -> Self {
         Self {
             from,
             to,
             duration_seconds,
+            distance_metres,
         }
     }
 }
@@ -37,7 +44,12 @@ impl TransferShortcutIndex {
 
     pub fn from_network(network: &TransitNetwork) -> Self {
         Self::new(network.transfer_edges.iter().map(|edge| {
-            TransferShortcut::new(edge.from.clone(), edge.to.clone(), edge.duration_seconds)
+            TransferShortcut::new(
+                edge.from.clone(),
+                edge.to.clone(),
+                edge.duration_seconds,
+                edge.distance_metres,
+            )
         }))
     }
 
@@ -108,8 +120,18 @@ mod tests {
             Vec::new(),
         )
         .with_transfer_edges(vec![
-            TransferEdge::new(BoardingPointId::new("a"), BoardingPointId::new("b"), 90),
-            TransferEdge::new(BoardingPointId::new("b"), BoardingPointId::new("a"), 90),
+            TransferEdge::new(
+                BoardingPointId::new("a"),
+                BoardingPointId::new("b"),
+                90,
+                100,
+            ),
+            TransferEdge::new(
+                BoardingPointId::new("b"),
+                BoardingPointId::new("a"),
+                90,
+                100,
+            ),
         ]);
 
         let index = TransferShortcutIndex::from_network(&network);

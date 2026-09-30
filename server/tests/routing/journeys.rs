@@ -82,6 +82,7 @@ fn terminal_transfer_network() -> TransitNetwork {
         BoardingPointId::new("F-M2-RED"),
         BoardingPointId::new("F-M2-BLUE"),
         30,
+        100,
     )];
     network
 }
@@ -291,6 +292,8 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
     .await;
     let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
 
+    assert_eq!(option["legs"][2]["distance_metres"], 100);
+    assert_eq!(option["legs"][2]["duration_seconds"], 120);
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
         leg_modes(option),

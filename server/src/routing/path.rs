@@ -174,7 +174,7 @@ impl JourneySkeleton {
                         kind: JourneyMovementKind::Walking {
                             kind: WalkingMovementKind::Transfer,
                             duration_seconds: shortcut.duration_seconds,
-                            distance_metres: 0,
+                            distance_metres: shortcut.distance_metres,
                         },
                         street_path: None,
                     });
@@ -756,10 +756,11 @@ mod tests {
                         a.clone(),
                         b.clone(),
                         60,
+                        100,
                     ),
                 },
                 JourneySegment::WalkingTransfer {
-                    shortcut: crate::routing::transfers::TransferShortcut::new(b, c, 60),
+                    shortcut: crate::routing::transfers::TransferShortcut::new(b, c, 60, 100),
                 },
             ],
             departure_time: departure_at,

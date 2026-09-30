@@ -577,11 +577,13 @@ mod tests {
                 BoardingPointId::new("bus-end-a"),
                 BoardingPointId::new("metro-start-a"),
                 60,
+                100,
             ),
             crate::domain::transit::TransferEdge::new(
                 BoardingPointId::new("bus-end-b"),
                 BoardingPointId::new("metro-start-b"),
                 60,
+                100,
             ),
         ]);
         Arc::new(TransitRuntime::new(Arc::new(network)))

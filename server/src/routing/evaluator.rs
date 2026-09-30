@@ -203,8 +203,10 @@ impl EvaluationPath {
     ) -> Self {
         let mut next = self.clone();
         let segment_index = next.segments.len();
+        // This skeleton placeholder is replaced by the exact BikeShare movement.
+        // Its total duration includes cycling, so it has no walking distance.
         next.segments.push(JourneySegment::WalkingTransfer {
-            shortcut: TransferShortcut::new(from.clone(), to.clone(), shortcut.total_seconds),
+            shortcut: TransferShortcut::new(from.clone(), to.clone(), shortcut.total_seconds, 0),
         });
         next.walking_seconds = next
             .walking_seconds
@@ -543,6 +545,7 @@ async fn evaluate_inner(
                         from,
                         to,
                         walking_duration_seconds,
+                        walking_distance_metres,
                     } => {
                         stats.surface_transfers_evaluated += 1;
                         if charge_state(&mut stats, query.max_expansions) {
@@ -556,6 +559,7 @@ async fn evaluate_inner(
                                 from.clone(),
                                 to.clone(),
                                 *walking_duration_seconds,
+                                *walking_distance_metres,
                             );
                             stats.walking_realizations_considered += 1;
                             normal_successors.push(state.after_normal_transition(
@@ -1269,6 +1273,7 @@ mod tests {
             BoardingPointId::new("R03"),
             BoardingPointId::new("egress"),
             86,
+            100,
         );
         let arrival = datetime!(2026-09-21 10:19:22 UTC);
 
@@ -1399,6 +1404,7 @@ mod tests {
                 BoardingPointId::new("bus-end"),
                 BoardingPointId::new("metro-start"),
                 30,
+                100,
             )],
         );
         let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 10);
@@ -1465,6 +1471,7 @@ mod tests {
                         from: BoardingPointId::new("transfer-from"),
                         to: BoardingPointId::new("transfer-to"),
                         walking_duration_seconds: 8 * 60,
+                        walking_distance_metres: 100,
                     },
                     static_leg("second", "transfer-to", "destination"),
                 ],
@@ -1730,6 +1737,7 @@ mod tests {
                     from: BoardingPointId::new("a"),
                     to: BoardingPointId::new("b"),
                     walking_duration_seconds: 600,
+                    walking_distance_metres: 100,
                 }],
             }],
         );
@@ -1783,6 +1791,7 @@ mod tests {
                     from: BoardingPointId::new("a"),
                     to: BoardingPointId::new("b"),
                     walking_duration_seconds: 300,
+                    walking_distance_metres: 100,
                 }],
             }],
         );
@@ -1885,6 +1894,7 @@ mod tests {
                     from: BoardingPointId::new("a"),
                     to: BoardingPointId::new("b"),
                     walking_duration_seconds: 12 * 60,
+                    walking_distance_metres: 100,
                 }],
             }],
         );
@@ -1948,6 +1958,7 @@ mod tests {
                     from: BoardingPointId::new("a"),
                     to: BoardingPointId::new("b"),
                     walking_duration_seconds: 10 * 60,
+                    walking_distance_metres: 100,
                 }],
             }],
         );
@@ -2005,6 +2016,7 @@ mod tests {
                         from: BoardingPointId::new(&pair[0]),
                         to: BoardingPointId::new(&pair[1]),
                         walking_duration_seconds: 60,
+                        walking_distance_metres: 100,
                     })
                     .collect(),
             }],
@@ -2183,6 +2195,7 @@ mod tests {
                     from: BoardingPointId::new("a"),
                     to: BoardingPointId::new("b"),
                     walking_duration_seconds: 60,
+                    walking_distance_metres: 100,
                 }],
             }],
         );
@@ -2692,6 +2705,7 @@ mod tests {
                 BoardingPointId::new("bus-end"),
                 BoardingPointId::new("metro-start"),
                 30,
+                100,
             )],
         );
         let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 10);

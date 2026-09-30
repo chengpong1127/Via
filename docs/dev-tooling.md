@@ -117,3 +117,7 @@ response shape are unchanged by the static-data workflow.
 
 `TransferShortcutIndex` is projected from validated directional
 `TransitNetwork.transfer_edges`. GTFS `transfers.txt` is ignored.
+
+ViaStatic schema version 2 requires measured `distance_metres` on static walking
+transfer edges. Rebuild version 1 artifacts with `via-data build`; missing
+transfer distances are not inferred from walking speed.

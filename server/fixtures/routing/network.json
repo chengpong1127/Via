@@ -155,62 +155,74 @@
     {
       "from": "F-M1",
       "to": "F-TRA-B",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M2-BLUE",
       "to": "F-M2-BUS",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M2-BLUE",
       "to": "F-M2-RED",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M2-BUS",
       "to": "F-M2-BLUE",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M2-RED",
       "to": "F-M2-BLUE",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M3-BLUE",
       "to": "F-M3-BUS",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M3-BLUE",
       "to": "F-M3-GREEN",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M3-BUS",
       "to": "F-M3-BLUE",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-M3-GREEN",
       "to": "F-M3-BLUE",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-TRA-B",
       "to": "F-M1",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-MISS-M-IN",
       "to": "F-MISS-M-OUT",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     },
     {
       "from": "F-MISS-M-OUT",
       "to": "F-MISS-M-IN",
-      "duration_seconds": 120
+      "duration_seconds": 120,
+      "distance_metres": 100
     }
   ],
   "default_transfer_seconds": 120,

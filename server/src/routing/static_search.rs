@@ -52,6 +52,7 @@ pub enum StaticCorridorStep {
         from: BoardingPointId,
         to: BoardingPointId,
         walking_duration_seconds: u32,
+        walking_distance_metres: u32,
     },
 }
 
@@ -932,6 +933,7 @@ pub fn generate(
                     from: shortcut.from.clone(),
                     to: shortcut.to.clone(),
                     walking_duration_seconds: shortcut.duration_seconds,
+                    walking_distance_metres: shortcut.distance_metres,
                 });
                 next.transfer_ready = true;
                 if next.transit_legs_used > 0 {
@@ -1892,7 +1894,12 @@ mod tests {
                 trip("second-trip", "second", &[0, 1]),
             ],
         )
-        .with_transfer_edges(vec![TransferEdge::new(id("hub-from"), id("hub-to"), 1)]);
+        .with_transfer_edges(vec![TransferEdge::new(
+            id("hub-from"),
+            id("hub-to"),
+            1,
+            100,
+        )]);
 
         let (surface, stats) = generate(
             &TransitRuntime::new(std::sync::Arc::new(network.clone())),
@@ -2026,7 +2033,7 @@ mod tests {
                 trip("last", "bus-after-metro", &[0, 45]),
             ],
         )
-        .with_transfer_edges(vec![TransferEdge::new(id("m"), id("x"), 30)]);
+        .with_transfer_edges(vec![TransferEdge::new(id("m"), id("x"), 30, 100)]);
         let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
         let surface = run(
@@ -2150,7 +2157,7 @@ mod tests {
             vec![pattern("metro", TransitMode::Metro, &["board", "d"])],
             vec![trip("metro-trip", "metro", &[0, 100])],
         )
-        .with_transfer_edges(vec![TransferEdge::new(id("access"), id("board"), 30)]);
+        .with_transfer_edges(vec![TransferEdge::new(id("access"), id("board"), 30, 100)]);
         let mut network = network;
         network.stops.push(TransitStop::new(
             id("access"),
@@ -2179,7 +2186,7 @@ mod tests {
             vec![pattern("bus", TransitMode::Bus, &["o", "alight"])],
             vec![trip("bus-trip", "bus", &[0, 100])],
         )
-        .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("d"), 30)]);
+        .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("d"), 30, 100)]);
         let mut network = network;
         network.stops.push(TransitStop::new(
             id("d"),

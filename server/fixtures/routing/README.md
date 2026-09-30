@@ -19,7 +19,7 @@ The common topology is:
 
 `network.json` contains 18 boarding points, three metro services with static
 station departures, eight scheduled bus/rail trips, and bidirectional 120-second
-`transfer_edges` for the MRT/MRT, MRT/bus, TRA/MRT, and missed-transfer
+`transfer_edges` with explicit 100-metre fixture distances for the MRT/MRT, MRT/bus, TRA/MRT, and missed-transfer
 interchanges. The interchange points are distinct boarding points even when
 they represent the same physical station.
 

@@ -284,6 +284,7 @@ fn transfer_fixture_rejects_unknown_zero_duration_and_self_transfers() {
         BoardingPointId::new("F-M1"),
         BoardingPointId::new("F-UNKNOWN"),
         120,
+        100,
     ));
     assert!(unknown.validate().is_err());
 
@@ -292,6 +293,7 @@ fn transfer_fixture_rejects_unknown_zero_duration_and_self_transfers() {
         BoardingPointId::new("F-M2-RED"),
         BoardingPointId::new("F-M2-BLUE"),
         0,
+        100,
     ));
     assert!(zero_duration.validate().is_err());
 
@@ -300,6 +302,7 @@ fn transfer_fixture_rejects_unknown_zero_duration_and_self_transfers() {
         BoardingPointId::new("F-M1"),
         BoardingPointId::new("F-M1"),
         120,
+        100,
     ));
     assert!(self_transfer.validate().is_err());
 }
