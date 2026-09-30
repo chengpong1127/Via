@@ -13,7 +13,7 @@ use crate::{
         transit::TransitMode,
         transit_timing::{TimingBasis, TimingReliability},
     },
-    street::{Coordinate, RoutingTimeKind, StreetPath, StreetTravelMode},
+    street::{Coordinate, ProviderFailureClass, RoutingTimeKind, StreetPath, StreetTravelMode},
 };
 
 use super::{
@@ -22,9 +22,7 @@ use super::{
             JourneyAnchorKind, JourneyMovementKind, JourneyPathMovement, JourneyPathStep,
             JourneyVariant, WalkingMovementKind,
         },
-        service::{
-            PlanningContext, RoutingService, is_global_provider_error, is_transient_provider_error,
-        },
+        service::{PlanningContext, RoutingService},
     },
     evidence, geometry,
 };
@@ -739,21 +737,17 @@ async fn hydrate_path(
     mode: StreetTravelMode,
     departure: OffsetDateTime,
 ) -> Result<Option<StreetPath>, PlanningError> {
-    let from = Coordinate::try_new(from.coordinate.latitude, from.coordinate.longitude)?;
-    let to = Coordinate::try_new(to.coordinate.latitude, to.coordinate.longitude)?;
+    let from = Coordinate::try_from(from.coordinate).map_err(|_| PlanningError::Internal)?;
+    let to = Coordinate::try_from(to.coordinate).map_err(|_| PlanningError::Internal)?;
     let constraints = context.constraints(departure, RoutingTimeKind::DepartAt);
     match service.street_path(mode, from, to, constraints).await {
         super::super::service::PathAttempt::Found(path) => Ok(Some(path)),
         super::super::service::PathAttempt::Unreachable => Ok(None),
-        super::super::service::PathAttempt::Failed(error)
-            if is_transient_provider_error(&error) =>
-        {
-            Err(PlanningError::TemporarilyUnavailable)
-        }
-        super::super::service::PathAttempt::Failed(error) if is_global_provider_error(&error) => {
-            Err(PlanningError::Internal)
-        }
-        super::super::service::PathAttempt::Failed(_) => Err(PlanningError::Internal),
+        super::super::service::PathAttempt::Failed(error) => match error.failure_class() {
+            ProviderFailureClass::Unreachable => Ok(None),
+            ProviderFailureClass::Transient => Err(PlanningError::TemporarilyUnavailable),
+            ProviderFailureClass::Internal => Err(PlanningError::Internal),
+        },
     }
 }
 

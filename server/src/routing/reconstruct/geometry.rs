@@ -145,7 +145,7 @@ pub(crate) fn short_digest(value: &str) -> String {
 }
 
 pub(crate) fn to_street_coordinate(coordinate: GeoCoordinate) -> Result<Coordinate, PlanningError> {
-    Coordinate::try_new(coordinate.latitude, coordinate.longitude).map_err(PlanningError::from)
+    Coordinate::try_from(coordinate).map_err(|_| PlanningError::Internal)
 }
 
 pub(crate) fn taipei_now() -> OffsetDateTime {

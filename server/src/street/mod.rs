@@ -225,6 +225,27 @@ pub enum StreetRoutingError {
     ResponseTooLarge { limit_bytes: usize },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderFailureClass {
+    Unreachable,
+    Transient,
+    Internal,
+}
+
+impl StreetRoutingError {
+    pub fn failure_class(&self) -> ProviderFailureClass {
+        match self {
+            Self::Unreachable => ProviderFailureClass::Unreachable,
+            Self::Timeout | Self::RateLimited | Self::TemporarilyUnavailable => {
+                ProviderFailureClass::Transient
+            }
+            Self::InvalidRequest { .. }
+            | Self::MalformedResponse
+            | Self::ResponseTooLarge { .. } => ProviderFailureClass::Internal,
+        }
+    }
+}
+
 #[async_trait]
 pub trait StreetRouter: Send + Sync {
     fn matrix_limits(&self) -> MatrixLimits {
@@ -260,6 +281,41 @@ mod coordinate_tests {
                 }),
                 Err(StreetRoutingError::InvalidRequest { .. })
             ));
+        }
+    }
+    #[test]
+    fn every_street_error_has_an_explicit_failure_class() {
+        let cases = [
+            (
+                StreetRoutingError::Unreachable,
+                ProviderFailureClass::Unreachable,
+            ),
+            (StreetRoutingError::Timeout, ProviderFailureClass::Transient),
+            (
+                StreetRoutingError::RateLimited,
+                ProviderFailureClass::Transient,
+            ),
+            (
+                StreetRoutingError::TemporarilyUnavailable,
+                ProviderFailureClass::Transient,
+            ),
+            (
+                StreetRoutingError::InvalidRequest {
+                    reason: "invalid".into(),
+                },
+                ProviderFailureClass::Internal,
+            ),
+            (
+                StreetRoutingError::MalformedResponse,
+                ProviderFailureClass::Internal,
+            ),
+            (
+                StreetRoutingError::ResponseTooLarge { limit_bytes: 1 },
+                ProviderFailureClass::Internal,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.failure_class(), expected);
         }
     }
 }

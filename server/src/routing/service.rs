@@ -22,8 +22,8 @@ use crate::{
     observability::{OperationalMetrics, PlannerStageMetrics},
     providers::BikeAvailabilitySource,
     street::{
-        Coordinate, RouteQuery, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetPath,
-        StreetRouter, StreetRoutingError, StreetTravelMode,
+        Coordinate, ProviderFailureClass, RouteQuery, RoutingConstraints, RoutingTime,
+        RoutingTimeKind, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -175,15 +175,15 @@ impl RoutingService {
         )?;
         context.ensure_before_deadline()?;
         let mut generated = Vec::new();
-        let mut had_transient_failure = false;
-        let mut had_global_failure = false;
+        let mut failures = PlanningFailures::default();
         let mut stage_metrics = PlannerStageMetrics::default();
 
-        let (direct_walking, walking_transient, walking_global) =
-            self.discover_direct_walking(&context).await;
+        let DirectWalkingOutcome {
+            walking: direct_walking,
+            failures: walking_failures,
+        } = self.discover_direct_walking(&context).await;
         context.ensure_before_deadline()?;
-        had_transient_failure |= walking_transient;
-        had_global_failure |= walking_global;
+        failures.merge(walking_failures);
         let mut direct_bike_journey = None;
         if let Some(direct_walking) = &direct_walking {
             let departure_at = match request.departure_setting {
@@ -217,14 +217,13 @@ impl RoutingService {
                         Ok(Some(candidate)) => generated.push(candidate),
                         Ok(None) => {}
                         Err(error) => {
-                            had_transient_failure |= error == PlanningError::TemporarilyUnavailable;
-                            had_global_failure |= error == PlanningError::Internal;
+                            failures.record_planning(&error);
                         }
                     }
                 }
                 Err(error) => {
                     tracing::error!(error = %error, "direct walking path could not be skeletonized");
-                    had_global_failure = true;
+                    failures.internal = true;
                 }
             }
         }
@@ -264,8 +263,7 @@ impl RoutingService {
             let (access, egress) = match (access, egress) {
                 (Ok(access), Ok(egress)) => (access, egress),
                 (Err(error), _) | (_, Err(error)) => {
-                    had_transient_failure |= is_transient_provider_error(&error);
-                    had_global_failure |= is_global_provider_error(&error);
+                    failures.record_provider(&error);
                     (Vec::new(), Vec::new())
                 }
             };
@@ -334,9 +332,7 @@ impl RoutingService {
                                 Ok(Some(candidate)) => generated.push(candidate),
                                 Ok(None) => {}
                                 Err(error) => {
-                                    had_transient_failure |=
-                                        error == PlanningError::TemporarilyUnavailable;
-                                    had_global_failure |= error == PlanningError::Internal;
+                                    failures.record_planning(&error);
                                 }
                             }
                         }
@@ -344,11 +340,11 @@ impl RoutingService {
                     Err(error) => {
                         match &error {
                             super::model::RoutingError::Timing(timing) => {
-                                had_transient_failure |= timing.is_transient();
+                                failures.transient |= timing.is_transient();
                             }
                             super::model::RoutingError::StaticSearchLimit
                             | super::model::RoutingError::Phase2EvaluationLimit => {
-                                had_global_failure = true;
+                                failures.internal = true;
                             }
                             super::model::RoutingError::DeadlineExceeded => {
                                 return Err(PlanningError::TemporarilyUnavailable);
@@ -376,8 +372,7 @@ impl RoutingService {
                     Ok(Some(candidate)) => generated.push(candidate),
                     Ok(None) => {}
                     Err(error) => {
-                        had_transient_failure |= error == PlanningError::TemporarilyUnavailable;
-                        had_global_failure |= error == PlanningError::Internal;
+                        failures.record_planning(&error);
                     }
                 }
             }
@@ -397,14 +392,14 @@ impl RoutingService {
             generated_candidates = generated.len(),
             "journey planning routing stages"
         );
-        if had_global_failure {
+        if failures.internal {
             tracing::error!(
                 target: "via_server::routing",
                 "journey planning failed due to an internal routing error"
             );
             return Err(PlanningError::Internal);
         }
-        if generated.is_empty() && had_transient_failure {
+        if generated.is_empty() && failures.transient {
             tracing::warn!(
                 target: "via_server::routing",
                 "journey planning has no result because a dependency was temporarily unavailable"
@@ -558,46 +553,36 @@ pub(crate) enum PathAttempt {
     Failed(StreetRoutingError),
 }
 
-impl PathAttempt {
-    fn was_transient_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::Failed(
-                StreetRoutingError::Timeout
-                    | StreetRoutingError::RateLimited
-                    | StreetRoutingError::TemporarilyUnavailable
-            )
-        )
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlanningFailures {
+    pub(crate) transient: bool,
+    pub(crate) internal: bool,
+}
+
+impl PlanningFailures {
+    fn record_provider(&mut self, error: &StreetRoutingError) {
+        match error.failure_class() {
+            ProviderFailureClass::Unreachable => {}
+            ProviderFailureClass::Transient => self.transient = true,
+            ProviderFailureClass::Internal => self.internal = true,
+        }
     }
 
-    fn is_global_failure(&self) -> bool {
-        matches!(
-            self,
-            Self::Failed(
-                StreetRoutingError::InvalidRequest { .. }
-                    | StreetRoutingError::MalformedResponse
-                    | StreetRoutingError::ResponseTooLarge { .. }
-            )
-        )
+    fn record_planning(&mut self, error: &PlanningError) {
+        self.transient |= *error == PlanningError::TemporarilyUnavailable;
+        self.internal |= *error == PlanningError::Internal;
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.transient |= other.transient;
+        self.internal |= other.internal;
     }
 }
 
-pub(crate) fn is_transient_provider_error(error: &StreetRoutingError) -> bool {
-    matches!(
-        error,
-        StreetRoutingError::Timeout
-            | StreetRoutingError::RateLimited
-            | StreetRoutingError::TemporarilyUnavailable
-    )
-}
-
-pub(crate) fn is_global_provider_error(error: &StreetRoutingError) -> bool {
-    matches!(
-        error,
-        StreetRoutingError::InvalidRequest { .. }
-            | StreetRoutingError::MalformedResponse
-            | StreetRoutingError::ResponseTooLarge { .. }
-    )
+#[derive(Default)]
+struct DirectWalkingOutcome {
+    walking: Option<DirectWalking>,
+    failures: PlanningFailures,
 }
 
 impl RoutingService {
@@ -624,15 +609,12 @@ impl RoutingService {
         }
     }
 
-    async fn discover_direct_walking(
-        &self,
-        context: &PlanningContext,
-    ) -> (Option<DirectWalking>, bool, bool) {
+    async fn discover_direct_walking(&self, context: &PlanningContext) -> DirectWalkingOutcome {
         let (Ok(origin), Ok(destination)) = (
             to_street_coordinate(context.request.origin.coordinate),
             to_street_coordinate(context.request.destination.coordinate),
         ) else {
-            return (None, false, false);
+            return DirectWalkingOutcome::default();
         };
         let attempt = self
             .street_path(
@@ -642,31 +624,22 @@ impl RoutingService {
                 context.direct_constraints(),
             )
             .await;
-        let transient = attempt.was_transient_failure();
-        let global = attempt.is_global_failure();
-        let PathAttempt::Found(path) = attempt else {
-            return (None, transient, global);
-        };
-        (Some(DirectWalking { path }), false, false)
-    }
-}
-
-impl From<StreetRoutingError> for PlanningError {
-    fn from(error: StreetRoutingError) -> Self {
-        match error {
-            StreetRoutingError::Timeout
-            | StreetRoutingError::RateLimited
-            | StreetRoutingError::TemporarilyUnavailable => Self::TemporarilyUnavailable,
-            StreetRoutingError::Unreachable => unreachable_is_handled_before_conversion(),
-            StreetRoutingError::InvalidRequest { .. }
-            | StreetRoutingError::MalformedResponse
-            | StreetRoutingError::ResponseTooLarge { .. } => Self::Internal,
+        match attempt {
+            PathAttempt::Found(path) => DirectWalkingOutcome {
+                walking: Some(DirectWalking { path }),
+                failures: PlanningFailures::default(),
+            },
+            PathAttempt::Unreachable => DirectWalkingOutcome::default(),
+            PathAttempt::Failed(error) => {
+                let mut failures = PlanningFailures::default();
+                failures.record_provider(&error);
+                DirectWalkingOutcome {
+                    walking: None,
+                    failures,
+                }
+            }
         }
     }
-}
-
-fn unreachable_is_handled_before_conversion() -> ! {
-    panic!("unreachable street route must be handled before conversion")
 }
 
 #[cfg(test)]
@@ -709,6 +682,30 @@ mod limits_tests {
             .planner
             .max_phase2_expansions,
             1
+        );
+    }
+    #[test]
+    fn planning_failures_accumulate_without_treating_unreachable_as_failure() {
+        let mut failures = PlanningFailures::default();
+        failures.record_provider(&StreetRoutingError::Unreachable);
+        assert_eq!(failures, PlanningFailures::default());
+        failures.record_provider(&StreetRoutingError::Timeout);
+        assert_eq!(
+            failures,
+            PlanningFailures {
+                transient: true,
+                internal: false
+            }
+        );
+        let mut internal = PlanningFailures::default();
+        internal.record_planning(&PlanningError::Internal);
+        failures.merge(internal);
+        assert_eq!(
+            failures,
+            PlanningFailures {
+                transient: true,
+                internal: true
+            }
         );
     }
 }
