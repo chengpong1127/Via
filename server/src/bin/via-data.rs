@@ -9,8 +9,8 @@ use clap::{Args, Parser, Subcommand};
 use via_server::{
     config::load_dotenv,
     data::{
-        GtfsBuildDiagnostics, build_from_fetch_snapshot, fetch, fetch::fetch_snapshot,
-        load_static_artifact,
+        GtfsBuildDiagnostics, GtfsModeCoverage, build_from_fetch_snapshot, fetch,
+        fetch::fetch_snapshot, gtfs::measure_mode_coverage, load_static_artifact,
     },
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     health::DependencyHealth,
@@ -294,38 +294,9 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static_artifact(&args.artifact.static_path)?;
     print_static_counts("static data", &artifact);
+    let coverage = measure_mode_coverage(&artifact.transit, &artifact.provider_bindings);
+    print_mode_coverage(&coverage);
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
-    for mode in [
-        TransitMode::Bus,
-        TransitMode::Metro,
-        TransitMode::Rail,
-        TransitMode::HighSpeedRail,
-    ] {
-        println!(
-            "{} pattern count: {}",
-            mode_name(mode),
-            runtime
-                .data()
-                .patterns
-                .iter()
-                .filter(|pattern| runtime.route_of(pattern).mode == mode)
-                .count()
-        );
-    }
-    println!(
-        "derived Bus Phase 1 profiles: {}",
-        runtime
-            .data()
-            .patterns
-            .iter()
-            .filter(|pattern| pattern
-                .static_profile
-                .segments
-                .iter()
-                .all(|segment| segment.source
-                    == via_server::domain::transit::SegmentTimeSource::Derived))
-            .count()
-    );
     println!(
         "service-day boundary: {}",
         runtime.data().service_day_boundary
@@ -398,27 +369,16 @@ fn print_build_diagnostics(
         "GTFS trips skipped for invalid exact timing: {}",
         diagnostics.invalid_timing_trips
     );
-    for mode in ["bus", "metro", "rail", "high_speed_rail"] {
-        println!(
-            "{mode}: routes={} patterns={}",
-            diagnostics
-                .routes_loaded_by_mode
-                .get(mode)
-                .copied()
-                .unwrap_or(0),
-            diagnostics
-                .patterns_loaded_by_mode
-                .get(mode)
-                .copied()
-                .unwrap_or(0),
-        );
-    }
     println!(
-        "static Pattern profiles: exact={} derived_bus={} geometric_fallback_or_mixed={}",
-        diagnostics.exact_static_timing_patterns,
-        diagnostics.derived_bus_timing_patterns,
-        diagnostics.geometric_fallback_patterns
+        "GTFS valid stops with no retained pattern: {}",
+        diagnostics.valid_unreferenced_stops
     );
+    print_warning(
+        "valid GTFS stop points are not referenced by any retained pattern",
+        diagnostics.valid_unreferenced_stops,
+        &diagnostics.unreferenced_stop_examples,
+    );
+    print_mode_coverage(&diagnostics.coverage_by_mode);
     println!(
         "Bus Patterns without a TDX realtime scope: {}",
         diagnostics.unresolved_bus_realtime_scope_patterns
@@ -431,6 +391,82 @@ fn print_build_diagnostics(
         "Via Pattern IDs without current TDX realtime mapping: {}",
         diagnostics.gtfs_pattern_ids_without_tdx_mapping
     );
+}
+
+fn print_mode_coverage(coverage_by_mode: &std::collections::BTreeMap<String, GtfsModeCoverage>) {
+    for line in mode_coverage_lines(coverage_by_mode) {
+        println!("{line}");
+    }
+}
+
+fn mode_coverage_lines(
+    coverage_by_mode: &std::collections::BTreeMap<String, GtfsModeCoverage>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for mode in ["bus", "metro", "rail", "high_speed_rail"] {
+        let coverage = coverage_by_mode.get(mode).cloned().unwrap_or_default();
+        lines.push(format!(
+            "{mode} coverage: routes={} routes_without_patterns={} patterns={} gtfs_service={} without_gtfs_service={} live_provider_bound={} without_usable_service={} exact_timing={} derived_bus_timing={} estimated_or_mixed_timing={}",
+            coverage.supported_routes,
+            coverage.routes_without_patterns,
+            coverage.patterns,
+            coverage.patterns_with_gtfs_service,
+            coverage.patterns_without_gtfs_service,
+            coverage.patterns_with_live_provider_binding,
+            coverage.patterns_without_usable_service,
+            coverage.exact_static_timing_patterns,
+            coverage.derived_bus_timing_patterns,
+            coverage.estimated_or_mixed_timing_patterns,
+        ));
+        push_warning_line(
+            &mut lines,
+            &format!("{mode} routes have no retained pattern"),
+            coverage.routes_without_patterns,
+            &coverage.route_without_pattern_examples,
+        );
+        push_warning_line(
+            &mut lines,
+            &format!("{mode} patterns have no GTFS scheduled trips or frequencies"),
+            coverage.patterns_without_gtfs_service,
+            &coverage.patterns_without_gtfs_service_examples,
+        );
+        push_warning_line(
+            &mut lines,
+            &format!("{mode} patterns have no usable static or realtime service"),
+            coverage.patterns_without_usable_service,
+            &coverage.patterns_without_usable_service_examples,
+        );
+        push_warning_line(
+            &mut lines,
+            &format!("{mode} patterns use estimated or mixed Phase 1 timing"),
+            coverage.estimated_or_mixed_timing_patterns,
+            &coverage.estimated_or_mixed_timing_examples,
+        );
+    }
+    lines
+}
+
+fn push_warning_line(lines: &mut Vec<String>, label: &str, count: usize, examples: &[String]) {
+    if let Some(line) = warning_line(label, count, examples) {
+        lines.push(format!("WARNING: {line}"));
+    }
+}
+
+fn print_warning(label: &str, count: usize, examples: &[String]) {
+    if let Some(line) = warning_line(label, count, examples) {
+        println!("WARNING: {line}");
+    }
+}
+
+fn warning_line(label: &str, count: usize, examples: &[String]) -> Option<String> {
+    (count > 0).then(|| {
+        let examples = if examples.is_empty() {
+            String::new()
+        } else {
+            format!("; examples: {}", examples.join(", "))
+        };
+        format!("{label}: {count}{examples}")
+    })
 }
 
 fn coordinate(
@@ -471,5 +507,50 @@ fn mode_name(mode: TransitMode) -> &'static str {
         TransitMode::Metro => "Metro",
         TransitMode::Rail => "TRA",
         TransitMode::HighSpeedRail => "THSR",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::mode_coverage_lines;
+    use via_server::data::GtfsModeCoverage;
+
+    #[test]
+    fn inspect_stats_mode_coverage_reports_counts_and_examples() {
+        let coverage = GtfsModeCoverage {
+            supported_routes: 3,
+            routes_without_patterns: 1,
+            route_without_pattern_examples: vec!["bus:missing".to_owned()],
+            patterns: 2,
+            patterns_with_gtfs_service: 1,
+            patterns_without_gtfs_service: 1,
+            patterns_without_gtfs_service_examples: vec!["bus:ghost".to_owned()],
+            patterns_with_live_provider_binding: 1,
+            patterns_without_usable_service: 1,
+            patterns_without_usable_service_examples: vec!["bus:ghost".to_owned()],
+            exact_static_timing_patterns: 1,
+            derived_bus_timing_patterns: 0,
+            estimated_or_mixed_timing_patterns: 1,
+            estimated_or_mixed_timing_examples: vec!["bus:estimated".to_owned()],
+        };
+        let lines = mode_coverage_lines(&BTreeMap::from([("bus".to_owned(), coverage)]));
+
+        assert!(lines.iter().any(|line| {
+            line == "bus coverage: routes=3 routes_without_patterns=1 patterns=2 gtfs_service=1 without_gtfs_service=1 live_provider_bound=1 without_usable_service=1 exact_timing=1 derived_bus_timing=0 estimated_or_mixed_timing=1"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "WARNING: bus routes have no retained pattern: 1; examples: bus:missing"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "WARNING: bus patterns have no GTFS scheduled trips or frequencies: 1; examples: bus:ghost"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "WARNING: bus patterns have no usable static or realtime service: 1; examples: bus:ghost"
+        }));
+        assert!(lines.iter().any(|line| {
+            line == "WARNING: bus patterns use estimated or mixed Phase 1 timing: 1; examples: bus:estimated"
+        }));
     }
 }

@@ -20,7 +20,7 @@ pub mod fetch;
 pub mod gtfs;
 pub mod static_transfers;
 pub mod via_static;
-pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput};
+pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput, GtfsModeCoverage};
 pub use via_static::ViaStatic;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,6 +43,8 @@ pub enum DataError {
     InvalidGtfsArchive { path: PathBuf, detail: String },
     #[error("GTFS archive contains no usable transit stops")]
     EmptyNetwork,
+    #[error("GTFS archive {path} contains no usable route service: {details}")]
+    NoUsableRouteService { path: PathBuf, details: String },
     #[error("artifact JSON is invalid: {0}")]
     InvalidArtifactJson(String),
     #[error("fetch snapshot is invalid: {0}")]

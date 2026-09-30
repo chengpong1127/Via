@@ -35,6 +35,12 @@ pub(super) struct NormalizationOutput {
     pub(super) binding_inputs: BindingInputs,
 }
 
+struct ViaStops {
+    stops: Vec<TransitStop>,
+    index_by_gtfs_id: HashMap<String, u32>,
+    valid_gtfs_stop_ids: Vec<String>,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct ServicePatternKey {
     route_id: String,
@@ -146,7 +152,11 @@ pub(super) fn normalize(
     let shapes = optional_table(raw.shapes, input, "shapes.txt")?;
 
     let calendars = via_calendars(calendars, calendar_dates);
-    let (stops, stop_index_by_gtfs_id) = via_stops(raw_stops)?;
+    let ViaStops {
+        stops,
+        index_by_gtfs_id: stop_index_by_gtfs_id,
+        valid_gtfs_stop_ids,
+    } = via_stops(raw_stops)?;
     let route_modes = route_modes(&raw_routes, diagnostics);
     let route_index_by_id = raw_routes
         .iter()
@@ -245,6 +255,12 @@ pub(super) fn normalize(
         .iter()
         .flat_map(|pattern| pattern.stops.iter().cloned())
         .collect::<HashSet<_>>();
+    for (stop, gtfs_stop_id) in stops.iter().zip(&valid_gtfs_stop_ids) {
+        if !used_stop_ids.contains(&stop.id) {
+            diagnostics.valid_unreferenced_stops += 1;
+            super::push_example(&mut diagnostics.unreferenced_stop_examples, gtfs_stop_id);
+        }
+    }
     let stops = stops
         .into_iter()
         .filter(|stop| used_stop_ids.contains(&stop.id))
@@ -572,11 +588,10 @@ fn optional_table<T>(
         .map_err(|error| super::invalid_gtfs(input, format!("{name}: {error}")))
 }
 
-fn via_stops(
-    source: Vec<gtfs_structures::Stop>,
-) -> Result<(Vec<TransitStop>, HashMap<String, u32>), DataError> {
+fn via_stops(source: Vec<gtfs_structures::Stop>) -> Result<ViaStops, DataError> {
     let mut stops = Vec::new();
     let mut index_by_gtfs_id = HashMap::new();
+    let mut valid_gtfs_stop_ids = Vec::new();
     for stop in source {
         if stop.location_type != LocationType::StopPoint {
             continue;
@@ -593,6 +608,7 @@ fn via_stops(
         }
         let index = stops.len() as u32;
         index_by_gtfs_id.insert(id.to_owned(), index);
+        valid_gtfs_stop_ids.push(id.to_owned());
         stops.push(TransitStop::new(
             BoardingPointId::new(bindings::tdx_stop_id(id)),
             stop.name
@@ -609,7 +625,11 @@ fn via_stops(
     if stops.is_empty() {
         return Err(DataError::EmptyNetwork);
     }
-    Ok((stops, index_by_gtfs_id))
+    Ok(ViaStops {
+        stops,
+        index_by_gtfs_id,
+        valid_gtfs_stop_ids,
+    })
 }
 
 fn valid_coordinate(latitude: f64, longitude: f64) -> bool {

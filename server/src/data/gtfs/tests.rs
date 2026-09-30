@@ -124,6 +124,67 @@ fn refresh_fetch_source(snapshot: &Path, source_name: &str) {
     std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 }
 
+fn write_tables(path: &Path, tables: Vec<(&str, String)>) {
+    let mut zip = ZipWriter::new(File::create(path).unwrap());
+    let options = SimpleFileOptions::default();
+    for (name, body) in tables {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+fn write_coverage_fixture(path: &Path, unreferenced_stop_count: usize) {
+    let mut stops = String::from(
+        "stop_id,stop_name,stop_lat,stop_lon,location_type\nTRTC_BL12,Metro A,25.0478,121.5170,0\nTRTC_BL13,Metro B,25.0400,121.5300,0\n",
+    );
+    for index in 0..unreferenced_stop_count {
+        stops.push_str(&format!("UNUSED_{index:03},Unused stop,25.0,121.5,0\n"));
+    }
+    write_tables(
+        path,
+        vec![
+            ("stops.txt", stops),
+            (
+                "routes.txt",
+                "route_id,agency_id,route_short_name,route_long_name,route_type\nTHB111_0,THB,111,No pattern,3\nTHB222_0,THB,222,Unknown stops,3\nTRTC_BL_BL-1_0,TRTC,BL,Blue line,1\n".to_owned(),
+            ),
+            (
+                "trips.txt",
+                "route_id,service_id,trip_id,direction_id,trip_headsign\nTHB222_0,ghost,bus-no-pattern,0,Nowhere\nTRTC_BL_BL-1_0,ghost,metro-no-calendar,0,Metro B\n".to_owned(),
+            ),
+            (
+                "stop_times.txt",
+                "trip_id,arrival_time,departure_time,stop_id,stop_sequence\nbus-no-pattern,08:00:00,08:00:00,UNKNOWN_A,1\nbus-no-pattern,08:05:00,08:05:00,UNKNOWN_B,2\nmetro-no-calendar,09:00:00,09:00:00,TRTC_BL12,1\nmetro-no-calendar,09:04:00,09:04:00,TRTC_BL13,2\n".to_owned(),
+            ),
+        ],
+    );
+}
+
+fn write_no_service_fixture(path: &Path) {
+    write_tables(
+        path,
+        vec![
+            (
+                "stops.txt",
+                "stop_id,stop_name,stop_lat,stop_lon,location_type\nTPE001,Main,25.0478,121.5170,0\nTPE002,End,25.0400,121.5300,0\n".to_owned(),
+            ),
+            (
+                "routes.txt",
+                "route_id,agency_id,route_short_name,route_long_name,route_type\nTHB111_0,THB,111,No pattern,3\n".to_owned(),
+            ),
+            (
+                "trips.txt",
+                "route_id,service_id,trip_id,direction_id\n".to_owned(),
+            ),
+            (
+                "stop_times.txt",
+                "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n".to_owned(),
+            ),
+        ],
+    );
+}
+
 #[test]
 fn maps_gtfs_modes_and_canonical_tdx_stop_ids() {
     assert_eq!(via_mode(RouteType::Bus, "THB123_0"), Some(TransitMode::Bus));
@@ -230,6 +291,56 @@ fn repeated_stops_are_rejected_and_headsign_falls_back_to_route_label() {
         ..Default::default()
     };
     assert_eq!(route_headsign_fallback(&route), "1");
+}
+
+#[test]
+fn coverage_diagnostics_report_unused_stops_route_gaps_and_realtime_only_patterns() {
+    let input = temporary_path("coverage.zip");
+    write_coverage_fixture(&input, super::MAX_DIAGNOSTIC_EXAMPLES + 3);
+
+    let (network, bindings, diagnostics) = super::build_network(&input).unwrap();
+
+    assert_eq!(
+        diagnostics.valid_unreferenced_stops,
+        super::MAX_DIAGNOSTIC_EXAMPLES + 3
+    );
+    assert_eq!(
+        diagnostics.unreferenced_stop_examples.len(),
+        super::MAX_DIAGNOSTIC_EXAMPLES
+    );
+    assert_eq!(diagnostics.unreferenced_stop_examples[0], "UNUSED_000");
+    assert_eq!(network.stops.len(), 2);
+    assert_eq!(bindings.metro_patterns.len(), 1);
+
+    let bus = &diagnostics.coverage_by_mode["bus"];
+    assert_eq!(bus.supported_routes, 2);
+    assert_eq!(bus.routes_without_patterns, 2);
+    assert_eq!(bus.route_without_pattern_examples.len(), 2);
+
+    let metro = &diagnostics.coverage_by_mode["metro"];
+    assert_eq!(metro.patterns, 1);
+    assert_eq!(metro.patterns_without_gtfs_service, 1);
+    assert_eq!(metro.patterns_with_live_provider_binding, 1);
+    assert_eq!(metro.patterns_without_usable_service, 0);
+    assert_eq!(metro.estimated_or_mixed_timing_patterns, 1);
+    assert_eq!(metro.patterns_without_gtfs_service_examples.len(), 1);
+    assert_eq!(metro.estimated_or_mixed_timing_examples.len(), 1);
+
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn rejects_a_feed_with_no_usable_route_service_before_build_enrichment() {
+    let input = temporary_path("no-service.zip");
+    write_no_service_fixture(&input);
+
+    let error = super::build_network(&input).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::data::DataError::NoUsableRouteService { .. }
+    ));
+    std::fs::remove_file(input).unwrap();
 }
 
 #[tokio::test]
