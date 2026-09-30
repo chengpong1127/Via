@@ -18,7 +18,7 @@ use crate::{
         ids::{TransitPatternId, TransitTripId},
         transit::{SegmentTimeSource, TransitMode, TransitNetwork},
     },
-    providers::bindings::TdxProviderBindings,
+    providers::tdx_bindings::TdxProviderBindings,
 };
 
 pub const MAX_DIAGNOSTIC_EXAMPLES: usize = 10;

@@ -224,7 +224,7 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
 fn finish_gtfs_build(
     output: &Path,
     network: TransitNetwork,
-    provider_bindings: crate::providers::bindings::TdxProviderBindings,
+    provider_bindings: crate::providers::tdx_bindings::TdxProviderBindings,
     bike_share_network: BikeShareNetwork,
     fetched_at: String,
     sources: BTreeMap<String, ViaStaticSource>,

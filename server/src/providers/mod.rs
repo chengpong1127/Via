@@ -1,7 +1,11 @@
 pub mod bikeshare;
-pub mod bindings;
 pub mod service_conditions;
+pub mod tdx_bindings;
 pub mod timing;
+
+pub mod bindings {
+    pub use super::tdx_bindings::*;
+}
 
 pub mod valhalla;
 

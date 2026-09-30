@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::source::TransitDepartureSource;
-use crate::providers::bindings::TdxProviderBindings;
+use crate::providers::tdx_bindings::TdxProviderBindings;
 
 const DEFAULT_TRAIN_LIVE_BOARD_PATH: &str = "v3/Rail/TRA/TrainLiveBoard";
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);

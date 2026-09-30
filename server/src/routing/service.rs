@@ -30,11 +30,11 @@ use crate::{
 use super::{
     access,
     model::{PlannerLimits, PlanningDeadline, TransitQuery},
-    path::{JourneySkeleton, JourneyVariant},
     planner::{DirectBikeJourney, TransitPlanner},
     reconstruct::{
         apply_ranked_journey, assign_result_local_ids, taipei_now, to_street_coordinate,
     },
+    variant::{JourneySkeleton, JourneyVariant},
 };
 
 #[derive(Clone)]

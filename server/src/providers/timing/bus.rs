@@ -12,7 +12,7 @@ use super::bus_realtime::{
 };
 use super::metrics::BusTimingMetrics;
 use super::source::TransitDepartureSource;
-use crate::providers::bindings::TdxProviderBindings;
+use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},

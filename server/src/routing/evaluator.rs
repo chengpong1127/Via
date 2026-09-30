@@ -16,9 +16,9 @@ use super::{
         AccessPoint, EgressPoint, JourneySegment, RealizedJourney, RoutingError, TransitQuery,
         physical_transfer_count,
     },
-    path::{BikeShortcut, JourneySkeleton, JourneyVariant, JourneyVariantIdentity},
     static_search::{RetainedCorridorSet, StaticCorridor, StaticCorridorStep, StaticTransitLeg},
     transfers::TransferShortcut,
+    variant::{BikeShortcut, JourneySkeleton, JourneyVariant, JourneyVariantIdentity},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1128,7 +1128,7 @@ impl FixedCorridorEvaluator<'_> {
                         .filter(|step| {
                             matches!(
                                 step.movement,
-                                super::path::JourneyPathMovement::BikeShare { .. }
+                                super::variant::JourneyPathMovement::BikeShare { .. }
                             )
                         })
                         .count(),
@@ -1181,7 +1181,7 @@ impl FixedCorridorEvaluator<'_> {
                     .filter(|step| {
                         matches!(
                             step.movement,
-                            super::path::JourneyPathMovement::BikeShare { .. }
+                            super::variant::JourneyPathMovement::BikeShare { .. }
                         )
                     })
                     .count()
@@ -1682,8 +1682,8 @@ mod tests {
                 .movements()
                 .get(2)
                 .map(|movement| &movement.kind),
-            Some(super::super::path::JourneyMovementKind::Walking {
-                kind: super::super::path::WalkingMovementKind::Transfer,
+            Some(super::super::variant::JourneyMovementKind::Walking {
+                kind: super::super::variant::WalkingMovementKind::Transfer,
                 ..
             })
         ));
@@ -1778,8 +1778,10 @@ mod tests {
             .path()
             .iter()
             .find_map(|step| match &step.movement {
-                super::super::path::JourneyPathMovement::BikeShare { shortcut } => Some(shortcut),
-                super::super::path::JourneyPathMovement::Baseline { .. } => None,
+                super::super::variant::JourneyPathMovement::BikeShare { shortcut } => {
+                    Some(shortcut)
+                }
+                super::super::variant::JourneyPathMovement::Baseline { .. } => None,
             })
             .unwrap();
         assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
@@ -1790,24 +1792,24 @@ mod tests {
             .find(|step| {
                 matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )
             })
             .unwrap();
         assert!(matches!(
             &variants[0].skeleton().anchors()[bike_step.from_anchor].kind,
-            super::super::path::JourneyAnchorKind::BoardingPoint { id }
+            super::super::variant::JourneyAnchorKind::BoardingPoint { id }
                 if id == &BoardingPointId::new("transfer-from")
         ));
         assert!(matches!(
             &variants[0].skeleton().anchors()[bike_step.to_anchor].kind,
-            super::super::path::JourneyAnchorKind::BoardingPoint { id }
+            super::super::variant::JourneyAnchorKind::BoardingPoint { id }
                 if id == &BoardingPointId::new("transfer-to")
         ));
         assert_eq!(stats.bike_realizations_selected, 1);
         assert!(variants[0].path().iter().any(|step| matches!(
             step.movement,
-            super::super::path::JourneyPathMovement::BikeShare { .. }
+            super::super::variant::JourneyPathMovement::BikeShare { .. }
         )));
     }
 
@@ -1862,7 +1864,7 @@ mod tests {
                 variant.path().iter().any(|step| {
                     matches!(
                         step.movement,
-                        super::super::path::JourneyPathMovement::BikeShare { .. }
+                        super::super::variant::JourneyPathMovement::BikeShare { .. }
                     )
                 })
             })
@@ -1878,7 +1880,7 @@ mod tests {
         assert!(bike_variant.skeleton().movements().iter().any(|movement| {
             matches!(
                 &movement.kind,
-                super::super::path::JourneyMovementKind::Transit { trip, .. }
+                super::super::variant::JourneyMovementKind::Transit { trip, .. }
                     if trip.id == EffectiveTripId::new("second-17")
             )
         }));
@@ -1946,7 +1948,7 @@ mod tests {
                     && variant.path().iter().any(|step| {
                         matches!(
                             step.movement,
-                            super::super::path::JourneyPathMovement::BikeShare { .. }
+                            super::super::variant::JourneyPathMovement::BikeShare { .. }
                         )
                     })
             })
@@ -2006,7 +2008,7 @@ mod tests {
             variant.path().iter().any(|step| {
                 matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )
             })
         }));
@@ -2063,7 +2065,7 @@ mod tests {
                 .iter()
                 .all(|variant| variant.path().iter().all(|step| !matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )))
         );
     }
@@ -2165,7 +2167,7 @@ mod tests {
                 .iter()
                 .all(|variant| variant.path().iter().all(|step| !matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )))
         );
     }
@@ -2386,7 +2388,7 @@ mod tests {
                     .filter(|step| {
                         matches!(
                             step.movement,
-                            super::super::path::JourneyPathMovement::BikeShare { .. }
+                            super::super::variant::JourneyPathMovement::BikeShare { .. }
                         )
                     })
                     .count()
@@ -2412,13 +2414,13 @@ mod tests {
             .find(|step| {
                 matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )
             })
             .unwrap();
         assert!(matches!(
             &last_bike.movement,
-            super::super::path::JourneyPathMovement::BikeShare { shortcut }
+            super::super::variant::JourneyPathMovement::BikeShare { shortcut }
                 if shortcut.rental_wait_seconds == 5 * 60
         ));
     }
@@ -2482,7 +2484,7 @@ mod tests {
                 .iter()
                 .all(|variant| variant.path().iter().all(|step| !matches!(
                     step.movement,
-                    super::super::path::JourneyPathMovement::BikeShare { .. }
+                    super::super::variant::JourneyPathMovement::BikeShare { .. }
                 )))
         );
     }
@@ -2540,7 +2542,7 @@ mod tests {
         );
         assert!(variants[0].path().iter().all(|step| !matches!(
             step.movement,
-            super::super::path::JourneyPathMovement::BikeShare { .. }
+            super::super::variant::JourneyPathMovement::BikeShare { .. }
         )));
     }
 
@@ -2726,7 +2728,7 @@ mod tests {
                 .movements()
                 .get(1)
                 .map(|movement| &movement.kind),
-            Some(super::super::path::JourneyMovementKind::Transit { .. })
+            Some(super::super::variant::JourneyMovementKind::Transit { .. })
         ));
     }
 
@@ -2751,7 +2753,7 @@ mod tests {
             candidate.skeleton().movements().iter().any(|movement| {
                 matches!(
                     &movement.kind,
-                    super::super::path::JourneyMovementKind::Transit { trip, .. }
+                    super::super::variant::JourneyMovementKind::Transit { trip, .. }
                         if trip.timing_reliability == TimingReliability::Reliable
                 )
             })
@@ -2789,7 +2791,7 @@ mod tests {
             candidate.skeleton().movements().iter().any(|movement| {
                 matches!(
                     &movement.kind,
-                    super::super::path::JourneyMovementKind::Transit { trip, .. }
+                    super::super::variant::JourneyMovementKind::Transit { trip, .. }
                         if trip.id == EffectiveTripId::new("z-reliable")
                 )
             })

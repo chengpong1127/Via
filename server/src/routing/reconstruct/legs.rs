@@ -18,11 +18,11 @@ use crate::{
 
 use super::{
     super::{
-        path::{
+        service::{PlanningContext, RoutingService},
+        variant::{
             JourneyAnchorKind, JourneyMovement, JourneyMovementKind, JourneyPathMovement,
             JourneyPathStep, JourneyVariant, WalkingMovementKind,
         },
-        service::{PlanningContext, RoutingService},
     },
     evidence, geometry,
 };

@@ -7,7 +7,7 @@ use crate::{
     },
     health::DependencyHealth,
     observability::OperationalMetrics,
-    providers::bindings::TdxProviderBindings,
+    providers::tdx_bindings::TdxProviderBindings,
     providers::{
         BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxBikeAvailabilitySource,
         ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,

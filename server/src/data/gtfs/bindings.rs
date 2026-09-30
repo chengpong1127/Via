@@ -7,7 +7,7 @@ use crate::{
         ids::{TransitPatternId, TransitTripId},
         transit::{TransitMode, TransitNetwork, TransitStop},
     },
-    providers::bindings::{
+    providers::tdx_bindings::{
         BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,
     },
     tdx::transit_service_id_for_direction,

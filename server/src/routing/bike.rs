@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-use super::path::{BikeRide, BikeShortcut};
+use super::variant::{BikeRide, BikeShortcut};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BikePlanningStats {

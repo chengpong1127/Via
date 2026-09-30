@@ -14,10 +14,10 @@ use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
     evaluator::{self, Phase2EvaluationStats},
     model::{PlanningDeadline, RoutingError, TransitQuery},
-    path::{JourneySkeleton, JourneyVariant},
     static_search,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
+    variant::{JourneySkeleton, JourneyVariant},
 };
 
 #[derive(Clone)]
@@ -358,7 +358,7 @@ impl TransitPlanner {
         query: &TransitQuery,
         direct: Option<&DirectBikeJourney>,
         bike_snapshot: Option<&crate::domain::bikeshare::BikeAvailabilitySnapshot>,
-    ) -> Result<(Vec<super::path::BikeShortcut>, BikePlanningStats), RoutingError> {
+    ) -> Result<(Vec<super::variant::BikeShortcut>, BikePlanningStats), RoutingError> {
         let mut direct_shortcuts = Vec::new();
         let mut direct_bike_stats = BikePlanningStats::default();
         if let (Some(direct), Some(bike), Some(snapshot)) =
@@ -440,7 +440,7 @@ fn log_phase2_metrics(
 
 fn direct_bike_variants(
     direct: DirectBikeJourney,
-    shortcuts: Vec<super::path::BikeShortcut>,
+    shortcuts: Vec<super::variant::BikeShortcut>,
 ) -> Vec<JourneyVariant> {
     let Ok(skeleton) =
         JourneySkeleton::from_direct_walking(direct.path.clone(), direct.departure_at)

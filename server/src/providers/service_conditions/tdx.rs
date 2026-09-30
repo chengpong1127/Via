@@ -12,8 +12,8 @@ use crate::{
         },
     },
     providers::{
-        bindings::TdxProviderBindings,
         service_conditions::{ServiceConditionError, ServiceConditionProvider},
+        tdx_bindings::TdxProviderBindings,
     },
     tdx::{TdxClient, TdxClientError, tdx_sub_route_uid},
 };

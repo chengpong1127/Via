@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    path::JourneyVariant,
     service::{PlanningContext, ReconstructedCandidate, RoutingService},
+    variant::JourneyVariant,
 };
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";

@@ -8,7 +8,7 @@ mod metro_realtime;
 mod thsr;
 mod tra;
 
-pub use crate::providers::bindings::{
+pub use crate::providers::tdx_bindings::{
     BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,
 };
 pub use bus::BusDepartureSource;

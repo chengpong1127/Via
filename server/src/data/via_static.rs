@@ -5,7 +5,7 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
-use crate::providers::bindings::TdxProviderBindings;
+use crate::providers::tdx_bindings::TdxProviderBindings;
 
 pub const VIA_STATIC_SCHEMA_VERSION: u32 = 2;
 
@@ -186,7 +186,7 @@ mod tests {
             location::GeoCoordinate,
             transit::{TransitStop, default_service_day_boundary},
         },
-        providers::bindings::{BusPatternBinding, TdxProviderBindings},
+        providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings},
     };
 
     fn artifact() -> ViaStatic {
