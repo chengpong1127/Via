@@ -1,6 +1,7 @@
 mod archive;
 mod bindings;
 mod normalize;
+mod patterns;
 mod segment_profile;
 #[cfg(test)]
 mod tests;

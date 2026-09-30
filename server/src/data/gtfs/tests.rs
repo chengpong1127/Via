@@ -5,7 +5,8 @@ use zip::{ZipWriter, write::SimpleFileOptions};
 
 use super::{
     bindings::tdx_stop_id,
-    normalize::{has_unique_stops, is_chronological_times, route_headsign_fallback, via_mode},
+    normalize::{has_unique_stops, is_chronological_times, via_mode},
+    patterns::route_headsign_fallback,
     segment_profile::distribute_runtime,
 };
 use crate::data::{
