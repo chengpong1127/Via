@@ -3,7 +3,8 @@
 Static data has two stages. `via-data fetch` saves immutable external source
 snapshots. `via-data build` turns one snapshot into a validated
 `.via-static.json` using the local Valhalla service. TDX realtime supplies
-transit timing, service conditions, and YouBike availability at request time.
+transit timing and YouBike availability at request time. The service-condition
+provider remains available separately and is not called by journey requests.
 
 ## Fetch source data
 
@@ -78,8 +79,8 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect nearby-sto
 ## Live route debugging
 
 `via-route` uses the same production runtime as the HTTP server, including live
-TDX timing and service conditions, Valhalla, and BikeShare availability. It
-accepts the same immutable static artifact:
+TDX timing, Valhalla, and BikeShare availability. It accepts the same immutable
+static artifact:
 
 ```bash
 cargo run --manifest-path server/Cargo.toml --bin via-route -- \
@@ -99,18 +100,32 @@ routes, and fresh availability support it. It does not add transit topology.
 
 ## Run the server
 
-Set `VIA_STATIC` to the same artifact used by `via-route`, then start the server
-or Docker Compose stack:
+Set `VIA_ENV` to `development`, `staging`, or `production` and `VIA_STATIC` to
+the same artifact used by `via-route`. `PORT` is optional and defaults to
+`3000`:
 
 ```bash
+VIA_ENV=development \
 VIA_STATIC=server/data/build/{build_datetime}/.via-static.json \
   cargo run --manifest-path server/Cargo.toml --bin via-server
 
+VIA_ENV=development \
 VIA_STATIC=/app/server/data/build/20260928T043000Z/.via-static.json \
   docker compose -f server/docker-compose.yml up --build
 ```
 
 Replace the example build timestamp with the directory created on your run.
+The server and live `via-route` command read TDX credentials, `VIA_TDX_BASE_URL`,
+and `VIA_VALHALLA_URL` at startup. TDX defaults to its HTTPS API URL; Valhalla
+defaults to the local development URL, so production must set an HTTPS
+`VIA_VALHALLA_URL`. Production validates HTTPS for both upstreams. The live
+route command defaults a missing `VIA_ENV` to development and rejects an
+unsupported value. `via-data fetch` reads the TDX URL and credentials;
+`via-data build` reads the Valhalla URL and uses its 15-second build request
+timeout. Local `via-route` flags override its routing limits and Valhalla
+timeout. The included Compose stack forwards `VIA_ENV` and
+`VIA_VALHALLA_URL`; its default Valhalla endpoint uses HTTP for local
+development, so the stack's default settings are not suitable for production.
 
 The server exposes `POST /v1/journey-plans`. The request API and journey
 response shape are unchanged by the static-data workflow.

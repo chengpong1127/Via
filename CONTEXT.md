@@ -15,10 +15,10 @@ PlanningRequest
        → Phase 1: bounded static Top-K structural corridors
        → one request-local TimingSnapshot
        → optional BikeAvailabilitySnapshot
-       → Phase 2: time-dependent multimodal realization over corridor anchors
+       → Phase 2: forward fixed-corridor time-dependent evaluation
             ├─ Transit: equivalent Pattern and departure choices
             ├─ Walking: retained surface movement
-            └─ YouBike: bounded forward shortcut across anchors
+            └─ YouBike: optimistic screening, then lazy street routing
        → reconstruct → rank → JourneyOption
 ```
 
@@ -44,37 +44,38 @@ terminal runtime is sufficient, preprocessing derives per-segment Bus costs
 from stop or shape distances; otherwise it uses geometric estimates. These
 costs rank Phase 1 candidates and are not timetable data.
 
-`CandidateCorridor` contains retained corridors, equivalent transit legs,
-timing positions, and selected Bus stops. Equivalent legs share mode and
-boarding/alighting points; Phase 2 can choose any matching Pattern and
-departure while preserving the retained structural steps.
+Retained corridors contain equivalent transit legs, timing positions, and
+selected Bus stops. Equivalent legs share mode and boarding/alighting points;
+Phase 2 can choose any matching Pattern and departure while preserving the
+retained structural steps.
 
 ## Request-local evaluation
 
-The planner loads one timing snapshot for the retained timing positions before
-calling the synchronous, provider-free corridor evaluator. Bus realtime is
-fetched by unique stop and scope, then filtered locally. Other modes keep their
+The planner loads one timing snapshot for the retained timing positions and,
+when selected, one BikeShare availability snapshot. Bus realtime is fetched by
+unique stop and scope, then filtered locally. Other modes keep their
 provider-native batching and static fallback behavior.
 
-When BikeShare is selected and retained corridors or a direct walking candidate
-exist, one request-local availability snapshot is loaded alongside transit
-timing and shared with both evaluations. Phase 2 expands each corridor as a
-forward DAG: its next retained transit or walking edge, plus BikeShare shortcuts
-to up to eight later anchors. BikeShare choices require a fresh, serviceable
-pickup with a bike and a return station with a dock. Each shortcut includes
-walking access, one bicycle route, and walking from the return station. At each
-endpoint it considers no more than three pickup and three return stations.
-Intermediate anchors do not need BikeShare stations, and one shortcut is one
-continuous rental. Transit departures after a shortcut are selected from the
+Phase 2 evaluates normal transit and walking successors before screening a
+BikeShare movement with a cheap optimistic lower bound. Competitive movements
+are routed lazily through the street provider. The evaluator advances only
+along retained corridor anchors. An active rental can extend from its original
+pickup anchor to the next corridor anchor, so intermediate anchors need no
+station and the rental remains continuous. Each movement requires a fresh,
+serviceable pickup with a bike and a return station with a dock, and includes
+walking access, one bicycle route, and walking from the return station. At
+each endpoint it considers no more than three pickup and three return
+stations. Transit departures after a movement are selected from the same
 timing snapshot using the new arrival time. State expansion and retained
 frontiers are bounded by the query's expansion and candidate limits.
 
 The direct walking candidate uses the same journey path representation and may
-have a direct BikeShare alternative. It considers three nearby serviceable
-stations at each endpoint and caps station access walks at 15 minutes, bicycle
-legs at 60 minutes, and bicycle distance at 20 kilometres. BikeShare never adds
-arbitrary transit stops, patterns, or connections. Availability is observed at
-request time; future DepartAt and ArriveBy inventory is not forecast.
+have a separate direct origin-to-destination BikeShare alternative. It
+considers three nearby serviceable stations at each endpoint and caps station
+access walks at 15 minutes, bicycle legs at 60 minutes, and bicycle distance
+at 20 kilometres. BikeShare never adds arbitrary transit stops, patterns, or
+connections. Availability is observed at request time; future DepartAt and
+ArriveBy inventory is not forecast.
 
 Static transfer edges are directional facts in `TransitNetwork.transfer_edges`.
 `TransferShortcutIndex` provides incoming and outgoing lookups; there is no
@@ -99,13 +100,17 @@ Keep the dependency direction `domain ← routing ← app/api`. Providers
 implement domain-facing interfaces. iOS remains feature-oriented
 (`App`, `Components`, `Domain`, `Features`, `Resources`, `Services`), with
 production planning through `JourneyPlanner → HTTPJourneyPlanner → APIClient`.
+The server parses runtime environment settings at its executable entrypoints
+and passes typed configuration into provider and data-fetch clients. Production
+requires HTTPS for configured upstream URLs; `via-data build` keeps its
+separate 15-second Valhalla request timeout.
 
 ## Essential commands
 
 ```bash
 cargo fmt --manifest-path server/Cargo.toml --check
-cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features
-cargo test --manifest-path server/Cargo.toml --all
+cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path server/Cargo.toml --all-targets --all-features
 ```
 
 See [`docs/dev-tooling.md`](docs/dev-tooling.md) for data and route-debug

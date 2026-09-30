@@ -20,7 +20,10 @@ batching. THSR remains static-only.
 
 ## Consequences
 
-The fixed corridor evaluator is synchronous and provider-free. A rate limit
-stops remaining Bus chunks for the affected scope, and unresolved values use
-static timing fallback. `TimingSnapshot` is request-local; this decision adds
-no shared cache or distributed cache.
+The forward fixed-corridor evaluator is asynchronous, consumes the immutable
+snapshot, and makes no additional TDX calls. Transit and walking successors
+use snapshot values; competitive BikeShare movements may make lazy Valhalla
+calls after the optimistic lower-bound check. A rate limit stops remaining Bus
+chunks for the affected scope, and unresolved values use static timing fallback.
+`TimingSnapshot` is request-local; this decision adds no shared cache or
+distributed cache.
