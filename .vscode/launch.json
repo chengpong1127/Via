@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Via server",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path",
+          "${workspaceFolder}/server/Cargo.toml",
+          "--bin",
+          "via-server"
+        ],
+        "filter": {
+          "name": "via-server",
+          "kind": "bin"
+        }
+      },
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/server/.env",
+      "env": {
+        "RUST_LOG": "via_server=debug"
+      }
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 use std::{
     error::Error,
+    fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -149,6 +151,7 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
         .join("data/build")
         .join(fetch::timestamp_now());
     let result = build_from_fetch_snapshot(&args.input, &output, street.as_ref()).await?;
+    let latest_static = update_latest_static_link(&output)?;
     println!("build latency: {} ms", started.elapsed().as_millis());
     print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
     print_static_counts("built", &result.build.via_static);
@@ -156,7 +159,45 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
         "static artifact: {}",
         output.join(".via-static.json").display()
     );
+    println!("latest static artifact: {}", latest_static.display());
     Ok(())
+}
+
+fn update_latest_static_link(output: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let output_directory = output.parent().ok_or_else(|| {
+        std::io::Error::new(ErrorKind::InvalidInput, "build output has no parent directory")
+    })?;
+    let build_directory_name = output.file_name().ok_or_else(|| {
+        std::io::Error::new(ErrorKind::InvalidInput, "build output has no directory name")
+    })?;
+    let latest_link = output_directory.join(".via-static-latest.json");
+    let target = PathBuf::from(build_directory_name).join(".via-static.json");
+
+    match fs::symlink_metadata(&latest_link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(&latest_link)?,
+        Ok(_) => {
+            return Err(format!(
+                "refusing to replace non-symlink latest artifact path {}",
+                latest_link.display()
+            )
+            .into());
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    create_file_symlink(&target, &latest_link)?;
+    Ok(latest_link)
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
 }
 
 async fn build_street_router(
