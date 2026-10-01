@@ -221,7 +221,7 @@ impl BikeSegmentPlanner {
         if station_limit == 0 {
             return (Vec::new(), BikePlanningStats::default());
         }
-        let (pickups, dropoffs) = select_direct_station_candidates(
+        let candidates = select_direct_station_candidates(
             &self.network,
             &view,
             origin_point,
@@ -229,19 +229,30 @@ impl BikeSegmentPlanner {
             station_limit,
         );
         let mut stats = BikePlanningStats {
-            relevant_bike_stations: pickups.len() + dropoffs.len(),
-            candidate_movements: usize::from(!pickups.is_empty() && !dropoffs.is_empty()),
-            pickup_stations_considered: pickups.len(),
-            dropoff_stations_considered: dropoffs.len(),
-            station_pairs: pickups.len().saturating_mul(dropoffs.len()),
+            relevant_bike_stations: candidates.pickups.len() + candidates.dropoffs.len(),
+            candidate_movements: usize::from(
+                !candidates.pickups.is_empty() && !candidates.dropoffs.is_empty(),
+            ),
+            pickup_stations_considered: candidates.pickups.len(),
+            dropoff_stations_considered: candidates.dropoffs.len(),
+            station_pairs: candidates
+                .pickups
+                .len()
+                .saturating_mul(candidates.dropoffs.len()),
             ..BikePlanningStats::default()
         };
-        if pickups.is_empty() || dropoffs.is_empty() {
+        if candidates.pickups.is_empty() || candidates.dropoffs.is_empty() {
             return (Vec::new(), stats);
         }
 
         let Some((walk_to_pickups, walk_from_dropoffs)) = self
-            .load_direct_walking_access(origin, destination, &pickups, &dropoffs, &mut stats)
+            .load_direct_walking_access(
+                origin,
+                destination,
+                &candidates.pickups,
+                &candidates.dropoffs,
+                &mut stats,
+            )
             .await
         else {
             return (Vec::new(), stats);
@@ -253,19 +264,23 @@ impl BikeSegmentPlanner {
         }
 
         let Some(bike_matrix) = self
-            .load_direct_bike_matrix(&pickups, &dropoffs, &mut stats)
+            .load_direct_bike_matrix(&candidates.pickups, &candidates.dropoffs, &mut stats)
             .await
         else {
             return (Vec::new(), stats);
         };
-        if !matrix_has_shape(&bike_matrix, pickups.len(), dropoffs.len()) {
+        if !matrix_has_shape(
+            &bike_matrix,
+            candidates.pickups.len(),
+            candidates.dropoffs.len(),
+        ) {
             return (Vec::new(), stats);
         }
 
         let shortcuts = build_direct_shortcuts(
             &bike_matrix,
-            &pickups,
-            &dropoffs,
+            &candidates.pickups,
+            &candidates.dropoffs,
             &walk_to_pickups,
             &walk_from_dropoffs,
         );
@@ -315,7 +330,7 @@ impl BikeSegmentPlanner {
         }
         let walk_to_pickups = pickup_walks.cells[0]
             .iter()
-            .map(|cell| walking_access(cell))
+            .map(walking_access)
             .collect::<Vec<_>>();
         let walk_from_dropoffs = dropoff_walks
             .cells
@@ -365,21 +380,23 @@ fn corridor_candidate_stats(candidate: &BikeMovementCandidate) -> BikePlanningSt
     }
 }
 
+struct DirectStationCandidates {
+    pickups: Vec<(BikeStationId, Coordinate)>,
+    dropoffs: Vec<(BikeStationId, Coordinate)>,
+}
+
 fn select_direct_station_candidates(
     network: &BikeShareNetwork,
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
     origin: GeoCoordinate,
     destination: GeoCoordinate,
     station_limit: usize,
-) -> (
-    Vec<(BikeStationId, Coordinate)>,
-    Vec<(BikeStationId, Coordinate)>,
-) {
+) -> DirectStationCandidates {
     let mut pickups = direct_station_choices(network, view, origin, true);
     let mut dropoffs = direct_station_choices(network, view, destination, false);
     pickups.truncate(station_limit);
     dropoffs.truncate(station_limit);
-    (pickups, dropoffs)
+    DirectStationCandidates { pickups, dropoffs }
 }
 
 fn walking_access(cell: &MatrixCell) -> Option<BikeWalkingAccess> {
