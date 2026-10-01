@@ -31,6 +31,22 @@ use crate::{
 
 const MAX_REALTIME_STOPS_PER_REQUEST: usize = 100;
 
+struct RealtimeRequestPlan {
+    stops_by_scope: BTreeMap<String, HashSet<BoardingPointId>>,
+    services_by_scope: BTreeMap<String, HashSet<TransitPatternId>>,
+    pairs_by_scope: BTreeMap<String, HashSet<(TransitPatternId, BoardingPointId)>>,
+    unscoped_queries: usize,
+}
+
+#[derive(Default)]
+struct RealtimeDepartureResults {
+    values_by_pair: HashMap<(TransitPatternId, BoardingPointId), Vec<NormalizedRealtimeValue>>,
+    errors_by_pair: HashMap<(TransitPatternId, BoardingPointId), DepartureError>,
+    http_requests: usize,
+    rows_received: usize,
+    rows_relevant: usize,
+}
+
 pub struct BusDepartureSource {
     network: Arc<TransitRuntime>,
     tdx: Option<Arc<TdxClient>>,
@@ -196,12 +212,80 @@ impl BusDepartureSource {
             return queries.into_iter().map(|_| Ok(Vec::new())).collect();
         }
 
+        let plan = self.build_realtime_request_plan(&active_queries);
+        let relevant_stop_count = plan.stops_by_scope.values().map(HashSet::len).sum();
+        let batch_count = plan
+            .stops_by_scope
+            .values()
+            .map(|stops| stops.len().div_ceil(MAX_REALTIME_STOPS_PER_REQUEST))
+            .sum();
+        self.metrics
+            .record_departure_batch(active_queries.len(), relevant_stop_count, batch_count);
+
+        let mut results = RealtimeDepartureResults::default();
+        let scope_count = plan.stops_by_scope.len();
+        for (scope, unique_stops) in &plan.stops_by_scope {
+            self.fetch_scope(scope, unique_stops, &plan, &mut results)
+                .await;
+        }
+
+        let outcome = if results
+            .errors_by_pair
+            .values()
+            .any(|error| matches!(error, DepartureError::RateLimited))
+        {
+            "rate_limited"
+        } else if results.errors_by_pair.is_empty() {
+            "success"
+        } else {
+            "fallback"
+        };
+        self.metrics
+            .record_snapshot_rows(results.rows_received, results.rows_relevant);
+        tracing::debug!(
+            target: "via_server::providers::timing",
+            relevant_stops = relevant_stop_count,
+            scopes = scope_count,
+            http_requests = results.http_requests,
+            rows_received = results.rows_received,
+            rows_relevant = results.rows_relevant,
+            unscoped_queries = plan.unscoped_queries,
+            outcome,
+            latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            "bus timing snapshot"
+        );
+
+        queries
+            .into_iter()
+            .map(|query| {
+                if query.limit == 0 {
+                    Ok(Vec::new())
+                } else {
+                    let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
+                    results.errors_by_pair.get(&pair).cloned().map_or_else(
+                        || {
+                            Ok(self.resolve_query(
+                                &query,
+                                results.values_by_pair.get(&pair).map_or(&[], Vec::as_slice),
+                            ))
+                        },
+                        Err,
+                    )
+                }
+            })
+            .collect()
+    }
+
+    fn build_realtime_request_plan(
+        &self,
+        active_queries: &[&DepartureQuery],
+    ) -> RealtimeRequestPlan {
         let mut stops_by_scope = BTreeMap::<String, HashSet<BoardingPointId>>::new();
         let mut services_by_scope = BTreeMap::<String, HashSet<TransitPatternId>>::new();
         let mut pairs_by_scope =
             BTreeMap::<String, HashSet<(TransitPatternId, BoardingPointId)>>::new();
         let mut unscoped_queries = 0;
-        for query in &active_queries {
+        for query in active_queries {
             let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
             let Some(pattern) = self.network.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
@@ -227,166 +311,140 @@ impl BusDepartureSource {
                 .insert(query.pattern_id.clone());
             pairs_by_scope.entry(scope).or_default().insert(pair);
         }
-        let relevant_stop_count = stops_by_scope.values().map(HashSet::len).sum();
-        let batch_count = stops_by_scope
-            .values()
-            .map(|stops| stops.len().div_ceil(MAX_REALTIME_STOPS_PER_REQUEST))
-            .sum();
-        self.metrics
-            .record_departure_batch(active_queries.len(), relevant_stop_count, batch_count);
+        RealtimeRequestPlan {
+            stops_by_scope,
+            services_by_scope,
+            pairs_by_scope,
+            unscoped_queries,
+        }
+    }
 
-        let mut values_by_pair =
-            HashMap::<(TransitPatternId, BoardingPointId), Vec<NormalizedRealtimeValue>>::new();
-        let mut errors_by_pair =
-            HashMap::<(TransitPatternId, BoardingPointId), DepartureError>::new();
-        let mut http_requests = 0usize;
-        let mut rows_received = 0usize;
-        let mut rows_relevant = 0usize;
-        let scope_count = stops_by_scope.len();
-        for (scope, unique_stops) in stops_by_scope {
-            let mut unique_stops = unique_stops.into_iter().collect::<Vec<_>>();
-            unique_stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-            let mut requested_services = HashMap::<String, Vec<TransitPatternId>>::new();
-            for pattern_id in services_by_scope.get(&scope).into_iter().flatten() {
-                if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
-                    requested_services
-                        .entry(binding.tdx_service_id.clone())
-                        .or_default()
-                        .push(pattern_id.clone());
-                }
-            }
-            let scope_pairs = pairs_by_scope.get(&scope).cloned().unwrap_or_default();
-            let mut completed_stops = HashSet::new();
-            let mut rate_limited = false;
-            for stops in unique_stops.chunks(MAX_REALTIME_STOPS_PER_REQUEST) {
-                if rate_limited {
-                    for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                        errors_by_pair.insert(pair.clone(), DepartureError::RateLimited);
-                    }
-                    continue;
-                }
-                let requested_stops = stops.iter().cloned().collect::<HashSet<_>>();
-                let path = match self.realtime_path_for_scope(Some(&scope)) {
-                    Ok(path) => path,
-                    Err(error) => {
-                        for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                            errors_by_pair.insert(pair.clone(), error.clone());
-                        }
-                        continue;
-                    }
-                };
-                let boarding_point_ids = stops
-                    .iter()
-                    .map(|stop| stop.as_str().to_owned())
-                    .collect::<Vec<_>>();
-                let filter = odata_in_filter("StopUID", &boarding_point_ids);
-                let query = [("$filter", filter.as_str())];
-                self.metrics.record_departure_upstream_request();
-                http_requests += 1;
-                let payload = self
-                    .tdx
-                    .as_ref()
-                    .expect("realtime_departures requires a TDX client")
-                    .get_json::<serde_json::Value>(&path, &query)
-                    .await;
-                let values = match payload {
-                    Ok(payload) => parse_bus_realtime_payload(
-                        &payload,
-                        &requested_services,
-                        &self.freshness_policy,
-                    ),
-                    Err(error) => Err(map_tdx_error(error)),
-                };
-                self.metrics
-                    .record_departure_upstream_result(values.as_ref().err());
-                let values = match values {
-                    Ok(values) => {
-                        completed_stops.extend(requested_stops.iter().cloned());
-                        rows_received += values.len();
-                        values
-                    }
-                    Err(error) => {
-                        if matches!(error, DepartureError::RateLimited) {
-                            rate_limited = true;
-                        }
-                        for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                            errors_by_pair.insert(pair.clone(), error.clone());
-                        }
-                        continue;
-                    }
-                };
-                for value in values {
-                    let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
-                        continue;
-                    };
-                    let pair = (
-                        arrival.transit_pattern_id.clone(),
-                        arrival.boarding_point_id.clone(),
-                    );
-                    if requested_stops.contains(&arrival.boarding_point_id)
-                        && scope_pairs.contains(&pair)
-                    {
-                        rows_relevant += 1;
-                        values_by_pair.entry(pair).or_default().push(value);
-                    }
-                }
-            }
-            if rate_limited {
-                for pair in scope_pairs
-                    .into_iter()
-                    .filter(|(_, stop)| !completed_stops.contains(stop))
-                {
-                    errors_by_pair
-                        .entry(pair)
-                        .or_insert(DepartureError::RateLimited);
-                }
+    async fn fetch_scope(
+        &self,
+        scope: &str,
+        unique_stops: &HashSet<BoardingPointId>,
+        plan: &RealtimeRequestPlan,
+        results: &mut RealtimeDepartureResults,
+    ) {
+        let mut unique_stops = unique_stops.iter().cloned().collect::<Vec<_>>();
+        unique_stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let mut requested_services = HashMap::<String, Vec<TransitPatternId>>::new();
+        for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
+            if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
+                requested_services
+                    .entry(binding.tdx_service_id.clone())
+                    .or_default()
+                    .push(pattern_id.clone());
             }
         }
+        let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
+        let mut completed_stops = HashSet::new();
+        let mut rate_limited = false;
+        for stops in unique_stops.chunks(MAX_REALTIME_STOPS_PER_REQUEST) {
+            if rate_limited {
+                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
+                    results
+                        .errors_by_pair
+                        .insert(pair.clone(), DepartureError::RateLimited);
+                }
+                continue;
+            }
+            if self
+                .fetch_stop_batch(
+                    scope,
+                    stops,
+                    &requested_services,
+                    &scope_pairs,
+                    &mut completed_stops,
+                    results,
+                )
+                .await
+            {
+                rate_limited = true;
+            }
+        }
+        if rate_limited {
+            for pair in scope_pairs
+                .into_iter()
+                .filter(|(_, stop)| !completed_stops.contains(stop))
+            {
+                results
+                    .errors_by_pair
+                    .entry(pair)
+                    .or_insert(DepartureError::RateLimited);
+            }
+        }
+    }
 
-        let outcome = if errors_by_pair
-            .values()
-            .any(|error| matches!(error, DepartureError::RateLimited))
-        {
-            "rate_limited"
-        } else if errors_by_pair.is_empty() {
-            "success"
-        } else {
-            "fallback"
+    async fn fetch_stop_batch(
+        &self,
+        scope: &str,
+        stops: &[BoardingPointId],
+        requested_services: &HashMap<String, Vec<TransitPatternId>>,
+        scope_pairs: &HashSet<(TransitPatternId, BoardingPointId)>,
+        completed_stops: &mut HashSet<BoardingPointId>,
+        results: &mut RealtimeDepartureResults,
+    ) -> bool {
+        let requested_stops = stops.iter().cloned().collect::<HashSet<_>>();
+        let path = match self.realtime_path_for_scope(Some(scope)) {
+            Ok(path) => path,
+            Err(error) => {
+                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
+                    results.errors_by_pair.insert(pair.clone(), error.clone());
+                }
+                return false;
+            }
+        };
+        let boarding_point_ids = stops
+            .iter()
+            .map(|stop| stop.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let filter = odata_in_filter("StopUID", &boarding_point_ids);
+        let query = [("$filter", filter.as_str())];
+        self.metrics.record_departure_upstream_request();
+        results.http_requests += 1;
+        let payload = self
+            .tdx
+            .as_ref()
+            .expect("realtime_departures requires a TDX client")
+            .get_json::<serde_json::Value>(&path, &query)
+            .await;
+        let values = match payload {
+            Ok(payload) => {
+                parse_bus_realtime_payload(&payload, requested_services, &self.freshness_policy)
+            }
+            Err(error) => Err(map_tdx_error(error)),
         };
         self.metrics
-            .record_snapshot_rows(rows_received, rows_relevant);
-        tracing::debug!(
-            target: "via_server::providers::timing",
-            relevant_stops = relevant_stop_count,
-            scopes = scope_count,
-            http_requests,
-            rows_received,
-            rows_relevant,
-            unscoped_queries,
-            outcome,
-            latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-            "bus timing snapshot"
-        );
-
-        queries
-            .into_iter()
-            .map(|query| {
-                if query.limit == 0 {
-                    Ok(Vec::new())
-                } else {
-                    let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
-                    errors_by_pair.get(&pair).cloned().map_or_else(
-                        || {
-                            Ok(self.resolve_query(
-                                &query,
-                                values_by_pair.get(&pair).map_or(&[], Vec::as_slice),
-                            ))
-                        },
-                        Err,
-                    )
+            .record_departure_upstream_result(values.as_ref().err());
+        let values = match values {
+            Ok(values) => {
+                completed_stops.extend(requested_stops.iter().cloned());
+                results.rows_received += values.len();
+                values
+            }
+            Err(error) => {
+                let rate_limited = matches!(error, DepartureError::RateLimited);
+                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
+                    results.errors_by_pair.insert(pair.clone(), error.clone());
                 }
-            })
-            .collect()
+                return rate_limited;
+            }
+        };
+        for value in values {
+            let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
+                continue;
+            };
+            let pair = (
+                arrival.transit_pattern_id.clone(),
+                arrival.boarding_point_id.clone(),
+            );
+            if requested_stops.contains(&arrival.boarding_point_id) && scope_pairs.contains(&pair) {
+                results.rows_relevant += 1;
+                results.values_by_pair.entry(pair).or_default().push(value);
+            }
+        }
+        false
     }
 
     fn realtime_path_for_scope(&self, scope: Option<&str>) -> Result<String, DepartureError> {
