@@ -68,28 +68,12 @@ pub async fn enrich_network_with_static_transfers(
     street: &dyn StreetRouter,
 ) -> Result<TransferStatistics, StreetRoutingError> {
     let started = Instant::now();
-    let used = network
-        .patterns
-        .iter()
-        .flat_map(|pattern| pattern.stops.iter())
-        .collect::<HashSet<_>>();
-    let indices = network
-        .stops
-        .iter()
-        .enumerate()
-        .filter_map(|(index, stop)| used.contains(&stop.id).then_some(index))
-        .collect::<Vec<_>>();
+    let indices = used_stop_indices(network);
     let mut stats = TransferStatistics {
         boarding_points: indices.len(),
         ..Default::default()
     };
-    let mut grid = HashMap::<(i32, i32), Vec<usize>>::new();
-    for &index in &indices {
-        let point = network.stops[index].coordinate;
-        grid.entry(cell(point.latitude, point.longitude))
-            .or_default()
-            .push(index);
-    }
+    let grid = build_spatial_grid(network, &indices);
 
     let limits = street.matrix_limits();
     if limits.max_targets == 0 || limits.max_sources == 0 {
@@ -97,33 +81,93 @@ pub async fn enrich_network_with_static_transfers(
             reason: "street matrix limits must be positive".into(),
         });
     }
+    let best = query_walking_transfers(
+        network,
+        street,
+        &indices,
+        &grid,
+        limits.max_targets,
+        &mut stats,
+    )
+    .await?;
+    retain_outgoing_transfers(best, &mut network.transfer_edges, &mut stats);
+    stats.retained_edges = network.transfer_edges.len();
+    record_mode_statistics(network, &mut stats);
+    stats.elapsed_milliseconds = started.elapsed().as_millis();
+    Ok(stats)
+}
+
+fn used_stop_indices(network: &TransitNetwork) -> Vec<usize> {
+    let used = network
+        .patterns
+        .iter()
+        .flat_map(|pattern| pattern.stops.iter())
+        .collect::<HashSet<_>>();
+    network
+        .stops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, stop)| used.contains(&stop.id).then_some(index))
+        .collect()
+}
+
+fn build_spatial_grid(
+    network: &TransitNetwork,
+    indices: &[usize],
+) -> HashMap<(i32, i32), Vec<usize>> {
+    let mut grid = HashMap::<(i32, i32), Vec<usize>>::new();
+    for &index in indices {
+        let point = network.stops[index].coordinate;
+        grid.entry(cell(point.latitude, point.longitude))
+            .or_default()
+            .push(index);
+    }
+    grid
+}
+
+fn candidate_targets(
+    network: &TransitNetwork,
+    grid: &HashMap<(i32, i32), Vec<usize>>,
+    source: usize,
+) -> Vec<usize> {
+    let origin = network.stops[source].coordinate;
+    let (row, column) = cell(origin.latitude, origin.longitude);
+    let mut targets = Vec::new();
+    for dy in -3..=3 {
+        for dx in -3..=3 {
+            if let Some(neighbors) = grid.get(&(row + dy, column + dx)) {
+                for &target in neighbors {
+                    if target != source
+                        && origin.haversine_distance_metres(network.stops[target].coordinate)
+                            <= RADIUS_METRES
+                    {
+                        targets.push(target);
+                    }
+                }
+            }
+        }
+    }
+    targets.sort_unstable();
+    targets
+}
+
+async fn query_walking_transfers(
+    network: &TransitNetwork,
+    street: &dyn StreetRouter,
+    indices: &[usize],
+    grid: &HashMap<(i32, i32), Vec<usize>>,
+    max_targets: usize,
+    stats: &mut TransferStatistics,
+) -> Result<HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>, StreetRoutingError>
+{
     let mut best = HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
 
     for source_group in indices.chunks(128) {
         let mut requests = Vec::new();
         for &source in source_group {
-            let origin = network.stops[source].coordinate;
-            let (row, column) = cell(origin.latitude, origin.longitude);
-            let mut targets = Vec::new();
-
-            for dy in -3..=3 {
-                for dx in -3..=3 {
-                    if let Some(neighbors) = grid.get(&(row + dy, column + dx)) {
-                        for &target in neighbors {
-                            if target != source
-                                && origin
-                                    .haversine_distance_metres(network.stops[target].coordinate)
-                                    <= RADIUS_METRES
-                            {
-                                targets.push(target);
-                            }
-                        }
-                    }
-                }
-            }
-            targets.sort_unstable();
+            let targets = candidate_targets(network, grid, source);
             stats.geographic_candidate_pairs += targets.len();
-            for chunk in targets.chunks(limits.max_targets) {
+            for chunk in targets.chunks(max_targets) {
                 requests.push((source, chunk.to_vec()));
             }
         }
@@ -182,13 +226,20 @@ pub async fn enrich_network_with_static_transfers(
             }
         }
     }
+    Ok(best)
+}
 
+fn retain_outgoing_transfers(
+    best: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
+    transfer_edges: &mut Vec<TransferEdge>,
+    stats: &mut TransferStatistics,
+) {
     let mut by_source =
         HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
     for ((from, to), metrics) in best {
         by_source.entry(from).or_default().push((to, metrics));
     }
-    network.transfer_edges.clear();
+    transfer_edges.clear();
     for (from, mut targets) in by_source {
         targets.sort_by(|a, b| {
             a.1.duration_seconds
@@ -197,7 +248,7 @@ pub async fn enrich_network_with_static_transfers(
         });
         stats.removed_by_fanout += targets.len().saturating_sub(MAX_OUTGOING);
         for (to, metrics) in targets.into_iter().take(MAX_OUTGOING) {
-            network.transfer_edges.push(TransferEdge::new(
+            transfer_edges.push(TransferEdge::new(
                 from.clone(),
                 to,
                 metrics.duration_seconds,
@@ -205,13 +256,15 @@ pub async fn enrich_network_with_static_transfers(
             ));
         }
     }
-    network.transfer_edges.sort_by(|a, b| {
+    transfer_edges.sort_by(|a, b| {
         a.from
             .as_str()
             .cmp(b.from.as_str())
             .then_with(|| a.to.as_str().cmp(b.to.as_str()))
     });
-    stats.retained_edges = network.transfer_edges.len();
+}
+
+fn record_mode_statistics(network: &TransitNetwork, stats: &mut TransferStatistics) {
     let route_modes = network
         .routes
         .iter()
@@ -243,8 +296,6 @@ pub async fn enrich_network_with_static_transfers(
             }
         }
     }
-    stats.elapsed_milliseconds = started.elapsed().as_millis();
-    Ok(stats)
 }
 
 #[cfg(test)]
