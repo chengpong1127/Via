@@ -10,8 +10,8 @@ use crate::{
     domain::location::GeoCoordinate,
     providers::BikeAvailabilitySource,
     street::{
-        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
-        StreetTravelMode,
+        Coordinate, MatrixCell, MatrixLimits, MatrixOrientation, MatrixQuery, MatrixResult,
+        RoutingConstraints, StreetRouter, StreetTravelMode,
     },
 };
 
@@ -116,28 +116,27 @@ impl BikeSegmentPlanner {
         from_anchor: usize,
         to_anchor: usize,
     ) -> (Vec<BikeShortcut>, BikePlanningStats) {
-        let mut stats = BikePlanningStats {
-            relevant_bike_stations: candidate.pickups.len() + candidate.dropoffs.len(),
-            candidate_movements: 1,
-            pickup_stations_considered: candidate.pickups.len(),
-            dropoff_stations_considered: candidate.dropoffs.len(),
-            station_pairs: candidate
-                .pickups
-                .iter()
-                .flat_map(|pickup| {
-                    candidate
-                        .dropoffs
-                        .iter()
-                        .filter(move |dropoff| pickup.station_id != dropoff.station_id)
-                })
-                .count(),
-            ..BikePlanningStats::default()
-        };
+        let mut stats = corridor_candidate_stats(candidate);
         let limits = self.street_router.matrix_limits();
         if limits.max_sources == 0 || limits.max_targets == 0 {
             return (Vec::new(), stats);
         }
 
+        let shortcuts = self
+            .realize_candidate_matrices(candidate, from_anchor, to_anchor, limits, &mut stats)
+            .await;
+        let shortcuts = finalize_shortcuts(shortcuts, &mut stats);
+        (shortcuts, stats)
+    }
+
+    async fn realize_candidate_matrices(
+        &self,
+        candidate: &BikeMovementCandidate,
+        from_anchor: usize,
+        to_anchor: usize,
+        limits: MatrixLimits,
+        stats: &mut BikePlanningStats,
+    ) -> Vec<BikeShortcut> {
         let mut shortcuts = Vec::new();
         for pickup_chunk in candidate.pickups.chunks(limits.max_sources) {
             for dropoff_chunk in candidate.dropoffs.chunks(limits.max_targets) {
@@ -169,12 +168,7 @@ impl BikeSegmentPlanner {
                 else {
                     continue;
                 };
-                if result.cells.len() != pickup_chunk.len()
-                    || result
-                        .cells
-                        .iter()
-                        .any(|row| row.len() != dropoff_chunk.len())
-                {
+                if !matrix_has_shape(&result, pickup_chunk.len(), dropoff_chunk.len()) {
                     continue;
                 }
                 for (pickup_index, row) in result.cells.iter().enumerate() {
@@ -184,24 +178,13 @@ impl BikeSegmentPlanner {
                         {
                             continue;
                         }
-                        let MatrixCell::Reachable { duration, distance } = cell else {
-                            continue;
-                        };
-                        if duration.0 > MAX_BIKE_DURATION_SECONDS
-                            || distance.0 > MAX_BIKE_DISTANCE_METRES
-                        {
-                            continue;
-                        }
-                        if let Some(shortcut) = BikeShortcut::new(
+                        if let Some(shortcut) = bike_shortcut_from_cell(
                             from_anchor,
                             to_anchor,
-                            pickup_chunk[pickup_index].station_id.clone(),
-                            dropoff_chunk[dropoff_index].station_id.clone(),
+                            &pickup_chunk[pickup_index].station_id,
+                            &dropoff_chunk[dropoff_index].station_id,
                             pickup_chunk[pickup_index].walking,
-                            BikeRide {
-                                duration_seconds: duration.0,
-                                distance_metres: distance.0,
-                            },
+                            cell,
                             dropoff_chunk[dropoff_index].walking,
                         ) {
                             shortcuts.push(shortcut);
@@ -210,21 +193,7 @@ impl BikeSegmentPlanner {
                 }
             }
         }
-        shortcuts.sort_by(|left, right| {
-            (
-                left.total_seconds,
-                left.pickup_station_id.as_str(),
-                left.dropoff_station_id.as_str(),
-            )
-                .cmp(&(
-                    right.total_seconds,
-                    right.pickup_station_id.as_str(),
-                    right.dropoff_station_id.as_str(),
-                ))
-        });
-        shortcuts.dedup();
-        stats.realizations_feasible = shortcuts.len();
-        (shortcuts, stats)
+        shortcuts
     }
 
     pub(crate) async fn direct_realizations(
@@ -252,10 +221,13 @@ impl BikeSegmentPlanner {
         if station_limit == 0 {
             return (Vec::new(), BikePlanningStats::default());
         }
-        let mut pickups = direct_station_choices(&self.network, &view, origin_point, true);
-        let mut dropoffs = direct_station_choices(&self.network, &view, destination_point, false);
-        pickups.truncate(station_limit);
-        dropoffs.truncate(station_limit);
+        let (pickups, dropoffs) = select_direct_station_candidates(
+            &self.network,
+            &view,
+            origin_point,
+            destination_point,
+            station_limit,
+        );
         let mut stats = BikePlanningStats {
             relevant_bike_stations: pickups.len() + dropoffs.len(),
             candidate_movements: usize::from(!pickups.is_empty() && !dropoffs.is_empty()),
@@ -268,8 +240,52 @@ impl BikeSegmentPlanner {
             return (Vec::new(), stats);
         }
 
+        let Some((walk_to_pickups, walk_from_dropoffs)) = self
+            .load_direct_walking_access(origin, destination, &pickups, &dropoffs, &mut stats)
+            .await
+        else {
+            return (Vec::new(), stats);
+        };
+        if !walk_to_pickups.iter().any(Option::is_some)
+            || !walk_from_dropoffs.iter().any(Option::is_some)
+        {
+            return (Vec::new(), stats);
+        }
+
+        let Some(bike_matrix) = self
+            .load_direct_bike_matrix(&pickups, &dropoffs, &mut stats)
+            .await
+        else {
+            return (Vec::new(), stats);
+        };
+        if !matrix_has_shape(&bike_matrix, pickups.len(), dropoffs.len()) {
+            return (Vec::new(), stats);
+        }
+
+        let shortcuts = build_direct_shortcuts(
+            &bike_matrix,
+            &pickups,
+            &dropoffs,
+            &walk_to_pickups,
+            &walk_from_dropoffs,
+        );
+        let shortcuts = finalize_shortcuts(shortcuts, &mut stats);
+        (shortcuts, stats)
+    }
+
+    async fn load_direct_walking_access(
+        &self,
+        origin: Coordinate,
+        destination: Coordinate,
+        pickups: &[(BikeStationId, Coordinate)],
+        dropoffs: &[(BikeStationId, Coordinate)],
+        stats: &mut BikePlanningStats,
+    ) -> Option<(
+        Vec<Option<BikeWalkingAccess>>,
+        Vec<Option<BikeWalkingAccess>>,
+    )> {
         stats.matrix_requests += 1;
-        let Ok(pickup_walks) = self
+        let pickup_walks = self
             .street_router
             .matrix(MatrixQuery {
                 orientation: MatrixOrientation::OneToMany,
@@ -279,11 +295,9 @@ impl BikeSegmentPlanner {
                 constraints: RoutingConstraints::default(),
             })
             .await
-        else {
-            return (Vec::new(), stats);
-        };
+            .ok()?;
         stats.matrix_requests += 1;
-        let Ok(dropoff_walks) = self
+        let dropoff_walks = self
             .street_router
             .matrix(MatrixQuery {
                 orientation: MatrixOrientation::ManyToOne,
@@ -293,48 +307,32 @@ impl BikeSegmentPlanner {
                 constraints: RoutingConstraints::default(),
             })
             .await
-        else {
-            return (Vec::new(), stats);
-        };
-        if pickup_walks.cells.len() != 1
-            || pickup_walks.cells[0].len() != pickups.len()
-            || dropoff_walks.cells.len() != dropoffs.len()
-            || dropoff_walks.cells.iter().any(|row| row.len() != 1)
+            .ok()?;
+        if !matrix_has_shape(&pickup_walks, 1, pickups.len())
+            || !matrix_has_shape(&dropoff_walks, dropoffs.len(), 1)
         {
-            return (Vec::new(), stats);
+            return None;
         }
         let walk_to_pickups = pickup_walks.cells[0]
             .iter()
-            .map(|cell| match cell {
-                MatrixCell::Reachable { duration, distance }
-                    if duration.0 <= MAX_DIRECT_BIKE_WALK_SECONDS =>
-                {
-                    Some(BikeWalkingAccess::new(duration.0, distance.0))
-                }
-                _ => None,
-            })
+            .map(|cell| walking_access(cell))
             .collect::<Vec<_>>();
         let walk_from_dropoffs = dropoff_walks
             .cells
             .iter()
-            .map(|row| match row[0] {
-                MatrixCell::Reachable { duration, distance }
-                    if duration.0 <= MAX_DIRECT_BIKE_WALK_SECONDS =>
-                {
-                    Some(BikeWalkingAccess::new(duration.0, distance.0))
-                }
-                _ => None,
-            })
+            .map(|row| walking_access(&row[0]))
             .collect::<Vec<_>>();
-        if !walk_to_pickups.iter().any(Option::is_some)
-            || !walk_from_dropoffs.iter().any(Option::is_some)
-        {
-            return (Vec::new(), stats);
-        }
+        Some((walk_to_pickups, walk_from_dropoffs))
+    }
 
+    async fn load_direct_bike_matrix(
+        &self,
+        pickups: &[(BikeStationId, Coordinate)],
+        dropoffs: &[(BikeStationId, Coordinate)],
+        stats: &mut BikePlanningStats,
+    ) -> Option<MatrixResult> {
         stats.matrix_requests += 1;
-        let Ok(bike_matrix) = self
-            .street_router
+        self.street_router
             .matrix(MatrixQuery {
                 orientation: MatrixOrientation::ManyToMany,
                 travel_mode: StreetTravelMode::Bicycle,
@@ -343,65 +341,143 @@ impl BikeSegmentPlanner {
                 constraints: RoutingConstraints::default(),
             })
             .await
-        else {
-            return (Vec::new(), stats);
-        };
-        if bike_matrix.cells.len() != pickups.len()
-            || bike_matrix
-                .cells
-                .iter()
-                .any(|row| row.len() != dropoffs.len())
-        {
-            return (Vec::new(), stats);
-        }
+            .ok()
+    }
+}
 
-        let mut shortcuts = Vec::new();
-        for (pickup_index, row) in bike_matrix.cells.iter().enumerate() {
-            let Some(walk_to_pickup) = walk_to_pickups[pickup_index] else {
+fn corridor_candidate_stats(candidate: &BikeMovementCandidate) -> BikePlanningStats {
+    BikePlanningStats {
+        relevant_bike_stations: candidate.pickups.len() + candidate.dropoffs.len(),
+        candidate_movements: 1,
+        pickup_stations_considered: candidate.pickups.len(),
+        dropoff_stations_considered: candidate.dropoffs.len(),
+        station_pairs: candidate
+            .pickups
+            .iter()
+            .flat_map(|pickup| {
+                candidate
+                    .dropoffs
+                    .iter()
+                    .filter(move |dropoff| pickup.station_id != dropoff.station_id)
+            })
+            .count(),
+        ..BikePlanningStats::default()
+    }
+}
+
+fn select_direct_station_candidates(
+    network: &BikeShareNetwork,
+    view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
+    origin: GeoCoordinate,
+    destination: GeoCoordinate,
+    station_limit: usize,
+) -> (
+    Vec<(BikeStationId, Coordinate)>,
+    Vec<(BikeStationId, Coordinate)>,
+) {
+    let mut pickups = direct_station_choices(network, view, origin, true);
+    let mut dropoffs = direct_station_choices(network, view, destination, false);
+    pickups.truncate(station_limit);
+    dropoffs.truncate(station_limit);
+    (pickups, dropoffs)
+}
+
+fn walking_access(cell: &MatrixCell) -> Option<BikeWalkingAccess> {
+    match cell {
+        MatrixCell::Reachable { duration, distance }
+            if duration.0 <= MAX_DIRECT_BIKE_WALK_SECONDS =>
+        {
+            Some(BikeWalkingAccess::new(duration.0, distance.0))
+        }
+        _ => None,
+    }
+}
+
+fn matrix_has_shape(matrix: &MatrixResult, expected_rows: usize, expected_columns: usize) -> bool {
+    matrix.cells.len() == expected_rows
+        && matrix.cells.iter().all(|row| row.len() == expected_columns)
+}
+
+fn bike_shortcut_from_cell(
+    from_anchor: usize,
+    to_anchor: usize,
+    pickup_station_id: &BikeStationId,
+    dropoff_station_id: &BikeStationId,
+    walk_to_pickup: BikeWalkingAccess,
+    cell: &MatrixCell,
+    walk_from_dropoff: BikeWalkingAccess,
+) -> Option<BikeShortcut> {
+    let MatrixCell::Reachable { duration, distance } = cell else {
+        return None;
+    };
+    if duration.0 > MAX_BIKE_DURATION_SECONDS || distance.0 > MAX_BIKE_DISTANCE_METRES {
+        return None;
+    }
+    BikeShortcut::new(
+        from_anchor,
+        to_anchor,
+        pickup_station_id.clone(),
+        dropoff_station_id.clone(),
+        walk_to_pickup,
+        BikeRide {
+            duration_seconds: duration.0,
+            distance_metres: distance.0,
+        },
+        walk_from_dropoff,
+    )
+}
+
+fn finalize_shortcuts(
+    mut shortcuts: Vec<BikeShortcut>,
+    stats: &mut BikePlanningStats,
+) -> Vec<BikeShortcut> {
+    shortcuts.sort_by(|left, right| {
+        (
+            left.total_seconds,
+            left.pickup_station_id.as_str(),
+            left.dropoff_station_id.as_str(),
+        )
+            .cmp(&(
+                right.total_seconds,
+                right.pickup_station_id.as_str(),
+                right.dropoff_station_id.as_str(),
+            ))
+    });
+    shortcuts.dedup();
+    stats.realizations_feasible = shortcuts.len();
+    shortcuts
+}
+
+fn build_direct_shortcuts(
+    bike_matrix: &MatrixResult,
+    pickups: &[(BikeStationId, Coordinate)],
+    dropoffs: &[(BikeStationId, Coordinate)],
+    walk_to_pickups: &[Option<BikeWalkingAccess>],
+    walk_from_dropoffs: &[Option<BikeWalkingAccess>],
+) -> Vec<BikeShortcut> {
+    let mut shortcuts = Vec::new();
+    for (pickup_index, row) in bike_matrix.cells.iter().enumerate() {
+        let Some(walk_to_pickup) = walk_to_pickups[pickup_index] else {
+            continue;
+        };
+        for (dropoff_index, cell) in row.iter().enumerate() {
+            let Some(walk_from_dropoff) = walk_from_dropoffs[dropoff_index] else {
                 continue;
             };
-            for (dropoff_index, cell) in row.iter().enumerate() {
-                let Some(walk_from_dropoff) = walk_from_dropoffs[dropoff_index] else {
-                    continue;
-                };
-                let MatrixCell::Reachable { duration, distance } = cell else {
-                    continue;
-                };
-                if duration.0 > MAX_BIKE_DURATION_SECONDS || distance.0 > MAX_BIKE_DISTANCE_METRES {
-                    continue;
-                }
-                if let Some(shortcut) = BikeShortcut::new(
-                    0,
-                    1,
-                    pickups[pickup_index].0.clone(),
-                    dropoffs[dropoff_index].0.clone(),
-                    walk_to_pickup,
-                    BikeRide {
-                        duration_seconds: duration.0,
-                        distance_metres: distance.0,
-                    },
-                    walk_from_dropoff,
-                ) {
-                    shortcuts.push(shortcut);
-                }
+            if let Some(shortcut) = bike_shortcut_from_cell(
+                0,
+                1,
+                &pickups[pickup_index].0,
+                &dropoffs[dropoff_index].0,
+                walk_to_pickup,
+                cell,
+                walk_from_dropoff,
+            ) {
+                shortcuts.push(shortcut);
             }
         }
-        shortcuts.sort_by(|left, right| {
-            (
-                left.total_seconds,
-                left.pickup_station_id.as_str(),
-                left.dropoff_station_id.as_str(),
-            )
-                .cmp(&(
-                    right.total_seconds,
-                    right.pickup_station_id.as_str(),
-                    right.dropoff_station_id.as_str(),
-                ))
-        });
-        shortcuts.dedup();
-        stats.realizations_feasible = shortcuts.len();
-        (shortcuts, stats)
     }
+    shortcuts
 }
 
 #[derive(Clone)]
