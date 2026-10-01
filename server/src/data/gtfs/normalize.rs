@@ -4,8 +4,8 @@ use std::{
 };
 
 use gtfs_structures::{
-    Calendar, CalendarDate, Exception, ExtendedRouteType, LocationType, RawGtfs, RawStopTime,
-    Route, RouteType,
+    Calendar, CalendarDate, Exception, ExtendedRouteType, LocationType, RawFrequency, RawGtfs,
+    RawStopTime, RawTrip, Route, RouteType, Shape, Stop,
 };
 use time::{Date, Month, Weekday};
 
@@ -15,8 +15,8 @@ use crate::{
         ids::{BoardingPointId, ServiceCalendarId, TransitRouteId},
         location::GeoCoordinate,
         transit::{
-            ScheduledStopTime, ServiceCalendar, TransitMode, TransitNetwork, TransitRoute,
-            TransitStop, default_service_day_boundary,
+            ScheduledStopTime, ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork,
+            TransitPattern, TransitRoute, TransitStop, TransitTrip, default_service_day_boundary,
         },
     },
 };
@@ -38,29 +38,34 @@ struct ViaStops {
     valid_gtfs_stop_ids: Vec<String>,
 }
 
+struct RawTables {
+    stops: Vec<Stop>,
+    routes: Vec<Route>,
+    trips: Vec<RawTrip>,
+    stop_times: Vec<RawStopTime>,
+    calendars: Vec<Calendar>,
+    calendar_dates: Vec<CalendarDate>,
+    frequencies: Vec<RawFrequency>,
+    shapes: Vec<Shape>,
+}
+
 pub(super) fn normalize(
     raw: RawGtfs,
     input: &Path,
     diagnostics: &mut GtfsBuildDiagnostics,
 ) -> Result<NormalizationOutput, DataError> {
-    let raw_stops = raw
-        .stops
-        .map_err(|error| super::invalid_gtfs(input, format!("stops.txt: {error}")))?;
-    let raw_routes = raw
-        .routes
-        .map_err(|error| super::invalid_gtfs(input, format!("routes.txt: {error}")))?;
-    let raw_trips = raw
-        .trips
-        .map_err(|error| super::invalid_gtfs(input, format!("trips.txt: {error}")))?;
-    let stop_times = raw
-        .stop_times
-        .map_err(|error| super::invalid_gtfs(input, format!("stop_times.txt: {error}")))?;
-    let calendars = optional_table(raw.calendar, input, "calendar.txt")?;
-    let calendar_dates = optional_table(raw.calendar_dates, input, "calendar_dates.txt")?;
-    let frequencies = optional_table(raw.frequencies, input, "frequencies.txt")?;
-    let shapes = optional_table(raw.shapes, input, "shapes.txt")?;
+    let RawTables {
+        stops: raw_stops,
+        routes: raw_routes,
+        trips: raw_trips,
+        stop_times,
+        calendars: raw_calendars,
+        calendar_dates,
+        frequencies,
+        shapes,
+    } = extract_tables(raw, input)?;
 
-    let calendars = via_calendars(calendars, calendar_dates);
+    let calendars = via_calendars(raw_calendars, calendar_dates);
     let ViaStops {
         stops,
         index_by_gtfs_id: stop_index_by_gtfs_id,
@@ -72,28 +77,9 @@ pub(super) fn normalize(
         .enumerate()
         .map(|(index, route)| (route.id.clone(), index))
         .collect::<HashMap<_, _>>();
-    let mut usable_trip_ids = HashSet::new();
-    let mut usable_trips = Vec::new();
-    for trip in &raw_trips {
-        if route_modes.contains_key(trip.route_id.as_str())
-            && usable_trip_ids.insert(trip.id.as_str())
-        {
-            usable_trips.push(trip);
-        }
-    }
-    diagnostics.trips_loaded = usable_trips.len();
-
-    let used_shape_ids = usable_trips
-        .iter()
-        .filter_map(|trip| trip.shape_id.as_deref())
-        .collect::<HashSet<_>>();
-    diagnostics.shape_rows_loaded = shapes
-        .iter()
-        .filter(|shape| {
-            used_shape_ids.contains(shape.id.as_str())
-                && valid_coordinate(shape.latitude, shape.longitude)
-        })
-        .count();
+    let (usable_trip_ids, usable_trips) =
+        select_usable_trips(&raw_trips, &route_modes, diagnostics);
+    record_shape_rows_loaded(&usable_trips, &shapes, diagnostics);
 
     let indexes = GtfsIndexes {
         stops: &stops,
@@ -102,29 +88,11 @@ pub(super) fn normalize(
         route_index_by_id: &route_index_by_id,
         route_modes: &route_modes,
     };
-    let mut stop_times_by_trip = HashMap::<&str, Vec<&RawStopTime>>::new();
-    for stop_time in &stop_times {
-        if usable_trip_ids.contains(stop_time.trip_id.as_str())
-            && stop_index_by_gtfs_id.contains_key(stop_time.stop_id.as_str())
-        {
-            stop_times_by_trip
-                .entry(&stop_time.trip_id)
-                .or_default()
-                .push(stop_time);
-        }
-    }
-    for times in stop_times_by_trip.values_mut() {
-        times.sort_by_key(|stop_time| stop_time.stop_sequence);
-    }
-    let mut frequencies_by_trip = HashMap::<String, Vec<_>>::new();
-    for frequency in frequencies {
-        frequencies_by_trip
-            .entry(frequency.trip_id.clone())
-            .or_default()
-            .push(frequency);
-    }
+    let stop_times_by_trip =
+        index_stop_times(&stop_times, &usable_trip_ids, &stop_index_by_gtfs_id);
+    let frequencies_by_trip = index_frequencies(frequencies);
 
-    let normalized = patterns::normalize(
+    let mut normalized = patterns::normalize(
         &indexes,
         &usable_trips,
         &stop_times_by_trip,
@@ -132,13 +100,7 @@ pub(super) fn normalize(
         &calendars,
         &shapes,
     );
-    diagnostics.invalid_timing_trips = normalized.invalid_trip_count;
-    diagnostics.invalid_timing_trip_examples = normalized.invalid_trip_examples;
-    diagnostics.scheduled_trips_loaded = normalized.scheduled_trips.len();
-    diagnostics.frequencies_loaded = normalized.frequencies.len();
-    diagnostics.exact_static_timing_patterns = normalized.timing_counts.exact_static;
-    diagnostics.derived_bus_timing_patterns = normalized.timing_counts.derived_bus;
-    diagnostics.geometric_fallback_patterns = normalized.timing_counts.geometric_fallback;
+    record_timing_diagnostics(&mut normalized, diagnostics);
     let mut patterns = normalized.patterns;
     let scheduled_trips = normalized.scheduled_trips;
     let mut normalized_frequencies = normalized.frequencies;
@@ -152,7 +114,142 @@ pub(super) fn normalize(
         })
         .collect::<BTreeMap<_, _>>();
 
-    for pattern in &patterns {
+    record_pattern_modes(&patterns, &route_by_via_id, diagnostics);
+    let stops = retain_referenced_stops(stops, &valid_gtfs_stop_ids, &patterns, diagnostics);
+    let calendars =
+        retain_referenced_calendars(calendars, &scheduled_trips, &normalized_frequencies);
+    normalized_frequencies.shrink_to_fit();
+    patterns.shrink_to_fit();
+    let routes = build_routes(route_by_via_id, &route_modes);
+    let network = assemble_network(
+        stops,
+        patterns,
+        scheduled_trips,
+        calendars,
+        routes,
+        normalized_frequencies,
+    );
+
+    Ok(NormalizationOutput {
+        network,
+        binding_inputs: BindingInputs {
+            routes: raw_routes,
+            route_modes,
+            trips: raw_trips,
+        },
+    })
+}
+
+fn extract_tables(raw: RawGtfs, input: &Path) -> Result<RawTables, DataError> {
+    Ok(RawTables {
+        stops: raw
+            .stops
+            .map_err(|error| super::invalid_gtfs(input, format!("stops.txt: {error}")))?,
+        routes: raw
+            .routes
+            .map_err(|error| super::invalid_gtfs(input, format!("routes.txt: {error}")))?,
+        trips: raw
+            .trips
+            .map_err(|error| super::invalid_gtfs(input, format!("trips.txt: {error}")))?,
+        stop_times: raw
+            .stop_times
+            .map_err(|error| super::invalid_gtfs(input, format!("stop_times.txt: {error}")))?,
+        calendars: optional_table(raw.calendar, input, "calendar.txt")?,
+        calendar_dates: optional_table(raw.calendar_dates, input, "calendar_dates.txt")?,
+        frequencies: optional_table(raw.frequencies, input, "frequencies.txt")?,
+        shapes: optional_table(raw.shapes, input, "shapes.txt")?,
+    })
+}
+
+fn select_usable_trips<'a>(
+    raw_trips: &'a [RawTrip],
+    route_modes: &HashMap<String, TransitMode>,
+    diagnostics: &mut GtfsBuildDiagnostics,
+) -> (HashSet<&'a str>, Vec<&'a RawTrip>) {
+    let mut usable_trip_ids = HashSet::new();
+    let mut usable_trips = Vec::new();
+    for trip in raw_trips {
+        if route_modes.contains_key(trip.route_id.as_str())
+            && usable_trip_ids.insert(trip.id.as_str())
+        {
+            usable_trips.push(trip);
+        }
+    }
+    diagnostics.trips_loaded = usable_trips.len();
+    (usable_trip_ids, usable_trips)
+}
+
+fn record_shape_rows_loaded(
+    usable_trips: &[&RawTrip],
+    shapes: &[Shape],
+    diagnostics: &mut GtfsBuildDiagnostics,
+) {
+    let used_shape_ids = usable_trips
+        .iter()
+        .filter_map(|trip| trip.shape_id.as_deref())
+        .collect::<HashSet<_>>();
+    diagnostics.shape_rows_loaded = shapes
+        .iter()
+        .filter(|shape| {
+            used_shape_ids.contains(shape.id.as_str())
+                && valid_coordinate(shape.latitude, shape.longitude)
+        })
+        .count();
+}
+
+fn index_stop_times<'a>(
+    stop_times: &'a [RawStopTime],
+    usable_trip_ids: &HashSet<&str>,
+    stop_index_by_gtfs_id: &HashMap<String, u32>,
+) -> HashMap<&'a str, Vec<&'a RawStopTime>> {
+    let mut by_trip = HashMap::<&str, Vec<&RawStopTime>>::new();
+    for stop_time in stop_times {
+        if usable_trip_ids.contains(stop_time.trip_id.as_str())
+            && stop_index_by_gtfs_id.contains_key(stop_time.stop_id.as_str())
+        {
+            by_trip
+                .entry(stop_time.trip_id.as_str())
+                .or_default()
+                .push(stop_time);
+        }
+    }
+    for times in by_trip.values_mut() {
+        times.sort_by_key(|stop_time| stop_time.stop_sequence);
+    }
+    by_trip
+}
+
+fn index_frequencies(frequencies: Vec<RawFrequency>) -> HashMap<String, Vec<RawFrequency>> {
+    let mut by_trip = HashMap::<String, Vec<_>>::new();
+    for frequency in frequencies {
+        by_trip
+            .entry(frequency.trip_id.clone())
+            .or_default()
+            .push(frequency);
+    }
+    by_trip
+}
+
+fn record_timing_diagnostics(
+    normalized: &mut patterns::PatternNormalization,
+    diagnostics: &mut GtfsBuildDiagnostics,
+) {
+    diagnostics.invalid_timing_trips = normalized.invalid_trip_count;
+    diagnostics.invalid_timing_trip_examples =
+        std::mem::take(&mut normalized.invalid_trip_examples);
+    diagnostics.scheduled_trips_loaded = normalized.scheduled_trips.len();
+    diagnostics.frequencies_loaded = normalized.frequencies.len();
+    diagnostics.exact_static_timing_patterns = normalized.timing_counts.exact_static;
+    diagnostics.derived_bus_timing_patterns = normalized.timing_counts.derived_bus;
+    diagnostics.geometric_fallback_patterns = normalized.timing_counts.geometric_fallback;
+}
+
+fn record_pattern_modes(
+    patterns: &[TransitPattern],
+    route_by_via_id: &BTreeMap<String, &Route>,
+    diagnostics: &mut GtfsBuildDiagnostics,
+) {
+    for pattern in patterns {
         let route = route_by_via_id[pattern.route_id.as_str()];
         let mode = via_mode(route.route_type, &route.id).expect("normalized route is supported");
         *diagnostics
@@ -160,11 +257,19 @@ pub(super) fn normalize(
             .entry(mode_name(mode).to_owned())
             .or_default() += 1;
     }
+}
+
+fn retain_referenced_stops(
+    stops: Vec<TransitStop>,
+    valid_gtfs_stop_ids: &[String],
+    patterns: &[TransitPattern],
+    diagnostics: &mut GtfsBuildDiagnostics,
+) -> Vec<TransitStop> {
     let used_stop_ids = patterns
         .iter()
         .flat_map(|pattern| pattern.stops.iter().cloned())
         .collect::<HashSet<_>>();
-    for (stop, gtfs_stop_id) in stops.iter().zip(&valid_gtfs_stop_ids) {
+    for (stop, gtfs_stop_id) in stops.iter().zip(valid_gtfs_stop_ids) {
         if !used_stop_ids.contains(&stop.id) {
             diagnostics.valid_unreferenced_stops += 1;
             super::push_example(&mut diagnostics.unreferenced_stop_examples, gtfs_stop_id);
@@ -175,22 +280,34 @@ pub(super) fn normalize(
         .filter(|stop| used_stop_ids.contains(&stop.id))
         .collect::<Vec<_>>();
     diagnostics.stops_loaded = stops.len();
+    stops
+}
+
+fn retain_referenced_calendars(
+    calendars: HashMap<String, ServiceCalendar>,
+    scheduled_trips: &[TransitTrip],
+    frequencies: &[TransitFrequency],
+) -> Vec<ServiceCalendar> {
     let used_calendars = scheduled_trips
         .iter()
         .map(|trip| trip.calendar_id.as_str())
         .chain(
-            normalized_frequencies
+            frequencies
                 .iter()
                 .map(|frequency| frequency.calendar_id.as_str()),
         )
         .collect::<HashSet<_>>();
-    let calendars = calendars
+    calendars
         .into_values()
         .filter(|calendar| used_calendars.contains(calendar.id.as_str()))
-        .collect();
-    normalized_frequencies.shrink_to_fit();
-    patterns.shrink_to_fit();
-    let routes = route_by_via_id
+        .collect()
+}
+
+fn build_routes(
+    route_by_via_id: BTreeMap<String, &Route>,
+    route_modes: &HashMap<String, TransitMode>,
+) -> Vec<TransitRoute> {
+    route_by_via_id
         .into_iter()
         .map(|(id, route)| {
             let mode = route_modes[route.id.as_str()];
@@ -211,8 +328,18 @@ pub(super) fn normalize(
                 label,
             }
         })
-        .collect();
-    let network = TransitNetwork::new(
+        .collect()
+}
+
+fn assemble_network(
+    stops: Vec<TransitStop>,
+    patterns: Vec<TransitPattern>,
+    scheduled_trips: Vec<TransitTrip>,
+    calendars: Vec<ServiceCalendar>,
+    routes: Vec<TransitRoute>,
+    frequencies: Vec<TransitFrequency>,
+) -> TransitNetwork {
+    TransitNetwork::new(
         default_service_day_boundary(),
         stops,
         patterns,
@@ -220,16 +347,7 @@ pub(super) fn normalize(
     )
     .with_calendars(calendars)
     .with_routes(routes)
-    .with_frequencies(normalized_frequencies);
-
-    Ok(NormalizationOutput {
-        network,
-        binding_inputs: BindingInputs {
-            routes: raw_routes,
-            route_modes,
-            trips: raw_trips,
-        },
-    })
+    .with_frequencies(frequencies)
 }
 
 pub(super) fn is_chronological_times(times: &[ScheduledStopTime]) -> bool {
