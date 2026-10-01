@@ -103,7 +103,7 @@ fn phase2_evaluator_uses_request_snapshots_and_lazy_bike_routing() {
 
 #[test]
 fn tdx_client_remains_transport_agnostic() {
-    let client = source("src/tdx/client.rs");
+    let client = source("src/tdx.rs");
     for forbidden in [
         "TransitMode",
         "ArrivalEstimate",
