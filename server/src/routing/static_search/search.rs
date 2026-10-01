@@ -10,7 +10,9 @@ use crate::domain::{
 };
 
 use crate::routing::{
-    model::TransitQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
+    model::TransitQuery,
+    topology::{PatternPosition, TransitTopologyIndex},
+    transfers::TransferShortcutIndex,
 };
 
 use super::{
@@ -33,6 +35,25 @@ struct ModeSearchAccumulator {
     stop_sequences: HashSet<Vec<BoardingPointId>>,
 }
 
+#[derive(Default)]
+struct SearchExpansionStats {
+    states_by_leg_count: HashMap<usize, usize>,
+    expanded_stops: HashMap<BoardingPointId, usize>,
+    modes: HashMap<TransitMode, ModeSearchAccumulator>,
+}
+
+struct PreparedSearch<'a> {
+    network: &'a TransitRuntime,
+    topology: &'a TransitTopologyIndex,
+    transfers: &'a TransferShortcutIndex,
+    query: &'a TransitQuery,
+    patterns: StaticPhase1PatternIndex,
+    egress_by_stop: HashMap<BoardingPointId, Vec<u32>>,
+    terminal_transfer_source_stops: HashSet<BoardingPointId>,
+    destination_lower_bounds: HashMap<BoardingPointId, u32>,
+    max_legs: usize,
+}
+
 pub fn generate(
     network: &TransitRuntime,
     topology: &TransitTopologyIndex,
@@ -41,53 +62,73 @@ pub fn generate(
 ) -> (RetainedCorridorSet, StaticSearchStats) {
     let started = Instant::now();
     let limit = query.limits.max_static_corridors.max(1);
-    let max_legs = query.limits.max_transfers.saturating_add(1);
     let mut stats = StaticSearchStats::default();
-    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-        stats.deadline_exceeded = true;
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
-    }
-    let pattern_index_started = Instant::now();
-    let mut patterns = StaticPhase1PatternIndex::new(
-        network,
-        &query.allowed_transit_modes,
+    let Some(mut search) = prepare_search(network, topology, transfers, query, &mut stats) else {
+        return finish_deadline(started, stats);
+    };
+    let mut frontier = seed_frontier(&search, limit, &mut stats);
+    let forward_search_started = Instant::now();
+    let mut retention = CorridorRetention::new(limit);
+    let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
+    let mut expansion_stats = SearchExpansionStats::default();
+    run_forward_search(
+        &mut search,
+        &mut frontier,
+        &mut retention,
+        &mut equivalent_legs,
         &mut stats,
-        query.deadline,
+        &mut expansion_stats,
     );
-    stats.static_pattern_index_build_latency_us = elapsed_microseconds(pattern_index_started);
+
     if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-        stats.deadline_exceeded = true;
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
+        stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
+        return finish_deadline(started, stats);
     }
-    let egress_by_stop = query.destination_egress.iter().fold(
-        HashMap::<BoardingPointId, Vec<u32>>::new(),
-        |mut by_stop, egress| {
-            by_stop
-                .entry(egress.stop_id.clone())
-                .or_default()
-                .push(egress.walking_seconds);
-            by_stop
-        },
-    );
-    let terminal_transfer_source_stops = egress_by_stop
-        .keys()
-        .flat_map(|egress_stop| transfers.transfers_to(egress_stop))
-        .map(|shortcut| shortcut.from.clone())
-        .collect::<HashSet<_>>();
+
+    stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
+    finalize_expansion_stats(&mut stats, expansion_stats);
+
+    let retention_started = Instant::now();
+    let surface = retention.finish(network, &equivalent_legs, &mut stats);
+    stats.static_retention_latency_us = elapsed_microseconds(retention_started);
+    stats.static_search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    (surface, stats)
+}
+
+fn prepare_search<'a>(
+    network: &'a TransitRuntime,
+    topology: &'a TransitTopologyIndex,
+    transfers: &'a TransferShortcutIndex,
+    query: &'a TransitQuery,
+    stats: &mut StaticSearchStats,
+) -> Option<PreparedSearch<'a>> {
+    if deadline_exceeded(query) {
+        stats.deadline_exceeded = true;
+        return None;
+    }
+
+    let pattern_index_started = Instant::now();
+    let patterns =
+        StaticPhase1PatternIndex::new(network, &query.allowed_transit_modes, stats, query.deadline);
+    stats.static_pattern_index_build_latency_us = elapsed_microseconds(pattern_index_started);
+    if stats.deadline_exceeded || deadline_exceeded(query) {
+        stats.deadline_exceeded = true;
+        return None;
+    }
+
+    let egress_by_stop = build_egress_index(query);
+    let terminal_transfer_source_stops =
+        collect_terminal_transfer_sources(&egress_by_stop, transfers);
+
     let lower_bound_started = Instant::now();
     let destination_lower_bounds =
-        destination_lower_bounds(&patterns, topology, transfers, query, &mut stats);
+        destination_lower_bounds(&patterns, topology, transfers, query, stats);
     stats.static_lower_bound_latency_us = elapsed_microseconds(lower_bound_started);
-    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+    if stats.deadline_exceeded || deadline_exceeded(query) {
         stats.deadline_exceeded = true;
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
+        return None;
     }
+
     let Some(required_mode_pairs) = reachable_endpoint_mode_pairs(
         network,
         topology,
@@ -96,49 +137,98 @@ pub fn generate(
         &destination_lower_bounds,
     ) else {
         stats.deadline_exceeded = true;
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
+        return None;
     };
-    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+    if deadline_exceeded(query) {
         stats.deadline_exceeded = true;
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
+        return None;
     }
     stats.static_required_endpoint_mode_pairs = sorted_mode_pairs(&required_mode_pairs);
+
+    Some(PreparedSearch {
+        network,
+        topology,
+        transfers,
+        query,
+        patterns,
+        egress_by_stop,
+        terminal_transfer_source_stops,
+        destination_lower_bounds,
+        max_legs: query.limits.max_transfers.saturating_add(1),
+    })
+}
+
+fn build_egress_index(query: &TransitQuery) -> HashMap<BoardingPointId, Vec<u32>> {
+    query.destination_egress.iter().fold(
+        HashMap::<BoardingPointId, Vec<u32>>::new(),
+        |mut by_stop, egress| {
+            by_stop
+                .entry(egress.stop_id.clone())
+                .or_default()
+                .push(egress.walking_seconds);
+            by_stop
+        },
+    )
+}
+
+fn collect_terminal_transfer_sources(
+    egress_by_stop: &HashMap<BoardingPointId, Vec<u32>>,
+    transfers: &TransferShortcutIndex,
+) -> HashSet<BoardingPointId> {
+    egress_by_stop
+        .keys()
+        .flat_map(|egress_stop| transfers.transfers_to(egress_stop))
+        .map(|shortcut| shortcut.from.clone())
+        .collect()
+}
+
+fn seed_frontier(
+    search: &PreparedSearch<'_>,
+    limit: usize,
+    stats: &mut StaticSearchStats,
+) -> SearchFrontier {
     let mut frontier = SearchFrontier::new(limit);
-    for access in &query.origin_access {
-        let Some(remaining_seconds) = destination_lower_bounds.get(&access.stop_id).copied() else {
+    for access in &search.query.origin_access {
+        let Some(remaining_seconds) = search
+            .destination_lower_bounds
+            .get(&access.stop_id)
+            .copied()
+        else {
             continue;
         };
         let elapsed_seconds = access.walking_seconds;
-        let state = StaticState {
-            stop_id: access.stop_id.clone(),
-            elapsed_seconds,
-            lower_bound_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-            priority_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-            access_stop_id: access.stop_id.clone(),
-            transit_legs_used: 0,
-            last_transit_mode: None,
-            mode_transition_sequence: Vec::new(),
-            steps: Vec::new(),
-            has_exact_cost: false,
-            has_derived_bus_cost: false,
-            has_estimated_cost: false,
-            transfer_ready: false,
-        };
-        frontier.enqueue(state, &mut stats);
+        frontier.enqueue(
+            StaticState {
+                stop_id: access.stop_id.clone(),
+                elapsed_seconds,
+                lower_bound_seconds: elapsed_seconds.saturating_add(remaining_seconds),
+                priority_seconds: elapsed_seconds.saturating_add(remaining_seconds),
+                access_stop_id: access.stop_id.clone(),
+                transit_legs_used: 0,
+                last_transit_mode: None,
+                mode_transition_sequence: Vec::new(),
+                steps: Vec::new(),
+                has_exact_cost: false,
+                has_derived_bus_cost: false,
+                has_estimated_cost: false,
+                transfer_ready: false,
+            },
+            stats,
+        );
     }
+    frontier
+}
 
-    let forward_search_started = Instant::now();
-    let mut retention = CorridorRetention::new(limit);
-    let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
-    let mut expanded_states_by_leg_count = HashMap::<usize, usize>::new();
-    let mut expanded_stops = HashMap::<BoardingPointId, usize>::new();
-    let mut mode_accumulators = HashMap::<TransitMode, ModeSearchAccumulator>::new();
-    'search: while let Some(entry) = frontier.pop() {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+fn run_forward_search(
+    search: &mut PreparedSearch<'_>,
+    frontier: &mut SearchFrontier,
+    retention: &mut CorridorRetention,
+    equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+    stats: &mut StaticSearchStats,
+    expansion_stats: &mut SearchExpansionStats,
+) {
+    while let Some(entry) = frontier.pop() {
+        if deadline_exceeded(search.query) {
             stats.deadline_exceeded = true;
             break;
         }
@@ -152,202 +242,262 @@ pub fn generate(
         if !frontier.is_current(&entry.state) {
             continue;
         }
-        if stats.static_search_states_expanded >= query.limits.max_phase1_expansions {
+        if stats.static_search_states_expanded >= search.query.limits.max_phase1_expansions {
             stats.static_search_limit_reached = true;
             break;
         }
         stats.static_search_states_expanded += 1;
         let state = entry.state;
-        *expanded_states_by_leg_count
-            .entry(state.transit_legs_used)
-            .or_default() += 1;
-        *expanded_stops.entry(state.stop_id.clone()).or_default() += 1;
-        if egress_by_stop.contains_key(&state.stop_id) {
-            stats.static_expanded_egress_states += 1;
-        }
-        if terminal_transfer_source_stops.contains(&state.stop_id) {
-            stats.static_expanded_terminal_transfer_source_states += 1;
-        }
-        if let Some(mode) = state.last_transit_mode {
-            mode_accumulators.entry(mode).or_default().states_expanded += 1;
-        } else {
-            stats.static_unattributed_states_expanded += 1;
-        }
-        let occurrences = topology.occurrences_at(&state.stop_id);
-        let pattern_occurrences = occurrences
-            .iter()
-            .filter(|position| patterns.group_index(&position.pattern_id).is_some())
-            .cloned()
-            .collect::<Vec<_>>();
-        stats.static_expanded_stop_occurrence_samples += 1;
-        stats.static_expanded_stop_occurrences_total += occurrences.len();
-        stats.static_expanded_stop_pattern_occurrences_total += pattern_occurrences.len();
-        stats.static_expanded_stop_occurrences_max = stats
-            .static_expanded_stop_occurrences_max
-            .max(occurrences.len());
-        stats.static_expanded_stop_pattern_occurrences_max = stats
-            .static_expanded_stop_pattern_occurrences_max
-            .max(pattern_occurrences.len());
+        let pattern_occurrences =
+            record_expanded_state_stats(&state, search, stats, expansion_stats);
 
-        if !state.transfer_ready {
-            for shortcut in transfers.transfers_from(&state.stop_id) {
-                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-                    stats.deadline_exceeded = true;
-                    break 'search;
-                }
-                stats.static_walking_transfer_expansions += 1;
-                let elapsed_seconds = state
-                    .elapsed_seconds
-                    .saturating_add(shortcut.duration_seconds);
-                if elapsed_seconds > query.limits.max_journey_duration_seconds {
-                    continue;
-                }
-                let mut next = state.clone();
-                next.stop_id = shortcut.to.clone();
-                next.elapsed_seconds = elapsed_seconds;
-                let Some(remaining_seconds) = destination_lower_bounds.get(&shortcut.to).copied()
-                else {
-                    continue;
-                };
-                next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
-                next.priority_seconds = next.lower_bound_seconds;
-                next.steps.push(StaticCorridorStep::SurfaceTransfer {
-                    from: shortcut.from.clone(),
-                    to: shortcut.to.clone(),
-                    walking_duration_seconds: shortcut.duration_seconds,
-                    walking_distance_metres: shortcut.distance_metres,
-                });
-                next.transfer_ready = true;
-                if next.transit_legs_used > 0 {
-                    retention.record_complete(
-                        &next,
-                        &egress_by_stop,
-                        query.limits.max_journey_duration_seconds,
-                        &mut stats,
-                        network,
-                    );
-                }
-                if next.transit_legs_used < max_legs {
-                    frontier.enqueue(next, &mut stats);
-                }
-            }
+        if !state.transfer_ready
+            && expand_surface_transfers(&state, search, frontier, retention, stats)
+        {
+            break;
         }
 
-        if state.transit_legs_used >= max_legs {
+        if state.transit_legs_used >= search.max_legs {
             continue;
         }
 
-        for position in pattern_occurrences {
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-                stats.deadline_exceeded = true;
-                break 'search;
-            }
-            let group_index = patterns
-                .group_index(&position.pattern_id)
-                .expect("indexed pattern");
-            let group = patterns.group(group_index);
-            let mode = group.mode;
-            if !query.allowed_transit_modes.contains(&mode) {
-                continue;
-            }
-            stats.static_pattern_scans += 1;
-            {
-                let mode_stats = mode_accumulators.entry(mode).or_default();
-                mode_stats.pattern_scans += 1;
-                mode_stats.pattern_ids.insert(group.pattern_id.clone());
-                mode_stats.stop_sequences.insert(group.stops.clone());
-            }
-            let profile_started = Instant::now();
-            if patterns.ensure_ride_options(
-                group_index,
-                position.stop_index,
-                &mut stats,
-                &mut equivalent_legs,
-                query.deadline,
-            ) {
-                stats.static_ride_profile_build_latency_us = stats
-                    .static_ride_profile_build_latency_us
-                    .saturating_add(elapsed_microseconds(profile_started));
-            }
-            if stats.deadline_exceeded {
-                break 'search;
-            }
-            let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
-                network.same_stop_transfer_seconds()
-            } else {
-                0
-            };
-            for ride_option in patterns.ride_options(group_index, position.stop_index) {
-                if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-                    stats.deadline_exceeded = true;
-                    break 'search;
-                }
-                stats.static_positions_scanned += 1;
-                mode_accumulators
-                    .entry(mode)
-                    .or_default()
-                    .downstream_positions_scanned += 1;
-                let Some(alternative) = ride_option.alternatives.first() else {
-                    continue;
-                };
-                stats.static_structurally_equivalent_states_rejected +=
-                    ride_option.alternatives.len().saturating_sub(1);
-                let ride_seconds = alternative.duration_seconds;
-                let source = alternative.leg.cost_source;
-                let elapsed_seconds = state
-                    .elapsed_seconds
-                    .saturating_add(transfer_seconds)
-                    .saturating_add(ride_seconds);
-                if elapsed_seconds > query.limits.max_journey_duration_seconds {
-                    continue;
-                }
-                let alight_stop_id = ride_option.alight_stop_id.clone();
-                let mut next = state.clone();
-                next.stop_id = alight_stop_id.clone();
-                next.elapsed_seconds = elapsed_seconds;
-                let Some(remaining_seconds) =
-                    destination_lower_bounds.get(&alight_stop_id).copied()
-                else {
-                    continue;
-                };
-                next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
-                next.priority_seconds = next.lower_bound_seconds;
-                next.transit_legs_used += 1;
-                if state.last_transit_mode != Some(mode) {
-                    next.mode_transition_sequence.push(mode);
-                }
-                next.last_transit_mode = Some(mode);
-                next.steps
-                    .push(StaticCorridorStep::Transit(alternative.leg.clone()));
-                next.has_exact_cost |= source == StaticCostSource::ExactSchedule;
-                next.has_derived_bus_cost |= source == StaticCostSource::DerivedBus;
-                next.has_estimated_cost |= source == StaticCostSource::OptimisticEstimate;
-                if source == StaticCostSource::Mixed {
-                    next.has_exact_cost = true;
-                    next.has_estimated_cost = true;
-                }
-                next.transfer_ready = false;
-                retention.record_complete(
-                    &next,
-                    &egress_by_stop,
-                    query.limits.max_journey_duration_seconds,
-                    &mut stats,
-                    network,
-                );
-                frontier.enqueue(next, &mut stats);
-            }
+        if expand_transit_rides(
+            &state,
+            &pattern_occurrences,
+            search,
+            frontier,
+            retention,
+            equivalent_legs,
+            stats,
+            expansion_stats,
+        ) {
+            break;
         }
     }
+}
 
-    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-        stats.deadline_exceeded = true;
-        stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
-        stats.static_search_latency_ms =
-            started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        return (RetainedCorridorSet::default(), stats);
+fn record_expanded_state_stats(
+    state: &StaticState,
+    search: &PreparedSearch<'_>,
+    stats: &mut StaticSearchStats,
+    expansion_stats: &mut SearchExpansionStats,
+) -> Vec<PatternPosition> {
+    *expansion_stats
+        .states_by_leg_count
+        .entry(state.transit_legs_used)
+        .or_default() += 1;
+    *expansion_stats
+        .expanded_stops
+        .entry(state.stop_id.clone())
+        .or_default() += 1;
+    if search.egress_by_stop.contains_key(&state.stop_id) {
+        stats.static_expanded_egress_states += 1;
     }
+    if search
+        .terminal_transfer_source_stops
+        .contains(&state.stop_id)
+    {
+        stats.static_expanded_terminal_transfer_source_states += 1;
+    }
+    if let Some(mode) = state.last_transit_mode {
+        expansion_stats
+            .modes
+            .entry(mode)
+            .or_default()
+            .states_expanded += 1;
+    } else {
+        stats.static_unattributed_states_expanded += 1;
+    }
+    let occurrences = search.topology.occurrences_at(&state.stop_id);
+    let pattern_occurrences = occurrences
+        .iter()
+        .filter(|position| search.patterns.group_index(&position.pattern_id).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    stats.static_expanded_stop_occurrence_samples += 1;
+    stats.static_expanded_stop_occurrences_total += occurrences.len();
+    stats.static_expanded_stop_pattern_occurrences_total += pattern_occurrences.len();
+    stats.static_expanded_stop_occurrences_max = stats
+        .static_expanded_stop_occurrences_max
+        .max(occurrences.len());
+    stats.static_expanded_stop_pattern_occurrences_max = stats
+        .static_expanded_stop_pattern_occurrences_max
+        .max(pattern_occurrences.len());
+    pattern_occurrences
+}
 
-    stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
+fn expand_surface_transfers(
+    state: &StaticState,
+    search: &PreparedSearch<'_>,
+    frontier: &mut SearchFrontier,
+    retention: &mut CorridorRetention,
+    stats: &mut StaticSearchStats,
+) -> bool {
+    for shortcut in search.transfers.transfers_from(&state.stop_id) {
+        if deadline_exceeded(search.query) {
+            stats.deadline_exceeded = true;
+            return true;
+        }
+        stats.static_walking_transfer_expansions += 1;
+        let elapsed_seconds = state
+            .elapsed_seconds
+            .saturating_add(shortcut.duration_seconds);
+        if elapsed_seconds > search.query.limits.max_journey_duration_seconds {
+            continue;
+        }
+        let mut next = state.clone();
+        next.stop_id = shortcut.to.clone();
+        next.elapsed_seconds = elapsed_seconds;
+        let Some(remaining_seconds) = search.destination_lower_bounds.get(&shortcut.to).copied()
+        else {
+            continue;
+        };
+        next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
+        next.priority_seconds = next.lower_bound_seconds;
+        next.steps.push(StaticCorridorStep::SurfaceTransfer {
+            from: shortcut.from.clone(),
+            to: shortcut.to.clone(),
+            walking_duration_seconds: shortcut.duration_seconds,
+            walking_distance_metres: shortcut.distance_metres,
+        });
+        next.transfer_ready = true;
+        if next.transit_legs_used > 0 {
+            retention.record_complete(
+                &next,
+                &search.egress_by_stop,
+                search.query.limits.max_journey_duration_seconds,
+                stats,
+                search.network,
+            );
+        }
+        if next.transit_legs_used < search.max_legs {
+            frontier.enqueue(next, stats);
+        }
+    }
+    false
+}
+
+fn expand_transit_rides(
+    state: &StaticState,
+    pattern_occurrences: &[PatternPosition],
+    search: &mut PreparedSearch<'_>,
+    frontier: &mut SearchFrontier,
+    retention: &mut CorridorRetention,
+    equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+    stats: &mut StaticSearchStats,
+    expansion_stats: &mut SearchExpansionStats,
+) -> bool {
+    for position in pattern_occurrences {
+        if deadline_exceeded(search.query) {
+            stats.deadline_exceeded = true;
+            return true;
+        }
+        let group_index = search
+            .patterns
+            .group_index(&position.pattern_id)
+            .expect("indexed pattern");
+        let group = search.patterns.group(group_index);
+        let mode = group.mode;
+        if !search.query.allowed_transit_modes.contains(&mode) {
+            continue;
+        }
+        stats.static_pattern_scans += 1;
+        {
+            let mode_stats = expansion_stats.modes.entry(mode).or_default();
+            mode_stats.pattern_scans += 1;
+            mode_stats.pattern_ids.insert(group.pattern_id.clone());
+            mode_stats.stop_sequences.insert(group.stops.clone());
+        }
+        let profile_started = Instant::now();
+        if search.patterns.ensure_ride_options(
+            group_index,
+            position.stop_index,
+            stats,
+            equivalent_legs,
+            search.query.deadline,
+        ) {
+            stats.static_ride_profile_build_latency_us = stats
+                .static_ride_profile_build_latency_us
+                .saturating_add(elapsed_microseconds(profile_started));
+        }
+        if stats.deadline_exceeded {
+            return true;
+        }
+        let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
+            search.network.same_stop_transfer_seconds()
+        } else {
+            0
+        };
+        for ride_option in search
+            .patterns
+            .ride_options(group_index, position.stop_index)
+        {
+            if deadline_exceeded(search.query) {
+                stats.deadline_exceeded = true;
+                return true;
+            }
+            stats.static_positions_scanned += 1;
+            expansion_stats
+                .modes
+                .entry(mode)
+                .or_default()
+                .downstream_positions_scanned += 1;
+            let Some(alternative) = ride_option.alternatives.first() else {
+                continue;
+            };
+            stats.static_structurally_equivalent_states_rejected +=
+                ride_option.alternatives.len().saturating_sub(1);
+            let ride_seconds = alternative.duration_seconds;
+            let source = alternative.leg.cost_source;
+            let elapsed_seconds = state
+                .elapsed_seconds
+                .saturating_add(transfer_seconds)
+                .saturating_add(ride_seconds);
+            if elapsed_seconds > search.query.limits.max_journey_duration_seconds {
+                continue;
+            }
+            let alight_stop_id = ride_option.alight_stop_id.clone();
+            let mut next = state.clone();
+            next.stop_id = alight_stop_id.clone();
+            next.elapsed_seconds = elapsed_seconds;
+            let Some(remaining_seconds) = search
+                .destination_lower_bounds
+                .get(&alight_stop_id)
+                .copied()
+            else {
+                continue;
+            };
+            next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
+            next.priority_seconds = next.lower_bound_seconds;
+            next.transit_legs_used += 1;
+            if state.last_transit_mode != Some(mode) {
+                next.mode_transition_sequence.push(mode);
+            }
+            next.last_transit_mode = Some(mode);
+            next.steps
+                .push(StaticCorridorStep::Transit(alternative.leg.clone()));
+            next.has_exact_cost |= source == StaticCostSource::ExactSchedule;
+            next.has_derived_bus_cost |= source == StaticCostSource::DerivedBus;
+            next.has_estimated_cost |= source == StaticCostSource::OptimisticEstimate;
+            if source == StaticCostSource::Mixed {
+                next.has_exact_cost = true;
+                next.has_estimated_cost = true;
+            }
+            next.transfer_ready = false;
+            retention.record_complete(
+                &next,
+                &search.egress_by_stop,
+                search.query.limits.max_journey_duration_seconds,
+                stats,
+                search.network,
+            );
+            frontier.enqueue(next, stats);
+        }
+    }
+    false
+}
+
+fn finalize_expansion_stats(stats: &mut StaticSearchStats, expansion_stats: SearchExpansionStats) {
     stats.static_expanded_stop_occurrences_average_milli = stats
         .static_expanded_stop_occurrences_total
         .saturating_mul(1_000)
@@ -358,7 +508,8 @@ pub fn generate(
         .saturating_mul(1_000)
         .checked_div(stats.static_expanded_stop_occurrence_samples)
         .unwrap_or_default();
-    stats.static_mode_stats = mode_accumulators
+    stats.static_mode_stats = expansion_stats
+        .modes
         .into_iter()
         .map(|(mode, accumulator)| {
             (
@@ -373,12 +524,13 @@ pub fn generate(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    stats.static_expanded_states_by_leg_count = expanded_states_by_leg_count
+    stats.static_expanded_states_by_leg_count = expansion_stats
+        .states_by_leg_count
         .into_iter()
         .collect::<BTreeMap<_, _>>()
         .into_iter()
         .collect();
-    stats.static_most_expanded_stops = expanded_stops.into_iter().collect();
+    stats.static_most_expanded_stops = expansion_stats.expanded_stops.into_iter().collect();
     stats
         .static_most_expanded_stops
         .sort_by(|(left_id, left_count), (right_id, right_count)| {
@@ -387,12 +539,19 @@ pub fn generate(
                 .then(left_id.as_str().cmp(right_id.as_str()))
         });
     stats.static_most_expanded_stops.truncate(12);
+}
 
-    let retention_started = Instant::now();
-    let surface = retention.finish(network, &equivalent_legs, &mut stats);
-    stats.static_retention_latency_us = elapsed_microseconds(retention_started);
+fn deadline_exceeded(query: &TransitQuery) -> bool {
+    query.deadline.is_some_and(|deadline| deadline.is_elapsed())
+}
+
+fn finish_deadline(
+    started: Instant,
+    mut stats: StaticSearchStats,
+) -> (RetainedCorridorSet, StaticSearchStats) {
+    stats.deadline_exceeded = true;
     stats.static_search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    (surface, stats)
+    (RetainedCorridorSet::default(), stats)
 }
 
 fn elapsed_microseconds(started: Instant) -> u64 {
