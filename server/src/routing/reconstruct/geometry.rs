@@ -9,7 +9,7 @@ use crate::{
     street::{Coordinate, Maneuver, ManeuverKind},
 };
 
-pub(crate) fn overview_geometry(legs: &[Leg]) -> Geometry {
+pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
     let mut points = Vec::new();
     for leg in legs {
         let fallback = || {
@@ -32,7 +32,7 @@ pub(crate) fn overview_geometry(legs: &[Leg]) -> Geometry {
     }
 }
 
-pub(crate) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geometry {
+pub(super) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geometry {
     let from = Coordinate::try_new(from.latitude, from.longitude).expect("validated coordinate");
     let to = Coordinate::try_new(to.latitude, to.longitude).expect("validated coordinate");
     Geometry {
@@ -41,11 +41,11 @@ pub(crate) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geome
     }
 }
 
-pub(crate) fn transit_leg_distance_metres(from: GeoCoordinate, to: GeoCoordinate) -> u32 {
+pub(super) fn transit_leg_distance_metres(from: GeoCoordinate, to: GeoCoordinate) -> u32 {
     from.planar_distance_metres(to) as u32
 }
 
-pub(crate) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
+pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
     maneuvers
         .iter()
         .map(|maneuver| Guidance {
@@ -65,7 +65,7 @@ pub(crate) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
         .collect()
 }
 
-pub(crate) fn encode_polyline6(coordinates: &[Coordinate]) -> String {
+pub(super) fn encode_polyline6(coordinates: &[Coordinate]) -> String {
     let mut output = String::new();
     let mut previous_latitude = 0_i64;
     let mut previous_longitude = 0_i64;
@@ -80,7 +80,7 @@ pub(crate) fn encode_polyline6(coordinates: &[Coordinate]) -> String {
     output
 }
 
-pub(crate) fn encode_polyline_value(value: i64, output: &mut String) {
+fn encode_polyline_value(value: i64, output: &mut String) {
     let mut encoded = if value < 0 {
         (!(value << 1)) as u64
     } else {
@@ -93,7 +93,7 @@ pub(crate) fn encode_polyline_value(value: i64, output: &mut String) {
     output.push(char::from_u32((encoded + 63) as u32).unwrap());
 }
 
-pub(crate) fn decode_polyline6(encoded: &str) -> Option<Vec<Coordinate>> {
+fn decode_polyline6(encoded: &str) -> Option<Vec<Coordinate>> {
     let mut values = Vec::new();
     let mut current = 0_i64;
     let mut shift = 0_u32;
@@ -138,16 +138,18 @@ pub(crate) fn decode_polyline6(encoded: &str) -> Option<Vec<Coordinate>> {
     Some(points)
 }
 
-pub(crate) fn short_digest(value: &str) -> String {
+pub(super) fn short_digest(value: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(value.as_bytes());
     format!("match_{:x}", digest.finalize())[..22].to_owned()
 }
 
-pub(crate) fn to_street_coordinate(coordinate: GeoCoordinate) -> Result<Coordinate, PlanningError> {
+pub(in crate::routing) fn to_street_coordinate(
+    coordinate: GeoCoordinate,
+) -> Result<Coordinate, PlanningError> {
     Coordinate::try_from(coordinate).map_err(|_| PlanningError::Internal)
 }
 
-pub(crate) fn taipei_now() -> OffsetDateTime {
+pub(in crate::routing) fn taipei_now() -> OffsetDateTime {
     OffsetDateTime::now_utc().to_offset(UtcOffset::from_hms(8, 0, 0).unwrap())
 }

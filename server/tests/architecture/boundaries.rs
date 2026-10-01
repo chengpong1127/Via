@@ -55,7 +55,7 @@ fn routing_uses_provider_traits_instead_of_concrete_adapters() {
 
 #[test]
 fn phase1_does_not_depend_on_realtime_or_bikeshare() {
-    let static_search = source("src/routing/static_search.rs");
+    let static_search = source_tree("src/routing/static_search");
     for forbidden in [
         "DepartureQuery",
         "EffectiveTrip",
@@ -78,7 +78,7 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
 
 #[test]
 fn phase2_evaluator_uses_request_snapshots_and_lazy_bike_routing() {
-    let evaluator = source("src/routing/evaluator.rs");
+    let evaluator = source_tree("src/routing/evaluator");
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("corridor.retained()"));
     assert!(evaluator.contains("BikeAvailabilitySnapshot"));

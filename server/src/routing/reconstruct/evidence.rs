@@ -5,7 +5,7 @@ use crate::domain::{
     transit::TransitMode,
 };
 
-pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {
+pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {
     let (kind, observed_at) = match &status.value {
         RealtimeValue::ArrivalEstimate(arrival) => (
             LiveStatusKind::ArrivalEstimate,
@@ -31,13 +31,13 @@ pub(crate) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatu
     }
 }
 
-pub(crate) fn push_unique_mode(modes: &mut Vec<LegMode>, mode: LegMode) {
+pub(super) fn push_unique_mode(modes: &mut Vec<LegMode>, mode: LegMode) {
     if !modes.contains(&mode) {
         modes.push(mode);
     }
 }
 
-pub(crate) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) -> TransferKind {
+pub(super) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) -> TransferKind {
     if from == Some(TransitMode::Metro) && to == Some(TransitMode::Metro) {
         TransferKind::MetroToMetro
     } else {
@@ -45,7 +45,7 @@ pub(crate) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) 
     }
 }
 
-pub(crate) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStatusSummary {
+pub(super) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStatusSummary {
     if evidence.is_empty() {
         return LiveStatusSummary {
             state: FreshnessState::NotApplicable,

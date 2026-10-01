@@ -1,6 +1,9 @@
+mod assembler;
+mod bike;
 mod evidence;
 mod geometry;
-mod legs;
+mod street;
+mod transit;
 
 use std::collections::HashMap;
 
@@ -20,16 +23,16 @@ use super::{
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
 const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
 
-pub(crate) use geometry::{taipei_now, to_street_coordinate};
+pub(super) use geometry::{taipei_now, to_street_coordinate};
 
 impl RoutingService {
-    pub(crate) async fn reconstruct_multimodal_variant(
+    pub(super) async fn reconstruct_multimodal_variant(
         &self,
         request: &PlanningRequest,
         variant: &JourneyVariant,
         context: &PlanningContext,
     ) -> Result<Option<ReconstructedCandidate>, PlanningError> {
-        let Some(assembled) = legs::assemble(self, request, variant, context).await? else {
+        let Some(assembled) = assembler::assemble(self, request, variant, context).await? else {
             return Ok(None);
         };
         if context
@@ -39,7 +42,7 @@ impl RoutingService {
             return Ok(None);
         }
         let duration_seconds =
-            legs::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
+            transit::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
         let transfer_count = assembled.transfers.len() as u32;
         let matching_key = variant_matching_key(variant);
@@ -88,7 +91,7 @@ impl RoutingService {
         }))
     }
 
-    pub(crate) fn origin_place(&self, request: &PlanningRequest) -> Place {
+    pub(super) fn origin_place(&self, request: &PlanningRequest) -> Place {
         Place {
             display_name: request.origin.display_text.clone(),
             coordinate: request.origin.coordinate,
@@ -97,7 +100,7 @@ impl RoutingService {
         }
     }
 
-    pub(crate) fn destination_place(&self, request: &PlanningRequest) -> Place {
+    pub(super) fn destination_place(&self, request: &PlanningRequest) -> Place {
         Place {
             display_name: request.destination.display_text.clone(),
             coordinate: request.destination.coordinate,
@@ -106,14 +109,16 @@ impl RoutingService {
         }
     }
 
-    pub(crate) fn stop_place(
+    pub(super) fn stop_place(
         &self,
         stop_id: &crate::domain::ids::BoardingPointId,
     ) -> Option<Place> {
-        self.transit_runtime.stop(stop_id).map(legs::transit_place)
+        self.transit_runtime
+            .stop(stop_id)
+            .map(transit::transit_place)
     }
 
-    pub(crate) fn bike_station_place(
+    pub(super) fn bike_station_place(
         &self,
         station_id: &crate::domain::ids::BikeStationId,
     ) -> Option<Place> {
@@ -140,13 +145,13 @@ fn variant_matching_key(variant: &JourneyVariant) -> String {
     ))
 }
 
-pub(crate) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {
+pub(super) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {
     option.class = ranked.class;
     option.label = ranked.label;
     option.ranking_reasons = ranked.ranking_reasons.clone();
 }
 
-pub(crate) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) {
+pub(super) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) {
     let suffix = geometry::short_digest(&format!("{}:{index}", option.matching_key));
     option.id = format!("option_{:02}_{}", index + 1, suffix);
     let mut ids = HashMap::new();
