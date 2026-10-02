@@ -5,6 +5,7 @@ mod openapi;
 use std::sync::Arc;
 
 use axum::Router;
+use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::{
     request_id::{PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
@@ -12,25 +13,26 @@ use tower_http::{
 use utoipa::openapi::OpenApi;
 
 use crate::{
-    domain::transit_runtime::TransitRuntime, health::DependencyHealth,
-    observability::OperationalMetrics, providers::timing::BusTimingMetrics,
-    routing::RoutingService, runtime::RoutingRuntime,
+    health::{DependencyHealth, Health},
+    routing::RoutingService,
+    runtime::RoutingRuntime,
 };
 
 #[derive(Clone)]
 struct AppState {
-    street_health: Arc<dyn DependencyHealth>,
     routing: RoutingService,
-    transit_runtime: Arc<TransitRuntime>,
-    metrics: OperationalMetrics,
-    bus_timing_metrics: BusTimingMetrics,
+    health: Health,
+    metrics: PrometheusHandle,
     openapi: OpenApi,
 }
 
-pub fn build_router(street_health: Arc<dyn DependencyHealth>, runtime: RoutingRuntime) -> Router {
+pub fn build_router(
+    street_health: Arc<dyn DependencyHealth>,
+    runtime: RoutingRuntime,
+    metrics: PrometheusHandle,
+) -> Router {
     let routing = runtime.routing;
-    let transit_runtime = runtime.transit_runtime;
-    let metrics = routing.operational_metrics.clone();
+    let health = Health::new(street_health, runtime.transit_runtime);
     let (router, openapi) = openapi::documented_router().split_for_parts();
     let openapi = openapi::configure_openapi(openapi);
     router
@@ -39,11 +41,9 @@ pub fn build_router(street_health: Arc<dyn DependencyHealth>, runtime: RoutingRu
             axum::routing::get(handlers::openapi_document_endpoint),
         )
         .with_state(AppState {
-            street_health,
             routing,
-            transit_runtime,
+            health,
             metrics,
-            bus_timing_metrics: runtime.bus_timing_metrics,
             openapi,
         })
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))

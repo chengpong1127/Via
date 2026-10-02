@@ -17,6 +17,28 @@ use via_server::{
 };
 
 #[tokio::test]
+async fn liveness_reports_the_process_as_alive_without_caching() {
+    let provider = Arc::new(FakeStreetRouter::builder().build());
+    let app = build_test_router(provider).await.unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["alive"], true);
+}
+
+#[tokio::test]
 async fn axum_receives_the_provider_by_injection_and_reports_provider_name() {
     let provider = Arc::new(FakeStreetRouter::builder().build());
     let app = build_test_router(provider).await.unwrap();

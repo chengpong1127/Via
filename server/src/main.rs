@@ -3,6 +3,7 @@ use via_server::{
     app::build_router,
     config::{ProductionRuntimeConfig, ServerConfig, load_dotenv},
     data::load_static_artifact,
+    metrics,
     runtime::{ProductionRuntimeOptions, build_production_runtime},
 };
 
@@ -20,6 +21,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
+    let metrics = metrics::install_prometheus()?;
+
     let via_static = load_static_artifact(&config.static_path)
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
     let runtime_config = ProductionRuntimeConfig::from_env(config.environment)?;
@@ -29,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_config,
     )
     .await?;
-    let router = build_router(provider, runtime);
+    let router = build_router(provider, runtime, metrics);
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(port = config.port, "Via server listening");

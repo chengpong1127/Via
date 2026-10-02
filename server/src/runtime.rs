@@ -7,13 +7,12 @@ use crate::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
     },
     health::DependencyHealth,
-    observability::OperationalMetrics,
     providers::tdx_bindings::TdxProviderBindings,
     providers::{
         BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxBikeAvailabilitySource,
         ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
         TransitDepartureSource, ValhallaConfig, ValhallaProvider,
-        bikeshare::BikeAvailabilitySource, timing::BusTimingMetrics,
+        bikeshare::BikeAvailabilitySource,
     },
     routing::{RoutingLimits, RoutingService},
     street::StreetRouter,
@@ -23,7 +22,6 @@ use crate::{
 pub struct RoutingRuntime {
     pub routing: RoutingService,
     pub transit_runtime: Arc<TransitRuntime>,
-    pub bus_timing_metrics: BusTimingMetrics,
 }
 
 pub struct RoutingRuntimeDependencies {
@@ -44,13 +42,11 @@ pub struct ProductionRuntimeOptions {
 
 impl RoutingRuntime {
     pub fn from_dependencies(dependencies: RoutingRuntimeDependencies) -> Self {
-        let bus_timing_metrics = BusTimingMetrics::default();
         let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
         let provider_bindings = Arc::new(dependencies.provider_bindings);
         let bus = Arc::new(
             BusDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
-                .with_bindings(provider_bindings.clone())
-                .with_metrics(bus_timing_metrics.clone()),
+                .with_bindings(provider_bindings.clone()),
         );
         let metro = Arc::new(
             MetroDepartureSource::new(transit_runtime.clone())
@@ -83,7 +79,6 @@ impl RoutingRuntime {
         Self {
             routing,
             transit_runtime,
-            bus_timing_metrics,
         }
     }
 }
@@ -126,8 +121,4 @@ pub async fn build_production_runtime(
         limits: options.limits,
     });
     Ok((street, runtime))
-}
-
-pub fn runtime_metrics(runtime: &RoutingRuntime) -> OperationalMetrics {
-    runtime.routing.operational_metrics.clone()
 }

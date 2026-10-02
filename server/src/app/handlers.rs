@@ -10,6 +10,7 @@ use tracing::{Span, field};
 use crate::{
     api::PlanningRequest,
     domain::journey::{PlanningError, PlanningOutcome},
+    health::{DependencyHealthReport, ReadinessReport},
 };
 
 use super::AppState;
@@ -49,23 +50,11 @@ pub(super) async fn metrics(State(state): State<AppState>) -> Response {
     no_store((
         StatusCode::OK,
         [
-            ("content-type", "text/plain; version=0.0.4"),
+            ("content-type", "text/plain; version=0.0.4; charset=utf-8"),
             ("cache-control", "no-store"),
         ],
-        format!(
-            "{}{}",
-            state.metrics.prometheus(),
-            state.bus_timing_metrics.prometheus()
-        ),
+        state.metrics.render(),
     ))
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-struct ReadinessResponse {
-    ready: bool,
-    street_routing: bool,
-    static_network: bool,
-    transit_artifact: bool,
 }
 
 #[utoipa::path(
@@ -75,23 +64,14 @@ struct ReadinessResponse {
     summary = "Check planning readiness",
     description = "Reports whether street routing and the immutable static transit artifact are ready for planning.",
     responses(
-        (status = 200, description = "All planning dependencies are ready", body = ReadinessResponse,
+        (status = 200, description = "All planning dependencies are ready", body = ReadinessReport,
             headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 503, description = "One or more planning dependencies are unavailable", body = ReadinessResponse,
+        (status = 503, description = "One or more planning dependencies are unavailable", body = ReadinessReport,
             headers(("Cache-Control" = String, description = "Always no-store.")))
     )
 )]
 pub(super) async fn readiness(State(state): State<AppState>) -> Response {
-    let street_routing = state.street_health.healthy().await;
-    let revisions = state.transit_runtime.data().revisions();
-    let static_network = !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty();
-    let transit_artifact = state.transit_runtime.data().validate().is_ok();
-    let body = ReadinessResponse {
-        ready: street_routing && static_network && transit_artifact,
-        street_routing,
-        static_network,
-        transit_artifact,
-    };
+    let body = state.health.readiness().await;
     no_store((
         if body.ready {
             StatusCode::OK
@@ -106,12 +86,6 @@ pub(super) async fn openapi_document_endpoint(State(state): State<AppState>) -> 
     no_store((StatusCode::OK, Json(state.openapi.clone())))
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
-struct HealthResponse {
-    healthy: bool,
-    provider: String,
-}
-
 #[utoipa::path(
     get,
     path = "/health/street-routing",
@@ -119,18 +93,14 @@ struct HealthResponse {
     summary = "Check street-routing health",
     description = "Reports whether the street-routing dependency is healthy.",
     responses(
-        (status = 200, description = "Street-routing provider is healthy", body = HealthResponse,
+        (status = 200, description = "Street-routing provider is healthy", body = DependencyHealthReport,
             headers(("Cache-Control" = String, description = "Always no-store."))),
-        (status = 503, description = "Street-routing provider is unavailable", body = HealthResponse,
+        (status = 503, description = "Street-routing provider is unavailable", body = DependencyHealthReport,
             headers(("Cache-Control" = String, description = "Always no-store.")))
     )
 )]
 pub(super) async fn street_routing_health(State(state): State<AppState>) -> Response {
-    let healthy = state.street_health.healthy().await;
-    let body = HealthResponse {
-        healthy,
-        provider: state.street_health.name().to_owned(),
-    };
+    let body = state.health.street_routing().await;
     no_store((
         if body.healthy {
             StatusCode::OK
@@ -181,7 +151,12 @@ pub(super) async fn journey_plan(
                 PlanningOutcome::Options(result) => result.journey_options.len(),
                 PlanningOutcome::Empty(_) => 0,
             };
-            state.metrics.record_planning_success(journey_options);
+            ::metrics::counter!("via_planning_requests_total").increment(1);
+            if journey_options == 0 {
+                ::metrics::counter!("via_planning_empty_total").increment(1);
+            } else {
+                ::metrics::counter!("via_planning_options_total").increment(journey_options as u64);
+            }
             Span::current().record(
                 "outcome",
                 if journey_options == 0 {
@@ -194,7 +169,8 @@ pub(super) async fn journey_plan(
             no_store((StatusCode::OK, Json(outcome)))
         }
         Err(PlanningError::TemporarilyUnavailable) => {
-            state.metrics.record_planning_failure();
+            ::metrics::counter!("via_planning_requests_total").increment(1);
+            ::metrics::counter!("via_planning_failures_total").increment(1);
             error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "temporarily_unavailable",
@@ -202,7 +178,8 @@ pub(super) async fn journey_plan(
             )
         }
         Err(PlanningError::Internal) => {
-            state.metrics.record_planning_failure();
+            ::metrics::counter!("via_planning_requests_total").increment(1);
+            ::metrics::counter!("via_planning_failures_total").increment(1);
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }
     }

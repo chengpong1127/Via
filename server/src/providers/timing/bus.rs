@@ -10,7 +10,6 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use super::bus_realtime::{
     DEFAULT_ARRIVAL_PATH, map_tdx_error, odata_in_filter, parse_bus_realtime_payload,
 };
-use super::metrics::BusTimingMetrics;
 use super::source::TransitDepartureSource;
 use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
@@ -51,7 +50,6 @@ pub struct BusDepartureSource {
     schedule: ScheduleTiming,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
-    metrics: BusTimingMetrics,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -63,7 +61,6 @@ impl BusDepartureSource {
             tdx,
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_default(),
-            metrics: BusTimingMetrics::default(),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -75,11 +72,6 @@ impl BusDepartureSource {
 
     pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
         self.realtime_path = path.into();
-        self
-    }
-
-    pub fn with_metrics(mut self, metrics: BusTimingMetrics) -> Self {
-        self.metrics = metrics;
         self
     }
 
@@ -209,14 +201,17 @@ impl BusDepartureSource {
         }
 
         let plan = self.build_realtime_request_plan(&active_queries);
-        let relevant_stop_count = plan.stops_by_scope.values().map(HashSet::len).sum();
-        let batch_count = plan
+        let relevant_stop_count: usize = plan.stops_by_scope.values().map(HashSet::len).sum();
+        let batch_count: usize = plan
             .stops_by_scope
             .values()
             .map(|stops| stops.len().div_ceil(MAX_REALTIME_STOPS_PER_REQUEST))
             .sum();
-        self.metrics
-            .record_departure_batch(active_queries.len(), relevant_stop_count, batch_count);
+        ::metrics::counter!("via_bus_timing_logical_departure_needs_total")
+            .increment(active_queries.len() as u64);
+        ::metrics::counter!("via_bus_timing_realtime_stops_requested_total")
+            .increment(relevant_stop_count as u64);
+        ::metrics::counter!("via_bus_timing_realtime_batches_total").increment(batch_count as u64);
 
         let mut results = RealtimeDepartureResults::default();
         let scope_count = plan.stops_by_scope.len();
@@ -236,8 +231,10 @@ impl BusDepartureSource {
         } else {
             "fallback"
         };
-        self.metrics
-            .record_snapshot_rows(results.rows_received, results.rows_relevant);
+        ::metrics::counter!("via_bus_timing_realtime_rows_received_total")
+            .increment(results.rows_received as u64);
+        ::metrics::counter!("via_bus_timing_realtime_rows_relevant_total")
+            .increment(results.rows_relevant as u64);
         tracing::debug!(
             target: "via_server::providers::timing",
             relevant_stops = relevant_stop_count,
@@ -397,7 +394,7 @@ impl BusDepartureSource {
             .collect::<Vec<_>>();
         let filter = odata_in_filter("StopUID", &boarding_point_ids);
         let query = [("$filter", filter.as_str())];
-        self.metrics.record_departure_upstream_request();
+        ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
         results.http_requests += 1;
         let payload = self
             .tdx
@@ -411,8 +408,12 @@ impl BusDepartureSource {
             }
             Err(error) => Err(map_tdx_error(error)),
         };
-        self.metrics
-            .record_departure_upstream_result(values.as_ref().err());
+        if let Err(error) = &values {
+            ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
+            if matches!(error, DepartureError::RateLimited) {
+                ::metrics::counter!("via_bus_timing_rate_limited_requests_total").increment(1);
+            }
+        }
         let values = match values {
             Ok(values) => {
                 completed_stops.extend(requested_stops.iter().cloned());

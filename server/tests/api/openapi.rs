@@ -32,10 +32,18 @@ fn generated_openapi_covers_the_http_contract() {
             ["schema"]["$ref"],
         "#/components/schemas/LivenessResponse"
     );
-    assert!(openapi["paths"]["/health/ready"]["get"]["responses"]["200"].is_object());
-    assert!(openapi["paths"]["/health/ready"]["get"]["responses"]["503"].is_object());
-    assert!(openapi["paths"]["/health/street-routing"]["get"]["responses"]["200"].is_object());
-    assert!(openapi["paths"]["/health/street-routing"]["get"]["responses"]["503"].is_object());
+    for status in ["200", "503"] {
+        assert_eq!(
+            openapi["paths"]["/health/ready"]["get"]["responses"][status]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/ReadinessReport"
+        );
+        assert_eq!(
+            openapi["paths"]["/health/street-routing"]["get"]["responses"][status]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/DependencyHealthReport"
+        );
+    }
     assert!(openapi["paths"]["/metrics"]["get"]["responses"]["200"].is_object());
 
     let journey = &openapi["paths"]["/v1/journey-plans"]["post"];
@@ -83,8 +91,8 @@ fn generated_openapi_covers_the_http_contract() {
         "EmptyResult",
         "EmptyReason",
         "ErrorEnvelope",
-        "ReadinessResponse",
-        "HealthResponse",
+        "ReadinessReport",
+        "DependencyHealthReport",
     ] {
         assert!(
             openapi["components"]["schemas"][schema].is_object(),
@@ -92,7 +100,18 @@ fn generated_openapi_covers_the_http_contract() {
         );
     }
 
-    let health_properties = &openapi["components"]["schemas"]["HealthResponse"]["properties"];
+    let readiness_properties = &openapi["components"]["schemas"]["ReadinessReport"]["properties"];
+    for property in [
+        "ready",
+        "street_routing",
+        "static_network",
+        "transit_artifact",
+    ] {
+        assert!(readiness_properties[property].is_object());
+    }
+
+    let health_properties =
+        &openapi["components"]["schemas"]["DependencyHealthReport"]["properties"];
     assert!(health_properties["healthy"].is_object());
     assert!(health_properties["provider"].is_object());
     for removed in ["graph_revision", "pinned_graph_revision", "capabilities"] {

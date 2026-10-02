@@ -92,7 +92,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {
-        eprintln!("{}", runtime.bus_timing_metrics.trace());
         print_trace(&result);
     }
     if cli.json {
