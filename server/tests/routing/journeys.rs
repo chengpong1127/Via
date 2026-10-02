@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::json;
 use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use via_server::{
     domain::journey::PlanningError,
@@ -138,15 +138,6 @@ async fn same_line_reboarding_counts_a_transfer_between_effective_trips() {
     let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
 
     assert_eq!(option["transfer_count"], 1);
-    assert_eq!(option["transfers"].as_array().unwrap().len(), 1);
-    assert_eq!(option["transfers"][0]["duration_seconds"], 120);
-    assert_eq!(option["transfers"][0]["available_seconds"], 120);
-    assert!(
-        option["transfers"][0]["connector_leg_ids"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
     assert_eq!(option["legs"][1]["details"]["service_label"], "R");
     assert_eq!(option["legs"][2]["details"]["service_label"], "R");
 }
@@ -192,7 +183,6 @@ async fn terminal_surface_transfer_and_egress_are_one_routed_walk() {
     assert_eq!(legs[2]["from"]["via_id"], "F-M2-RED");
     assert_eq!(legs[2]["to"]["display_name"], "Fixture destination");
     assert_eq!(legs[2]["duration_seconds"], 120);
-    assert_eq!(legs[2]["distance_metres"], 600);
     assert!(!legs[2]["geometry"]["points"].as_str().unwrap().is_empty());
 }
 
@@ -226,7 +216,6 @@ async fn simple_bus_uses_the_earliest_realtime_departure() {
         option["legs"][1]["arrival_time"],
         json!(format_fixture_time(updated_at + Duration::minutes(14)))
     );
-    assert_eq!(option["legs"][1]["scheduled_departure_time"], Value::Null);
     assert_eq!(option["live_status_summary"]["state"], "fresh");
 }
 
@@ -250,10 +239,6 @@ async fn static_bus_schedule_is_used_when_realtime_is_unavailable() {
     assert_eq!(
         option["legs"][1]["arrival_time"],
         "2026-08-31T10:11:00+08:00"
-    );
-    assert_eq!(
-        option["legs"][1]["scheduled_departure_time"],
-        "2026-08-31T10:01:00+08:00"
     );
     assert_eq!(option["live_status_summary"]["state"], "not_applicable");
 }
@@ -292,7 +277,6 @@ async fn mrt_to_mrt_transfer_reconstructs_one_transfer() {
     .await;
     let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
 
-    assert_eq!(option["legs"][2]["distance_metres"], 100);
     assert_eq!(option["legs"][2]["duration_seconds"], 120);
     assert_eq!(option["transfer_count"], 1);
     assert_eq!(
@@ -602,7 +586,6 @@ async fn train_can_transfer_to_local_mrt() {
     assert_eq!(option["legs"][1]["details"]["transit_mode"], "rail");
     assert_eq!(option["legs"][3]["details"]["transit_mode"], "metro");
     assert_eq!(option["legs"][2]["duration_seconds"], 120);
-    assert_eq!(option["transfers"].as_array().unwrap().len(), 1);
     assert_eq!(
         option["legs"][3]["departure_time"],
         "2026-08-31T10:22:00+08:00"

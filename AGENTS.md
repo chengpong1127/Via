@@ -42,7 +42,7 @@ iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 
 GTFS is the only static transit source. `via-data` reads the supplied local
 archive; it does not download or refresh it. TDX APIs are used for realtime
-timing, service conditions, and BikeShare availability. Local TDX Bike Station
+timing and BikeShare availability. Local TDX Bike Station
 City snapshots can provide static station metadata to `via-data build`; live
 counts remain request-time availability. Normalize GTFS IDs to existing
 TDX-derived Via IDs when their formats map directly, and report IDs that do

@@ -11,8 +11,7 @@ use crate::{
     domain::{
         bikeshare::BikeShareNetwork,
         journey::{
-            EmptyResult, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
-            ResultMetadata, SemanticObject,
+            EmptyReason, EmptyResult, JourneyOption, OptionsResult, PlanningError, PlanningOutcome,
         },
         normalize_to_taipei,
         ranking::{RankingCandidate, RankingPolicy},
@@ -117,11 +116,7 @@ impl RoutingLimits {
 }
 
 impl RoutingService {
-    pub async fn route(
-        &self,
-        request: PlanningRequest,
-        request_id: String,
-    ) -> Result<PlanningOutcome, PlanningError> {
+    pub async fn route(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
         let timeout = self.limits.request_timeout;
         let deadline = PlanningDeadline::after(timeout);
         match tokio::time::timeout_at(deadline.instant(), async {
@@ -135,8 +130,7 @@ impl RoutingService {
                     return Err(PlanningError::TemporarilyUnavailable);
                 }
             };
-            self.plan_multimodal_inner(request, request_id, deadline)
-                .await
+            self.plan_multimodal_inner(request, deadline).await
         })
         .await
         {
@@ -155,18 +149,9 @@ impl RoutingService {
     async fn plan_multimodal_inner(
         &self,
         request: PlanningRequest,
-        request_id: String,
         deadline: PlanningDeadline,
     ) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
-        let metadata = ResultMetadata::new(
-            request_id,
-            request_started_at,
-            request
-                .departure_setting
-                .effective_search_time(request_started_at),
-            self.transit_runtime.data().revision(),
-        );
         let context = PlanningContext::new(
             &request,
             request_started_at,
@@ -182,7 +167,7 @@ impl RoutingService {
             .await?;
         self.plan_and_reconstruct(transit_query, &context, &mut state)
             .await?;
-        self.finalize_plan(metadata, request, &context, state)
+        self.finalize_plan(request_started_at, &context, state)
     }
 
     async fn discover_direct_alternatives(
@@ -415,8 +400,7 @@ impl RoutingService {
 
     fn finalize_plan(
         &self,
-        metadata: ResultMetadata,
-        request: PlanningRequest,
+        generated_at: OffsetDateTime,
         context: &PlanningContext,
         state: PlanningState,
     ) -> Result<PlanningOutcome, PlanningError> {
@@ -449,13 +433,12 @@ impl RoutingService {
             return Err(PlanningError::TemporarilyUnavailable);
         }
         context.ensure_before_deadline()?;
-        self.rank_generated(metadata, request, state.candidates)
+        self.rank_generated(generated_at, state.candidates)
     }
 
     fn rank_generated(
         &self,
-        metadata: ResultMetadata,
-        request: PlanningRequest,
+        generated_at: OffsetDateTime,
         generated: Vec<ReconstructedCandidate>,
     ) -> Result<PlanningOutcome, PlanningError> {
         let mut seen_keys = HashSet::new();
@@ -488,20 +471,14 @@ impl RoutingService {
         }
         if journey_options.is_empty() {
             return Ok(PlanningOutcome::Empty(EmptyResult {
-                metadata,
-                empty: SemanticObject {
+                generated_at,
+                empty: EmptyReason {
                     code: "no_feasible_journey_option",
-                    required: true,
-                    parameters: std::collections::BTreeMap::from([(
-                        "selected_modes",
-                        serde_json::to_value(request.canonical_selected_modes())
-                            .unwrap_or_default(),
-                    )]),
                 },
             }));
         }
         Ok(PlanningOutcome::Options(OptionsResult {
-            metadata,
+            generated_at,
             journey_options,
         }))
     }

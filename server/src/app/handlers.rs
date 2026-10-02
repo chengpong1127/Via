@@ -1,19 +1,18 @@
 use axum::{
     Json,
-    extract::{Extension, State, rejection::JsonRejection},
+    extract::{State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use tower_http::request_id::RequestId;
 use tracing::{Span, field};
 
 use crate::{
-    api::{API_VERSION, PlanningRequest, SEMANTIC_CATALOG_VERSION},
+    api::PlanningRequest,
     domain::journey::{PlanningError, PlanningOutcome},
 };
 
-use super::{AppState, middleware::request_id_string};
+use super::AppState;
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct LivenessResponse {
@@ -164,31 +163,19 @@ pub(super) async fn street_routing_health(State(state): State<AppState>) -> Resp
 )]
 pub(super) async fn journey_plan(
     State(state): State<AppState>,
-    Extension(request_id): Extension<RequestId>,
     request: Result<Json<PlanningRequest>, JsonRejection>,
 ) -> Response {
-    let request_id = request_id_string(&request_id);
     let request = match request {
         Ok(Json(request)) => request,
         Err(_) => {
-            return error_response(
-                &request_id,
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                Some("/"),
-            );
+            return error_response(StatusCode::BAD_REQUEST, "invalid_request", Some("/"));
         }
     };
     if let Err(error) = request.validate() {
-        return error_response(
-            &request_id,
-            StatusCode::BAD_REQUEST,
-            error.code(),
-            Some(error.field()),
-        );
+        return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
     record_request_fields(&request);
-    match state.routing.route(request, request_id.clone()).await {
+    match state.routing.route(request).await {
         Ok(outcome) => {
             let journey_options = match &outcome {
                 PlanningOutcome::Options(result) => result.journey_options.len(),
@@ -209,7 +196,6 @@ pub(super) async fn journey_plan(
         Err(PlanningError::TemporarilyUnavailable) => {
             state.metrics.record_planning_failure();
             error_response(
-                &request_id,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "temporarily_unavailable",
                 None,
@@ -217,12 +203,7 @@ pub(super) async fn journey_plan(
         }
         Err(PlanningError::Internal) => {
             state.metrics.record_planning_failure();
-            error_response(
-                &request_id,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "planner_failure",
-                None,
-            )
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }
     }
 }
@@ -245,40 +226,25 @@ fn record_request_fields(request: &PlanningRequest) {
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct ErrorEnvelope {
-    api_version: &'static str,
-    semantic_catalog_version: &'static str,
-    request_id: String,
     error: ErrorObject,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct ErrorObject {
     code: String,
-    required: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<String>,
-    parameters: serde_json::Value,
 }
 
-pub(super) fn error_response(
-    request_id: &str,
-    status: StatusCode,
-    code: &str,
-    field: Option<&str>,
-) -> Response {
+pub(super) fn error_response(status: StatusCode, code: &str, field: Option<&str>) -> Response {
     Span::current().record("outcome", "error");
     Span::current().record("error_code", code);
     no_store((
         status,
         Json(ErrorEnvelope {
-            api_version: API_VERSION,
-            semantic_catalog_version: SEMANTIC_CATALOG_VERSION,
-            request_id: request_id.to_owned(),
             error: ErrorObject {
                 code: code.into(),
-                required: true,
                 field: field.map(str::to_owned),
-                parameters: serde_json::json!({}),
             },
         }),
     ))

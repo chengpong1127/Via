@@ -27,7 +27,6 @@ fn request_body() -> Value {
             "display_text": "Taipei 101"
         },
         "selected_modes": ["bus", "metro"],
-        "locale": "en",
         "departure_setting": {"type": "depart_now"}
     })
 }
@@ -72,22 +71,14 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
         .to_owned();
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(body["api_version"], "1.0");
+    assert!(body["generated_at"].is_string());
     assert_eq!(body["journey_options"].as_array().unwrap().len(), 1);
-    assert_eq!(body["journey_options"][0]["class"], "reliable");
     assert_eq!(body["journey_options"][0]["label"], "best_now");
     assert_eq!(body["journey_options"][0]["legs"][0]["mode"], "walking");
-    assert_eq!(
-        body["network_revision"]["static_network_revision"],
-        "development-static"
-    );
-    assert_eq!(
-        body["network_revision"]["schedule_revision"],
-        "development-schedule"
-    );
-    assert_eq!(body["request_id"], response_request_id);
     assert!(response_request_id.starts_with("req_"));
     let serialized = body.to_string();
+    assert!(!serialized.contains("request_id"));
+    assert!(!serialized.contains("network_revision"));
     assert!(!serialized.contains("revision-a"));
     assert!(!serialized.contains("fake"));
 }
@@ -121,13 +112,15 @@ async fn invalid_request_returns_a_redacted_error_envelope() {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["error"]["code"], "invalid_coordinate");
     assert_eq!(body["error"]["field"], "/origin/coordinate/latitude");
-    assert_eq!(body["request_id"], response_request_id);
+    assert_eq!(body.as_object().unwrap().len(), 1);
+    assert_eq!(body["error"].as_object().unwrap().len(), 2);
     assert!(response_request_id.starts_with("req_"));
+    assert!(body.get("request_id").is_none());
     assert!(!body.to_string().contains("Taipei Main Station"));
 }
 
 #[tokio::test]
-async fn supplied_request_id_is_preserved_across_result_and_response() {
+async fn supplied_request_id_is_preserved_in_response_header() {
     let provider = FakeStreetRouter::builder().build();
     let app = build_test_router(Arc::new(provider)).await.unwrap();
     let request_id = "req_existing-correlation-id";
@@ -148,7 +141,7 @@ async fn supplied_request_id_is_preserved_across_result_and_response() {
     assert_eq!(response.headers()["x-request-id"], request_id);
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(body["request_id"], request_id);
+    assert!(body.get("request_id").is_none());
 }
 
 #[tokio::test]
@@ -172,5 +165,7 @@ async fn successful_empty_result_is_distinct_from_service_unavailability() {
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
+    assert!(body["generated_at"].is_string());
+    assert_eq!(body["empty"].as_object().unwrap().len(), 1);
     assert!(body.get("journey_options").is_none());
 }

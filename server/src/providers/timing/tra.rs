@@ -68,7 +68,7 @@ impl TraDepartureSource {
             network,
             tdx: None,
             realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_one_minute("tra_train_live_board_v1"),
+            freshness_policy: FreshnessPolicy::tdx_default(),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -326,15 +326,12 @@ fn parse_realtime_payload(
     let wrapper_evidence_at = platform_update.min(source_update);
     let wrapper_freshness = freshness_policy.evaluate(
         LiveStatusTimes {
-            measured_at: Some(source_update),
             published_at: Some(wrapper_evidence_at),
             received_at,
-            normalized_at: received_at,
         },
         received_at,
-        None,
     );
-    if wrapper_freshness.state != FreshnessState::Fresh {
+    if wrapper_freshness != FreshnessState::Fresh {
         return Ok(BTreeMap::new());
     }
 
@@ -354,15 +351,12 @@ fn parse_realtime_payload(
         let evidence_at = observed_at.min(wrapper_evidence_at);
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
-                measured_at: Some(observed_at),
                 published_at: Some(evidence_at),
                 received_at,
-                normalized_at: received_at,
             },
             received_at,
-            None,
         );
-        if freshness.state != FreshnessState::Fresh {
+        if freshness != FreshnessState::Fresh {
             continue;
         }
         let delay_seconds = board

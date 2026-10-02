@@ -7,13 +7,9 @@ enum JourneyMapper {
         else {
             throw JourneyPlanningError.unsupportedResponse
         }
-        let revision = response.networkRevision.domainValue()
         let options = try response.journeyOptions?.map { try $0.domainValue() } ?? []
         return JourneyResult(
-            apiVersion: response.apiVersion,
-            semanticCatalogVersion: response.semanticCatalogVersion,
             generatedAt: generatedAt,
-            networkRevision: revision,
             options: options
         )
     }
@@ -23,19 +19,9 @@ enum JourneyMapper {
     }
 }
 
-private extension ServerNetworkRevision {
-    func domainValue() -> NetworkRevision {
-        NetworkRevision(
-            staticNetworkRevision: staticNetworkRevision,
-            scheduleRevision: scheduleRevision
-        )
-    }
-}
-
 private extension ServerJourneyOptionDTO {
     func domainValue() throws -> JourneyOption {
-        guard let journeyClass = JourneyClass(rawValue: journeyClass),
-              let departureTime = RFC3339.date(departureTime),
+        guard let departureTime = RFC3339.date(departureTime),
               let arrivalTime = RFC3339.date(arrivalTime),
               let liveStatusSummary = liveStatusSummary.domainValue(),
               let overview = overviewGeometry.coordinates()
@@ -51,14 +37,11 @@ private extension ServerJourneyOptionDTO {
         return JourneyOption(
             id: id,
             matchingKey: matchingKey,
-            journeyClass: journeyClass,
             label: label.flatMap(JourneyLabel.init(rawValue:)),
             departureTime: departureTime,
             arrivalTime: arrivalTime,
             durationSeconds: durationSeconds,
             walkingSeconds: walkingSeconds,
-            bicycleSeconds: bicycleSeconds ?? 0,
-            bikeShareUses: bikeShareUses ?? 0,
             transferCount: transferCount,
             travelModes: travelModes,
             liveStatusSummary: liveStatusSummary,
@@ -162,7 +145,7 @@ private extension ServerGuidance {
 
     var parameterDetail: String? {
         for key in ["service_label", "boarding_point_name", "pickup_station_name", "return_station_name"] {
-            if case let .string(value)? = parameters[key] { return value }
+            if let value = parameters[key] { return value }
         }
         return nil
     }

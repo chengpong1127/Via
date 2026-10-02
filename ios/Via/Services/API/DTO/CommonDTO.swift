@@ -4,16 +4,6 @@ struct ServerEmpty: Decodable, Sendable {
     let code: String
 }
 
-struct ServerNetworkRevision: Decodable, Sendable {
-    let staticNetworkRevision: String
-    let scheduleRevision: String
-
-    enum CodingKeys: String, CodingKey {
-        case staticNetworkRevision = "static_network_revision"
-        case scheduleRevision = "schedule_revision"
-    }
-}
-
 struct ErrorEnvelope: Decodable, Sendable {
     let error: ErrorObject
 }
@@ -75,24 +65,5 @@ struct ServerDetails: Decodable, Sendable {
 
 struct ServerGuidance: Decodable, Sendable {
     let code: String
-    let parameters: [String: JSONValue]
-}
-
-enum JSONValue: Decodable, Sendable {
-    case string(String)
-    case number(Double)
-    case boolean(Bool)
-    case object([String: JSONValue])
-    case array([JSONValue])
-    case null
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() { self = .null }
-        else if let value = try? container.decode(String.self) { self = .string(value) }
-        else if let value = try? container.decode(Bool.self) { self = .boolean(value) }
-        else if let value = try? container.decode(Double.self) { self = .number(value) }
-        else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) }
-        else { self = .array(try container.decode([JSONValue].self)) }
-    }
+    let parameters: [String: String]
 }

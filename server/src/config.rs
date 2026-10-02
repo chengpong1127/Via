@@ -17,7 +17,6 @@ pub fn load_dotenv() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Environment {
     Development,
-    Staging,
     Production,
 }
 
@@ -47,7 +46,6 @@ impl FromStr for Environment {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "development" => Ok(Self::Development),
-            "staging" => Ok(Self::Staging),
             "production" => Ok(Self::Production),
             _ => Err(ConfigError::InvalidEnvironment),
         }
@@ -56,9 +54,9 @@ impl FromStr for Environment {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("VIA_ENV must be explicitly set to development, staging, or production")]
+    #[error("VIA_ENV must be explicitly set to development or production")]
     MissingEnvironment,
-    #[error("VIA_ENV must be development, staging, or production")]
+    #[error("VIA_ENV must be development or production")]
     InvalidEnvironment,
     #[error("VIA_STATIC must point to a validated .via-static.json artifact")]
     MissingStaticPath,
@@ -207,13 +205,13 @@ mod tests {
             Environment::Development
         );
         assert_eq!(
-            "staging".parse::<Environment>().unwrap(),
-            Environment::Staging
-        );
-        assert_eq!(
             "production".parse::<Environment>().unwrap(),
             Environment::Production
         );
+        assert!(matches!(
+            "staging".parse::<Environment>(),
+            Err(ConfigError::InvalidEnvironment)
+        ));
         assert!(matches!(
             "prod".parse::<Environment>(),
             Err(ConfigError::InvalidEnvironment)
@@ -259,7 +257,7 @@ mod tests {
                 setting: "VIA_TDX_BASE_URL"
             })
         ));
-        assert!(validate_transport_security(Environment::Staging, &valhalla, &tdx).is_ok());
+        assert!(validate_transport_security(Environment::Development, &valhalla, &tdx).is_ok());
         assert!(
             validate_transport_security(
                 Environment::Production,

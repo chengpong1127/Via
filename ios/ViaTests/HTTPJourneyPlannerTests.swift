@@ -4,14 +4,7 @@ import Testing
 
 @Suite(.serialized)
 struct HTTPJourneyPlannerTests {
-    @Test("Locale normalization accepts common Apple identifiers")
-    func normalizesAppleLocales() {
-        #expect(LocaleNormalization.bcp47("en_US") == "en-US")
-        #expect(LocaleNormalization.bcp47("zh_Hant_TW") == "zh-Hant-TW")
-        #expect(LocaleNormalization.bcp47("en_US@calendar=gregorian") == "en-US")
-    }
-
-    @Test("Apple locale identifiers are normalized to BCP-47 and request JSON matches the API")
+    @Test("Request JSON matches the API")
     func requestMatchesContract() async throws {
         StubURLProtocol.reset(statusCode: 200, body: Self.emptyResult)
         let planner = HTTPJourneyPlanner(
@@ -29,15 +22,13 @@ struct HTTPJourneyPlannerTests {
                 coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
             ),
             selectedModes: [.metro],
-            departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000)),
-            locale: "en_US"
+            departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000))
         )
 
         let result = try await planner.plan(request)
         #expect(result.options.isEmpty)
         let body = try #require(StubURLProtocol.lastRequest?.httpBody)
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(json["locale"] as? String == "en-US")
         #expect(json["selected_modes"] as? [String] == ["metro"])
         #expect(json["departure_setting"] as? [String: Any] != nil)
         let origin = try #require(json["origin"] as? [String: Any])
@@ -144,8 +135,7 @@ struct HTTPJourneyPlannerTests {
             origin: Place(name: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
             destination: Place(name: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
             selectedModes: [.metro],
-            departureSetting: .departNow,
-            locale: "en"
+            departureSetting: .departNow
         )
     }
 
@@ -172,28 +162,14 @@ struct HTTPJourneyPlannerTests {
 
     private static let emptyResult = Data(#"""
     {
-      "api_version":"1.0",
-      "semantic_catalog_version":"1.0",
-      "request_id":"req_test",
       "generated_at":"2026-08-29T10:08:00+08:00",
-      "effective_search_time":"2026-08-29T10:08:00+08:00",
-      "time_zone":"Asia/Taipei",
-      "network_revision":{
-        "static_network_revision":"static_test",
-        "schedule_revision":"schedule_test"
-      },
-      "policy_versions":{"freshness":"1","ranking":"1","transfer_safety":"1"},
-      "warnings":[],
-      "empty":{"code":"no_feasible_journey_option","required":true,"parameters":{}}
+      "empty":{"code":"no_feasible_journey_option"}
     }
     """#.utf8)
 
     private static let errorBody = Data(#"""
     {
-      "api_version":"1.0",
-      "semantic_catalog_version":"1.0",
-      "request_id":"req_test",
-      "error":{"code":"invalid_request","required":true,"field":"/origin","parameters":{}}
+      "error":{"code":"invalid_request","field":"/origin"}
     }
     """#.utf8)
 }

@@ -6,8 +6,10 @@ use via_server::{
     app::build_router,
     domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
     health::DependencyHealth,
-    providers::bindings::TdxProviderBindings,
-    providers::{BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
+    providers::{
+        BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
+        tdx_bindings::TdxProviderBindings,
+    },
     routing::RoutingLimits,
     runtime::{RoutingRuntime, RoutingRuntimeDependencies},
     street::{StreetRouter, StreetRoutingError},

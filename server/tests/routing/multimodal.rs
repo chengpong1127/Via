@@ -7,6 +7,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde_json::Value;
 use time::OffsetDateTime;
 use via_server::{
     domain::{
@@ -53,6 +54,15 @@ fn bike_snapshot(ids: &[(&str, u32, u32)]) -> Arc<BikeAvailabilitySnapshot> {
         })
         .collect::<HashMap<_, _>>();
     Arc::new(BikeAvailabilitySnapshot::new(observed_at, stations))
+}
+
+fn bike_share_uses(option: &Value) -> usize {
+    option["legs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|leg| leg["details"]["type"] == "bike_share")
+        .count()
 }
 
 fn segment_network(
@@ -153,7 +163,7 @@ async fn bike_can_replace_a_transit_leg() {
             .iter()
             .any(|option| leg_modes(option).contains(&"transit"))
     );
-    assert!(options.iter().any(|option| option["bike_share_uses"] == 1));
+    assert!(options.iter().any(|option| bike_share_uses(option) == 1));
 }
 
 #[tokio::test]
@@ -222,7 +232,7 @@ async fn slower_bike_segment_is_rejected() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|option| option["bike_share_uses"] == 0)
+            .all(|option| bike_share_uses(option) == 0)
     );
 }
 
@@ -288,7 +298,7 @@ async fn bike_can_realize_a_surface_transfer_without_skipping_transit() {
     let options = body["journey_options"].as_array().unwrap();
     assert!(
         options.iter().any(|option| {
-            option["bike_share_uses"] == 0
+            bike_share_uses(option) == 0
                 && option["legs"]
                     .as_array()
                     .unwrap()
@@ -300,7 +310,7 @@ async fn bike_can_realize_a_surface_transfer_without_skipping_transit() {
     );
     let bike = options
         .iter()
-        .find(|option| option["bike_share_uses"] == 1)
+        .find(|option| bike_share_uses(option) == 1)
         .unwrap_or_else(|| panic!("bike transfer option missing: {body}"));
     assert_eq!(bike["transfer_count"], 1);
     assert_eq!(bike["walking_seconds"], 140);
@@ -319,16 +329,16 @@ async fn bike_can_realize_a_surface_transfer_without_skipping_transit() {
 async fn no_bike_at_pickup_keeps_the_walking_transfer() {
     let body = surface_transfer_options(0, 2).await;
     let options = body["journey_options"].as_array().unwrap();
-    assert!(options.iter().any(|option| option["bike_share_uses"] == 0));
-    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
+    assert!(options.iter().any(|option| bike_share_uses(option) == 0));
+    assert!(options.iter().all(|option| bike_share_uses(option) == 0));
 }
 
 #[tokio::test]
 async fn no_dock_at_dropoff_keeps_the_walking_transfer() {
     let body = surface_transfer_options(2, 0).await;
     let options = body["journey_options"].as_array().unwrap();
-    assert!(options.iter().any(|option| option["bike_share_uses"] == 0));
-    assert!(options.iter().all(|option| option["bike_share_uses"] == 0));
+    assert!(options.iter().any(|option| bike_share_uses(option) == 0));
+    assert!(options.iter().all(|option| bike_share_uses(option) == 0));
 }
 
 #[tokio::test]
@@ -440,7 +450,7 @@ async fn direct_walking_gains_a_bike_share_variant_with_the_shared_snapshot() {
     .await;
     let options = body["journey_options"].as_array().unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
-    assert!(options.iter().any(|option| option["bike_share_uses"] == 1));
+    assert!(options.iter().any(|option| bike_share_uses(option) == 1));
 }
 
 #[tokio::test]
@@ -519,6 +529,6 @@ async fn direct_walking_without_a_transit_query_can_use_bike_share() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|option| option["bike_share_uses"] == 1)
+            .any(|option| bike_share_uses(option) == 1)
     );
 }

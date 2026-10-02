@@ -41,10 +41,6 @@ pub(super) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geome
     }
 }
 
-pub(super) fn transit_leg_distance_metres(from: GeoCoordinate, to: GeoCoordinate) -> u32 {
-    from.planar_distance_metres(to) as u32
-}
-
 pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
     maneuvers
         .iter()
@@ -59,7 +55,6 @@ pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
                 ManeuverKind::ExitRoundabout => "exit_roundabout",
                 ManeuverKind::Arrive => "arrive",
             },
-            required: true,
             parameters: BTreeMap::new(),
         })
         .collect()

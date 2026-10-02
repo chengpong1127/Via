@@ -121,27 +121,3 @@ fn tdx_client_remains_transport_agnostic() {
     }
     assert!(client.contains("pub async fn get_json<T: DeserializeOwned>"));
 }
-
-#[test]
-fn service_conditions_do_not_own_departure_timing() {
-    let provider = source("src/providers/service_conditions/tdx.rs");
-    for forbidden in ["DepartureQuery", "EffectiveTrip", "ArrivalEstimate"] {
-        assert!(
-            !provider.contains(forbidden),
-            "service-condition provider contains departure timing detail: {forbidden}"
-        );
-    }
-    assert!(provider.contains("Arc<TdxClient>"));
-    assert!(provider.contains("impl ServiceConditionProvider"));
-}
-
-#[test]
-fn routing_does_not_fetch_unconsumed_service_conditions() {
-    let routing_service = source("src/routing/service.rs");
-    for forbidden in ["ServiceConditionProvider", "collect_service_conditions"] {
-        assert!(
-            !routing_service.contains(forbidden),
-            "routing service must not fetch unused service conditions: {forbidden}"
-        );
-    }
-}

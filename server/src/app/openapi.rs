@@ -47,60 +47,6 @@ fn apply_schema_constraints(document: &mut OpenApi) {
     );
     set_schema_property_enum(
         document,
-        "ResultMetadata",
-        "api_version",
-        ["1.0"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "ResultMetadata",
-        "semantic_catalog_version",
-        ["1.0"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "ResultMetadata",
-        "time_zone",
-        ["Asia/Taipei"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "Warning",
-        "required",
-        [true].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "Warning",
-        "severity",
-        ["information", "caution"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "SemanticObject",
-        "required",
-        [true].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "ErrorEnvelope",
-        "api_version",
-        ["1.0"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "ErrorEnvelope",
-        "semantic_catalog_version",
-        ["1.0"].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
-        "ErrorObject",
-        "required",
-        [true].map(serde_json::Value::from),
-    );
-    set_schema_property_enum(
-        document,
         "Geometry",
         "encoding",
         ["polyline6"].map(serde_json::Value::from),

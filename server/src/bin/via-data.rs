@@ -165,10 +165,16 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
 
 fn update_latest_static_link(output: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let output_directory = output.parent().ok_or_else(|| {
-        std::io::Error::new(ErrorKind::InvalidInput, "build output has no parent directory")
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "build output has no parent directory",
+        )
     })?;
     let build_directory_name = output.file_name().ok_or_else(|| {
-        std::io::Error::new(ErrorKind::InvalidInput, "build output has no directory name")
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "build output has no directory name",
+        )
     })?;
     let latest_link = output_directory.join(".via-static-latest.json");
     let target = PathBuf::from(build_directory_name).join(".via-static.json");

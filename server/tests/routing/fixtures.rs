@@ -4,7 +4,7 @@ use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    api::{PlanningRequest, new_request_id},
+    api::PlanningRequest,
     domain::{
         bikeshare::BikeShareNetwork,
         ids::BoardingPointId,
@@ -85,7 +85,6 @@ pub(crate) fn request(origin: Coordinate, destination: Coordinate, modes: &[&str
         "origin": {"coordinate": {"latitude": origin.latitude(), "longitude": origin.longitude()}, "display_text": "Fixture origin"},
         "destination": {"coordinate": {"latitude": destination.latitude(), "longitude": destination.longitude()}, "display_text": "Fixture destination"},
         "selected_modes": modes,
-        "locale": "en",
         "departure_setting": {"type": "depart_at", "time": "2026-08-31T10:00:00+08:00"}
     })
 }
@@ -175,7 +174,6 @@ async fn route_body_inner(
             .with_bindings(Arc::new(bindings))
             .with_realtime_endpoint("feed")
             .with_freshness_policy(FreshnessPolicy {
-                version: "fixture-1".into(),
                 fresh_through: time::Duration::days(30),
                 degraded_through: time::Duration::days(31),
             }),
@@ -207,7 +205,7 @@ async fn route_body_inner(
         availability_source,
         limits,
     );
-    Ok(serde_json::to_value(service.route(request, new_request_id()).await?).unwrap())
+    Ok(serde_json::to_value(service.route(request).await?).unwrap())
 }
 
 pub(crate) fn option_for_patterns<'a>(body: &'a Value, services: &[&str]) -> &'a Value {

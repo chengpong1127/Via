@@ -1,38 +1,20 @@
 {
-  "api_version": "1.0",
-  "semantic_catalog_version": "1.0",
-  "request_id": "req_fixture_transit",
   "generated_at": "2026-08-31T12:00:00+08:00",
-  "effective_search_time": "2026-08-31T12:00:00+08:00",
-  "time_zone": "Asia/Taipei",
-  "network_revision": {
-    "static_network_revision": "static-1",
-    "schedule_revision": "schedule-1"
-  },
-  "policy_versions": {
-    "freshness": "1",
-    "ranking": "1",
-    "transfer_safety": "1"
-  },
-  "warnings": [],
   "journey_options": [
     {
       "id": "option_fixture_transit",
       "matching_key": "match_fixture_transit",
-      "class": "reliable",
       "label": "best_now",
-      "ranking_reasons": ["earliest_reliable_arrival"],
       "departure_time": "2026-08-31T12:00:00+08:00",
       "arrival_time": "2026-08-31T12:20:00+08:00",
       "duration_seconds": 1200,
       "walking_seconds": 0,
-      "bicycle_seconds": 0,
-      "bike_share_uses": 0,
       "transfer_count": 0,
-      "travel_modes": ["transit"],
+      "travel_modes": [
+        "transit"
+      ],
       "live_status_summary": {
         "state": "fresh",
-        "reasons": [],
         "observed_at": "2026-08-31T12:00:00+08:00"
       },
       "overview_geometry": {
@@ -45,26 +27,40 @@
           "mode": "transit",
           "from": {
             "display_name": "Taipei Main Station",
-            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
-            "kind": "boarding_point",
+            "coordinate": {
+              "latitude": 25.04776,
+              "longitude": 121.51706
+            },
             "via_id": "metro-stop-1"
           },
           "to": {
             "display_name": "Taipei City Hall",
-            "coordinate": {"latitude": 25.0408, "longitude": 121.5654},
-            "kind": "boarding_point",
+            "coordinate": {
+              "latitude": 25.0408,
+              "longitude": 121.5654
+            },
             "via_id": "metro-stop-2"
           },
           "departure_time": "2026-08-31T12:00:00+08:00",
           "arrival_time": "2026-08-31T12:20:00+08:00",
-          "scheduled_departure_time": "2026-08-31T12:00:00+08:00",
-          "scheduled_arrival_time": "2026-08-31T12:20:00+08:00",
           "duration_seconds": 1200,
-          "distance_metres": 6500,
-          "geometry": {"encoding": "polyline6", "points": "_lxwn@g_ywfF~qLgl}A"},
+          "geometry": {
+            "encoding": "polyline6",
+            "points": "_lxwn@g_ywfF~qLgl}A"
+          },
           "guidance": [
-            {"code": "board_transit", "required": true, "parameters": {"service_label": "Blue Line"}},
-            {"code": "alight_transit", "required": true, "parameters": {"service_label": "Blue Line"}}
+            {
+              "code": "board_transit",
+              "parameters": {
+                "service_label": "Blue Line"
+              }
+            },
+            {
+              "code": "alight_transit",
+              "parameters": {
+                "service_label": "Blue Line"
+              }
+            }
           ],
           "details": {
             "type": "transit",
@@ -73,16 +69,11 @@
             "via_boarding_point_id": "metro-stop-1",
             "via_alighting_point_id": "metro-stop-2",
             "service_label": "Blue Line",
-            "headsign": "Nangang Exhibition Center",
-            "stop_count": 5
+            "headsign": "Nangang Exhibition Center"
           },
-          "live_status": [],
-          "warnings": [],
           "attribution": []
         }
-      ],
-      "transfers": [],
-      "warnings": []
+      ]
     }
   ]
 }

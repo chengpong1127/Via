@@ -156,26 +156,16 @@ fn append_bicycle(
         to: dropoff.clone(),
         departure_time: departure,
         arrival_time: arrival,
-        scheduled_departure_time: None,
-        scheduled_arrival_time: None,
         duration_seconds: path.duration.0,
-        distance_metres: path.distance.0,
         geometry: Geometry {
             encoding: "polyline6",
             points: geometry::encode_polyline6(&path.geometry),
         },
         guidance: vec![Guidance {
             code: "bike_share",
-            required: true,
             parameters: std::collections::BTreeMap::from([
-                (
-                    "pickup_station_name".into(),
-                    serde_json::json!(pickup.display_name),
-                ),
-                (
-                    "dropoff_station_name".into(),
-                    serde_json::json!(dropoff.display_name),
-                ),
+                ("pickup_station_name".into(), pickup.display_name.clone()),
+                ("dropoff_station_name".into(), dropoff.display_name.clone()),
             ]),
         }],
         details: LegDetails::BikeShare {
@@ -184,8 +174,6 @@ fn append_bicycle(
             dropoff_station_id: dropoff.via_id.clone().unwrap_or_default(),
             dropoff_station_name: dropoff.display_name.clone(),
         },
-        live_status: Vec::new(),
-        warnings: Vec::new(),
         attribution: path.attribution.clone(),
     });
     result.bicycle_seconds = result.bicycle_seconds.saturating_add(path.duration.0);

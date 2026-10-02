@@ -10,7 +10,7 @@ struct JourneySessionTests {
         let planner = PlannerStub(results: [.success(Self.result(ids: ["first", "second"]))])
         let session = makeSession(planner: planner)
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         #expect(session.state == .results)
         #expect(session.result?.options.map(\.id) == ["first", "second"])
@@ -22,7 +22,7 @@ struct JourneySessionTests {
         let initial = Self.result(ids: ["original"])
         let planner = PlannerStub(results: [.success(initial), .failure(.temporarilyUnavailable)])
         let session = makeSession(planner: planner)
-        await session.submit(locale: "en")
+        await session.submit()
 
         await session.refresh()
 
@@ -37,7 +37,7 @@ struct JourneySessionTests {
         let replacement = Self.result(ids: ["new-b", "new-a"], matchingKeys: ["key-b", "key-a"])
         let planner = PlannerStub(results: [.success(initial), .success(replacement)])
         let session = makeSession(planner: planner)
-        await session.submit(locale: "en")
+        await session.submit()
         session.select(initial.options[1])
 
         await session.refresh()
@@ -72,7 +72,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         let requests = await planner.requests
         #expect(requests.first?.origin.coordinate == coordinate)
@@ -95,7 +95,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         #expect(locationProvider.requestAuthorizationCallCount == 1)
         #expect(locationProvider.currentLocationCallCount == 1)
@@ -115,7 +115,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         let requests = await planner.requests
         #expect(requests.first?.origin.name == "Kaohsiung Station")
@@ -132,7 +132,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         #expect(session.state == .locationPermissionDenied)
         #expect(locationProvider.currentLocationCallCount == 0)
@@ -150,7 +150,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         #expect(session.state == .locationRestricted)
         #expect(locationProvider.currentLocationCallCount == 0)
@@ -168,7 +168,7 @@ struct JourneySessionTests {
             locationProvider: locationProvider
         )
 
-        await session.submit(locale: "en")
+        await session.submit()
 
         #expect(session.state == .locationUnavailable)
         let requests = await planner.requests
@@ -180,7 +180,7 @@ struct JourneySessionTests {
         let planner = PlannerStub(results: [.success(Self.result(ids: ["stale"]))])
         let session = makeSession(planner: planner)
 
-        await session.submit(locale: "en")
+        await session.submit()
         session.returnToEditing()
 
         #expect(session.state == .editing)
@@ -213,17 +213,10 @@ struct JourneySessionTests {
         let keys = matchingKeys ?? ids.map { "key-\($0)" }
         let generatedAt = Date()
         return JourneyResult(
-            apiVersion: "1.0",
-            semanticCatalogVersion: "1.0",
             generatedAt: generatedAt,
-            networkRevision: NetworkRevision(
-                staticNetworkRevision: "static-1",
-                scheduleRevision: "schedule-1"
-            ),
             options: zip(ids, keys).map { id, key in JourneyOption(
                 id: id,
                 matchingKey: key,
-                journeyClass: .reliable,
                 label: .bestNow,
                 departureTime: .now,
                 arrivalTime: .now,

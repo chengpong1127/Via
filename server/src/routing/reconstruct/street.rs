@@ -308,21 +308,13 @@ fn walking_leg(
         to: to.clone(),
         departure_time,
         arrival_time,
-        scheduled_departure_time: None,
-        scheduled_arrival_time: None,
         duration_seconds: path.duration.0,
-        distance_metres: path.distance.0,
         geometry: Geometry {
             encoding: "polyline6",
             points: geometry::encode_polyline6(&path.geometry),
         },
         guidance: geometry::guidance(&path.maneuvers),
-        details: LegDetails::Walking {
-            start_fact: None,
-            end_fact: None,
-        },
-        live_status: Vec::new(),
-        warnings: Vec::new(),
+        details: LegDetails::Walking,
         attribution: path.attribution.clone(),
     }
 }

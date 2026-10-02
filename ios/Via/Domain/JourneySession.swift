@@ -78,7 +78,7 @@ final class JourneySession {
         selectedOptionID = option.id
     }
 
-    func submit(locale: String = Locale.current.identifier) async {
+    func submit() async {
         guard destination != nil, !selectedModes.isEmpty else {
             state = .invalidRequest(field: missingField)
             return
@@ -91,7 +91,7 @@ final class JourneySession {
         lastRequest = nil
 
         do {
-            let request = try await makeRequest(locale: locale)
+            let request = try await makeRequest()
             lastRequest = request
             apply(try await planner.plan(request), preservingMatchingKey: nil)
         } catch {
@@ -127,7 +127,7 @@ final class JourneySession {
         return "selected_modes"
     }
 
-    private func makeRequest(locale: String) async throws -> PlanningRequest {
+    private func makeRequest() async throws -> PlanningRequest {
         guard let destination, !selectedModes.isEmpty else {
             throw JourneyPlanningError.invalidRequest(field: missingField)
         }
@@ -137,8 +137,7 @@ final class JourneySession {
             origin: origin,
             destination: destination,
             selectedModes: selectedModes,
-            departureSetting: departureSetting,
-            locale: LocaleNormalization.bcp47(locale)
+            departureSetting: departureSetting
         )
     }
 

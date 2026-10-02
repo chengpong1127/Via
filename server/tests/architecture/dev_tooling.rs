@@ -40,5 +40,4 @@ fn via_route_uses_a_single_static_artifact_argument() {
     assert!(help.contains("--static"));
     assert!(help.contains("--modes"));
     assert!(!help.contains("--network"));
-    assert!(!help.contains("service-conditions"));
 }

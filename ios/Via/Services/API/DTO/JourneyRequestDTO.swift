@@ -4,7 +4,6 @@ struct JourneyPlanRequestDTO: Encodable, Sendable {
     let origin: PlaceDTO
     let destination: PlaceDTO
     let selectedModes: [String]
-    let locale: String
     let departureSetting: DepartureSettingDTO
 
     init(request: PlanningRequest) {
@@ -13,7 +12,6 @@ struct JourneyPlanRequestDTO: Encodable, Sendable {
         selectedModes = PlanningMode.selectable
             .filter(request.selectedModes.contains)
             .map(\.rawValue)
-        locale = LocaleNormalization.bcp47(request.locale)
         departureSetting = DepartureSettingDTO(setting: request.departureSetting)
     }
 
@@ -21,7 +19,6 @@ struct JourneyPlanRequestDTO: Encodable, Sendable {
         case origin
         case destination
         case selectedModes = "selected_modes"
-        case locale
         case departureSetting = "departure_setting"
     }
 }
@@ -81,32 +78,5 @@ enum DepartureSettingDTO: Encodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case type
         case time
-    }
-}
-
-enum LocaleNormalization {
-    static func bcp47(_ identifier: String) -> String {
-        let identifier = identifier.split(separator: "@", maxSplits: 1).first.map(String.init) ?? identifier
-        let parts = identifier
-            .replacingOccurrences(of: "_", with: "-")
-            .split(separator: "-")
-            .map(String.init)
-        guard let language = parts.first,
-              (2...8).contains(language.count),
-              language.allSatisfy({ $0.isLetter })
-        else { return "en" }
-
-        var normalized = [language.lowercased()]
-        for part in parts.dropFirst() {
-            if part.count == 4, part.allSatisfy({ $0.isLetter }) {
-                normalized.append(part.prefix(1).uppercased() + part.dropFirst().lowercased())
-            } else if (part.count == 2 && part.allSatisfy({ $0.isLetter }))
-                        || (part.count == 3 && part.allSatisfy({ $0.isNumber })) {
-                normalized.append(part.uppercased())
-            } else {
-                normalized.append(part.lowercased())
-            }
-        }
-        return normalized.joined(separator: "-")
     }
 }

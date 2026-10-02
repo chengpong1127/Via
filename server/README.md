@@ -2,8 +2,7 @@
 
 The Rust/Axum server exposes Via's provider-neutral journey-planning API. It
 loads one validated `.via-static.json` artifact, then uses TDX for realtime
-transit timing, service conditions, and YouBike availability, and Valhalla for
-street routing.
+transit timing and YouBike availability, and Valhalla for street routing.
 
 ## Run locally
 
@@ -35,14 +34,12 @@ Configuration:
 
 | Variable | Purpose |
 | --- | --- |
-| `VIA_ENV` | `development`, `staging`, or `production`. |
+| `VIA_ENV` | `development` or `production`. |
 | `VIA_STATIC` | Validated `.via-static.json` path. |
 | `VIA_VALHALLA_URL` | Valhalla base URL. |
 | `VALHALLA_TILE_URL` | OSM PBF URL used by the local scripted Valhalla container. |
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
-| `VIA_TDX_SERVICE_CONDITION_PATH` | Optional service-condition path. |
-| `VIA_SERVICE_CONDITION_CACHE_TTL_SECONDS` | Service-condition cache TTL; default 45 seconds. |
 | `PORT` | Axum port; default 3000. |
 
 ## Current routing boundary

@@ -1,33 +1,14 @@
 use crate::domain::{
-    journey::{EvidenceType, LegMode, LiveStatusEvidence, LiveStatusKind, LiveStatusSummary},
+    journey::{LegMode, LiveStatusEvidence, LiveStatusSummary},
     ranking::TransferKind,
-    realtime::{FreshnessState, NormalizedRealtimeValue, RealtimeValue},
+    realtime::{FreshnessState, NormalizedRealtimeValue},
     transit::TransitMode,
 };
 
 pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {
-    let (kind, observed_at) = match &status.value {
-        RealtimeValue::ArrivalEstimate(arrival) => (
-            LiveStatusKind::ArrivalEstimate,
-            Some(arrival.transmitted_at),
-        ),
-        RealtimeValue::ServiceCondition(_) => (
-            LiveStatusKind::ServiceCondition,
-            status.provider_published_at,
-        ),
-    };
     LiveStatusEvidence {
-        kind,
-        evidence_type: EvidenceType::Live,
-        observed_at,
-        published_at: match &status.value {
-            RealtimeValue::ArrivalEstimate(arrival) => Some(arrival.transmitted_at),
-            RealtimeValue::ServiceCondition(_) => status.provider_published_at,
-        }
-        .or(status.provider_published_at),
-        received_at: status.received_at,
-        evaluated_at: status.freshness.evaluated_at,
-        freshness: status.freshness.clone(),
+        state: status.freshness,
+        observed_at: Some(status.value.transmitted_at),
     }
 }
 
@@ -49,29 +30,22 @@ pub(super) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStat
     if evidence.is_empty() {
         return LiveStatusSummary {
             state: FreshnessState::NotApplicable,
-            reasons: Vec::new(),
             observed_at: None,
         };
     }
-    let mut reasons = evidence
-        .iter()
-        .filter_map(|evidence| evidence.freshness.reason)
-        .collect::<Vec<_>>();
-    reasons.sort_by_key(|reason| format!("{reason:?}"));
-    reasons.dedup();
     let state = if evidence
         .iter()
-        .any(|evidence| evidence.freshness.state == FreshnessState::Unavailable)
+        .any(|evidence| evidence.state == FreshnessState::Unavailable)
     {
         FreshnessState::Unavailable
     } else if evidence
         .iter()
-        .any(|evidence| evidence.freshness.state == FreshnessState::Degraded)
+        .any(|evidence| evidence.state == FreshnessState::Degraded)
     {
         FreshnessState::Degraded
     } else if evidence
         .iter()
-        .any(|evidence| evidence.freshness.state == FreshnessState::Fresh)
+        .any(|evidence| evidence.state == FreshnessState::Fresh)
     {
         FreshnessState::Fresh
     } else {
@@ -79,7 +53,6 @@ pub(super) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStat
     };
     LiveStatusSummary {
         state,
-        reasons,
         observed_at: evidence
             .iter()
             .filter_map(|evidence| evidence.observed_at)

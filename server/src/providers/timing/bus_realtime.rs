@@ -8,7 +8,7 @@ use crate::{
         ids::{BoardingPointId, TransitPatternId},
         realtime::{
             ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes,
-            NormalizedRealtimeValue, RealtimeValue,
+            NormalizedRealtimeValue,
         },
         transit_timing::DepartureError,
     },
@@ -19,7 +19,6 @@ use crate::{
 
 pub(super) const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
-const TDX_AUTHORITY_NAMESPACE: &str = "tdx";
 
 #[derive(Debug, Deserialize)]
 struct TdxBusEstimatedArrival {
@@ -62,13 +61,10 @@ pub(super) fn parse_bus_realtime_payload(
         }
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
-                measured_at: None,
                 published_at: Some(published_at),
                 received_at,
-                normalized_at: received_at,
             },
             received_at,
-            None,
         );
         let Some(service_uid) = record
             .sub_route_uid
@@ -94,13 +90,8 @@ pub(super) fn parse_bus_realtime_payload(
                 published_at,
             );
             normalized.push(NormalizedRealtimeValue {
-                id: observation_id(&record.stop_uid, service_uid, published_at),
-                received_at,
-                normalized_at: received_at,
-                provider_published_at: Some(published_at),
-                source_change_at: None,
-                freshness: freshness.clone(),
-                value: RealtimeValue::ArrivalEstimate(arrival),
+                freshness,
+                value: arrival,
             });
         }
     }
@@ -136,17 +127,6 @@ pub(super) fn odata_in_filter(field: &str, values: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{field} in ({values})")
-}
-
-fn observation_id(primary_key: &str, secondary_key: &str, published_at: OffsetDateTime) -> String {
-    use sha2::{Digest, Sha256};
-    let mut digest = Sha256::new();
-    digest.update(b"via.realtime.v1\0");
-    digest.update(TDX_AUTHORITY_NAMESPACE.as_bytes());
-    digest.update(primary_key.as_bytes());
-    digest.update(secondary_key.as_bytes());
-    digest.update(published_at.unix_timestamp_nanos().to_be_bytes());
-    format!("live_{:x}", digest.finalize())
 }
 
 pub fn normalize_n1(
@@ -204,14 +184,12 @@ mod tests {
         let values = parse_bus_realtime_payload(
             &payload,
             &requested_services,
-            &FreshnessPolicy::tdx_one_minute("test"),
+            &FreshnessPolicy::tdx_default(),
         )
         .unwrap();
 
         assert_eq!(values.len(), 1);
-        let RealtimeValue::ArrivalEstimate(arrival) = &values[0].value else {
-            panic!("expected an arrival estimate");
-        };
+        let arrival = &values[0].value;
         assert_eq!(arrival.transit_pattern_id, pattern_id);
         assert_eq!(arrival.boarding_point_id, boarding_point_id("TPE11896"));
         assert_eq!(arrival.state, ArrivalState::Predicted);

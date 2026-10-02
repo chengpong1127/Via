@@ -7,10 +7,7 @@ use crate::domain::{
     transit_timing::{TimingBasis, TimingReliability},
 };
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, utoipa::ToSchema,
-)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum JourneyClass {
     Reliable,
     Feasible,
@@ -22,16 +19,6 @@ pub enum JourneyLabel {
     BestNow,
     FewerTransfers,
     LessWalking,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RankingReason {
-    EarliestArrival,
-    EarliestReliableArrival,
-    FewerTransfers,
-    LessWalking,
-    TightTransferMargin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,12 +51,11 @@ pub struct RankingCandidate {
     pub blocking_condition: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RankedJourney {
     pub stable_key: String,
     pub class: JourneyClass,
     pub label: Option<JourneyLabel>,
-    pub ranking_reasons: Vec<RankingReason>,
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
@@ -81,7 +67,6 @@ pub struct RankedJourney {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RankingPolicy {
-    pub version: String,
     pub metro_transfer_buffer_seconds: u32,
     pub bus_transfer_buffer_seconds: u32,
     pub near_duplicate_arrival_seconds: i64,
@@ -95,7 +80,6 @@ pub struct RankingPolicy {
 impl Default for RankingPolicy {
     fn default() -> Self {
         Self {
-            version: "1".into(),
             metro_transfer_buffer_seconds: 180,
             bus_transfer_buffer_seconds: 300,
             near_duplicate_arrival_seconds: 300,
@@ -149,7 +133,6 @@ impl RankingPolicy {
         } else {
             JourneyClass::Reliable
         };
-        let mut reasons = Vec::new();
         for transfer in &candidate.transfers {
             if transfer.available_seconds < transfer.physical_seconds {
                 return None;
@@ -160,7 +143,6 @@ impl RankingPolicy {
             };
             if transfer.available_seconds < transfer.physical_seconds.saturating_add(buffer) {
                 class = JourneyClass::Feasible;
-                push_unique(&mut reasons, RankingReason::TightTransferMargin);
             }
         }
 
@@ -168,7 +150,6 @@ impl RankingPolicy {
             stable_key: candidate.stable_key,
             class,
             label: None,
-            ranking_reasons: reasons,
             departure_epoch_seconds: candidate.departure_epoch_seconds,
             arrival_epoch_seconds: candidate.arrival_epoch_seconds,
             walking_seconds: candidate.walking_seconds,
@@ -306,30 +287,15 @@ fn apply_labels(options: &mut [RankedJourney]) {
     let best_index = 0;
     let best_transfers = options[best_index].transfer_count;
     let best_walking = options[best_index].walking_seconds;
-    let best_reason = match options[best_index].class {
-        JourneyClass::Reliable => RankingReason::EarliestReliableArrival,
-        JourneyClass::Feasible => RankingReason::EarliestArrival,
-    };
     options[best_index].label = Some(JourneyLabel::BestNow);
-    options[best_index].ranking_reasons.insert(0, best_reason);
     for (index, option) in options.iter_mut().enumerate() {
         if index == best_index {
             continue;
         }
         if option.transfer_count < best_transfers {
             option.label = Some(JourneyLabel::FewerTransfers);
-            option
-                .ranking_reasons
-                .insert(0, RankingReason::FewerTransfers);
         } else if option.walking_seconds < best_walking {
             option.label = Some(JourneyLabel::LessWalking);
-            option.ranking_reasons.insert(0, RankingReason::LessWalking);
         }
-    }
-}
-
-fn push_unique(reasons: &mut Vec<RankingReason>, reason: RankingReason) {
-    if !reasons.contains(&reason) {
-        reasons.push(reason);
     }
 }

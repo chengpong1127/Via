@@ -42,7 +42,6 @@ struct PlanningRequest: Hashable, Sendable {
     let destination: Place
     let selectedModes: Set<PlanningMode>
     let departureSetting: DepartureSetting
-    let locale: String
 }
 
 enum JourneyPlanningError: Error, Equatable, Sendable {

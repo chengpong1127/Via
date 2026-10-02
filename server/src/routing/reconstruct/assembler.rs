@@ -4,7 +4,7 @@ use crate::{
     api::PlanningRequest,
     domain::{
         ids::BoardingPointId,
-        journey::{Leg, LegMode, LiveStatusEvidence, Place, PlanningError, Transfer},
+        journey::{Leg, LegMode, LiveStatusEvidence, Place, PlanningError},
         ranking::TransferEvidence,
         realtime::FreshnessState,
         transit::TransitMode,
@@ -21,7 +21,6 @@ use super::transit::PreviousTransit;
 
 pub(super) struct ReconstructedLegs {
     pub(super) legs: Vec<Leg>,
-    pub(super) transfers: Vec<Transfer>,
     pub(super) arrival_time: OffsetDateTime,
     pub(super) live_evidence: Vec<LiveStatusEvidence>,
     pub(super) required_states: Vec<FreshnessState>,
@@ -39,7 +38,6 @@ pub(super) struct PendingTransfer {
     pub(super) from_leg_id: String,
     pub(super) from_arrival: OffsetDateTime,
     pub(super) duration_seconds: u32,
-    pub(super) connector_leg_ids: Vec<String>,
     pub(super) from_mode: Option<TransitMode>,
 }
 
@@ -92,7 +90,6 @@ impl<'a> ReconstructionState<'a> {
             destination: service.destination_place(request),
             result: ReconstructedLegs {
                 legs: Vec::new(),
-                transfers: Vec::new(),
                 arrival_time: variant.skeleton().departure_at(),
                 live_evidence: Vec::new(),
                 required_states: Vec::new(),

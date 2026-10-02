@@ -22,14 +22,6 @@ impl MakeRequestId for ViaMakeRequestId {
     }
 }
 
-pub(super) fn request_id_string(request_id: &RequestId) -> String {
-    request_id
-        .header_value()
-        .to_str()
-        .unwrap_or("invalid_request_id")
-        .to_owned()
-}
-
 pub(super) fn make_request_span(request: &Request<Body>) -> Span {
     let request_id = request
         .headers()
@@ -98,18 +90,8 @@ pub(super) fn on_http_response<B>(response: &Response<B>, latency: Duration, spa
 }
 
 pub(super) async fn http_timeout(request: Request<Body>, next: Next) -> Response {
-    let request_id = request
-        .extensions()
-        .get::<RequestId>()
-        .map(request_id_string)
-        .unwrap_or_else(|| "missing_request_id".into());
     match tokio::time::timeout(std::time::Duration::from_secs(10), next.run(request)).await {
         Ok(response) => response,
-        Err(_) => error_response(
-            &request_id,
-            StatusCode::REQUEST_TIMEOUT,
-            "request_timeout",
-            None,
-        ),
+        Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, "request_timeout", None),
     }
 }

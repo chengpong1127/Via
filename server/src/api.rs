@@ -1,6 +1,5 @@
-use std::{fmt, str::FromStr};
+use std::fmt;
 
-use language_tags::LanguageTag;
 use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 use unicode_normalization::UnicodeNormalization;
@@ -10,8 +9,6 @@ use crate::domain::transit::TransitMode as DomainTransitMode;
 pub use crate::domain::location::GeoCoordinate;
 
 pub const API_VERSION: &str = "1.0";
-pub const SEMANTIC_CATALOG_VERSION: &str = "1.0";
-pub const TAIPEI_TIME_ZONE: &str = "Asia/Taipei";
 
 pub use crate::domain::{normalize_to_taipei, taipei_offset};
 
@@ -26,8 +23,6 @@ pub struct PlanningRequest {
     pub destination: SelectedPlace,
     #[schema(min_items = 1)]
     pub selected_modes: Vec<PlanningMode>,
-    #[schema(pattern = "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")]
-    pub locale: String,
     pub departure_setting: DepartureSetting,
 }
 
@@ -43,8 +38,6 @@ impl PlanningRequest {
                 "/selected_modes",
             ));
         }
-        LanguageTag::from_str(&self.locale)
-            .map_err(|_| RequestValidationError::new("invalid_locale", "/locale"))?;
         self.departure_setting.validate()?;
         Ok(())
     }

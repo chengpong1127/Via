@@ -66,15 +66,12 @@ pub(super) fn parse_realtime_payload(
         let observed_at = source_update.min(platform_update);
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
-                measured_at: Some(source_update),
                 published_at: Some(observed_at),
                 received_at,
-                normalized_at: received_at,
             },
             received_at,
-            None,
         );
-        if freshness.state != FreshnessState::Fresh
+        if freshness != FreshnessState::Fresh
             || board.service_status != 0
             || board.estimate_minutes.is_none_or(|minutes| minutes < 0)
         {

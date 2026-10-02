@@ -3,7 +3,7 @@ use std::{error::Error, path::PathBuf, time::Duration};
 use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
-    api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace, new_request_id},
+    api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace},
     config::{Environment, ProductionRuntimeConfig, load_dotenv},
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let result = runtime
         .routing
-        .route(request, new_request_id())
+        .route(request)
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {
@@ -142,7 +142,6 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
             display_text: "destination".into(),
         },
         selected_modes,
-        locale: "en-US".into(),
         departure_setting,
     };
     request
@@ -213,7 +212,7 @@ fn print_summary(result: &PlanningOutcome, network_revision: &str, schedule_revi
 
 fn leg_summary(leg: &via_server::domain::journey::Leg) -> String {
     match &leg.details {
-        via_server::domain::journey::LegDetails::Walking { .. } => {
+        via_server::domain::journey::LegDetails::Walking => {
             format!("Walk {} min", leg.duration_seconds.div_ceil(60))
         }
         via_server::domain::journey::LegDetails::Transit {
@@ -245,7 +244,7 @@ fn print_trace(result: &PlanningOutcome) {
                 );
                 for leg in &option.legs {
                     match &leg.details {
-                        via_server::domain::journey::LegDetails::Walking { .. } => eprintln!(
+                        via_server::domain::journey::LegDetails::Walking => eprintln!(
                             "  STREET walk {} -> {} ({}s)",
                             leg.from.display_name, leg.to.display_name, leg.duration_seconds
                         ),

@@ -1,19 +1,6 @@
 {
-  "api_version": "1.0",
-  "semantic_catalog_version": "1.0",
-  "request_id": "req_fixture_empty",
   "generated_at": "2026-08-31T12:00:00+08:00",
-  "effective_search_time": "2026-08-31T12:00:00+08:00",
-  "time_zone": "Asia/Taipei",
-  "network_revision": {
-    "static_network_revision": "static-1",
-    "schedule_revision": "schedule-1"
-  },
-  "policy_versions": {"freshness": "1", "ranking": "1", "transfer_safety": "1"},
-  "warnings": [],
   "empty": {
-    "code": "no_feasible_journey_option",
-    "required": true,
-    "parameters": {"selected_modes": ["bus", "metro", "tra", "thsr", "bike_share"]}
+    "code": "no_feasible_journey_option"
   }
 }

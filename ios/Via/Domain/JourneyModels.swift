@@ -49,11 +49,6 @@ enum TransitMode: String, CaseIterable, Hashable, Sendable {
     }
 }
 
-enum JourneyClass: String, Equatable, Sendable {
-    case reliable = "reliable"
-    case feasible = "feasible"
-}
-
 enum JourneyLabel: String, Equatable, Sendable {
     case bestNow = "best_now"
     case fewerTransfers = "fewer_transfers"
@@ -143,64 +138,20 @@ struct JourneyLeg: Identifiable, Sendable {
 struct JourneyOption: Identifiable, Sendable {
     let id: String
     let matchingKey: String
-    let journeyClass: JourneyClass
     let label: JourneyLabel?
     let departureTime: Date
     let arrivalTime: Date
     let durationSeconds: Int
     let walkingSeconds: Int
-    let bicycleSeconds: Int
-    let bikeShareUses: Int
     let transferCount: Int
     let travelModes: [LegMode]
     let liveStatusSummary: LiveStatusSummary
     let overview: [Coordinate]
     let legs: [JourneyLeg]
 
-    init(
-        id: String,
-        matchingKey: String,
-        journeyClass: JourneyClass,
-        label: JourneyLabel?,
-        departureTime: Date,
-        arrivalTime: Date,
-        durationSeconds: Int,
-        walkingSeconds: Int,
-        bicycleSeconds: Int = 0,
-        bikeShareUses: Int = 0,
-        transferCount: Int,
-        travelModes: [LegMode],
-        liveStatusSummary: LiveStatusSummary,
-        overview: [Coordinate],
-        legs: [JourneyLeg]
-    ) {
-        self.id = id
-        self.matchingKey = matchingKey
-        self.journeyClass = journeyClass
-        self.label = label
-        self.departureTime = departureTime
-        self.arrivalTime = arrivalTime
-        self.durationSeconds = durationSeconds
-        self.walkingSeconds = walkingSeconds
-        self.bicycleSeconds = bicycleSeconds
-        self.bikeShareUses = bikeShareUses
-        self.transferCount = transferCount
-        self.travelModes = travelModes
-        self.liveStatusSummary = liveStatusSummary
-        self.overview = overview
-        self.legs = legs
-    }
-}
-
-struct NetworkRevision: Sendable {
-    let staticNetworkRevision: String
-    let scheduleRevision: String
 }
 
 struct JourneyResult: Sendable {
-    let apiVersion: String
-    let semanticCatalogVersion: String
     let generatedAt: Date
-    let networkRevision: NetworkRevision
     let options: [JourneyOption]
 }

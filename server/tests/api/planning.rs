@@ -5,7 +5,7 @@ use via_server::{
         DepartureSetting, PlanningMode, PlanningRequest, RequestValidationError,
         normalize_to_taipei,
     },
-    domain::realtime::{FreshnessPolicy, FreshnessReason, FreshnessState, LiveStatusTimes},
+    domain::realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
 };
 
 #[test]
@@ -77,7 +77,6 @@ fn planning_request_accepts_the_provider_neutral_contract() {
             "display_text": "Taipei 101"
         },
         "selected_modes": ["bus", "metro", "bike_share"],
-        "locale": "zh-Hant-TW",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
@@ -113,7 +112,6 @@ fn planning_request_accepts_modes_in_any_order() {
             "display_text": "Taipei 101"
         },
         "selected_modes": ["metro", "bus"],
-        "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
@@ -140,7 +138,6 @@ fn bike_share_only_is_a_valid_request() {
             "display_text": "Destination"
         },
         "selected_modes": ["bike_share"],
-        "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
@@ -161,7 +158,6 @@ fn planning_request_rejects_duplicate_modes() {
             "display_text": "Destination"
         },
         "selected_modes": ["bus", "bus"],
-        "locale": "en",
         "departure_setting": {"type": "depart_now"}
     }))
     .unwrap();
@@ -173,42 +169,25 @@ fn planning_request_rejects_duplicate_modes() {
 
 #[test]
 fn tdx_freshness_boundaries_are_exact_and_use_evidence_time() {
-    let policy = FreshnessPolicy::tdx_one_minute("1");
+    let policy = FreshnessPolicy::tdx_default();
     let evaluated_at = datetime!(2026-08-31 12:00 +08:00);
 
     let fresh = policy.evaluate(
         LiveStatusTimes::received(datetime!(2026-08-31 11:58 +08:00)),
         evaluated_at,
-        None,
     );
     let degraded = policy.evaluate(
         LiveStatusTimes::received(datetime!(2026-08-31 11:57:59 +08:00)),
         evaluated_at,
-        None,
     );
     let unavailable = policy.evaluate(
         LiveStatusTimes::received(datetime!(2026-08-31 11:56:59 +08:00)),
         evaluated_at,
-        None,
     );
 
-    assert_eq!(fresh.state, FreshnessState::Fresh);
-    assert_eq!(degraded.state, FreshnessState::Degraded);
-    assert_eq!(degraded.reason, Some(FreshnessReason::Stale));
-    assert_eq!(unavailable.state, FreshnessState::Unavailable);
-}
-
-#[test]
-fn source_failure_never_makes_an_old_observation_fresh() {
-    let policy = FreshnessPolicy::tdx_one_minute("1");
-    let result = policy.evaluate(
-        LiveStatusTimes::received(datetime!(2026-08-31 11:59:30 +08:00)),
-        datetime!(2026-08-31 12:00 +08:00),
-        Some(FreshnessReason::SourceError),
-    );
-
-    assert_eq!(result.state, FreshnessState::Unavailable);
-    assert_eq!(result.reason, Some(FreshnessReason::SourceError));
+    assert_eq!(fresh, FreshnessState::Fresh);
+    assert_eq!(degraded, FreshnessState::Degraded);
+    assert_eq!(unavailable, FreshnessState::Unavailable);
 }
 
 #[test]

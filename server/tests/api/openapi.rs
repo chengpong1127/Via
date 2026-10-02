@@ -81,6 +81,7 @@ fn generated_openapi_covers_the_http_contract() {
         "PlanningOutcome",
         "JourneyOptionsResult",
         "EmptyResult",
+        "EmptyReason",
         "ErrorEnvelope",
         "ReadinessResponse",
         "HealthResponse",
@@ -121,8 +122,23 @@ fn generated_openapi_covers_the_http_contract() {
     );
     assert!(openapi["components"]["schemas"]["DepartureSetting"]["oneOf"].is_array());
     assert!(openapi["components"]["schemas"]["LegDetails"].is_object());
-    assert!(openapi["components"]["schemas"]["WarningScope"]["properties"]["type"].is_object());
 
+    for removed_schema in [
+        "ResultMetadata",
+        "PolicyVersions",
+        "Warning",
+        "WarningScope",
+        "SourceTextVariant",
+        "Transfer",
+        "SemanticObject",
+    ] {
+        assert!(
+            openapi["components"]["schemas"]
+                .get(removed_schema)
+                .is_none(),
+            "removed schema {removed_schema} remains in the API"
+        );
+    }
     for internal_schema in [
         "AppState",
         "PlanningError",

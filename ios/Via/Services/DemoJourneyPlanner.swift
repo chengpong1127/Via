@@ -15,13 +15,7 @@ actor DemoJourneyPlanner: JourneyPlanning {
 
         let generatedAt = Date()
         return JourneyResult(
-            apiVersion: "1.0",
-            semanticCatalogVersion: "1.0",
             generatedAt: generatedAt,
-            networkRevision: NetworkRevision(
-                staticNetworkRevision: "demo-static-1",
-                scheduleRevision: "demo-schedule-1"
-            ),
             options: Array(options.prefix(3))
         )
     }
@@ -47,7 +41,6 @@ actor DemoJourneyPlanner: JourneyPlanning {
             JourneyOption(
                 id: "option_metro",
                 matchingKey: "metro-blue-xinyi-walk",
-                journeyClass: .reliable,
                 label: .bestNow,
                 departureTime: now.addingTimeInterval(180),
                 arrivalTime: now.addingTimeInterval(1_740),
@@ -66,7 +59,6 @@ actor DemoJourneyPlanner: JourneyPlanning {
             JourneyOption(
                 id: "option_bus",
                 matchingKey: "bus-307-walk",
-                journeyClass: .reliable,
                 label: .fewerTransfers,
                 departureTime: now.addingTimeInterval(240),
                 arrivalTime: now.addingTimeInterval(1_920),

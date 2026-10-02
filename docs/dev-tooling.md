@@ -3,8 +3,7 @@
 Static data has two stages. `via-data fetch` saves immutable external source
 snapshots. `via-data build` turns one snapshot into a validated
 `.via-static.json` using the local Valhalla service. TDX realtime supplies
-transit timing and YouBike availability at request time. The service-condition
-provider remains available separately and is not called by journey requests.
+transit timing and YouBike availability at request time.
 
 ## Fetch source data
 
@@ -100,7 +99,7 @@ routes, and fresh availability support it. It does not add transit topology.
 
 ## Run the server
 
-Set `VIA_ENV` to `development`, `staging`, or `production` and `VIA_STATIC` to
+Set `VIA_ENV` to `development` or `production` and `VIA_STATIC` to
 the same artifact used by `via-route`. `PORT` is optional and defaults to
 `3000`:
 

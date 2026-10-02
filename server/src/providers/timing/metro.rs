@@ -54,7 +54,7 @@ impl MetroDepartureSource {
             network,
             tdx: None,
             realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_one_minute("metro_live_board_v1"),
+            freshness_policy: FreshnessPolicy::tdx_default(),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }

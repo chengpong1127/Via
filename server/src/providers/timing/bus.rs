@@ -16,9 +16,7 @@ use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::{
-            ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue, RealtimeValue,
-        },
+        realtime::{ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue},
         transit::TransitMode,
         transit_runtime::TransitRuntime,
         transit_timing::{
@@ -64,7 +62,7 @@ impl BusDepartureSource {
             network,
             tdx,
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_one_minute("1"),
+            freshness_policy: FreshnessPolicy::tdx_default(),
             metrics: BusTimingMetrics::default(),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
@@ -153,12 +151,10 @@ impl BusDepartureSource {
         let mut departures = values
             .iter()
             .filter_map(|status| {
-                if status.freshness.state != FreshnessState::Fresh {
+                if status.freshness != FreshnessState::Fresh {
                     return None;
                 }
-                let RealtimeValue::ArrivalEstimate(arrival) = &status.value else {
-                    return None;
-                };
+                let arrival = &status.value;
                 if arrival.transit_pattern_id != query.pattern_id
                     || arrival.boarding_point_id != query.board_stop_id
                     || !matches!(
@@ -432,9 +428,7 @@ impl BusDepartureSource {
             }
         };
         for value in values {
-            let RealtimeValue::ArrivalEstimate(arrival) = &value.value else {
-                continue;
-            };
+            let arrival = &value.value;
             let pair = (
                 arrival.transit_pattern_id.clone(),
                 arrival.boarding_point_id.clone(),

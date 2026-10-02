@@ -5,12 +5,10 @@ mod geometry;
 mod street;
 mod transit;
 
-use std::collections::HashMap;
-
 use crate::{
     api::PlanningRequest,
     domain::{
-        journey::{JourneyClass, JourneyOption, Place, PlanningError},
+        journey::{JourneyOption, Place, PlanningError},
         ranking::RankedJourney,
     },
 };
@@ -44,27 +42,21 @@ impl RoutingService {
         let duration_seconds =
             transit::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
-        let transfer_count = assembled.transfers.len() as u32;
+        let transfer_count = assembled.transfer_evidence.len() as u32;
         let matching_key = variant_matching_key(variant);
         let option = JourneyOption {
             id: "candidate".into(),
             matching_key: matching_key.clone(),
-            class: JourneyClass::Reliable,
             label: None,
-            ranking_reasons: Vec::new(),
             departure_time: variant.skeleton().departure_at(),
             arrival_time: assembled.arrival_time,
             duration_seconds,
             walking_seconds: assembled.walking_seconds,
-            bicycle_seconds: assembled.bicycle_seconds,
-            bike_share_uses: assembled.bike_share_uses,
             transfer_count,
             travel_modes: assembled.travel_modes,
             live_status_summary: evidence::summary_from_evidence(&assembled.live_evidence),
             overview_geometry: geometry::overview_geometry(&assembled.legs),
             legs: assembled.legs,
-            transfers: assembled.transfers,
-            warnings: Vec::new(),
         };
         let stable_key = format!(
             "{}:{}",
@@ -95,7 +87,6 @@ impl RoutingService {
         Place {
             display_name: request.origin.display_text.clone(),
             coordinate: request.origin.coordinate,
-            kind: "selected_place",
             via_id: None,
         }
     }
@@ -104,7 +95,6 @@ impl RoutingService {
         Place {
             display_name: request.destination.display_text.clone(),
             coordinate: request.destination.coordinate,
-            kind: "selected_place",
             via_id: None,
         }
     }
@@ -127,7 +117,6 @@ impl RoutingService {
             .map(|station| Place {
                 display_name: station.name.clone(),
                 coordinate: station.coordinate,
-                kind: "bike_station",
                 via_id: Some(station.id.as_str().into()),
             })
     }
@@ -146,32 +135,14 @@ fn variant_matching_key(variant: &JourneyVariant) -> String {
 }
 
 pub(super) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {
-    option.class = ranked.class;
     option.label = ranked.label;
-    option.ranking_reasons = ranked.ranking_reasons.clone();
 }
 
 pub(super) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) {
     let suffix = geometry::short_digest(&format!("{}:{index}", option.matching_key));
     option.id = format!("option_{:02}_{}", index + 1, suffix);
-    let mut ids = HashMap::new();
     for (leg_index, leg) in option.legs.iter_mut().enumerate() {
-        let previous = leg.id.clone();
         leg.id = format!("leg_{:02}_{}_{suffix}", index + 1, leg_index + 1);
-        ids.insert(previous, leg.id.clone());
-    }
-    for transfer in &mut option.transfers {
-        if let Some(id) = ids.get(&transfer.from_leg_id) {
-            transfer.from_leg_id = id.clone();
-        }
-        if let Some(id) = ids.get(&transfer.to_leg_id) {
-            transfer.to_leg_id = id.clone();
-        }
-        transfer.connector_leg_ids = transfer
-            .connector_leg_ids
-            .iter()
-            .filter_map(|id| ids.get(id).cloned())
-            .collect();
     }
 }
 
