@@ -335,7 +335,7 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     for stop in runtime.nearest_stops(coordinate, args.limit.max(1)) {
         println!(
             "{:.0}m  {}  {}  {}",
-            coordinate.haversine_distance_metres(stop.coordinate),
+            coordinate.distance_metres(stop.coordinate),
             stop.id.as_str(),
             stop.name,
             pattern_labels(&runtime, &stop.id)

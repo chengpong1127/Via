@@ -6,6 +6,7 @@ use crate::{
     domain::{
         bikeshare::{BikeShareNetwork, BikeStationAccess, BikeWalkingAccess},
         ids::{BikeStationId, BoardingPointId},
+        spatial::SpatialPointIndex,
         transit::TransitNetwork,
     },
     street::{
@@ -52,7 +53,6 @@ pub struct BikeAccessDiagnostics {
 struct Candidate {
     id: BikeStationId,
     coordinate: Coordinate,
-    geometric_distance_metres: u64,
 }
 
 struct Source {
@@ -158,6 +158,7 @@ fn source_candidates(
     bike_share: &BikeShareNetwork,
     policy: BikeAccessPolicy,
 ) -> Result<Vec<Source>, StreetRoutingError> {
+    let stations = SpatialPointIndex::build(&bike_share.stations);
     transit
         .stops
         .iter()
@@ -166,32 +167,22 @@ fn source_candidates(
                 boarding_point.coordinate.latitude,
                 boarding_point.coordinate.longitude,
             )?;
-            let mut candidates = bike_share
-                .stations
-                .iter()
-                .filter_map(|station| {
-                    let geometric_distance_metres = boarding_point
-                        .coordinate
-                        .planar_distance_metres(station.coordinate);
-                    (geometric_distance_metres <= u64::from(policy.max_geometric_radius_metres))
-                        .then(|| {
-                            Coordinate::try_new(
-                                station.coordinate.latitude,
-                                station.coordinate.longitude,
-                            )
-                            .map(|coordinate| Candidate {
-                                id: station.id.clone(),
-                                coordinate,
-                                geometric_distance_metres,
-                            })
+            let mut candidates = stations
+                .within_radius(
+                    &bike_share.stations,
+                    boarding_point.coordinate,
+                    f64::from(policy.max_geometric_radius_metres),
+                )
+                .into_iter()
+                .map(|(index, _)| {
+                    let station = &bike_share.stations[index];
+                    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
+                        .map(|coordinate| Candidate {
+                            id: station.id.clone(),
+                            coordinate,
                         })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            candidates.sort_by(|left, right| {
-                left.geometric_distance_metres
-                    .cmp(&right.geometric_distance_metres)
-                    .then(left.id.as_str().cmp(right.id.as_str()))
-            });
             candidates.truncate(policy.max_geometric_candidates_per_boarding_point);
             Ok(Source {
                 boarding_point_id: boarding_point.id.clone(),
@@ -353,7 +344,7 @@ mod tests {
         street::{FakeStreetRouter, Metres, Seconds, StreetTravelMode},
     };
 
-    use super::{BikeAccessPolicy, precompute_bike_access};
+    use super::{BikeAccessPolicy, precompute_bike_access, source_candidates};
 
     fn coordinate(latitude: f64, longitude: f64) -> GeoCoordinate {
         GeoCoordinate {
@@ -375,12 +366,129 @@ mod tests {
         )
     }
 
+    fn transit_at(points: &[GeoCoordinate]) -> TransitNetwork {
+        TransitNetwork::fixture(
+            time::Time::from_hms(4, 0, 0).unwrap(),
+            points
+                .iter()
+                .enumerate()
+                .map(|(index, point)| {
+                    TransitStop::new(
+                        BoardingPointId::new(format!("bp-{index}")),
+                        format!("BP {index}"),
+                        *point,
+                    )
+                })
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     fn station(id: &str, latitude: f64, longitude: f64) -> BikeStation {
         BikeStation::new(BikeStationId::new(id), id, coordinate(latitude, longitude))
     }
 
     fn bike(stations: Vec<BikeStation>) -> BikeShareNetwork {
         BikeShareNetwork::new(stations)
+    }
+
+    #[test]
+    fn source_candidates_match_exact_distance_order_for_many_stations_and_origins() {
+        let boarding_points = [
+            coordinate(25.0, 121.5),
+            coordinate(25.003, 121.497),
+            coordinate(24.997, 121.504),
+        ];
+        let mut stations = Vec::new();
+        for index in 0..240 {
+            let row = (index % 20) as f64;
+            let column = (index / 20) as f64;
+            stations.push(station(
+                &format!("station-{index:03}"),
+                24.994 + row * 0.00065,
+                121.493 + column * 0.00055,
+            ));
+        }
+        stations.extend([
+            station(
+                "tie-z",
+                boarding_points[0].latitude,
+                boarding_points[0].longitude,
+            ),
+            station(
+                "tie-a",
+                boarding_points[0].latitude,
+                boarding_points[0].longitude,
+            ),
+            station("inside-radius", 25.0026, 121.5),
+            station("outside-radius", 25.0028, 121.5),
+            station("distant", -30.0, 140.0),
+        ]);
+        let transit = transit_at(&boarding_points);
+        let bike_network = bike(stations);
+        let policy = BikeAccessPolicy {
+            max_geometric_candidates_per_boarding_point: 23,
+            ..BikeAccessPolicy::default()
+        };
+
+        let sources = source_candidates(&transit, &bike_network, policy).unwrap();
+        assert_eq!(sources.len(), boarding_points.len());
+        for (source, boarding_point) in sources.iter().zip(boarding_points) {
+            let mut expected = bike_network
+                .stations
+                .iter()
+                .filter_map(|station| {
+                    let distance = boarding_point.distance_metres(station.coordinate);
+                    (distance <= f64::from(policy.max_geometric_radius_metres))
+                        .then_some((station.id.as_str(), distance))
+                })
+                .collect::<Vec<_>>();
+            expected.sort_by(|left, right| {
+                left.1.total_cmp(&right.1).then_with(|| left.0.cmp(right.0))
+            });
+            expected.truncate(policy.max_geometric_candidates_per_boarding_point);
+            assert_eq!(
+                source
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|candidate| candidate.0)
+                    .collect::<Vec<_>>(),
+                "candidate order for {}",
+                source.boarding_point_id.as_str()
+            );
+        }
+
+        let radius_sources = source_candidates(
+            &transit,
+            &bike_network,
+            BikeAccessPolicy {
+                max_geometric_candidates_per_boarding_point: bike_network.stations.len(),
+                ..policy
+            },
+        )
+        .unwrap();
+        let first_ids = radius_sources[0]
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(first_ids.contains(&"inside-radius"));
+        assert!(!first_ids.contains(&"outside-radius"));
+        assert!(!first_ids.contains(&"distant"));
+        assert!(first_ids.windows(2).any(|pair| pair == ["tie-a", "tie-z"]));
+
+        let empty = bike(Vec::new());
+        let empty_sources = source_candidates(&transit, &empty, policy).unwrap();
+        assert!(
+            empty_sources
+                .iter()
+                .all(|source| source.candidates.is_empty())
+        );
     }
 
     fn street_with_directional_fixtures() -> FakeStreetRouter {

@@ -33,7 +33,7 @@ impl StraightLineStreetRouter {
             latitude: origin.latitude(),
             longitude: origin.longitude(),
         }
-        .haversine_distance_metres(GeoCoordinate {
+        .distance_metres(GeoCoordinate {
             latitude: destination.latitude(),
             longitude: destination.longitude(),
         })

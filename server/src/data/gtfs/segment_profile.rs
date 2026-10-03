@@ -79,7 +79,7 @@ fn estimated_segments(pattern: &[u32], mode: TransitMode, stops: &[TransitStop])
         .map(|pair| {
             (stops[pair[0] as usize]
                 .coordinate
-                .haversine_distance_metres(stops[pair[1] as usize].coordinate)
+                .distance_metres(stops[pair[1] as usize].coordinate)
                 / (kmh / 3.6))
                 .ceil()
                 .max(1.0) as u32
@@ -116,7 +116,7 @@ pub(super) fn trip_segment_distances(
         .map(|pair| {
             let from = stops[stop_index_by_gtfs_id[pair[0].stop_id.as_str()] as usize].coordinate;
             let to = stops[stop_index_by_gtfs_id[pair[1].stop_id.as_str()] as usize].coordinate;
-            from.haversine_distance_metres(to)
+            from.distance_metres(to)
         })
         .collect()
 }
@@ -169,7 +169,7 @@ fn stop_distances_on_shape(
 }
 
 fn point_distance(stop: GeoCoordinate, point: &Shape) -> f64 {
-    stop.haversine_distance_metres(GeoCoordinate {
+    stop.distance_metres(GeoCoordinate {
         latitude: point.latitude,
         longitude: point.longitude,
     })
@@ -180,7 +180,7 @@ fn geographic_distance_metres(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64
         latitude: lat1,
         longitude: lon1,
     }
-    .haversine_distance_metres(GeoCoordinate {
+    .distance_metres(GeoCoordinate {
         latitude: lat2,
         longitude: lon2,
     })

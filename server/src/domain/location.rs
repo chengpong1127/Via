@@ -1,7 +1,8 @@
+use geo::{Distance, HaversineMeasure, Point};
 use serde::{Deserialize, Serialize};
 
-pub(crate) const METRES_PER_DEGREE: f64 = 111_320.0;
-const EARTH_RADIUS_METRES: f64 = 6_371_000.0;
+// Preserve the sphere used by existing routing distance estimates.
+pub(crate) const EARTH_RADIUS_METRES: f64 = 6_371_000.0;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
 #[schema(as = Coordinate)]
@@ -21,21 +22,23 @@ impl GeoCoordinate {
             && (-180.0..=180.0).contains(&self.longitude)
     }
 
-    pub fn planar_distance_metres(self, other: Self) -> u64 {
-        let latitude = ((self.latitude + other.latitude) / 2.0).to_radians();
-        let north = (other.latitude - self.latitude) * METRES_PER_DEGREE;
-        let east = (other.longitude - self.longitude) * METRES_PER_DEGREE * latitude.cos();
-        north.hypot(east).max(0.0).round() as u64
+    /// Spherical great-circle distance in metres.
+    pub fn distance_metres(self, other: Self) -> f64 {
+        HaversineMeasure::new(EARTH_RADIUS_METRES).distance(self.point(), other.point())
     }
 
-    pub fn haversine_distance_metres(self, other: Self) -> f64 {
-        let from_latitude = self.latitude.to_radians();
-        let to_latitude = other.latitude.to_radians();
-        let delta_latitude = (other.latitude - self.latitude).to_radians();
-        let delta_longitude = (other.longitude - self.longitude).to_radians();
-        let haversine = (delta_latitude / 2.0).sin().powi(2)
-            + from_latitude.cos() * to_latitude.cos() * (delta_longitude / 2.0).sin().powi(2);
-        EARTH_RADIUS_METRES * 2.0 * haversine.sqrt().asin()
+    fn point(self) -> Point<f64> {
+        Point::new(self.longitude, self.latitude)
+    }
+
+    pub(crate) fn unit_sphere_point(self) -> [f64; 3] {
+        let (sin_latitude, cos_latitude) = self.latitude.to_radians().sin_cos();
+        let (sin_longitude, cos_longitude) = self.longitude.to_radians().sin_cos();
+        [
+            cos_latitude * cos_longitude,
+            cos_latitude * sin_longitude,
+            sin_latitude,
+        ]
     }
 }
 
@@ -44,7 +47,7 @@ mod tests {
     use super::GeoCoordinate;
 
     #[test]
-    fn distance_helpers_preserve_the_two_coordinate_semantics() {
+    fn distance_is_symmetric_and_matches_a_short_taiwan_baseline() {
         let origin = GeoCoordinate {
             latitude: 25.0,
             longitude: 121.5,
@@ -53,12 +56,11 @@ mod tests {
             latitude: 25.001,
             longitude: 121.501,
         };
-
-        assert_eq!(origin.planar_distance_metres(destination), 150);
+        assert!((origin.distance_metres(destination) - 150.067).abs() < 0.001);
         assert_eq!(
-            origin.planar_distance_metres(destination),
-            destination.planar_distance_metres(origin)
+            origin.distance_metres(destination),
+            destination.distance_metres(origin)
         );
-        assert!((origin.haversine_distance_metres(destination) - 150.1).abs() < 0.1);
+        assert_eq!(origin.distance_metres(origin), 0.0);
     }
 }

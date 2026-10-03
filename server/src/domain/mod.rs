@@ -6,6 +6,7 @@ pub mod journey;
 pub mod location;
 pub mod ranking;
 pub mod realtime;
+pub(crate) mod spatial;
 pub mod transit;
 pub mod transit_runtime;
 pub mod transit_timing;

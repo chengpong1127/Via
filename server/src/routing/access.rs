@@ -15,6 +15,13 @@ pub(crate) struct StreetMetric {
     pub distance_metres: u32,
 }
 
+#[derive(Clone)]
+struct NearbyStopCandidate {
+    stop_id: crate::domain::ids::BoardingPointId,
+    coordinate: Coordinate,
+    modes: Vec<TransitMode>,
+}
+
 pub(super) fn prune_access_coverage(
     topology: &TransitTopologyIndex,
     points: Vec<AccessPoint>,
@@ -94,7 +101,11 @@ pub(super) fn nearby_stops(
             }
             Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
                 .ok()
-                .map(|coordinate| (stop.id.clone(), coordinate, modes))
+                .map(|coordinate| NearbyStopCandidate {
+                    stop_id: stop.id.clone(),
+                    coordinate,
+                    modes,
+                })
         })
         .collect::<Vec<_>>();
     let limit = limit.max(1);
@@ -105,15 +116,11 @@ pub(super) fn nearby_stops(
             if selected.len() >= limit {
                 break;
             }
-            if let Some(candidate) = candidates.iter().find(|(stop_id, _, modes)| {
-                modes.contains(mode)
-                    && !selected.iter().any(
-                        |(selected_id, _, _): &(
-                            crate::domain::ids::BoardingPointId,
-                            Coordinate,
-                            Vec<TransitMode>,
-                        )| { selected_id == stop_id },
-                    )
+            if let Some(candidate) = candidates.iter().find(|candidate| {
+                candidate.modes.contains(mode)
+                    && !selected
+                        .iter()
+                        .any(|selected: &NearbyStopCandidate| selected.stop_id == candidate.stop_id)
             }) {
                 selected.push(candidate.clone());
                 added = true;
@@ -129,14 +136,14 @@ pub(super) fn nearby_stops(
         }
         if !selected
             .iter()
-            .any(|(stop_id, _, _)| stop_id == &candidate.0)
+            .any(|selected| selected.stop_id == candidate.stop_id)
         {
             selected.push(candidate);
         }
     }
     selected
         .into_iter()
-        .map(|(stop_id, coordinate, _)| (stop_id, coordinate))
+        .map(|candidate| (candidate.stop_id, candidate.coordinate))
         .collect()
 }
 

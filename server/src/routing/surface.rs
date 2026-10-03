@@ -44,7 +44,7 @@ impl CorridorAnchor {
             latitude: self.coordinate.latitude(),
             longitude: self.coordinate.longitude(),
         }
-        .haversine_distance_metres(GeoCoordinate {
+        .distance_metres(GeoCoordinate {
             latitude: other.coordinate.latitude(),
             longitude: other.coordinate.longitude(),
         })

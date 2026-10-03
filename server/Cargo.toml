@@ -12,6 +12,8 @@ csv = "1"
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 futures-util = "0.3"
+geo = { version = "0.32", default-features = false }
+rstar = "0.12"
 gtfs-structures = { version = "0.50.1", default-features = false }
 jiff = "0.2"
 httpdate = "1"

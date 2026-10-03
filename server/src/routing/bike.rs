@@ -100,7 +100,7 @@ impl BikeShareMovementPlanner {
                     let dropoff_station = self.network.station(&dropoff.station_id)?;
                     let bicycle_lower_bound = pickup_station
                         .coordinate
-                        .haversine_distance_metres(dropoff_station.coordinate)
+                        .distance_metres(dropoff_station.coordinate)
                         / OPTIMISTIC_BIKE_SPEED_METRES_PER_SECOND;
                     Some(
                         f64::from(pickup.walking.duration_seconds)
@@ -592,7 +592,7 @@ fn endpoint_station_choices(
         })
         .filter_map(|station| {
             station_coordinate(network, &station.id)?;
-            let distance = point.haversine_distance_metres(station.coordinate);
+            let distance = point.distance_metres(station.coordinate);
             (distance <= 1_500.0).then(|| StationChoice {
                 station_id: station.id.clone(),
                 walking: BikeWalkingAccess::new(
@@ -753,7 +753,7 @@ mod tests {
             latitude: 25.0,
             longitude: 121.5,
         }
-        .haversine_distance_metres(GeoCoordinate {
+        .distance_metres(GeoCoordinate {
             latitude: 25.001,
             longitude: 121.501,
         });

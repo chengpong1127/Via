@@ -8,6 +8,7 @@ use futures_util::{StreamExt, stream};
 use crate::{
     domain::{
         ids::BoardingPointId,
+        spatial::SpatialPointIndex,
         transit::{TransferEdge, TransitMode, TransitNetwork},
     },
     street::{
@@ -20,7 +21,6 @@ const RADIUS_METRES: f64 = 500.0;
 const MAX_DURATION_SECONDS: u32 = 480;
 const MAX_DISTANCE_METRES: u32 = 800;
 const MAX_OUTGOING: usize = 12;
-const CELL_DEGREES: f64 = 0.004;
 const CONCURRENCY: usize = 8;
 
 #[derive(Clone, Copy)]
@@ -40,13 +40,6 @@ pub struct TransferStatistics {
     pub retained_edges: usize,
     pub elapsed_milliseconds: u128,
     pub by_mode: BTreeMap<String, usize>,
-}
-
-fn cell(lat: f64, lon: f64) -> (i32, i32) {
-    (
-        (lat / CELL_DEGREES).floor() as i32,
-        (lon / CELL_DEGREES).floor() as i32,
-    )
 }
 
 fn coordinate(network: &TransitNetwork, index: usize) -> Coordinate {
@@ -73,7 +66,7 @@ pub async fn enrich_network_with_static_transfers(
         boarding_points: indices.len(),
         ..Default::default()
     };
-    let grid = build_spatial_grid(network, &indices);
+    let spatial = SpatialPointIndex::build(&network.stops);
 
     let limits = street.matrix_limits();
     if limits.max_targets == 0 || limits.max_sources == 0 {
@@ -85,7 +78,7 @@ pub async fn enrich_network_with_static_transfers(
         network,
         street,
         &indices,
-        &grid,
+        &spatial,
         limits.max_targets,
         &mut stats,
     )
@@ -111,42 +104,23 @@ fn used_stop_indices(network: &TransitNetwork) -> Vec<usize> {
         .collect()
 }
 
-fn build_spatial_grid(
-    network: &TransitNetwork,
-    indices: &[usize],
-) -> HashMap<(i32, i32), Vec<usize>> {
-    let mut grid = HashMap::<(i32, i32), Vec<usize>>::new();
-    for &index in indices {
-        let point = network.stops[index].coordinate;
-        grid.entry(cell(point.latitude, point.longitude))
-            .or_default()
-            .push(index);
-    }
-    grid
-}
-
 fn candidate_targets(
     network: &TransitNetwork,
-    grid: &HashMap<(i32, i32), Vec<usize>>,
+    spatial: &SpatialPointIndex,
+    indices: &[usize],
     source: usize,
 ) -> Vec<usize> {
-    let origin = network.stops[source].coordinate;
-    let (row, column) = cell(origin.latitude, origin.longitude);
-    let mut targets = Vec::new();
-    for dy in -3..=3 {
-        for dx in -3..=3 {
-            if let Some(neighbors) = grid.get(&(row + dy, column + dx)) {
-                for &target in neighbors {
-                    if target != source
-                        && origin.haversine_distance_metres(network.stops[target].coordinate)
-                            <= RADIUS_METRES
-                    {
-                        targets.push(target);
-                    }
-                }
-            }
-        }
-    }
+    let mut targets = spatial
+        .within_radius(
+            &network.stops,
+            network.stops[source].coordinate,
+            RADIUS_METRES,
+        )
+        .into_iter()
+        .map(|(index, _)| index)
+        .filter(|&target| target != source && indices.binary_search(&target).is_ok())
+        .collect::<Vec<_>>();
+    // Preserve artifact-position order for matrix batching.
     targets.sort_unstable();
     targets
 }
@@ -155,7 +129,7 @@ async fn query_walking_transfers(
     network: &TransitNetwork,
     street: &dyn StreetRouter,
     indices: &[usize],
-    grid: &HashMap<(i32, i32), Vec<usize>>,
+    spatial: &SpatialPointIndex,
     max_targets: usize,
     stats: &mut TransferStatistics,
 ) -> Result<HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>, StreetRoutingError>
@@ -165,7 +139,7 @@ async fn query_walking_transfers(
     for source_group in indices.chunks(128) {
         let mut requests = Vec::new();
         for &source in source_group {
-            let targets = candidate_targets(network, grid, source);
+            let targets = candidate_targets(network, spatial, indices, source);
             stats.geographic_candidate_pairs += targets.len();
             for chunk in targets.chunks(max_targets) {
                 requests.push((source, chunk.to_vec()));
@@ -340,6 +314,37 @@ mod tests {
 
     fn coord(latitude: f64) -> Coordinate {
         Coordinate::try_new(latitude, 121.5).unwrap()
+    }
+
+    #[test]
+    fn indexed_transfer_candidates_match_used_stop_scan_in_artifact_order() {
+        let mut network = network(vec![
+            point("source", 25.0),
+            point("far", 25.1),
+            point("near", 25.0005),
+            point("within-radius", 25.004),
+            point("outside-radius", 25.005),
+        ]);
+        network.stops.push(point("unused-near", 25.0001));
+        let indices = used_stop_indices(&network);
+        let spatial = SpatialPointIndex::build(&network.stops);
+        for &source in &indices {
+            let expected = indices
+                .iter()
+                .copied()
+                .filter(|&target| {
+                    target != source
+                        && network.stops[source]
+                            .coordinate
+                            .distance_metres(network.stops[target].coordinate)
+                            <= RADIUS_METRES
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                candidate_targets(&network, &spatial, &indices, source),
+                expected
+            );
+        }
     }
 
     #[tokio::test]

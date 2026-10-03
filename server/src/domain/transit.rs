@@ -679,7 +679,7 @@ impl TransitNetwork {
                         let distance = coordinates
                             .get(&pair[0])
                             .zip(coordinates.get(&pair[1]))
-                            .map_or(0.0, |(from, to)| from.haversine_distance_metres(*to));
+                            .map_or(0.0, |(from, to)| from.distance_metres(*to));
                         SegmentTravelTime {
                             seconds: (distance / (kmh / 3.6)).ceil().max(1.0) as u32,
                             source: SegmentTimeSource::Estimated,
