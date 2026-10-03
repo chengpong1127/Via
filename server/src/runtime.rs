@@ -6,7 +6,7 @@ use crate::{
     domain::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
     },
-    health::DependencyHealth,
+    health::{DependencyHealth, Health},
     providers::tdx_bindings::TdxProviderBindings,
     providers::{
         BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxBikeAvailabilitySource,
@@ -21,7 +21,7 @@ use crate::{
 
 pub struct RoutingRuntime {
     pub routing: RoutingService,
-    pub transit_runtime: Arc<TransitRuntime>,
+    pub health: Health,
 }
 
 pub struct RoutingRuntimeDependencies {
@@ -29,6 +29,7 @@ pub struct RoutingRuntimeDependencies {
     pub provider_bindings: TdxProviderBindings,
     pub bike_share_network: Arc<BikeShareNetwork>,
     pub street: Arc<dyn StreetRouter>,
+    pub street_health: Arc<dyn DependencyHealth>,
     pub tdx: Option<Arc<TdxClient>>,
     pub bike_availability: Arc<dyn BikeAvailabilitySource>,
     pub limits: RoutingLimits,
@@ -76,10 +77,8 @@ impl RoutingRuntime {
             dependencies.bike_availability,
             dependencies.limits,
         );
-        Self {
-            routing,
-            transit_runtime,
-        }
+        let health = Health::new(dependencies.street_health, transit_runtime);
+        Self { routing, health }
     }
 }
 
@@ -87,7 +86,7 @@ pub async fn build_production_runtime(
     via_static: ViaStatic,
     options: ProductionRuntimeOptions,
     config: ProductionRuntimeConfig,
-) -> Result<(Arc<ValhallaProvider>, RoutingRuntime), Box<dyn Error>> {
+) -> Result<RoutingRuntime, Box<dyn Error>> {
     via_static.validate()?;
     let mut valhalla_config = ValhallaConfig::local();
     if let Some(timeout) = options.valhalla_request_timeout {
@@ -116,9 +115,10 @@ pub async fn build_production_runtime(
         provider_bindings: bindings,
         bike_share_network,
         street: street.clone(),
+        street_health: street.clone(),
         tdx: Some(tdx),
         bike_availability,
         limits: options.limits,
     });
-    Ok((street, runtime))
+    Ok(runtime)
 }

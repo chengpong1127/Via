@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let runtime_config =
         ProductionRuntimeConfig::from_env(Environment::from_env_or_development()?)?;
-    let (_, runtime) = build_production_runtime(via_static, options, runtime_config).await?;
+    let runtime = build_production_runtime(via_static, options, runtime_config).await?;
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("  max static corridors={max_static_corridors}");

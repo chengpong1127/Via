@@ -64,6 +64,7 @@ where
     let bike_availability_source: Arc<dyn BikeAvailabilitySource> =
         Arc::new(UnavailableBikeAvailabilitySource);
     let street: Arc<dyn StreetRouter> = provider.clone();
+    let street_health: Arc<dyn DependencyHealth> = provider.clone();
     let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
         transit_network,
         provider_bindings: TdxProviderBindings::default(),
@@ -71,9 +72,10 @@ where
             BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled"),
         ),
         street,
+        street_health,
         tdx: None,
         bike_availability: bike_availability_source,
         limits: RoutingLimits::default(),
     });
-    Ok(build_router(provider, runtime, metrics))
+    Ok(build_router(runtime.routing, runtime.health, metrics))
 }

@@ -19,7 +19,7 @@ pub struct Health {
 }
 
 impl Health {
-    pub fn new(street: Arc<dyn DependencyHealth>, transit: Arc<TransitRuntime>) -> Self {
+    pub(crate) fn new(street: Arc<dyn DependencyHealth>, transit: Arc<TransitRuntime>) -> Self {
         Self { street, transit }
     }
 

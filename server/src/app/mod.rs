@@ -2,8 +2,6 @@ mod handlers;
 mod middleware;
 mod openapi;
 
-use std::sync::Arc;
-
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tower_http::{
@@ -12,11 +10,7 @@ use tower_http::{
 };
 use utoipa::openapi::OpenApi;
 
-use crate::{
-    health::{DependencyHealth, Health},
-    routing::RoutingService,
-    runtime::RoutingRuntime,
-};
+use crate::{health::Health, routing::RoutingService};
 
 #[derive(Clone)]
 struct AppState {
@@ -26,13 +20,7 @@ struct AppState {
     openapi: OpenApi,
 }
 
-pub fn build_router(
-    street_health: Arc<dyn DependencyHealth>,
-    runtime: RoutingRuntime,
-    metrics: PrometheusHandle,
-) -> Router {
-    let routing = runtime.routing;
-    let health = Health::new(street_health, runtime.transit_runtime);
+pub fn build_router(routing: RoutingService, health: Health, metrics: PrometheusHandle) -> Router {
     let (router, openapi) = openapi::documented_router().split_for_parts();
     let openapi = openapi::configure_openapi(openapi);
     router

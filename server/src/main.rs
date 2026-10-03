@@ -26,13 +26,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let via_static = load_static_artifact(&config.static_path)
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
     let runtime_config = ProductionRuntimeConfig::from_env(config.environment)?;
-    let (provider, runtime) = build_production_runtime(
+    let runtime = build_production_runtime(
         via_static,
         ProductionRuntimeOptions::default(),
         runtime_config,
     )
     .await?;
-    let router = build_router(provider, runtime, metrics);
+    let router = build_router(runtime.routing, runtime.health, metrics);
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(port = config.port, "Via server listening");
