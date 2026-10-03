@@ -30,7 +30,7 @@ pub struct ViaRuntimeDependencies {
     pub bike_share_network: Arc<BikeShareNetwork>,
     pub street: Arc<dyn StreetRouter>,
     pub street_health: Arc<dyn DependencyHealth>,
-    pub tdx: Option<Arc<TdxClient>>,
+    pub tdx: Arc<TdxClient>,
     pub bike_availability: Arc<dyn BikeAvailabilitySource>,
     pub limits: JourneyPlanningLimits,
 }
@@ -50,14 +50,12 @@ impl ViaRuntime {
                 .with_bindings(provider_bindings.clone()),
         );
         let metro = Arc::new(
-            MetroDepartureSource::new(transit_runtime.clone())
-                .with_bindings(provider_bindings.clone())
-                .with_tdx(dependencies.tdx.clone()),
+            MetroDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
+                .with_bindings(provider_bindings.clone()),
         );
         let tra = Arc::new(
-            TraDepartureSource::new(transit_runtime.clone())
-                .with_bindings(provider_bindings)
-                .with_tdx(dependencies.tdx),
+            TraDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
+                .with_bindings(provider_bindings),
         );
         let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
         let departure_resolver = Arc::new(DepartureResolver::new(
@@ -116,7 +114,7 @@ pub async fn build_runtime(
         bike_share_network,
         street: street.clone(),
         street_health: street.clone(),
-        tdx: Some(tdx),
+        tdx,
         bike_availability,
         limits: options.limits,
     });

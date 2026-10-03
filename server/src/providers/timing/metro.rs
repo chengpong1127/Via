@@ -34,7 +34,7 @@ const MAX_REALTIME_BATCH_PAIRS: usize = 64;
 pub struct MetroDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
-    tdx: Option<Arc<TdxClient>>,
+    tdx: Arc<TdxClient>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
     bindings: Arc<TdxProviderBindings>,
@@ -48,11 +48,11 @@ struct MetroRealtimeMatch {
 }
 
 impl MetroDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx: None,
+            tdx,
             realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_default(),
             bindings: Arc::new(TdxProviderBindings::default()),
@@ -61,11 +61,6 @@ impl MetroDepartureSource {
 
     pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
         self.bindings = bindings;
-        self
-    }
-
-    pub fn with_tdx(mut self, tdx: Option<Arc<TdxClient>>) -> Self {
-        self.tdx = tdx;
         self
     }
 
@@ -255,8 +250,6 @@ impl MetroDepartureSource {
             ];
             let payload = self
                 .tdx
-                .as_ref()
-                .expect("realtime_departures requires a TDX client")
                 .get_json::<Vec<TdxMetroLiveBoard>>(&self.realtime_path, &request)
                 .await;
             let parsed = match payload {
@@ -344,7 +337,6 @@ impl TransitDepartureSource for MetroDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Option<Vec<Result<Vec<EffectiveTrip>, DepartureError>>> {
-        self.tdx.as_ref()?;
         Some(self.realtime_departures(queries).await)
     }
 }

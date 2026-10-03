@@ -90,8 +90,8 @@ impl BikeShareMovementPlanner {
                     if pickup.station_id == dropoff.station_id {
                         return None;
                     }
-                    let pickup_station = self.network.station(&pickup.station_id)?;
-                    let dropoff_station = self.network.station(&dropoff.station_id)?;
+                    let pickup_station = self.network.required_station(&pickup.station_id);
+                    let dropoff_station = self.network.required_station(&dropoff.station_id);
                     let bicycle_lower_bound = pickup_station
                         .coordinate
                         .distance_metres(dropoff_station.coordinate)
@@ -177,20 +177,14 @@ impl BikeShareMovementPlanner {
         let mut failure = None;
         for pickup_chunk in candidate.pickups.chunks(limits.max_sources) {
             for dropoff_chunk in candidate.dropoffs.chunks(limits.max_targets) {
-                let Some(sources) = pickup_chunk
+                let sources = pickup_chunk
                     .iter()
                     .map(|choice| station_coordinate(&self.network, &choice.station_id))
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    continue;
-                };
-                let Some(targets) = dropoff_chunk
+                    .collect::<Vec<_>>();
+                let targets = dropoff_chunk
                     .iter()
                     .map(|choice| station_coordinate(&self.network, &choice.station_id))
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    continue;
-                };
+                    .collect::<Vec<_>>();
                 stats.matrix_requests += 1;
                 let result = self
                     .street_router
@@ -259,11 +253,8 @@ impl BikeShareMovementPlanner {
         }) {
             let coordinates = chunk
                 .iter()
-                .filter_map(|choice| station_coordinate(&self.network, &choice.station_id))
+                .map(|choice| station_coordinate(&self.network, &choice.station_id))
                 .collect::<Vec<_>>();
-            if coordinates.len() != chunk.len() {
-                continue;
-            }
             stats.matrix_requests += 1;
             let result = self
                 .street_router
@@ -472,7 +463,6 @@ struct StationChoice {
 }
 
 fn station_choices<'a>(
-    network: &BikeShareNetwork,
     accesses: impl IntoIterator<Item = &'a BikeStationAccess>,
     pickup: bool,
 ) -> Vec<StationChoice> {
@@ -485,9 +475,6 @@ fn station_choices<'a>(
         }) else {
             continue;
         };
-        if network.station(&access.station_id).is_none() {
-            continue;
-        }
         choices
             .entry(access.station_id.clone())
             .and_modify(|current| {
@@ -531,7 +518,6 @@ fn endpoint_station_choices(
 ) -> Vec<StationChoice> {
     if let Some(id) = endpoint.boarding_point() {
         return station_choices(
-            network,
             if pickup {
                 view.usable_pickups(id)
             } else {
@@ -554,16 +540,16 @@ fn endpoint_station_choices(
                 view.can_return_at(&station.id)
             }
         })
-        .filter_map(|station| {
-            station_coordinate(network, &station.id)?;
+        .filter(|station| point.distance_metres(station.coordinate) <= 1_500.0)
+        .map(|station| {
             let distance = point.distance_metres(station.coordinate);
-            (distance <= 1_500.0).then(|| StationChoice {
+            StationChoice {
                 station_id: station.id.clone(),
                 walking: BikeWalkingAccess::new(
                     (distance / OPTIMISTIC_WALK_SPEED_METRES_PER_SECOND).floor() as u32,
                     distance.floor() as u32,
                 ),
-            })
+            }
         })
         .collect::<Vec<_>>();
     choices.sort_by(|left, right| {
@@ -576,9 +562,10 @@ fn endpoint_station_choices(
     choices
 }
 
-fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Option<Coordinate> {
-    let station = network.station(id)?;
-    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude).ok()
+fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Coordinate {
+    let station = network.required_station(id);
+    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
+        .expect("validated bike station coordinate")
 }
 
 #[cfg(test)]
@@ -626,8 +613,8 @@ mod tests {
             })
             .collect();
         let network = BikeShareNetwork::new(stations).with_access_links(access_links);
-        let pickups = station_choices(&network, network.access_from_boarding_point(&anchor), true);
-        let dropoffs = station_choices(&network, network.access_to_boarding_point(&anchor), false);
+        let pickups = station_choices(network.access_from_boarding_point(&anchor), true);
+        let dropoffs = station_choices(network.access_to_boarding_point(&anchor), false);
 
         assert_eq!(pickups.len(), MAX_PICKUP_STATIONS_PER_ANCHOR);
         assert_eq!(dropoffs.len(), MAX_DROPOFF_STATIONS_PER_ANCHOR);

@@ -35,15 +35,13 @@ impl ReconstructionState<'_, '_> {
             self.context.request,
             self.journey,
             movement.from_anchor,
-        )
-        .ok_or(PlanningError::Internal)?;
+        )?;
         let to = anchor_place(
             self.reconstructor,
             self.context.request,
             self.journey,
             movement.to_anchor,
-        )
-        .ok_or(PlanningError::Internal)?;
+        )?;
         let connector_start = self.assembly.legs.len();
         append_routed_walking(&from, &to, path.clone(), &mut self.assembly);
         if matches!(
@@ -68,13 +66,9 @@ impl ReconstructionState<'_, '_> {
         if self.current_anchor != 0 {
             return Ok(false);
         }
-        let first_stop = self
-            .reconstructor
-            .stop_place(
-                &anchor_boarding_point(self.journey, movement.to_anchor)
-                    .ok_or(PlanningError::Internal)?,
-            )
+        let first_stop_id = anchor_boarding_point(self.journey, movement.to_anchor)
             .ok_or(PlanningError::Internal)?;
+        let first_stop = self.reconstructor.stop_place(&first_stop_id)?;
         append_hydrated_walking(
             self.reconstructor,
             self.context,
@@ -101,19 +95,13 @@ impl ReconstructionState<'_, '_> {
             .clone()
             .or_else(|| anchor_boarding_point(self.journey, movement.from_anchor))
             .ok_or(PlanningError::Internal)?;
-        let from = self
-            .reconstructor
-            .stop_place(&from_stop)
-            .ok_or(PlanningError::Internal)?;
+        let from = self.reconstructor.stop_place(&from_stop)?;
         let to_stop = anchor_boarding_point(self.journey, movement.to_anchor)
             .ok_or(PlanningError::Internal)?;
         if Some(to_stop.clone()) == self.current_stop {
             return Ok(false);
         }
-        let to = self
-            .reconstructor
-            .stop_place(&to_stop)
-            .ok_or(PlanningError::Internal)?;
+        let to = self.reconstructor.stop_place(&to_stop)?;
         let connector_start = self.assembly.legs.len();
         append_static_walking(
             &from,
@@ -142,10 +130,7 @@ impl ReconstructionState<'_, '_> {
             .clone()
             .or_else(|| anchor_boarding_point(self.journey, movement.from_anchor))
             .ok_or(PlanningError::Internal)?;
-        let final_stop = self
-            .reconstructor
-            .stop_place(&final_stop_id)
-            .ok_or(PlanningError::Internal)?;
+        let final_stop = self.reconstructor.stop_place(&final_stop_id)?;
         append_hydrated_walking(
             self.reconstructor,
             self.context,
@@ -165,7 +150,7 @@ pub(super) fn anchor_boarding_point(
     journey: &RealizedJourney,
     anchor: usize,
 ) -> Option<BoardingPointId> {
-    match &journey.anchors().get(anchor)?.kind {
+    match &journey.anchors()[anchor].kind {
         JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
         JourneyAnchorKind::Origin | JourneyAnchorKind::Destination => None,
     }
@@ -176,11 +161,15 @@ pub(super) fn anchor_place(
     request: &PlanningRequest,
     journey: &RealizedJourney,
     anchor: usize,
-) -> Option<Place> {
-    match &journey.anchors().get(anchor)?.kind {
-        JourneyAnchorKind::Origin => Some(reconstructor.origin_place(request)),
+) -> Result<Place, PlanningError> {
+    let anchor = journey
+        .anchors()
+        .get(anchor)
+        .ok_or(PlanningError::Internal)?;
+    match &anchor.kind {
+        JourneyAnchorKind::Origin => Ok(reconstructor.origin_place(request)),
         JourneyAnchorKind::BoardingPoint { id } => reconstructor.stop_place(id),
-        JourneyAnchorKind::Destination => Some(reconstructor.destination_place(request)),
+        JourneyAnchorKind::Destination => Ok(reconstructor.destination_place(request)),
     }
 }
 

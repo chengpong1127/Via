@@ -46,7 +46,7 @@ impl RetainedCorridorSet {
             .iter()
             .flat_map(StaticCorridor::transit_legs)
             .filter_map(|leg| {
-                let key = equivalent_leg_key(network, leg)?;
+                let key = equivalent_leg_key(network, leg);
                 equivalent_legs
                     .get(&key)
                     .map(|equivalent_legs| (key, equivalent_legs.clone()))
@@ -66,8 +66,9 @@ impl RetainedCorridorSet {
                     });
                     selected_pattern_ids.insert(equivalent_leg.pattern_id.clone());
                     if network
-                        .pattern(&equivalent_leg.pattern_id)
-                        .is_some_and(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
+                        .route_of(network.required_pattern(&equivalent_leg.pattern_id))
+                        .mode
+                        == TransitMode::Bus
                     {
                         selected_bus_stop_ids.insert(equivalent_leg.board_stop_id.clone());
                     }
@@ -112,8 +113,7 @@ impl RetainedCorridorSet {
         retained: &StaticTransitLeg,
         equivalent_leg: &StaticTransitLeg,
     ) -> bool {
-        equivalent_leg_key(network, retained).is_some()
-            && equivalent_leg_key(network, retained) == equivalent_leg_key(network, equivalent_leg)
+        equivalent_leg_key(network, retained) == equivalent_leg_key(network, equivalent_leg)
     }
 
     fn equivalent_legs_from(
@@ -121,8 +121,8 @@ impl RetainedCorridorSet {
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         leg: &StaticTransitLeg,
     ) -> Vec<StaticTransitLeg> {
-        let mut equivalent_legs = equivalent_leg_key(network, leg)
-            .and_then(|key| equivalent_legs.get(&key))
+        let mut equivalent_legs = equivalent_legs
+            .get(&equivalent_leg_key(network, leg))
             .cloned()
             .unwrap_or_else(|| vec![leg.clone()]);
         equivalent_legs.sort_by(|left, right| {
@@ -154,11 +154,7 @@ fn retained_pattern_sequence_groups(
         let pattern_sequence = corridor.pattern_sequence();
         let mode_sequence = pattern_sequence
             .iter()
-            .filter_map(|pattern_id| {
-                network
-                    .pattern(pattern_id)
-                    .map(|pattern| network.route_of(pattern).mode)
-            })
+            .map(|pattern_id| network.route_of(network.required_pattern(pattern_id)).mode)
             .collect::<Vec<_>>();
         let key = (pattern_sequence.clone(), mode_sequence.clone());
         groups
@@ -280,7 +276,8 @@ impl CorridorRetention {
             if self.all_unique.insert(signature.clone()) {
                 stats.static_unique_corridors_found += 1;
             }
-            if let Some(steps) = equivalent_steps(network, &corridor.steps) {
+            {
+                let steps = equivalent_steps(network, &corridor.steps);
                 let structural_signature = EquivalentCorridorSignature {
                     access_stop_id: corridor.access_stop_id.clone(),
                     steps,
@@ -292,10 +289,10 @@ impl CorridorRetention {
             }
             let modes = corridor
                 .transit_legs()
-                .filter_map(|leg| {
+                .map(|leg| {
                     network
-                        .pattern(&leg.pattern_id)
-                        .map(|pattern| network.route_of(pattern).mode)
+                        .route_of(network.required_pattern(&leg.pattern_id))
+                        .mode
                 })
                 .collect::<Vec<_>>();
             if let (Some(first), Some(last)) = (modes.first(), modes.last()) {
@@ -375,9 +372,7 @@ impl CorridorRetention {
             if selected.len() >= self.limit {
                 break;
             }
-            let Some(steps) = equivalent_steps(network, &corridor.steps) else {
-                continue;
-            };
+            let steps = equivalent_steps(network, &corridor.steps);
             let structure = EquivalentCorridorSignature {
                 access_stop_id: corridor.access_stop_id.clone(),
                 steps,

@@ -234,8 +234,8 @@ impl<'a> JourneyPlanningContext<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningQuery {
-    pub origin: Option<crate::street::Coordinate>,
-    pub destination: Option<crate::street::Coordinate>,
+    pub origin: crate::street::Coordinate,
+    pub destination: crate::street::Coordinate,
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
     pub allowed_transit_modes: Vec<TransitMode>,
@@ -244,18 +244,21 @@ pub struct PlanningQuery {
     pub departure_time: OffsetDateTime,
     pub latest_arrival: Option<OffsetDateTime>,
     pub limits: PlannerLimits,
-    pub deadline: Option<PlanningDeadline>,
+    pub deadline: PlanningDeadline,
 }
 
 impl PlanningQuery {
     pub fn new(
+        origin: crate::street::Coordinate,
+        destination: crate::street::Coordinate,
+        deadline: PlanningDeadline,
         origin_access: Vec<AccessPoint>,
         destination_egress: Vec<EgressPoint>,
         departure_time: OffsetDateTime,
     ) -> Self {
         Self {
-            origin: None,
-            destination: None,
+            origin,
+            destination,
             origin_access,
             destination_egress,
             allowed_transit_modes: vec![
@@ -268,7 +271,7 @@ impl PlanningQuery {
             departure_time,
             latest_arrival: None,
             limits: PlannerLimits::default(),
-            deadline: None,
+            deadline,
         }
     }
 
@@ -279,16 +282,6 @@ impl PlanningQuery {
         self.allowed_transit_modes = modes.into_iter().collect();
         self.allowed_transit_modes.sort();
         self.allowed_transit_modes.dedup();
-        self
-    }
-
-    pub fn with_endpoints(
-        mut self,
-        origin: crate::street::Coordinate,
-        destination: crate::street::Coordinate,
-    ) -> Self {
-        self.origin = Some(origin);
-        self.destination = Some(destination);
         self
     }
 
@@ -306,11 +299,6 @@ impl PlanningQuery {
         self.limits.max_static_corridors = max_static_corridors.max(1);
         self
     }
-
-    pub fn with_deadline(mut self, deadline: PlanningDeadline) -> Self {
-        self.deadline = Some(deadline);
-        self
-    }
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -323,6 +311,8 @@ pub enum RoutingError {
     Phase2EvaluationLimit,
     #[error("routing request deadline elapsed")]
     DeadlineExceeded,
+    #[error("routing invariant failed: {0}")]
+    Internal(String),
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
 }

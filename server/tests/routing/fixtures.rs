@@ -35,7 +35,7 @@ use via_server::{
 };
 
 pub(crate) use crate::support::routing::{near_stop, transit_street};
-use crate::support::tdx::spawn_tdx_fixture;
+use crate::support::tdx::{failing_tdx_client, spawn_tdx_fixture};
 
 const NETWORK_JSON: &str = include_str!("../../fixtures/routing/network.json");
 const BINDINGS_JSON: &str = include_str!("../../fixtures/routing/provider-bindings.json");
@@ -249,9 +249,10 @@ async fn route_body_inner(
         Some(fixture_tdx_client(bus_tdx_payload(updated_at)).await)
     } else {
         None
-    };
+    }
+    .unwrap_or_else(failing_tdx_client);
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx)
+        BusDepartureSource::new(network.clone(), tdx.clone())
             .with_bindings(Arc::new(bindings))
             .with_realtime_endpoint("feed")
             .with_freshness_policy(FreshnessPolicy {
@@ -259,8 +260,8 @@ async fn route_body_inner(
                 degraded_through: time::Duration::days(31),
             }),
     );
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    let tra = Arc::new(TraDepartureSource::new(network.clone()));
+    let metro = Arc::new(MetroDepartureSource::new(network.clone(), tdx.clone()));
+    let tra = Arc::new(TraDepartureSource::new(network.clone(), tdx));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
     let departure = Arc::new(DepartureResolver::new(
         network.clone(),

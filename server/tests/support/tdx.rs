@@ -17,3 +17,15 @@ pub async fn spawn_tdx_fixture(app: Router) -> Arc<TdxClient> {
         .unwrap(),
     )
 }
+
+#[allow(dead_code)]
+pub fn failing_tdx_client() -> Arc<TdxClient> {
+    Arc::new(
+        TdxClient::with_urls(
+            TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
+            "http://127.0.0.1:1/",
+            "http://127.0.0.1:1/",
+        )
+        .unwrap(),
+    )
+}

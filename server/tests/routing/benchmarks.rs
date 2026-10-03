@@ -2,18 +2,22 @@ use std::{hint::black_box, sync::Arc, time::Instant};
 
 use time::macros::datetime;
 use via_server::{
-    domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
+    domain::{
+        bikeshare::BikeShareNetwork, ids::BoardingPointId, transit::TransitMode,
+        transit_runtime::TransitRuntime,
+    },
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
-        TraDepartureSource, TransitDepartureSource,
+        TraDepartureSource, TransitDepartureSource, UnavailableBikeAvailabilitySource,
     },
     routing::{
-        AccessPoint, EgressPoint, MultimodalPlanner, PlanningQuery, static_search,
-        topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
+        AccessPoint, EgressPoint, MultimodalPlanner, PlanningDeadline, PlanningQuery,
+        static_search, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
     },
 };
 
 use super::fixtures::network;
+use via_server::street::FakeStreetRouter;
 
 // Run the same command/profile before and after a refactor; there are no machine-dependent thresholds.
 #[tokio::test]
@@ -23,14 +27,26 @@ async fn deterministic_routing_benchmark() {
     let topology = TransitTopologyIndex::new(runtime.network());
     let transfers = TransferShortcutIndex::from_network(runtime.network());
     let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
-        Arc::new(BusDepartureSource::new(runtime.clone(), None)),
-        Arc::new(MetroDepartureSource::new(runtime.clone())),
-        Arc::new(TraDepartureSource::new(runtime.clone())),
+        Arc::new(BusDepartureSource::new(
+            runtime.clone(),
+            crate::support::tdx::failing_tdx_client(),
+        )),
+        Arc::new(MetroDepartureSource::new(
+            runtime.clone(),
+            crate::support::tdx::failing_tdx_client(),
+        )),
+        Arc::new(TraDepartureSource::new(
+            runtime.clone(),
+            crate::support::tdx::failing_tdx_client(),
+        )),
         Arc::new(ThsrDepartureSource::new(runtime.clone())),
     ];
     let planner = MultimodalPlanner::new(
         runtime.clone(),
         Arc::new(DepartureResolver::new(runtime.clone(), sources)),
+        Arc::new(FakeStreetRouter::builder().build()),
+        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("benchmark-disabled")),
+        Arc::new(UnavailableBikeAvailabilitySource),
     );
     let cases = [
         ("metro", "F-M1", "F-M2-RED", vec![TransitMode::Metro]),
@@ -59,6 +75,19 @@ async fn deterministic_routing_benchmark() {
     const ITERATIONS: usize = 1000;
     for (label, origin, destination, modes) in cases {
         let query = PlanningQuery::new(
+            runtime
+                .stop(&BoardingPointId::new(origin))
+                .unwrap()
+                .coordinate
+                .try_into()
+                .unwrap(),
+            runtime
+                .stop(&BoardingPointId::new(destination))
+                .unwrap()
+                .coordinate
+                .try_into()
+                .unwrap(),
+            PlanningDeadline::after(std::time::Duration::from_secs(60)),
             vec![AccessPoint::new(
                 BoardingPointId::new(origin),
                 departure,

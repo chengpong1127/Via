@@ -69,7 +69,7 @@ pub(super) fn destination_lower_bounds(
     }
 
     'lower_bounds: while let Some(entry) = frontier.pop() {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             stats.deadline_exceeded = true;
             break;
         }
@@ -78,7 +78,7 @@ pub(super) fn destination_lower_bounds(
         }
         stats.static_lower_bound_nodes_settled += 1;
         for position in topology.occurrences_at(&entry.stop_id) {
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            if query.deadline.is_elapsed() {
                 stats.deadline_exceeded = true;
                 break 'lower_bounds;
             }
@@ -90,16 +90,8 @@ pub(super) fn destination_lower_bounds(
                 continue;
             };
             let group = patterns.group(group_index);
-            let Some(predecessor) = group.stops.get(predecessor_index) else {
-                continue;
-            };
-            let Some(edge_seconds) = group
-                .segments
-                .get(predecessor_index)
-                .map(|segment| segment.seconds)
-            else {
-                continue;
-            };
+            let predecessor = &group.stops[predecessor_index];
+            let edge_seconds = group.segments[predecessor_index].seconds;
             relax_lower_bound(
                 predecessor,
                 entry.seconds.saturating_add(edge_seconds),
@@ -110,7 +102,7 @@ pub(super) fn destination_lower_bounds(
             );
         }
         for shortcut in transfers.transfers_to(&entry.stop_id) {
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            if query.deadline.is_elapsed() {
                 stats.deadline_exceeded = true;
                 break 'lower_bounds;
             }
@@ -161,12 +153,12 @@ pub(super) fn reachable_endpoint_mode_pairs(
     query: &PlanningQuery,
     destination_lower_bounds: &HashMap<BoardingPointId, u32>,
 ) -> Option<HashSet<EndpointModePair>> {
-    if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+    if query.deadline.is_elapsed() {
         return None;
     }
     let mut origin_modes = HashSet::new();
     for access in &query.origin_access {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             return None;
         }
         let mut boarding_stops = vec![access.stop_id.clone()];
@@ -177,19 +169,17 @@ pub(super) fn reachable_endpoint_mode_pairs(
                 .map(|shortcut| shortcut.to.clone()),
         );
         for stop_id in boarding_stops {
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            if query.deadline.is_elapsed() {
                 return None;
             }
             if !destination_lower_bounds.contains_key(&stop_id) {
                 continue;
             }
             for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
-                if index % 64 == 0 && query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                if index % 64 == 0 && query.deadline.is_elapsed() {
                     return None;
                 }
-                let Some(pattern) = network.pattern(&position.pattern_id) else {
-                    continue;
-                };
+                let pattern = network.required_pattern(&position.pattern_id);
                 if query
                     .allowed_transit_modes
                     .contains(&network.route_of(pattern).mode)
@@ -202,7 +192,7 @@ pub(super) fn reachable_endpoint_mode_pairs(
 
     let mut destination_modes = HashSet::new();
     for egress in &query.destination_egress {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             return None;
         }
         let mut alighting_stops = vec![egress.stop_id.clone()];
@@ -213,16 +203,14 @@ pub(super) fn reachable_endpoint_mode_pairs(
                 .map(|shortcut| shortcut.from.clone()),
         );
         for stop_id in alighting_stops {
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            if query.deadline.is_elapsed() {
                 return None;
             }
             for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
-                if index % 64 == 0 && query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                if index % 64 == 0 && query.deadline.is_elapsed() {
                     return None;
                 }
-                let Some(pattern) = network.pattern(&position.pattern_id) else {
-                    continue;
-                };
+                let pattern = network.required_pattern(&position.pattern_id);
                 if query
                     .allowed_transit_modes
                     .contains(&network.route_of(pattern).mode)

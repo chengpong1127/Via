@@ -25,6 +25,16 @@ server and `via-route`. `RoutingService` owns the complete planning use case.
 Its request-scoped `JourneyPlanningContext` and `JourneyPlanningLimits` live in
 `routing/model.rs`.
 
+Planner construction requires street routing, a BikeShare network and availability
+source, and a timing resolver. Production runtime and Bus/Metro/TRA timing sources
+require a TDX client; failed realtime calls still fall back to static timing.
+Every `PlanningQuery` requires validated origin/destination coordinates and an
+explicit deadline. Tests supply these dependencies and bounded deadlines; static
+timing fixtures use a failing realtime client instead of an absent capability.
+BikeShare selection and its request-local availability snapshot remain conditional.
+Retained corridor conversion and reconstruction report broken internal references
+as planning errors rather than dropping corridors or emitting empty station IDs.
+
 `RoutingService` discovers access and egress for selected transit modes, then
 calls `MultimodalPlanner.prepare()` and evaluates the request-local
 `PlanningSession`. Primary evaluation uses `evaluate_primary()`; after all

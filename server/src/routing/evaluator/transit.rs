@@ -11,9 +11,7 @@ impl FixedCorridorEvaluator<'_> {
         let mut successors = Vec::new();
         for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
             self.charge()?;
-            if !valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg) {
-                continue;
-            }
+            valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg)?;
             let ready_at = if state.last_was_transit {
                 state.ready_at
                     + Duration::seconds(i64::from(self.network.same_stop_transfer_seconds()))
@@ -67,16 +65,36 @@ fn valid_pattern_leg(
     corridor: &RetainedCorridorSet,
     retained: &StaticTransitLeg,
     equivalent_leg: &StaticTransitLeg,
-) -> bool {
+) -> Result<(), RoutingError> {
     if !corridor.is_equivalent_leg(network, retained, equivalent_leg) {
-        return false;
+        return Err(RoutingError::Internal(
+            "retained transit leg has an invalid equivalent leg".into(),
+        ));
     }
-    let Some(pattern) = network.pattern(&equivalent_leg.pattern_id) else {
-        return false;
-    };
-    pattern.stops.get(equivalent_leg.board_index) == Some(&retained.board_stop_id)
-        && pattern.stops.get(equivalent_leg.alight_index) == Some(&retained.alight_stop_id)
-        && equivalent_leg.board_index < equivalent_leg.alight_index
+    if equivalent_leg.board_index >= equivalent_leg.alight_index {
+        return Err(RoutingError::Internal(
+            "retained transit leg has reversed stop indexes".into(),
+        ));
+    }
+    let pattern = network.required_pattern(&equivalent_leg.pattern_id);
+    let board_stop = pattern
+        .stops
+        .get(equivalent_leg.board_index)
+        .ok_or_else(|| {
+            RoutingError::Internal("retained transit leg has an invalid boarding index".into())
+        })?;
+    let alight_stop = pattern
+        .stops
+        .get(equivalent_leg.alight_index)
+        .ok_or_else(|| {
+            RoutingError::Internal("retained transit leg has an invalid alighting index".into())
+        })?;
+    if board_stop != &retained.board_stop_id || alight_stop != &retained.alight_stop_id {
+        return Err(RoutingError::Internal(
+            "retained transit leg indexes do not match its stops".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn retained_alight_time(

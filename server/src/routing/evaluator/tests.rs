@@ -14,7 +14,7 @@ use crate::{
     },
     routing::{
         AccessPoint, EgressPoint,
-        static_search::{StaticCorridor, StaticCorridorStep, generate},
+        static_search::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
         topology::TransitTopologyIndex,
         transfers::TransferShortcutIndex,
     },
@@ -62,6 +62,9 @@ fn network(
 
 fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> PlanningQuery {
     PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("origin"),
             datetime!(2026-09-21 10:00 UTC),
@@ -82,6 +85,39 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
         ..crate::routing::PlannerLimits::default()
     })
     .with_max_static_corridors(max_corridors)
+}
+
+#[test]
+fn retained_corridor_invariant_failures_are_explicit() {
+    let runtime = network(Vec::new(), &["a", "b"], Vec::new());
+    let make_corridor = |access: &str, egress: &str, steps| StaticCorridor {
+        access_stop_id: BoardingPointId::new(access),
+        egress_stop_id: BoardingPointId::new(egress),
+        theoretical_duration_seconds: 0,
+        cost_source: StaticCostSource::OptimisticEstimate,
+        steps,
+    };
+    let mut query = query(&[TransitMode::Bus], 0, 1);
+
+    let malformed = make_corridor("a", "b", Vec::new());
+    assert!(matches!(
+        EvaluationCorridor::from_transit(&runtime, &malformed, &query),
+        Err(RoutingError::Internal(_))
+    ));
+
+    let missing_stop = make_corridor("missing", "missing", Vec::new());
+    query.origin_access[0].stop_id = BoardingPointId::new("missing");
+    query.destination_egress[0].stop_id = BoardingPointId::new("missing");
+    assert!(matches!(
+        EvaluationCorridor::from_transit(&runtime, &missing_stop, &query),
+        Err(RoutingError::Internal(_))
+    ));
+
+    let no_matching_baseline = make_corridor("a", "a", Vec::new());
+    assert!(matches!(
+        EvaluationCorridor::from_transit(&runtime, &no_matching_baseline, &query),
+        Err(RoutingError::Internal(_))
+    ));
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> RetainedCorridorSet {
@@ -603,6 +639,9 @@ fn one_bike_movement_can_skip_multiple_transit_anchors() {
 fn bike_can_replace_a_surface_walking_edge() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -657,6 +696,9 @@ fn bike_can_replace_a_surface_walking_edge() {
 fn slower_optimistic_bike_bound_skips_exact_routing() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -760,6 +802,9 @@ fn transit_waiting_time_is_included_when_screening_bike() {
 fn exact_bike_that_loses_to_walking_is_not_retained() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -815,6 +860,9 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
 fn identical_physical_bike_movements_use_one_exact_realization() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![
             AccessPoint::new(
                 BoardingPointId::new("a"),
@@ -876,6 +924,9 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
     let network = network(Vec::new(), &stop_refs, Vec::new());
     let departure_at = datetime!(2026-09-21 10:00 UTC);
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new(&stop_names[0]),
             departure_at,
@@ -946,6 +997,9 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         Vec::new(),
     );
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1068,6 +1122,9 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
 fn bike_with_no_pareto_benefit_is_pruned() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1136,6 +1193,9 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
         Vec::new(),
     );
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1201,6 +1261,9 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         Vec::new(),
     );
     let mut query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![
             AccessPoint::new(
                 BoardingPointId::new("a"),
@@ -1782,8 +1845,8 @@ fn expired_deadline_stops_phase2_before_evaluating_corridors() {
     let network = network(Vec::new(), &["origin", "destination"], Vec::new());
     let corridor = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
-    let query = query(&[TransitMode::Bus], 0, 1)
-        .with_deadline(super::super::model::PlanningDeadline::elapsed_for_test());
+    let mut query = query(&[TransitMode::Bus], 0, 1);
+    query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
 
     let result = evaluate_with_stats(&network, &corridor, &snapshot, query);
 
@@ -1975,6 +2038,9 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
     use super::super::surface::WalkingMovementPlanner;
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),

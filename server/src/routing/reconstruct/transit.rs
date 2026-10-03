@@ -43,8 +43,7 @@ impl ReconstructionState<'_, '_> {
         let pattern_data = self
             .reconstructor
             .transit_runtime
-            .pattern(&trip.pattern_id)
-            .ok_or(PlanningError::Internal)?;
+            .required_pattern(&trip.pattern_id);
         let route_data = self.reconstructor.transit_runtime.route_of(pattern_data);
         let boarding = self
             .reconstructor
@@ -74,14 +73,14 @@ impl ReconstructionState<'_, '_> {
             alighting,
             board.departure_at,
             alight.arrival_at,
-        ));
+        )?);
         if let Some(pending) = self.pending_transfer.take() {
             record_transfer(
                 &mut self.assembly,
                 pending,
                 route_data.mode,
                 board.departure_at,
-            );
+            )?;
         } else if let Some(previous) = &self.previous_transit
             && previous.trip_id != trip.id
         {
@@ -98,7 +97,7 @@ impl ReconstructionState<'_, '_> {
                 },
                 route_data.mode,
                 board.departure_at,
-            );
+            )?;
         }
         self.previous_transit = Some(PreviousTransit {
             leg_id,
@@ -161,14 +160,16 @@ fn record_transfer(
     pending: PendingTransfer,
     to_mode: TransitMode,
     departure: OffsetDateTime,
-) {
-    let available_seconds = seconds_between(pending.from_arrival, departure).unwrap_or(0);
+) -> Result<(), PlanningError> {
+    let available_seconds =
+        seconds_between(pending.from_arrival, departure).ok_or(PlanningError::Internal)?;
     let kind = evidence::transfer_kind(pending.from_mode, Some(to_mode));
     assembly.transfer_evidence.push(TransferEvidence {
         kind,
         physical_seconds: pending.duration_seconds,
         available_seconds,
     });
+    Ok(())
 }
 
 fn transit_leg(
@@ -179,21 +180,21 @@ fn transit_leg(
     alighting: &crate::domain::transit::TransitStop,
     departure: OffsetDateTime,
     arrival: OffsetDateTime,
-) -> Leg {
+) -> Result<Leg, PlanningError> {
     let guidance_code = match route.mode {
         TransitMode::Bus => "board_bus",
         TransitMode::Metro => "board_metro",
         TransitMode::Rail => "board_rail",
         TransitMode::HighSpeedRail => "board_high_speed_rail",
     };
-    Leg {
+    Ok(Leg {
         id,
         mode: LegMode::Transit,
         from: transit_place(boarding),
         to: transit_place(alighting),
         departure_time: departure,
         arrival_time: arrival,
-        duration_seconds: seconds_between(departure, arrival).unwrap_or(0),
+        duration_seconds: seconds_between(departure, arrival).ok_or(PlanningError::Internal)?,
         geometry: geometry::straight_geometry(boarding.coordinate, alighting.coordinate),
         guidance: vec![Guidance {
             code: guidance_code,
@@ -211,7 +212,7 @@ fn transit_leg(
             headsign: service.headsign.clone(),
         },
         attribution: Vec::new(),
-    }
+    })
 }
 
 pub(super) fn transit_place(stop: &crate::domain::transit::TransitStop) -> Place {

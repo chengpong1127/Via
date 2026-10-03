@@ -34,8 +34,8 @@ pub struct MultimodalPlanner {
     topology: Arc<TransitTopologyIndex>,
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
-    bike: Option<BikeShareMovementPlanner>,
-    street: Option<Arc<dyn StreetRouter>>,
+    bike: BikeShareMovementPlanner,
+    street: Arc<dyn StreetRouter>,
 }
 
 /// Request-local algorithm accounting for diagnostics and deterministic benchmarks.
@@ -52,34 +52,21 @@ struct RequestSnapshots {
 }
 
 impl MultimodalPlanner {
-    pub fn new(network: Arc<TransitRuntime>, timing: Arc<dyn TimingSnapshotLoader>) -> Self {
+    pub fn new(
+        network: Arc<TransitRuntime>,
+        timing: Arc<dyn TimingSnapshotLoader>,
+        street: Arc<dyn StreetRouter>,
+        bike_network: Arc<BikeShareNetwork>,
+        bike_availability: Arc<dyn BikeAvailabilitySource>,
+    ) -> Self {
         Self {
             topology: Arc::new(TransitTopologyIndex::new(network.network())),
             transfers: Arc::new(TransferShortcutIndex::from_network(network.network())),
             network,
             timing,
-            bike: None,
-            street: None,
+            bike: BikeShareMovementPlanner::new(bike_network, bike_availability, street.clone()),
+            street,
         }
-    }
-
-    pub fn with_street_router(mut self, street_router: Arc<dyn StreetRouter>) -> Self {
-        self.street = Some(street_router);
-        self
-    }
-
-    pub fn with_bike_share(
-        mut self,
-        network: Arc<BikeShareNetwork>,
-        availability_source: Arc<dyn BikeAvailabilitySource>,
-        street_router: Arc<dyn StreetRouter>,
-    ) -> Self {
-        self.bike = Some(BikeShareMovementPlanner::new(
-            network,
-            availability_source,
-            street_router,
-        ));
-        self
     }
 
     pub(crate) async fn discover_access_points(
@@ -220,7 +207,7 @@ impl MultimodalPlanner {
         &self,
         query: PlanningQuery,
     ) -> Result<PlanningSession<'_>, RoutingError> {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
         let (retained, static_stats) = if query.allowed_transit_modes.is_empty()
@@ -235,23 +222,14 @@ impl MultimodalPlanner {
             self.execute_phase1(&query)?
         };
         let loading = self.load_request_snapshots(&query, &retained, &static_stats);
-        let snapshots = if let Some(deadline) = query.deadline {
-            tokio::time::timeout_at(deadline.instant(), loading)
-                .await
-                .map_err(|_| RoutingError::DeadlineExceeded)??
-        } else {
-            loading.await?
-        };
-        let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = Vec::new();
-        if query.origin.is_some()
-            && query.destination.is_some()
-            && let Some(street) = &self.street
-        {
-            surface_planners.push(Box::new(WalkingMovementPlanner::new(street.clone())));
-        }
-        if let Some((bike, snapshot)) = self.bike.as_ref().zip(snapshots.bike.clone()) {
+        let snapshots = tokio::time::timeout_at(query.deadline.instant(), loading)
+            .await
+            .map_err(|_| RoutingError::DeadlineExceeded)??;
+        let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> =
+            vec![Box::new(WalkingMovementPlanner::new(self.street.clone()))];
+        if let Some(snapshot) = snapshots.bike.clone() {
             surface_planners.push(Box::new(BikeShareSession::new(
-                bike.clone(),
+                self.bike.clone(),
                 snapshot,
                 OffsetDateTime::now_utc(),
             )));
@@ -281,7 +259,7 @@ impl MultimodalPlanner {
         ),
         RoutingError,
     > {
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
@@ -290,9 +268,7 @@ impl MultimodalPlanner {
         let max_legs = query.limits.max_transfers.saturating_add(1);
         let (retained_corridors, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, query);
-        if static_stats.deadline_exceeded
-            || query.deadline.is_some_and(|deadline| deadline.is_elapsed())
-        {
+        if static_stats.deadline_exceeded || query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
 
@@ -401,33 +377,35 @@ impl MultimodalPlanner {
             .max(query.limits.max_departures_per_query);
         let timing_queries = positions
             .into_iter()
-            .filter_map(|position| {
-                let pattern = self.network.pattern(&position.pattern_id)?;
-                let stop_id = pattern.stops.get(position.stop_index)?.clone();
-                Some(
-                    DepartureQuery::at_position(
-                        position.pattern_id,
-                        stop_id,
-                        position.stop_index,
-                        query.departure_time,
-                        snapshot_limit,
-                    )
-                    .until(
-                        query.departure_time
-                            + Duration::seconds(i64::from(
-                                query.limits.max_journey_duration_seconds,
-                            )),
-                    ),
+            .map(|position| {
+                let pattern = self.network.pattern(&position.pattern_id).ok_or_else(|| {
+                    RoutingError::Internal("retained timing position is invalid".into())
+                })?;
+                let stop_id = pattern
+                    .stops
+                    .get(position.stop_index)
+                    .ok_or_else(|| {
+                        RoutingError::Internal("retained timing position is invalid".into())
+                    })?
+                    .clone();
+                Ok(DepartureQuery::at_position(
+                    position.pattern_id,
+                    stop_id,
+                    position.stop_index,
+                    query.departure_time,
+                    snapshot_limit,
                 )
+                .until(
+                    query.departure_time
+                        + Duration::seconds(i64::from(query.limits.max_journey_duration_seconds)),
+                ))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, RoutingError>>()?;
         let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
-        let bike_enabled = query.allow_bike_share && self.bike.is_some();
+        let bike_enabled = query.allow_bike_share;
         let mut failures = evaluator::EvaluationFailures::default();
         let (snapshot, bike_snapshot) = if bike_enabled {
-            let bike = self.bike.as_ref().expect("bike planner checked above");
-
             let (snapshot, bike_snapshot) = tokio::join!(
                 async {
                     if timing_queries.is_empty() {
@@ -436,7 +414,7 @@ impl MultimodalPlanner {
                         self.timing.load_snapshot(timing_queries).await
                     }
                 },
-                bike.availability_source.snapshot()
+                self.bike.availability_source.snapshot()
             );
             let bike_snapshot = match bike_snapshot {
                 Ok(snapshot) => Some(snapshot),
@@ -465,7 +443,7 @@ impl MultimodalPlanner {
                 None,
             )
         };
-        if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+        if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
         tracing::debug!(
@@ -512,10 +490,8 @@ impl PlanningSession<'_> {
             .retained
             .retained()
             .iter()
-            .filter_map(|corridor| {
-                EvaluationCorridor::from_transit(self.network, corridor, &self.query)
-            })
-            .collect::<Vec<_>>();
+            .map(|corridor| EvaluationCorridor::from_transit(self.network, corridor, &self.query))
+            .collect::<Result<Vec<_>, _>>()?;
         let journeys = self.evaluate_corridors(&corridors).await?;
         if journeys.is_empty() {
             return self.evaluate_fallback().await;
@@ -527,9 +503,7 @@ impl PlanningSession<'_> {
         if self.fallback_used {
             return Ok(Vec::new());
         }
-        let Some((origin, destination)) = self.query.origin.zip(self.query.destination) else {
-            return Ok(Vec::new());
-        };
+        let (origin, destination) = (self.query.origin, self.query.destination);
         self.fallback_used = true;
         self.evaluate_corridors(&[EvaluationCorridor::surface_only(origin, destination)])
             .await
@@ -557,13 +531,10 @@ impl PlanningSession<'_> {
         let lookups_before = self.stats.phase2_evaluation.transit_departure_lookups;
         evaluator.stats = self.stats.phase2_evaluation;
         evaluator.failures = self.failures;
-        let evaluation_result = if let Some(deadline) = self.query.deadline {
-            tokio::time::timeout_at(deadline.instant(), evaluator.evaluate(corridors))
+        let evaluation_result =
+            tokio::time::timeout_at(self.query.deadline.instant(), evaluator.evaluate(corridors))
                 .await
-                .map_err(|_| RoutingError::DeadlineExceeded)??
-        } else {
-            evaluator.evaluate(corridors).await?
-        };
+                .map_err(|_| RoutingError::DeadlineExceeded)??;
         // Evaluation stats survive fallback; emit only this completed pass's work.
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
             .increment((evaluation_result.stats.transit_departure_lookups - lookups_before) as u64);
@@ -782,8 +753,24 @@ mod tests {
         Arc::new(TransitRuntime::new(Arc::new(network)))
     }
 
+    fn test_planner(
+        network: Arc<TransitRuntime>,
+        timing: Arc<dyn TimingSnapshotLoader>,
+    ) -> MultimodalPlanner {
+        MultimodalPlanner::new(
+            network,
+            timing,
+            Arc::new(FakeStreetRouter::builder().build()),
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+            Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+        )
+    }
+
     fn query(k: usize) -> PlanningQuery {
         PlanningQuery::new(
+            Coordinate::try_new(25.0, 121.5).unwrap(),
+            Coordinate::try_new(25.0, 121.5).unwrap(),
+            super::super::model::PlanningDeadline::after(std::time::Duration::from_secs(60)),
             vec![AccessPoint::new(
                 BoardingPointId::new("origin"),
                 datetime!(2026-09-21 10:00 UTC),
@@ -821,7 +808,7 @@ mod tests {
             ]),
             ..RecordingTimingLoader::default()
         });
-        let planner = MultimodalPlanner::new(network(), loader.clone());
+        let planner = test_planner(network(), loader.clone());
 
         let (_, stats) = planner.plan_with_stats(query(1)).await.unwrap();
 
@@ -844,9 +831,9 @@ mod tests {
     #[tokio::test]
     async fn expired_deadline_stops_before_loading_timing_snapshot() {
         let loader = Arc::new(RecordingTimingLoader::default());
-        let planner = MultimodalPlanner::new(network(), loader.clone());
-        let query =
-            query(1).with_deadline(super::super::model::PlanningDeadline::elapsed_for_test());
+        let planner = test_planner(network(), loader.clone());
+        let mut query = query(1);
+        query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
 
         let result = planner.plan_with_stats(query).await;
 
@@ -869,7 +856,7 @@ mod tests {
             ]),
             ..RecordingTimingLoader::default()
         });
-        let planner = MultimodalPlanner::new(network(), loader);
+        let planner = test_planner(network(), loader);
 
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
@@ -895,11 +882,11 @@ mod tests {
         });
         let origin = Coordinate::try_new(25.0, 121.5).unwrap();
         let destination = Coordinate::try_new(25.001, 121.501).unwrap();
-        let planner = MultimodalPlanner::new(network(), loader);
-        let mut session = planner
-            .prepare(query(1).with_endpoints(origin, destination))
-            .await
-            .unwrap();
+        let planner = test_planner(network(), loader);
+        let mut planning_query = query(1);
+        planning_query.origin = origin;
+        planning_query.destination = destination;
+        let mut session = planner.prepare(planning_query).await.unwrap();
         assert!(!session.evaluate_primary().await.unwrap().is_empty());
         let lookups = session.stats().phase2_evaluation.transit_departure_lookups;
         assert!(lookups > 0);
@@ -937,7 +924,7 @@ mod tests {
             )]),
             ..RecordingTimingLoader::default()
         });
-        let planner = MultimodalPlanner::new(network(), loader);
+        let planner = test_planner(network(), loader);
         let mut query = query(1);
         query.origin_access.push(query.origin_access[0].clone());
         query.limits.max_phase2_expansions = 1;
@@ -952,15 +939,16 @@ mod tests {
     async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
         let timing = Arc::new(RecordingTimingLoader::default());
         let calls = Arc::new(AtomicUsize::new(0));
-        let planner = MultimodalPlanner::new(multiple_mode_corridors_network(), timing.clone())
-            .with_bike_share(
-                Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
-                Arc::new(CountingBikeAvailabilitySource {
-                    calls: calls.clone(),
-                }),
-                Arc::new(FakeStreetRouter::builder().build()),
-            );
-        let query = query(2)
+        let planner = MultimodalPlanner::new(
+            multiple_mode_corridors_network(),
+            timing.clone(),
+            Arc::new(FakeStreetRouter::builder().build()),
+            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
+            Arc::new(CountingBikeAvailabilitySource {
+                calls: calls.clone(),
+            }),
+        );
+        let bike_query = query(2)
             .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
             .with_limits(crate::routing::PlannerLimits {
                 max_transfers: 1,
@@ -972,10 +960,12 @@ mod tests {
             })
             .with_bike_share(true);
 
-        let (_, stats) = planner.plan_with_stats(query).await.unwrap();
+        let (_, stats) = planner.plan_with_stats(bike_query).await.unwrap();
 
         assert_eq!(stats.phase1.static_corridors_retained, 2);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        planner.plan_with_stats(query(1)).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
     #[tokio::test]
@@ -999,10 +989,22 @@ mod tests {
                 )
                 .build(),
         );
-        let planner = MultimodalPlanner::new(network(), timing.clone()).with_street_router(street);
-        let query = PlanningQuery::new(Vec::new(), Vec::new(), datetime!(2026-09-21 10:00 UTC))
-            .with_allowed_transit_modes([])
-            .with_endpoints(origin, destination);
+        let planner = MultimodalPlanner::new(
+            network(),
+            timing.clone(),
+            street,
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+            Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+        );
+        let query = PlanningQuery::new(
+            origin,
+            destination,
+            super::super::model::PlanningDeadline::after(std::time::Duration::from_secs(60)),
+            Vec::new(),
+            Vec::new(),
+            datetime!(2026-09-21 10:00 UTC),
+        )
+        .with_allowed_transit_modes([]);
         let (journeys, stats) = planner.plan_with_stats(query).await.unwrap();
         assert_eq!(journeys.len(), 1);
         assert_eq!(stats.phase1.static_search_states_expanded, 0);
@@ -1030,10 +1032,22 @@ mod tests {
                 )
                 .build(),
         );
-        let planner = MultimodalPlanner::new(network(), timing).with_street_router(street);
-        let query = PlanningQuery::new(Vec::new(), Vec::new(), datetime!(2026-09-21 10:00 UTC))
-            .with_allowed_transit_modes([])
-            .with_endpoints(origin, destination);
+        let planner = MultimodalPlanner::new(
+            network(),
+            timing,
+            street,
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+            Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+        );
+        let query = PlanningQuery::new(
+            origin,
+            destination,
+            super::super::model::PlanningDeadline::after(std::time::Duration::from_secs(60)),
+            Vec::new(),
+            Vec::new(),
+            datetime!(2026-09-21 10:00 UTC),
+        )
+        .with_allowed_transit_modes([]);
         let mut session = planner.prepare(query).await.unwrap();
 
         let primary = session.evaluate_primary().await.unwrap();

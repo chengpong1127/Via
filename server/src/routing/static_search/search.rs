@@ -85,7 +85,7 @@ pub fn generate(
         &mut expansion_stats,
     );
 
-    if stats.deadline_exceeded || query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+    if stats.deadline_exceeded || query.deadline.is_elapsed() {
         stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
         return finish_deadline(started, stats);
     }
@@ -557,7 +557,7 @@ fn finalize_expansion_stats(stats: &mut StaticSearchStats, expansion_stats: Sear
 }
 
 fn deadline_exceeded(query: &PlanningQuery) -> bool {
-    query.deadline.is_some_and(|deadline| deadline.is_elapsed())
+    query.deadline.is_elapsed()
 }
 
 fn finish_deadline(

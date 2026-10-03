@@ -1,4 +1,4 @@
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 
 use crate::{
     domain::journey::{Geometry, Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
@@ -46,15 +46,13 @@ impl ReconstructionState<'_, '_> {
             self.context.request,
             self.journey,
             movement.from_anchor,
-        )
-        .ok_or(PlanningError::Internal)?;
+        )?;
         let to = anchor_place(
             self.reconstructor,
             self.context.request,
             self.journey,
             movement.to_anchor,
-        )
-        .ok_or(PlanningError::Internal)?;
+        )?;
         let connector_start = self.assembly.legs.len();
         if !append_bike_share(
             self.reconstructor,
@@ -85,16 +83,12 @@ async fn append_bike_share(
     bike_movement: &crate::routing::BikeShareMovement,
     assembly: &mut JourneyAssembly,
 ) -> Result<bool, PlanningError> {
-    let Some(pickup) = reconstructor.bike_station_place(&bike_movement.pickup_station_id) else {
-        return Ok(false);
-    };
-    let Some(dropoff) = reconstructor.bike_station_place(&bike_movement.dropoff_station_id) else {
-        return Ok(false);
-    };
+    let pickup = reconstructor.bike_station_place(&bike_movement.pickup_station_id)?;
+    let dropoff = reconstructor.bike_station_place(&bike_movement.dropoff_station_id)?;
 
     assembly.arrival_time += Duration::seconds(i64::from(bike_movement.rental_wait_seconds));
 
-    let Some(to_pickup) = strict_bike_path(
+    let Some(to_pickup) = hydrate_path(
         reconstructor,
         context,
         from,
@@ -102,13 +96,13 @@ async fn append_bike_share(
         StreetTravelMode::Walking,
         assembly.arrival_time,
     )
-    .await
+    .await?
     else {
         return Ok(false);
     };
     append_routed_walking(from, &pickup, to_pickup, assembly);
 
-    let Some(bicycle) = strict_bike_path(
+    let Some(bicycle) = hydrate_path(
         reconstructor,
         context,
         &pickup,
@@ -116,13 +110,20 @@ async fn append_bike_share(
         StreetTravelMode::Bicycle,
         assembly.arrival_time,
     )
-    .await
+    .await?
     else {
         return Ok(false);
     };
-    append_bicycle(&pickup, &dropoff, bicycle, assembly);
+    append_bicycle(
+        &pickup,
+        &dropoff,
+        &bike_movement.pickup_station_id,
+        &bike_movement.dropoff_station_id,
+        bicycle,
+        assembly,
+    );
 
-    let Some(from_dropoff) = strict_bike_path(
+    let Some(from_dropoff) = hydrate_path(
         reconstructor,
         context,
         &dropoff,
@@ -130,7 +131,7 @@ async fn append_bike_share(
         StreetTravelMode::Walking,
         assembly.arrival_time,
     )
-    .await
+    .await?
     else {
         return Ok(false);
     };
@@ -139,22 +140,11 @@ async fn append_bike_share(
     Ok(true)
 }
 
-async fn strict_bike_path(
-    reconstructor: &JourneyReconstructor,
-    context: &JourneyPlanningContext<'_>,
-    from: &Place,
-    to: &Place,
-    mode: StreetTravelMode,
-    departure: OffsetDateTime,
-) -> Option<StreetPath> {
-    hydrate_path(reconstructor, context, from, to, mode, departure)
-        .await
-        .unwrap_or_default()
-}
-
 fn append_bicycle(
     pickup: &Place,
     dropoff: &Place,
+    pickup_station_id: &crate::domain::ids::BikeStationId,
+    dropoff_station_id: &crate::domain::ids::BikeStationId,
     path: StreetPath,
     assembly: &mut JourneyAssembly,
 ) {
@@ -181,9 +171,9 @@ fn append_bicycle(
             ]),
         }],
         details: LegDetails::BikeShare {
-            pickup_station_id: pickup.via_id.clone().unwrap_or_default(),
+            pickup_station_id: pickup_station_id.as_str().into(),
             pickup_station_name: pickup.display_name.clone(),
-            dropoff_station_id: dropoff.via_id.clone().unwrap_or_default(),
+            dropoff_station_id: dropoff_station_id.as_str().into(),
             dropoff_station_name: dropoff.display_name.clone(),
         },
         attribution: path.attribution.clone(),

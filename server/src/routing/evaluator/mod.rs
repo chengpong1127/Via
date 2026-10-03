@@ -156,7 +156,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
     }
 
     fn check_deadline(&self) -> Result<(), RoutingError> {
-        if self.query.deadline.is_some_and(|d| d.is_elapsed()) {
+        if self.query.deadline.is_elapsed() {
             Err(RoutingError::DeadlineExceeded)
         } else {
             Ok(())
@@ -388,7 +388,11 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 self.query.departure_time,
             ) {
                 Ok(journey) => candidates.push(EvaluatedCandidate { metrics, journey }),
-                Err(_) => self.stats.malformed_trips += 1,
+                Err(error) => {
+                    return Err(RoutingError::Internal(format!(
+                        "evaluated journey has invalid movement continuity: {error}"
+                    )));
+                }
             }
         }
         if candidates.is_empty() {
@@ -530,8 +534,8 @@ fn run_test_evaluation(
             let evaluation_corridors = corridor
                 .retained()
                 .iter()
-                .filter_map(|retained| EvaluationCorridor::from_transit(network, retained, &query))
-                .collect::<Vec<_>>();
+                .map(|retained| EvaluationCorridor::from_transit(network, retained, &query))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = routes
                 .map(|routes| {
                     vec![Box::new(TestBikePlanner {

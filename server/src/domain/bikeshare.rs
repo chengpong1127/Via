@@ -278,6 +278,10 @@ impl BikeShareNetwork {
             .map(|index| &self.stations[*index])
     }
 
+    pub(crate) fn required_station(&self, id: &BikeStationId) -> &BikeStation {
+        self.station(id).expect("validated bike station id")
+    }
+
     pub fn access_from_boarding_point(&self, id: &BoardingPointId) -> &[BikeStationAccess] {
         self.indexes()
             .access_by_boarding_point

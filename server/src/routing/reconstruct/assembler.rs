@@ -147,16 +147,14 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             movements,
             movement_index,
             self.final_anchor,
-        ) else {
+        )?
+        else {
             return Ok(TerminalEgressOutcome::NotApplicable);
         };
         if self.current_stop.as_ref() != Some(&from_stop) {
             return Ok(TerminalEgressOutcome::Invalid);
         }
-        let from = self
-            .reconstructor
-            .stop_place(&from_stop)
-            .ok_or(PlanningError::Internal)?;
+        let from = self.reconstructor.stop_place(&from_stop)?;
         super::street::append_hydrated_walking(
             self.reconstructor,
             self.context,
@@ -220,15 +218,22 @@ fn terminal_surface_transfer_egress(
     movements: &[JourneyMovement],
     index: usize,
     final_anchor: usize,
-) -> Option<(
-    crate::domain::ids::BoardingPointId,
-    crate::domain::ids::BoardingPointId,
-    u32,
-)> {
-    let transfer_movement = movements.get(index)?;
-    let egress_movement = movements.get(index + 1)?;
+) -> Result<
+    Option<(
+        crate::domain::ids::BoardingPointId,
+        crate::domain::ids::BoardingPointId,
+        u32,
+    )>,
+    PlanningError,
+> {
+    let Some(transfer_movement) = movements.get(index) else {
+        return Ok(None);
+    };
+    let Some(egress_movement) = movements.get(index + 1) else {
+        return Ok(None);
+    };
     if transfer_movement.street_path.is_some() || egress_movement.street_path.is_some() {
-        return None;
+        return Ok(None);
     }
     let JourneyMovementKind::Walking {
         kind: WalkingMovementKind::Transfer,
@@ -236,7 +241,7 @@ fn terminal_surface_transfer_egress(
         ..
     } = &transfer_movement.kind
     else {
-        return None;
+        return Ok(None);
     };
     let JourneyMovementKind::Walking {
         kind: WalkingMovementKind::Egress,
@@ -244,16 +249,20 @@ fn terminal_surface_transfer_egress(
         ..
     } = &egress_movement.kind
     else {
-        return None;
+        return Ok(None);
     };
     if transfer_movement.to_anchor != egress_movement.from_anchor
         || egress_movement.to_anchor != final_anchor
     {
-        return None;
+        return Ok(None);
     }
-    Some((
-        super::street::anchor_boarding_point(journey, transfer_movement.from_anchor)?,
-        super::street::anchor_boarding_point(journey, transfer_movement.to_anchor)?,
+    let from_stop = super::street::anchor_boarding_point(journey, transfer_movement.from_anchor)
+        .ok_or(PlanningError::Internal)?;
+    let egress_stop = super::street::anchor_boarding_point(journey, transfer_movement.to_anchor)
+        .ok_or(PlanningError::Internal)?;
+    Ok(Some((
+        from_stop,
+        egress_stop,
         (*transfer_seconds).saturating_add(*egress_seconds),
-    ))
+    )))
 }

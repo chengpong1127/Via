@@ -14,7 +14,19 @@ use via_server::{
     routing::JourneyPlanningLimits,
     runtime::{ViaRuntime, ViaRuntimeDependencies},
     street::{StreetRouter, StreetRoutingError},
+    tdx::{TdxClient, TdxCredentials},
 };
+
+fn failing_tdx_client() -> Arc<TdxClient> {
+    Arc::new(
+        TdxClient::with_urls(
+            TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
+            "http://127.0.0.1:1/",
+            "http://127.0.0.1:1/",
+        )
+        .unwrap(),
+    )
+}
 
 pub async fn build_test_router<P>(provider: Arc<P>) -> Result<Router, StreetRoutingError>
 where
@@ -73,7 +85,7 @@ where
         ),
         street,
         street_health,
-        tdx: None,
+        tdx: failing_tdx_client(),
         bike_availability: bike_availability_source,
         limits: JourneyPlanningLimits::default(),
     });

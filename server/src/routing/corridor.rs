@@ -1,4 +1,5 @@
 //! Phase 2 anchors and baselines, independent of static transit discovery.
+use super::model::RoutingError;
 use super::{
     model::PlanningQuery,
     realized::{JourneyAnchorKind, WalkingMovementKind},
@@ -63,20 +64,36 @@ impl EvaluationCorridor {
         network: &TransitRuntime,
         retained: &StaticCorridor,
         query: &PlanningQuery,
-    ) -> Option<Self> {
-        let stops = retained.anchors()?.stops().to_vec();
+    ) -> Result<Self, RoutingError> {
+        let stops = retained
+            .anchors()
+            .ok_or_else(|| RoutingError::Internal("retained corridor has no anchors".into()))?
+            .stops()
+            .to_vec();
+        if stops.is_empty() {
+            return Err(RoutingError::Internal(
+                "retained corridor has no stop anchors".into(),
+            ));
+        }
         let stop_anchors = stops
             .iter()
             .map(|id| {
-                Some(CorridorAnchor {
+                let stop = network.stop(id).ok_or_else(|| {
+                    RoutingError::Internal(format!(
+                        "retained corridor references unknown stop {id:?}"
+                    ))
+                })?;
+                let coordinate = stop.coordinate.try_into().map_err(|_| {
+                    RoutingError::Internal(format!("stop {id:?} has an invalid coordinate"))
+                })?;
+                Ok(CorridorAnchor {
                     kind: JourneyAnchorKind::BoardingPoint { id: id.clone() },
-                    coordinate: network.stop(id)?.coordinate.try_into().ok()?,
+                    coordinate,
                 })
             })
-            .collect::<Option<Vec<_>>>()?;
-        // Stop-based queries may omit coordinates; the public service supplies both endpoints.
-        let origin = query.origin.unwrap_or(stop_anchors.first()?.coordinate);
-        let destination = query.destination.unwrap_or(stop_anchors.last()?.coordinate);
+            .collect::<Result<Vec<_>, RoutingError>>()?;
+        let origin = query.origin;
+        let destination = query.destination;
         let mut anchors = vec![CorridorAnchor {
             kind: JourneyAnchorKind::Origin,
             coordinate: origin,
@@ -100,7 +117,9 @@ impl EvaluationCorridor {
                 .collect(),
         }];
         if edges[0].baseline.is_empty() {
-            return None;
+            return Err(RoutingError::Internal(
+                "retained corridor has no matching access point".into(),
+            ));
         }
         edges.extend(retained.steps.iter().map(|step| CorridorEdge {
             baseline: vec![match step {
@@ -129,9 +148,13 @@ impl EvaluationCorridor {
             })
             .collect::<Vec<_>>();
         if egress.is_empty() {
-            return None;
+            return Err(RoutingError::Internal(
+                "retained corridor has no matching egress point".into(),
+            ));
         }
         edges.push(CorridorEdge { baseline: egress });
-        Self::new(anchors, edges)
+        Self::new(anchors, edges).ok_or_else(|| {
+            RoutingError::Internal("retained corridor has inconsistent anchors and edges".into())
+        })
     }
 }

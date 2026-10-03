@@ -37,11 +37,11 @@ impl StaticPhase1PatternIndex {
         network: &TransitRuntime,
         allowed_modes: &[TransitMode],
         stats: &mut StaticSearchStats,
-        deadline: Option<PlanningDeadline>,
+        deadline: PlanningDeadline,
     ) -> Self {
         let mut index = Self::default();
         for pattern in &network.network().patterns {
-            if deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+            if deadline.is_elapsed() {
                 stats.deadline_exceeded = true;
                 break;
             }
@@ -81,7 +81,7 @@ impl StaticPhase1PatternIndex {
         board_index: usize,
         stats: &mut StaticSearchStats,
         equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-        deadline: Option<PlanningDeadline>,
+        deadline: PlanningDeadline,
     ) -> bool {
         let group = &mut self.groups[group_index];
         if group.rides_by_board_index.contains_key(&board_index) {
@@ -95,14 +95,12 @@ impl StaticPhase1PatternIndex {
             let mut first_source = None;
             let mut mixed_source = false;
             for alight_index in (board_index + 1)..group.stops.len() {
-                if deadline.is_some_and(|deadline| deadline.is_elapsed()) {
+                if deadline.is_elapsed() {
                     stats.deadline_exceeded = true;
                     return false;
                 }
                 stats.static_ride_profile_positions_scanned += 1;
-                let Some(segment) = group.segments.get(alight_index - 1) else {
-                    continue;
-                };
+                let segment = &group.segments[alight_index - 1];
                 let Some(total) = duration_seconds.checked_add(segment.seconds) else {
                     break;
                 };
@@ -118,9 +116,7 @@ impl StaticPhase1PatternIndex {
                         SegmentTimeSource::Estimated => StaticCostSource::OptimisticEstimate,
                     }
                 };
-                let Some(alight_stop_id) = group.stops.get(alight_index).cloned() else {
-                    continue;
-                };
+                let alight_stop_id = group.stops[alight_index].clone();
                 let leg = StaticTransitLeg {
                     pattern_id: pattern_id.clone(),
                     board_stop_id: group.stops[board_index].clone(),

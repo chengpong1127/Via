@@ -88,7 +88,10 @@ fn trip(id: &str, pattern_id: &str, departure: u32) -> TransitTrip {
 
 fn resolver(network: TransitNetwork) -> DepartureResolver {
     let network = Arc::new(TransitRuntime::new(Arc::new(network)));
-    let metro = Arc::new(MetroDepartureSource::new(network.clone()));
+    let metro = Arc::new(MetroDepartureSource::new(
+        network.clone(),
+        crate::support::tdx::failing_tdx_client(),
+    ));
     DepartureResolver::new(network, vec![metro as Arc<dyn TransitDepartureSource>])
 }
 

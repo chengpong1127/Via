@@ -55,6 +55,10 @@ impl TransitRuntime {
         self.indexes.pattern(&self.network, id)
     }
 
+    pub(crate) fn required_pattern(&self, id: &TransitPatternId) -> &TransitPattern {
+        self.pattern(id).expect("validated transit pattern id")
+    }
+
     pub fn route_for_pattern(&self, pattern: &TransitPattern) -> Option<&TransitRoute> {
         self.indexes.route_for_pattern(&self.network, pattern)
     }

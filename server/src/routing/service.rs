@@ -48,13 +48,13 @@ impl RoutingService {
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
     ) -> Self {
-        let planner = MultimodalPlanner::new(transit_runtime.clone(), timing)
-            .with_street_router(street_routing.clone())
-            .with_bike_share(
-                bike_share_network.clone(),
-                bike_availability_source,
-                street_routing.clone(),
-            );
+        let planner = MultimodalPlanner::new(
+            transit_runtime.clone(),
+            timing,
+            street_routing.clone(),
+            bike_share_network.clone(),
+            bike_availability_source,
+        );
         let reconstructor =
             JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network);
         let limits = limits.normalized();
@@ -137,8 +137,15 @@ impl RoutingService {
                 .map_err(|_| PlanningError::Internal)?,
         );
         let query = if allowed_transit_modes.is_empty() {
-            PlanningQuery::new(Vec::new(), Vec::new(), context.search_start)
-                .with_allowed_transit_modes([])
+            PlanningQuery::new(
+                origin,
+                destination,
+                context.deadline,
+                Vec::new(),
+                Vec::new(),
+                context.search_start,
+            )
+            .with_allowed_transit_modes([])
         } else {
             let access_started = Instant::now();
             let access = self
@@ -198,14 +205,19 @@ impl RoutingService {
                 "discovered transit access and egress"
             );
 
-            PlanningQuery::new(access, egress, context.search_start)
-                .with_allowed_transit_modes(allowed_transit_modes)
+            PlanningQuery::new(
+                origin,
+                destination,
+                context.deadline,
+                access,
+                egress,
+                context.search_start,
+            )
+            .with_allowed_transit_modes(allowed_transit_modes)
         };
         let mut query = query
-            .with_endpoints(origin, destination)
             .with_bike_share(request.allows_bike_share())
-            .with_limits(self.limits.planner)
-            .with_deadline(context.deadline);
+            .with_limits(self.limits.planner);
         query.latest_arrival = context.latest_arrival;
 
         {
@@ -269,6 +281,9 @@ impl RoutingService {
                             return Err(PlanningError::TemporarilyUnavailable);
                         }
                         super::model::RoutingError::InvalidQuery => {}
+                        super::model::RoutingError::Internal(_) => {
+                            attempt.failures.internal = true;
+                        }
                     }
                     tracing::error!(error = %error, "transit planning failed");
                 }
@@ -407,7 +422,14 @@ mod limits_tests {
     }
     #[test]
     fn routing_and_query_share_planner_defaults() {
-        let query = PlanningQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc());
+        let query = PlanningQuery::new(
+            crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+            crate::street::Coordinate::try_new(25.001, 121.501).unwrap(),
+            crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
+            Vec::new(),
+            Vec::new(),
+            OffsetDateTime::now_utc(),
+        );
         assert_eq!(JourneyPlanningLimits::default().planner, query.limits);
         assert_eq!(query.limits, PlannerLimits::default());
     }
@@ -418,8 +440,15 @@ mod limits_tests {
             max_phase2_expansions: 0,
             ..PlannerLimits::default()
         };
-        let query = PlanningQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc())
-            .with_limits(limits);
+        let query = PlanningQuery::new(
+            crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+            crate::street::Coordinate::try_new(25.001, 121.501).unwrap(),
+            crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
+            Vec::new(),
+            Vec::new(),
+            OffsetDateTime::now_utc(),
+        )
+        .with_limits(limits);
         assert_eq!(query.limits.max_phase2_expansions, 0);
         assert_eq!(
             JourneyPlanningLimits {

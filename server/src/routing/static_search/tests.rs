@@ -90,6 +90,9 @@ fn query(
     k: usize,
 ) -> PlanningQuery {
     PlanningQuery::new(
+        crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
+        crate::street::Coordinate::try_new(25.001, 121.501).unwrap(),
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![AccessPoint::new(
             id(origin),
             datetime!(2026-09-21 10:00 UTC),
@@ -599,7 +602,7 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
     let topology = TransitTopologyIndex::new(&network);
     let transfers = TransferShortcutIndex::from_network(&network);
     let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
-    query.deadline = Some(super::super::model::PlanningDeadline::elapsed_for_test());
+    query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
     let (corridors, stats) = generate(&runtime, &topology, &transfers, &query);
@@ -628,7 +631,7 @@ fn endpoint_mode_discovery_cancels_expired_queries_without_partial_results() {
             last: TransitMode::Bus
         }])),
     );
-    query.deadline = Some(super::super::model::PlanningDeadline::elapsed_for_test());
+    query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
     assert_eq!(
         reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
         None
@@ -651,7 +654,12 @@ fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
     );
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
     let mut stats = StaticSearchStats::default();
-    let mut index = StaticPhase1PatternIndex::new(&runtime, &[TransitMode::Bus], &mut stats, None);
+    let mut index = StaticPhase1PatternIndex::new(
+        &runtime,
+        &[TransitMode::Bus],
+        &mut stats,
+        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
+    );
     let mut equivalent_legs = HashMap::new();
     for (pattern_id, segment_seconds) in [("loop-a", 10), ("loop-b", 15)] {
         let group_index = index
@@ -663,7 +671,9 @@ fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
                 board_index,
                 &mut stats,
                 &mut equivalent_legs,
-                None
+                crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(
+                    3600
+                ))
             ));
             let rides = index.ride_options(group_index, board_index);
             assert_eq!(rides.len(), 3 - board_index);
@@ -682,7 +692,9 @@ fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
                 board_index,
                 &mut stats,
                 &mut equivalent_legs,
-                None
+                crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(
+                    3600
+                ))
             ));
         }
     }

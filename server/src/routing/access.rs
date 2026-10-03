@@ -163,7 +163,7 @@ pub(crate) fn modes_at_stop(
     let mut modes = topology
         .occurrences_at(stop_id)
         .iter()
-        .filter_map(|position| runtime.pattern(&position.pattern_id))
+        .map(|position| runtime.required_pattern(&position.pattern_id))
         .map(|pattern| runtime.route_of(pattern).mode)
         .collect::<Vec<_>>();
     modes.sort_unstable();

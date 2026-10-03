@@ -55,18 +55,18 @@ struct TraDelayObservation {
 pub struct TraDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
-    tdx: Option<Arc<TdxClient>>,
+    tdx: Arc<TdxClient>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
     bindings: Arc<TdxProviderBindings>,
 }
 
 impl TraDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx: None,
+            tdx,
             realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
             freshness_policy: FreshnessPolicy::tdx_default(),
             bindings: Arc::new(TdxProviderBindings::default()),
@@ -75,11 +75,6 @@ impl TraDepartureSource {
 
     pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
         self.bindings = bindings;
-        self
-    }
-
-    pub fn with_tdx(mut self, tdx: Option<Arc<TdxClient>>) -> Self {
-        self.tdx = tdx;
         self
     }
 
@@ -151,8 +146,6 @@ impl TraDepartureSource {
         let request = [("$filter", filter.as_str()), ("$format", "JSON")];
         let payload = self
             .tdx
-            .as_ref()
-            .expect("realtime_departures requires a TDX client")
             .get_json::<TdxTraTrainLiveBoardResponse>(&self.realtime_path, &request)
             .await;
         let observations = match payload {
@@ -300,7 +293,6 @@ impl TransitDepartureSource for TraDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Option<Vec<Result<Vec<EffectiveTrip>, DepartureError>>> {
-        self.tdx.as_ref()?;
         Some(self.realtime_departures(queries).await)
     }
 }

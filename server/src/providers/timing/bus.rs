@@ -46,7 +46,7 @@ struct RealtimeDepartureResults {
 
 pub struct BusDepartureSource {
     network: Arc<TransitRuntime>,
-    tdx: Option<Arc<TdxClient>>,
+    tdx: Arc<TdxClient>,
     schedule: ScheduleTiming,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
@@ -54,7 +54,7 @@ pub struct BusDepartureSource {
 }
 
 impl BusDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>, tdx: Option<Arc<TdxClient>>) -> Self {
+    pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
@@ -396,12 +396,7 @@ impl BusDepartureSource {
         let query = [("$filter", filter.as_str())];
         ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
         results.http_requests += 1;
-        let payload = self
-            .tdx
-            .as_ref()
-            .expect("realtime_departures requires a TDX client")
-            .get_json::<serde_json::Value>(&path, &query)
-            .await;
+        let payload = self.tdx.get_json::<serde_json::Value>(&path, &query).await;
         let values = match payload {
             Ok(payload) => {
                 parse_bus_realtime_payload(&payload, requested_services, &self.freshness_policy)
@@ -503,7 +498,6 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Option<Vec<Result<Vec<EffectiveTrip>, DepartureError>>> {
-        self.tdx.as_ref()?;
         Some(self.realtime_departures(queries).await)
     }
 }

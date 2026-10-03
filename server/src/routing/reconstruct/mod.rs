@@ -128,13 +128,17 @@ impl JourneyReconstructor {
     pub(super) fn stop_place(
         &self,
         stop_id: &crate::domain::ids::BoardingPointId,
-    ) -> Option<Place> {
+    ) -> Result<Place, PlanningError> {
         self.transit_runtime
             .stop(stop_id)
             .map(transit::transit_place)
+            .ok_or(PlanningError::Internal)
     }
 
-    pub(super) fn bike_station_place(&self, station_id: &BikeStationId) -> Option<Place> {
+    pub(super) fn bike_station_place(
+        &self,
+        station_id: &BikeStationId,
+    ) -> Result<Place, PlanningError> {
         self.bike_share_network
             .station(station_id)
             .map(|station| Place {
@@ -142,6 +146,7 @@ impl JourneyReconstructor {
                 coordinate: station.coordinate,
                 via_id: Some(station.id.as_str().into()),
             })
+            .ok_or(PlanningError::Internal)
     }
 }
 
@@ -171,8 +176,28 @@ pub(super) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::{BASELINE_MATCHING_KEY_VERSION, BIKE_MATCHING_KEY_VERSION};
-    use crate::routing::reconstruct::geometry::short_digest;
+    use std::sync::Arc;
+
+    use super::{BASELINE_MATCHING_KEY_VERSION, BIKE_MATCHING_KEY_VERSION, JourneyReconstructor};
+    use crate::{
+        domain::{
+            bikeshare::BikeShareNetwork,
+            ids::{BikeStationId, BoardingPointId},
+            journey::PlanningError,
+            transit::TransitNetwork,
+            transit_runtime::TransitRuntime,
+        },
+        routing::reconstruct::geometry::short_digest,
+        street::FakeStreetRouter,
+    };
+
+    fn empty_reconstructor() -> JourneyReconstructor {
+        JourneyReconstructor::new(
+            Arc::new(FakeStreetRouter::builder().build()),
+            Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+        )
+    }
 
     #[test]
     fn matching_key_versions_remain_stable() {
@@ -189,5 +214,19 @@ mod tests {
             short_digest(&format!("{BIKE_MATCHING_KEY_VERSION}:{bike_signature}")),
             "match_15eae0d1afa8b091"
         );
+    }
+
+    #[test]
+    fn missing_required_catalog_places_are_internal_errors() {
+        let reconstructor = empty_reconstructor();
+
+        assert!(matches!(
+            reconstructor.stop_place(&BoardingPointId::new("missing-stop")),
+            Err(PlanningError::Internal)
+        ));
+        assert!(matches!(
+            reconstructor.bike_station_place(&BikeStationId::new("missing-station")),
+            Err(PlanningError::Internal)
+        ));
     }
 }

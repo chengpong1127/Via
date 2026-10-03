@@ -187,8 +187,7 @@ async fn resolver(
 ) -> (DepartureResolver, FixtureStats) {
     let (tdx, stats) = fixture_client(payload, status).await;
     let metro = Arc::new(
-        MetroDepartureSource::new(network.clone())
-            .with_tdx(Some(tdx))
+        MetroDepartureSource::new(network.clone(), tdx)
             .with_bindings(Arc::new(TdxProviderBindings {
                 metro_patterns: [(
                     TransitPatternId::new("metro:BL::direction=0"),

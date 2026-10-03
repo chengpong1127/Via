@@ -195,8 +195,7 @@ fn query(train_no: &str) -> DepartureQuery {
 
 fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
     let tra = Arc::new(
-        TraDepartureSource::new(network.clone())
-            .with_tdx(Some(tdx))
+        TraDepartureSource::new(network.clone(), tdx)
             .with_bindings(Arc::new(TdxProviderBindings {
                 tra_trips: network
                     .network()
@@ -348,9 +347,10 @@ async fn duplicate_train_queries_are_served_by_one_tdx_request() {
 }
 
 #[tokio::test]
-async fn tra_static_routing_still_works_without_tdx() {
+async fn tra_static_routing_falls_back_when_realtime_is_unavailable() {
     let network = network_for(&["100"]);
-    let source = TraDepartureSource::new(network.clone());
+    let source =
+        TraDepartureSource::new(network.clone(), crate::support::tdx::failing_tdx_client());
     let resolver = DepartureResolver::new(
         network,
         vec![Arc::new(source) as Arc<dyn TransitDepartureSource>],
