@@ -3,14 +3,14 @@ use crate::domain::ids::{BikeStationId, BoardingPointId, EffectiveTripId, Transi
 use super::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(in crate::routing) struct JourneyVariantIdentity {
+pub(in crate::routing) struct RealizedJourneyIdentity {
     is_baseline: bool,
-    movements: Vec<JourneyVariantMovementIdentity>,
+    movements: Vec<RealizedJourneyMovementIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum JourneyVariantMovementIdentity {
-    Baseline(Box<JourneyVariantMovementIdentity>),
+enum RealizedJourneyMovementIdentity {
+    Baseline(Box<RealizedJourneyMovementIdentity>),
     Access {
         stop_id: Option<BoardingPointId>,
         duration_seconds: u32,
@@ -111,12 +111,12 @@ impl JourneyAnchorIdentity {
     }
 }
 
-impl JourneyVariantIdentity {
+impl RealizedJourneyIdentity {
     pub(in crate::routing) fn canonical_signature(&self) -> String {
         let parts = self
             .movements
             .iter()
-            .map(JourneyVariantMovementIdentity::legacy_signature)
+            .map(RealizedJourneyMovementIdentity::legacy_signature)
             .collect::<Vec<_>>()
             .join("|");
         if self.is_baseline {
@@ -127,7 +127,7 @@ impl JourneyVariantIdentity {
     }
 }
 
-impl JourneyVariantMovementIdentity {
+impl RealizedJourneyMovementIdentity {
     fn legacy_signature(&self) -> String {
         match self {
             Self::Baseline(movement) => format!("baseline:{}", movement.legacy_signature()),
@@ -224,28 +224,28 @@ impl JourneyVariantMovementIdentity {
     }
 }
 
-impl JourneyVariant {
-    pub(in crate::routing) fn identity(&self) -> JourneyVariantIdentity {
-        let is_baseline = self.is_baseline();
+impl RealizedJourney {
+    pub(in crate::routing) fn identity(&self) -> RealizedJourneyIdentity {
+        let is_baseline = !self.has_bike_share();
         let movements = if is_baseline {
-            self.skeleton.baseline_identity()
+            self.baseline_identity()
         } else {
-            self.path
+            self.movements
                 .iter()
-                .map(|step| match &step.movement {
-                    JourneyPathMovement::Walking { movement_index }
-                    | JourneyPathMovement::Transit { movement_index } => {
-                        JourneyVariantMovementIdentity::Baseline(Box::new(
-                            self.skeleton.baseline_movement_identity(*movement_index),
+                .enumerate()
+                .map(|(movement_index, movement)| match &movement.kind {
+                    JourneyMovementKind::Walking { .. } | JourneyMovementKind::Transit { .. } => {
+                        RealizedJourneyMovementIdentity::Baseline(Box::new(
+                            self.baseline_movement_identity(movement_index),
                         ))
                     }
-                    JourneyPathMovement::BikeShare { shortcut } => {
-                        JourneyVariantMovementIdentity::BikeShare {
+                    JourneyMovementKind::BikeShare { shortcut } => {
+                        RealizedJourneyMovementIdentity::BikeShare {
                             from: JourneyAnchorIdentity::from_kind(
-                                &self.skeleton.anchors()[step.from_anchor].kind,
+                                &self.anchors[movement.from_anchor].kind,
                             ),
                             to: JourneyAnchorIdentity::from_kind(
-                                &self.skeleton.anchors()[step.to_anchor].kind,
+                                &self.anchors[movement.to_anchor].kind,
                             ),
                             pickup_station_id: shortcut.pickup_station_id.clone(),
                             dropoff_station_id: shortcut.dropoff_station_id.clone(),
@@ -262,29 +262,29 @@ impl JourneyVariant {
                 })
                 .collect()
         };
-        JourneyVariantIdentity {
+        RealizedJourneyIdentity {
             is_baseline,
             movements,
         }
     }
 }
 
-impl JourneySkeleton {
-    fn baseline_movement_identity(&self, movement_index: usize) -> JourneyVariantMovementIdentity {
+impl RealizedJourney {
+    fn baseline_movement_identity(&self, movement_index: usize) -> RealizedJourneyMovementIdentity {
         let Some(movement) = self.movements.get(movement_index) else {
-            return JourneyVariantMovementIdentity::InvalidMovement(movement_index);
+            return RealizedJourneyMovementIdentity::InvalidMovement(movement_index);
         };
         let from = JourneyAnchorIdentity::from_kind(&self.anchors[movement.from_anchor].kind);
         let to = JourneyAnchorIdentity::from_kind(&self.anchors[movement.to_anchor].kind);
         match &movement.kind {
             JourneyMovementKind::BikeShare { .. } => {
-                JourneyVariantMovementIdentity::InvalidMovement(movement_index)
+                RealizedJourneyMovementIdentity::InvalidMovement(movement_index)
             }
             JourneyMovementKind::Walking {
                 kind,
                 duration_seconds,
                 distance_metres,
-            } => JourneyVariantMovementIdentity::Walking {
+            } => RealizedJourneyMovementIdentity::Walking {
                 kind: *kind,
                 from,
                 to,
@@ -297,12 +297,12 @@ impl JourneySkeleton {
                 alight_index,
             } => {
                 let Some(board) = trip.stop_times.get(*board_index) else {
-                    return JourneyVariantMovementIdentity::InvalidTransit(*board_index);
+                    return RealizedJourneyMovementIdentity::InvalidTransit(*board_index);
                 };
                 let Some(alight) = trip.stop_times.get(*alight_index) else {
-                    return JourneyVariantMovementIdentity::InvalidTransit(*alight_index);
+                    return RealizedJourneyMovementIdentity::InvalidTransit(*alight_index);
                 };
-                JourneyVariantMovementIdentity::TransitMovement {
+                RealizedJourneyMovementIdentity::TransitMovement {
                     trip_id: trip.id.clone(),
                     pattern_id: trip.pattern_id.clone(),
                     board_stop_id: board.stop_id.clone(),
@@ -316,7 +316,7 @@ impl JourneySkeleton {
         }
     }
 
-    fn baseline_identity(&self) -> Vec<JourneyVariantMovementIdentity> {
+    fn baseline_identity(&self) -> Vec<RealizedJourneyMovementIdentity> {
         let mut identities = Vec::with_capacity(self.movements.len());
         for movement in &self.movements {
             let from = JourneyAnchorIdentity::from_kind(&self.anchors[movement.from_anchor].kind);
@@ -329,7 +329,7 @@ impl JourneySkeleton {
                     kind: WalkingMovementKind::Access,
                     duration_seconds,
                     ..
-                } => identities.push(JourneyVariantMovementIdentity::Access {
+                } => identities.push(RealizedJourneyMovementIdentity::Access {
                     stop_id: to.boarding_point_id().cloned(),
                     duration_seconds: *duration_seconds,
                 }),
@@ -337,7 +337,7 @@ impl JourneySkeleton {
                     kind: WalkingMovementKind::Transfer,
                     duration_seconds,
                     ..
-                } => identities.push(JourneyVariantMovementIdentity::Transfer {
+                } => identities.push(RealizedJourneyMovementIdentity::Transfer {
                     from,
                     to,
                     duration_seconds: *duration_seconds,
@@ -346,7 +346,7 @@ impl JourneySkeleton {
                     kind: WalkingMovementKind::Egress,
                     duration_seconds,
                     ..
-                } => identities.push(JourneyVariantMovementIdentity::Egress {
+                } => identities.push(RealizedJourneyMovementIdentity::Egress {
                     from,
                     duration_seconds: *duration_seconds,
                 }),
@@ -354,7 +354,7 @@ impl JourneySkeleton {
                     kind: WalkingMovementKind::Direct,
                     duration_seconds,
                     distance_metres,
-                } => identities.push(JourneyVariantMovementIdentity::DirectWalking {
+                } => identities.push(RealizedJourneyMovementIdentity::DirectWalking {
                     departure_unix_nanos: self.departure_at.unix_timestamp_nanos(),
                     duration_seconds: *duration_seconds,
                     distance_metres: *distance_metres,
@@ -366,11 +366,12 @@ impl JourneySkeleton {
                     alight_index,
                 } => {
                     let Some(board) = trip.stop_times.get(*board_index) else {
-                        identities
-                            .push(JourneyVariantMovementIdentity::InvalidTransit(*board_index));
+                        identities.push(RealizedJourneyMovementIdentity::InvalidTransit(
+                            *board_index,
+                        ));
                         continue;
                     };
-                    identities.push(JourneyVariantMovementIdentity::Transit {
+                    identities.push(RealizedJourneyMovementIdentity::Transit {
                         trip_id: trip.id.clone(),
                         board_index: *board_index,
                         alight_index: *alight_index,

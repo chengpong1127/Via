@@ -1,3 +1,4 @@
+mod bike;
 mod pareto;
 mod state;
 #[cfg(test)]
@@ -6,12 +7,15 @@ mod transit;
 
 use super::{
     corridor::{BaselineMovement, EvaluationCorridor},
-    model::{RoutingError, TransitQuery},
-    static_search::{RetainedCorridorSet, StaticTransitLeg},
-    surface::{SurfaceKind, SurfaceMovement, SurfaceMovementPlanner, SurfaceRequest},
-    variant::{
+    model::{PlanningQuery, RoutingError},
+    realized::{
         BikeShortcut, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
-        JourneyVariant, WalkingMovementKind,
+        RealizedJourney, WalkingMovementKind,
+    },
+    static_search::{RetainedCorridorSet, StaticTransitLeg},
+    surface::{
+        SurfaceKind, SurfaceMovement, SurfaceMovementPlanner, SurfaceRealizationStats,
+        SurfaceRequest,
     },
 };
 #[cfg(test)]
@@ -25,7 +29,7 @@ use crate::{
     street::ProviderFailureClass,
 };
 use pareto::{EvaluatedCandidate, pareto_candidates, prune_states};
-use state::{ActiveBikeRun, EvaluationState, PathMetrics};
+use state::{EvaluationState, PathMetrics};
 use std::{sync::Arc, time::Instant};
 use time::{Duration, OffsetDateTime};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,7 +68,7 @@ pub(crate) struct EvaluationFailures {
 }
 
 pub(super) struct EvaluationResult {
-    pub variants: Vec<JourneyVariant>,
+    pub journeys: Vec<RealizedJourney>,
     pub stats: Phase2EvaluationStats,
     pub failures: EvaluationFailures,
 }
@@ -75,7 +79,7 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     network: &'a TransitRuntime,
     corridor: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
-    query: &'a TransitQuery,
+    query: &'a PlanningQuery,
     surface: &'a mut [Box<dyn SurfaceMovementPlanner>],
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
@@ -86,7 +90,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         network: &'a TransitRuntime,
         corridor: &'a RetainedCorridorSet,
         snapshot: &'a TimingSnapshot,
-        query: &'a TransitQuery,
+        query: &'a PlanningQuery,
         surface: &'a mut [Box<dyn SurfaceMovementPlanner>],
     ) -> Self {
         Self {
@@ -116,6 +120,20 @@ impl<'a> FixedCorridorEvaluator<'a> {
             candidates.iter().map(|c| c.metrics.bike_share_uses).sum();
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let bike_work = self
+            .surface
+            .iter()
+            .filter(|planner| planner.kind() == SurfaceKind::BikeShare)
+            .map(|planner| planner.realization_stats())
+            .fold(SurfaceRealizationStats::default(), |mut total, stats| {
+                total.exact_requests += stats.exact_requests;
+                total.cache_hits += stats.cache_hits;
+                total.matrix_requests += stats.matrix_requests;
+                total
+            });
+        self.stats.bike_exact_candidates_requested = bike_work.exact_requests;
+        self.stats.bike_exact_cache_hits = bike_work.cache_hits;
+        self.stats.bike_matrix_requests = bike_work.matrix_requests;
         tracing::debug!(target:"via_server::routing",
             corridors_evaluated=self.stats.corridors_evaluated,
             corridor_states_evaluated=self.stats.corridor_states_evaluated,
@@ -131,7 +149,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
             phase2_latency_us=self.stats.phase2_latency_us,
             "Phase 2 corridor evaluation");
         Ok(EvaluationResult {
-            variants: candidates.into_iter().map(|c| c.variant).collect(),
+            journeys: candidates.into_iter().map(|c| c.journey).collect(),
             stats: self.stats,
             failures: self.failures,
         })
@@ -161,7 +179,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.check_deadline()?;
         self.stats.corridors_evaluated += 1;
         if corridor
-            .edges
+            .edges()
             .iter()
             .filter(|edge| {
                 edge.baseline
@@ -176,7 +194,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         }
         let mut states = vec![EvaluationState::initial(self.query)];
         let mut saw_missing_departure = false;
-        for (index, edge) in corridor.edges.iter().enumerate() {
+        for (index, edge) in corridor.edges().iter().enumerate() {
             let mut next = Vec::new();
             for state in states {
                 self.check_deadline()?;
@@ -189,15 +207,15 @@ impl<'a> FixedCorridorEvaluator<'a> {
                             index,
                             &mut saw_missing_departure,
                         )?),
-                        BaselineMovement::Walking {
+                        BaselineMovement::RetainedWalking {
                             kind,
                             duration_seconds,
                             distance_metres,
-                            ready_at,
+                            access_available_at,
                         } => {
                             self.charge()?;
                             self.stats.surface_transfers_evaluated += 1;
-                            let arrival = ready_at.unwrap_or(
+                            let arrival = access_available_at.unwrap_or(
                                 state.ready_at + Duration::seconds(i64::from(*duration_seconds)),
                             );
                             if within_query_bounds(self.query, arrival) {
@@ -222,32 +240,18 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 next.extend(baseline);
                 for planner_index in 0..self.surface.len() {
                     let kind = self.surface[planner_index].kind();
-                    if kind == SurfaceKind::Walking
-                        && edge
-                            .baseline
-                            .iter()
-                            .any(|b| matches!(b, BaselineMovement::Walking { .. }))
-                    {
-                        continue;
-                    }
                     let (start_anchor, started_at) = if kind == SurfaceKind::BikeShare {
-                        state.active_bike_run.as_ref().map_or_else(
-                            || {
-                                (
-                                    index,
-                                    state
-                                        .bike_reuse_available_at
-                                        .map_or(state.ready_at, |t| t.max(state.ready_at)),
-                                )
-                            },
-                            |run| (run.start_anchor, run.started_at),
-                        )
+                        state.bike_departure(index)
                     } else {
                         (index, state.ready_at)
                     };
                     let request = SurfaceRequest {
-                        from: &corridor.anchors[start_anchor],
-                        to: &corridor.anchors[index + 1],
+                        retained_walking_baseline: edge
+                            .baseline
+                            .iter()
+                            .any(|b| matches!(b, BaselineMovement::RetainedWalking { .. })),
+                        from: &corridor.anchors()[start_anchor],
+                        to: &corridor.anchors()[index + 1],
                         departure_at: started_at,
                         from_anchor: start_anchor,
                         to_anchor: index + 1,
@@ -269,19 +273,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
                         continue;
                     }
                     self.charge()?;
-                    if kind == SurfaceKind::BikeShare {
-                        self.stats.bike_exact_candidates_requested += 1;
-                    }
-                    let cache_hits = self.surface[planner_index].cache_hits();
-                    let matrix_requests = self.surface[planner_index].matrix_requests();
                     let movements = self.surface[planner_index].realize(&request).await;
-                    if kind == SurfaceKind::BikeShare {
-                        let hits = self.surface[planner_index].cache_hits() - cache_hits;
-                        self.stats.bike_exact_cache_hits += hits;
-                        self.stats.bike_exact_candidates_requested -= hits;
-                        self.stats.bike_matrix_requests +=
-                            self.surface[planner_index].matrix_requests() - matrix_requests;
-                    }
                     self.check_deadline()?;
                     let movements = match movements {
                         Ok(items) => items,
@@ -304,8 +296,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                 }
                                 self.stats.walking_realizations_considered += 1;
                                 let kind = match (
-                                    &corridor.anchors[index].kind,
-                                    &corridor.anchors[index + 1].kind,
+                                    &corridor.anchors()[index].kind,
+                                    &corridor.anchors()[index + 1].kind,
                                 ) {
                                     (JourneyAnchorKind::Origin, JourneyAnchorKind::Destination) => {
                                         WalkingMovementKind::Direct
@@ -339,50 +331,20 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                 {
                                     continue;
                                 }
-                                let wait = state.active_bike_run.as_ref().map_or_else(
-                                    || {
-                                        u32::try_from((started_at - state.ready_at).whole_seconds())
-                                            .unwrap_or(u32::MAX)
-                                    },
-                                    |run| run.shortcut.rental_wait_seconds,
-                                );
-                                let Some(shortcut) = shortcut.with_rental_wait(wait) else {
-                                    continue;
-                                };
-                                let prefix = state.active_bike_run.as_ref().map_or_else(
-                                    || state.movements.clone(),
-                                    |run| run.prefix_movements.clone(),
-                                );
-                                let departure = prefix
-                                    .last()
-                                    .map_or(self.query.departure_time, |m| m.arrival_at);
-                                let mut movements = prefix.clone();
-                                movements.push(JourneyMovement {
-                                    from_anchor: start_anchor,
-                                    to_anchor: index + 1,
-                                    departure_at: departure,
-                                    arrival_at: arrival,
-                                    kind: JourneyMovementKind::BikeShare {
-                                        shortcut: shortcut.clone(),
-                                    },
-                                    street_path: None,
-                                });
-                                if state.active_bike_run.is_some() {
-                                    self.stats.bike_continuous_extensions += 1;
+                                if let Some(next_state) = state.after_bike_share(
+                                    shortcut,
+                                    start_anchor,
+                                    index + 1,
+                                    started_at,
+                                    arrival,
+                                    self.query.departure_time,
+                                ) {
+                                    if state.active_bike_run.is_some() {
+                                        self.stats.bike_continuous_extensions += 1;
+                                    }
+                                    self.stats.bike_realizations_feasible += 1;
+                                    next.push(next_state);
                                 }
-                                self.stats.bike_realizations_feasible += 1;
-                                next.push(EvaluationState {
-                                    ready_at: arrival,
-                                    last_was_transit: false,
-                                    active_bike_run: Some(ActiveBikeRun {
-                                        start_anchor,
-                                        started_at,
-                                        prefix_movements: prefix,
-                                        shortcut,
-                                    }),
-                                    bike_reuse_available_at: state.bike_reuse_available_at,
-                                    movements,
-                                });
                             }
                         }
                     }
@@ -404,7 +366,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 continue;
             }
             let mut anchors = corridor
-                .anchors
+                .anchors()
                 .iter()
                 .map(|a| JourneyAnchor {
                     kind: a.kind.clone(),
@@ -419,12 +381,12 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 }
                 anchor.reached_at = reached_at;
             }
-            match JourneyVariant::from_movements(
+            match RealizedJourney::from_movements(
                 anchors,
                 state.movements,
                 self.query.departure_time,
             ) {
-                Ok(variant) => candidates.push(EvaluatedCandidate { metrics, variant }),
+                Ok(journey) => candidates.push(EvaluatedCandidate { metrics, journey }),
                 Err(_) => self.stats.malformed_trips += 1,
             }
         }
@@ -441,7 +403,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
     }
 }
 
-fn within_query_bounds(query: &TransitQuery, time: OffsetDateTime) -> bool {
+fn within_query_bounds(query: &PlanningQuery, time: OffsetDateTime) -> bool {
     time >= query.departure_time
         && time - query.departure_time
             <= Duration::seconds(i64::from(query.limits.max_journey_duration_seconds))
@@ -482,8 +444,12 @@ impl SurfaceMovementPlanner for TestBikePlanner {
     fn kind(&self) -> SurfaceKind {
         SurfaceKind::BikeShare
     }
-    fn cache_hits(&self) -> usize {
-        self.hits
+    fn realization_stats(&self) -> SurfaceRealizationStats {
+        SurfaceRealizationStats {
+            exact_requests: self.cache.len(),
+            cache_hits: self.hits,
+            matrix_requests: 0,
+        }
     }
     fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
         self.routes
@@ -522,8 +488,8 @@ fn evaluate(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
-    query: TransitQuery,
-) -> Result<Vec<JourneyVariant>, RoutingError> {
+    query: PlanningQuery,
+) -> Result<Vec<RealizedJourney>, RoutingError> {
     evaluate_with_stats(network, corridor, snapshot, query).map(|(items, _)| items)
 }
 #[cfg(test)]
@@ -531,8 +497,8 @@ fn evaluate_with_stats(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
-    query: TransitQuery,
-) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
+    query: PlanningQuery,
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
     run_test_evaluation(network, corridor, snapshot, query, None)
 }
 #[cfg(test)]
@@ -540,9 +506,9 @@ fn evaluate_with_test_bike_routes(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
-    query: TransitQuery,
+    query: PlanningQuery,
     routes: &TestBikeRoutes,
-) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
     run_test_evaluation(network, corridor, snapshot, query, Some(routes))
 }
 #[cfg(test)]
@@ -550,9 +516,9 @@ fn run_test_evaluation(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
-    query: TransitQuery,
+    query: PlanningQuery,
     routes: Option<&TestBikeRoutes>,
-) -> Result<(Vec<JourneyVariant>, Phase2EvaluationStats), RoutingError> {
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
     tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("test runtime")
@@ -578,6 +544,6 @@ fn run_test_evaluation(
                 FixedCorridorEvaluator::new(network, corridor, snapshot, &query, &mut surface)
                     .evaluate(&evaluation_corridors)
                     .await?;
-            Ok((result.variants, result.stats))
+            Ok((result.journeys, result.stats))
         })
 }

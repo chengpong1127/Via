@@ -8,7 +8,7 @@ use via_server::{
         TraDepartureSource, TransitDepartureSource,
     },
     routing::{
-        AccessPoint, EgressPoint, TransitPlanner, TransitQuery, static_search,
+        AccessPoint, EgressPoint, MultimodalPlanner, PlanningQuery, static_search,
         topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
     },
 };
@@ -28,7 +28,7 @@ async fn deterministic_routing_benchmark() {
         Arc::new(TraDepartureSource::new(runtime.clone())),
         Arc::new(ThsrDepartureSource::new(runtime.clone())),
     ];
-    let planner = TransitPlanner::new(
+    let planner = MultimodalPlanner::new(
         runtime.clone(),
         Arc::new(DepartureResolver::new(runtime.clone(), sources)),
     );
@@ -58,7 +58,7 @@ async fn deterministic_routing_benchmark() {
     const WARMUP: usize = 20;
     const ITERATIONS: usize = 1000;
     for (label, origin, destination, modes) in cases {
-        let query = TransitQuery::new(
+        let query = PlanningQuery::new(
             vec![AccessPoint::new(
                 BoardingPointId::new(origin),
                 departure,

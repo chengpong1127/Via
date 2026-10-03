@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use super::variant::{BikeShortcut, JourneyAnchorKind};
+use super::realized::{BikeShortcut, JourneyAnchorKind};
 use crate::{
     domain::{ids::BoardingPointId, location::GeoCoordinate, normalize_to_taipei},
     street::{
@@ -13,27 +13,27 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SurfaceEndpoint {
+pub(crate) struct CorridorAnchor {
     pub kind: JourneyAnchorKind,
     pub coordinate: Coordinate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct EndpointKey {
+pub(crate) struct CorridorAnchorKey {
     latitude: u64,
     longitude: u64,
     boarding_point: Option<BoardingPointId>,
 }
 
-impl SurfaceEndpoint {
+impl CorridorAnchor {
     pub fn boarding_point(&self) -> Option<&BoardingPointId> {
         match &self.kind {
             JourneyAnchorKind::BoardingPoint { id } => Some(id),
             _ => None,
         }
     }
-    pub fn cache_key(&self) -> EndpointKey {
-        EndpointKey {
+    pub fn cache_key(&self) -> CorridorAnchorKey {
+        CorridorAnchorKey {
             latitude: self.coordinate.latitude().to_bits(),
             longitude: self.coordinate.longitude().to_bits(),
             boarding_point: self.boarding_point().cloned(),
@@ -58,8 +58,9 @@ pub(crate) enum SurfaceKind {
 }
 
 pub(crate) struct SurfaceRequest<'a> {
-    pub from: &'a SurfaceEndpoint,
-    pub to: &'a SurfaceEndpoint,
+    pub retained_walking_baseline: bool,
+    pub from: &'a CorridorAnchor,
+    pub to: &'a CorridorAnchor,
     pub departure_at: OffsetDateTime,
     pub from_anchor: usize,
     pub to_anchor: usize,
@@ -70,14 +71,19 @@ pub(crate) enum SurfaceMovement {
     BikeShare(BikeShortcut),
 }
 
+/// Cumulative request-local exact routing work, including failed requests.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SurfaceRealizationStats {
+    pub exact_requests: usize,
+    pub cache_hits: usize,
+    pub matrix_requests: usize,
+}
+
 #[async_trait]
 pub(crate) trait SurfaceMovementPlanner: Send {
     fn kind(&self) -> SurfaceKind;
-    fn cache_hits(&self) -> usize {
-        0
-    }
-    fn matrix_requests(&self) -> usize {
-        0
+    fn realization_stats(&self) -> SurfaceRealizationStats {
+        SurfaceRealizationStats::default()
     }
     fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32>;
     async fn realize(
@@ -89,7 +95,7 @@ pub(crate) trait SurfaceMovementPlanner: Send {
 pub(crate) struct WalkingMovementPlanner {
     street: Arc<dyn StreetRouter>,
     cache: HashMap<
-        (EndpointKey, EndpointKey, OffsetDateTime),
+        (CorridorAnchorKey, CorridorAnchorKey, OffsetDateTime),
         Result<Arc<StreetPath>, StreetRoutingError>,
     >,
 }
@@ -109,6 +115,9 @@ impl SurfaceMovementPlanner for WalkingMovementPlanner {
         SurfaceKind::Walking
     }
     fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
+        if request.retained_walking_baseline {
+            return None;
+        }
         // An optimistic pedestrian speed keeps this bound below ordinary routed walking.
         Some(
             (request.from.distance_to(request.to) / 2.0)

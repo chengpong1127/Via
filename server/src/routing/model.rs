@@ -233,7 +233,7 @@ impl<'a> JourneyPlanningContext<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct TransitQuery {
+pub struct PlanningQuery {
     pub origin: Option<crate::street::Coordinate>,
     pub destination: Option<crate::street::Coordinate>,
     pub origin_access: Vec<AccessPoint>,
@@ -247,7 +247,7 @@ pub struct TransitQuery {
     pub deadline: Option<PlanningDeadline>,
 }
 
-impl TransitQuery {
+impl PlanningQuery {
     pub fn new(
         origin_access: Vec<AccessPoint>,
         destination_egress: Vec<EgressPoint>,

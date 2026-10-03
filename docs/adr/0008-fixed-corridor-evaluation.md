@@ -11,7 +11,7 @@ second search after Phase 1 had already retained candidate corridors.
 
 ## Decision
 
-`TransitPlanner` owns the two phases:
+`MultimodalPlanner` owns the two phases:
 
 1. **Static corridor discovery** performs one bounded forward Top-K search
    across selected transit modes. It ranks structural corridors using exact
@@ -38,9 +38,11 @@ planner uses an optimistic duration lower bound before requesting an exact
 street route; realized endpoint routes are cached within the request. Transit
 edges may use equivalent Patterns and feasible departures from the timing
 snapshot, selected using the state's current ready time. Walking surface
-movements are carried into the realized path, so reconstruction does not
-repeat their street route. The evaluator never searches transit topology, adds
-anchors, or combines portions of different corridors.
+movements are carried into the `RealizedJourney`, the sole realized path value.
+It owns ordered anchors and movements, validates path continuity and timing,
+and supplies canonical movement identity for deduplication; reconstruction
+does not repeat their street route. The evaluator never searches transit
+topology, adds anchors, or combines portions of different corridors.
 
 BikeShare checks nearby usable stations and exact routes only when its lower
 bound can compete with the baseline. An active rental can extend from its
@@ -50,6 +52,14 @@ request. Separate rentals wait 15 minutes after the bike is returned; the
 return time is the pickup walk plus bicycle ride, before the final walk to the
 anchor. Downstream departures use the same timing snapshot and each
 successor's current ready time.
+
+The shared `SurfaceMovementPlanner` contract serves both Walking and BikeShare.
+Walking skips retained walking baselines through its own applicability check.
+Both modes share lower-bound screening, exact realization and provider failure
+handling. `SurfaceKind` remains for BikeShare rental continuation from an earlier
+anchor and mode-specific metrics. Each planner reports cumulative exact routing
+work, including cached failures, rather than exposing counters for evaluator
+deltas. `PlanningSession` carries statistics across primary and fallback evaluation.
 
 The evaluator keeps a bounded Pareto frontier within each retained corridor.
 BikeShare considers up to three pickup and three return stations per endpoint;
@@ -67,8 +77,8 @@ outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
 station with a dock. A competitive movement's station pairs are evaluated in
 one or more bicycle matrix requests chunked to the street router's source and
-target limits. A trivial fallback corridor uses the same Walking and BikeShare
-planners and constraints as any other Phase-2 edge.
+target limits. A surface-only fallback corridor uses the same Walking and
+BikeShare planners and constraints as any other Phase-2 edge.
 
 ## Consequences
 

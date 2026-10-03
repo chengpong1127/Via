@@ -10,12 +10,12 @@ routing, and provider-neutral API models.
 PlanningRequest
   → RoutingService.plan()
        ├─ discover transit access / egress when transit is selected
-       ├─ TransitPlanner.begin_plan() → MovementSession.evaluate()
+       ├─ MultimodalPlanner.prepare() → PlanningSession.evaluate_primary()
        │    ├─ Phase 1: bounded static Top-K transit corridors
        │    ├─ load request-local snapshots for retained transit positions
        │    ├─ convert retained corridors to EvaluationCorridors
        │    └─ Phase 2: fixed-corridor movement evaluation
-       ├─ trivial Origin → Destination corridor if no candidate survives
+       ├─ PlanningSession.evaluate_fallback() via EvaluationCorridor::surface_only() when needed
        ├─ JourneyReconstructor assembles candidates
        └─ validate failures → rank → PlanningOutcome
 ```
@@ -26,17 +26,22 @@ Its request-scoped `JourneyPlanningContext` and `JourneyPlanningLimits` live in
 `routing/model.rs`.
 
 `RoutingService` discovers access and egress for selected transit modes, then
-calls `TransitPlanner.begin_plan()` and evaluates the request-local
-`MovementSession`. The planner owns static corridor discovery, request
-snapshots, and Phase 2. Its topology and transfer indexes
-stay private. A Phase-2 `EvaluationCorridor` has explicit Origin,
+calls `MultimodalPlanner.prepare()` and evaluates the request-local
+`PlanningSession`. Primary evaluation uses `evaluate_primary()`; after all
+primary candidates fail reconstruction, the session can evaluate its one-shot
+`evaluate_fallback()` corridor built with `EvaluationCorridor::surface_only()`.
+The planner owns static corridor discovery, request snapshots, and Phase 2. Its
+topology and transfer indexes stay private. A Phase-2 `EvaluationCorridor` has
+explicit Origin,
 BoardingPoint, and Destination anchors. Its edge baseline can hold bounded
 access or egress alternatives, transit, retained walking, or no movement.
 Phase 2 evaluates each corridor independently and cannot add anchors or
-combine steps from different corridors. `JourneyReconstructor` owns place
-lookups, remaining street geometry hydration, BikeShare station lookup, and
-candidate assembly; it depends on the street router, transit runtime, and
-BikeShare network rather than on `RoutingService`.
+combine steps from different corridors. `RealizedJourney` is the sole realized
+route value: it owns ordered anchors and movements, validates path continuity
+and timing, and supplies canonical movement identity for deduplication.
+`JourneyReconstructor` owns place lookups, remaining street geometry hydration,
+BikeShare station lookup, and candidate assembly; it depends on the street
+router, transit runtime, and BikeShare network rather than on `RoutingService`.
 
 ## Static corridor discovery
 
@@ -68,14 +73,14 @@ diagnostics.
 ## Request-local evaluation
 
 Walking is always implicit and is not a `selected_modes` value. An empty mode
-list skips transit discovery and Phase 1, then evaluates a trivial
+list skips transit discovery and Phase 1, then evaluates a surface-only
 Origin-to-Destination corridor as walking. Selecting only BikeShare also skips
 transit search and timing requests while loading one BikeShare availability
 snapshot. If transit corridors evaluate to no candidate, the planner evaluates
-the same trivial corridor as a fallback. It does not append a direct route to
-successful transit results. The session retains its snapshots, movement
-caches, and expansion accounting through reconstruction, so failed
-reconstruction can use the same fallback without additional snapshot loads.
+the same surface-only corridor as a fallback. It does not append a direct route
+to successful transit results. The session retains its snapshots, movement
+caches, and expansion accounting through reconstruction, so failed reconstruction
+can call its one-shot fallback without additional snapshot loads. The fallback flag is internal session state.
 
 For each edge, `FixedCorridorEvaluator` evaluates its baseline and asks the
 enabled `SurfaceMovementPlanner`s about alternatives. Walking and BikeShare

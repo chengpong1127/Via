@@ -10,7 +10,7 @@ use crate::domain::{
 };
 
 use crate::routing::{
-    model::TransitQuery,
+    model::PlanningQuery,
     topology::{PatternPosition, TransitTopologyIndex},
     transfers::TransferShortcutIndex,
 };
@@ -51,7 +51,7 @@ struct PreparedSearch<'a> {
     network: &'a TransitRuntime,
     topology: &'a TransitTopologyIndex,
     transfers: &'a TransferShortcutIndex,
-    query: &'a TransitQuery,
+    query: &'a PlanningQuery,
     patterns: StaticPhase1PatternIndex,
     egress_by_stop: HashMap<BoardingPointId, Vec<u32>>,
     terminal_transfer_source_stops: HashSet<BoardingPointId>,
@@ -63,7 +63,7 @@ pub fn generate(
     network: &TransitRuntime,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
-    query: &TransitQuery,
+    query: &PlanningQuery,
 ) -> (RetainedCorridorSet, StaticSearchStats) {
     let started = Instant::now();
     let limit = query.limits.max_static_corridors.max(1);
@@ -104,7 +104,7 @@ fn prepare_search<'a>(
     network: &'a TransitRuntime,
     topology: &'a TransitTopologyIndex,
     transfers: &'a TransferShortcutIndex,
-    query: &'a TransitQuery,
+    query: &'a PlanningQuery,
     stats: &mut StaticSearchStats,
 ) -> Option<PreparedSearch<'a>> {
     if deadline_exceeded(query) {
@@ -163,7 +163,7 @@ fn prepare_search<'a>(
     })
 }
 
-fn build_egress_index(query: &TransitQuery) -> HashMap<BoardingPointId, Vec<u32>> {
+fn build_egress_index(query: &PlanningQuery) -> HashMap<BoardingPointId, Vec<u32>> {
     query.destination_egress.iter().fold(
         HashMap::<BoardingPointId, Vec<u32>>::new(),
         |mut by_stop, egress| {
@@ -563,7 +563,7 @@ fn finalize_expansion_stats(stats: &mut StaticSearchStats, expansion_stats: Sear
     stats.static_most_expanded_stops.truncate(12);
 }
 
-fn deadline_exceeded(query: &TransitQuery) -> bool {
+fn deadline_exceeded(query: &PlanningQuery) -> bool {
     query.deadline.is_some_and(|deadline| deadline.is_elapsed())
 }
 

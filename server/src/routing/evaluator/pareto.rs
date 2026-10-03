@@ -15,7 +15,7 @@ pub(super) fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> 
 
 pub(super) struct EvaluatedCandidate {
     pub metrics: PathMetrics,
-    pub variant: JourneyVariant,
+    pub journey: RealizedJourney,
 }
 
 pub(super) fn pareto_candidates(
@@ -27,13 +27,13 @@ pub(super) fn pareto_candidates(
             candidate.metrics.arrival_time,
             candidate.metrics.transfer_count,
             candidate.metrics.walking_seconds,
-            candidate.variant.identity().canonical_signature(),
+            candidate.journey.identity().canonical_signature(),
         )
     });
     let mut pareto = Vec::<EvaluatedCandidate>::new();
     for candidate in candidates {
         if pareto.iter().any(|known| {
-            known.variant.identity() == candidate.variant.identity()
+            known.journey.identity() == candidate.journey.identity()
                 || known.metrics.dominates(&candidate.metrics)
         }) {
             continue;

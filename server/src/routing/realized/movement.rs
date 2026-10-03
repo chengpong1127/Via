@@ -55,29 +55,8 @@ pub struct JourneyMovement {
     pub street_path: Option<Arc<StreetPath>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct JourneySkeleton {
-    pub(super) anchors: Vec<JourneyAnchor>,
-    pub(super) movements: Vec<JourneyMovement>,
-    pub(super) departure_at: OffsetDateTime,
-}
-
-impl JourneySkeleton {
-    pub fn anchors(&self) -> &[JourneyAnchor] {
-        &self.anchors
-    }
-
-    pub fn movements(&self) -> &[JourneyMovement] {
-        &self.movements
-    }
-
-    pub fn departure_at(&self) -> OffsetDateTime {
-        self.departure_at
-    }
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum JourneySkeletonError {
+pub enum RealizedJourneyError {
     #[error("journey has an invalid realized path")]
     InvalidRealizedPath,
     #[error("journey has no realized movements")]

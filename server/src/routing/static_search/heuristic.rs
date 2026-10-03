@@ -6,7 +6,7 @@ use std::{
 use crate::domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime};
 
 use crate::routing::{
-    model::TransitQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
+    model::PlanningQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
 };
 
 use super::{pattern_index::StaticPhase1PatternIndex, types::StaticSearchStats};
@@ -43,7 +43,7 @@ pub(super) fn destination_lower_bounds(
     patterns: &StaticPhase1PatternIndex,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
-    query: &TransitQuery,
+    query: &PlanningQuery,
     stats: &mut StaticSearchStats,
 ) -> HashMap<BoardingPointId, u32> {
     let mut lower_bounds = HashMap::<BoardingPointId, u32>::new();
@@ -158,7 +158,7 @@ pub(super) fn reachable_endpoint_mode_pairs(
     network: &TransitRuntime,
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
-    query: &TransitQuery,
+    query: &PlanningQuery,
     destination_lower_bounds: &HashMap<BoardingPointId, u32>,
 ) -> Option<HashSet<EndpointModePair>> {
     if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {

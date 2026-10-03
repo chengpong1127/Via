@@ -19,7 +19,7 @@ use crate::{
     street::StreetRouter,
 };
 
-use super::{model::JourneyPlanningContext, variant::JourneyVariant};
+use super::{model::JourneyPlanningContext, realized::RealizedJourney};
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
 const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
@@ -53,10 +53,10 @@ impl JourneyReconstructor {
 
     pub(super) async fn reconstruct(
         &self,
-        variant: &JourneyVariant,
+        journey: &RealizedJourney,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<Option<JourneyCandidate>, PlanningError> {
-        let Some(assembled) = assembler::assemble(self, variant, context).await? else {
+        let Some(assembled) = assembler::assemble(self, journey, context).await? else {
             return Ok(None);
         };
         if context
@@ -66,15 +66,15 @@ impl JourneyReconstructor {
             return Ok(None);
         }
         let duration_seconds =
-            transit::seconds_between(variant.skeleton().departure_at(), assembled.arrival_time)
+            transit::seconds_between(journey.departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
         let transfer_count = assembled.transfer_evidence.len() as u32;
-        let matching_key = variant_matching_key(variant);
+        let matching_key = journey_matching_key(journey);
         let option = JourneyOption {
             id: "candidate".into(),
             matching_key: matching_key.clone(),
             label: None,
-            departure_time: variant.skeleton().departure_at(),
+            departure_time: journey.departure_at(),
             arrival_time: assembled.arrival_time,
             duration_seconds,
             walking_seconds: assembled.walking_seconds,
@@ -87,12 +87,12 @@ impl JourneyReconstructor {
         let stable_key = format!(
             "{}:{}",
             matching_key,
-            variant.skeleton().departure_at().unix_timestamp()
+            journey.departure_at().unix_timestamp()
         );
         Ok(Some(JourneyCandidate {
             ranking: RankingCandidate {
                 stable_key,
-                departure_epoch_seconds: variant.skeleton().departure_at().unix_timestamp(),
+                departure_epoch_seconds: journey.departure_at().unix_timestamp(),
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
                 walking_seconds: assembled.walking_seconds,
                 bicycle_seconds: assembled.bicycle_seconds,
@@ -145,15 +145,15 @@ impl JourneyReconstructor {
     }
 }
 
-fn variant_matching_key(variant: &JourneyVariant) -> String {
-    let version = if variant.is_baseline() {
+fn journey_matching_key(journey: &RealizedJourney) -> String {
+    let version = if !journey.has_bike_share() {
         BASELINE_MATCHING_KEY_VERSION
     } else {
         BIKE_MATCHING_KEY_VERSION
     };
     geometry::short_digest(&format!(
         "{version}:{}",
-        variant.identity().canonical_signature()
+        journey.identity().canonical_signature()
     ))
 }
 

@@ -10,8 +10,8 @@ use crate::{
         transit_timing::{TimingBasis, TimingReliability},
     },
     routing::{
-        JourneyMovementKind, JourneyPathMovement, JourneyPathStep, JourneyVariant,
-        WalkingMovementKind, model::JourneyPlanningContext,
+        JourneyMovement, JourneyMovementKind, RealizedJourney, WalkingMovementKind,
+        model::JourneyPlanningContext,
     },
 };
 
@@ -41,10 +41,10 @@ pub(super) struct PendingTransfer {
 
 pub(super) async fn assemble(
     reconstructor: &JourneyReconstructor,
-    variant: &JourneyVariant,
+    journey: &RealizedJourney,
     context: &JourneyPlanningContext<'_>,
 ) -> Result<Option<JourneyAssembly>, PlanningError> {
-    ReconstructionState::new(reconstructor, variant, context)
+    ReconstructionState::new(reconstructor, journey, context)
         .assemble()
         .await
 }
@@ -57,7 +57,7 @@ enum TerminalEgressOutcome {
 
 pub(super) struct ReconstructionState<'a, 'request> {
     pub(super) reconstructor: &'a JourneyReconstructor,
-    pub(super) variant: &'a JourneyVariant,
+    pub(super) journey: &'a RealizedJourney,
     pub(super) context: &'a JourneyPlanningContext<'request>,
     pub(super) origin: Place,
     pub(super) destination: Place,
@@ -67,24 +67,24 @@ pub(super) struct ReconstructionState<'a, 'request> {
     pub(super) current_stop: Option<BoardingPointId>,
     pub(super) current_anchor: usize,
     pub(super) final_anchor: usize,
-    pub(super) skip_next_step: bool,
+    pub(super) skip_next_movement: bool,
 }
 
 impl<'a, 'request> ReconstructionState<'a, 'request> {
     fn new(
         reconstructor: &'a JourneyReconstructor,
-        variant: &'a JourneyVariant,
+        journey: &'a RealizedJourney,
         context: &'a JourneyPlanningContext<'request>,
     ) -> Self {
         Self {
             reconstructor,
-            variant,
+            journey,
             context,
             origin: reconstructor.origin_place(context.request),
             destination: reconstructor.destination_place(context.request),
             result: JourneyAssembly {
                 legs: Vec::new(),
-                arrival_time: variant.skeleton().departure_at(),
+                arrival_time: journey.departure_at(),
                 live_evidence: Vec::new(),
                 required_states: Vec::new(),
                 travel_modes: Vec::new(),
@@ -100,31 +100,36 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             previous_transit: None,
             current_stop: None,
             current_anchor: 0,
-            final_anchor: variant.skeleton().anchors().len().saturating_sub(1),
-            skip_next_step: false,
+            final_anchor: journey.anchors().len().saturating_sub(1),
+            skip_next_movement: false,
         }
     }
 
     async fn assemble(mut self) -> Result<Option<JourneyAssembly>, PlanningError> {
-        let steps = self.variant.path();
-        for (step_index, step) in steps.iter().enumerate() {
+        let movements = self.journey.movements();
+        for (movement_index, movement) in movements.iter().enumerate() {
             self.context.ensure_before_deadline()?;
-            if self.skip_next_step {
-                self.skip_next_step = false;
+            if self.skip_next_movement {
+                self.skip_next_movement = false;
                 continue;
             }
-            if step.from_anchor != self.current_anchor || step.to_anchor <= step.from_anchor {
+            if movement.from_anchor != self.current_anchor
+                || movement.to_anchor <= movement.from_anchor
+            {
                 return Ok(None);
             }
-            match self.append_terminal_egress(steps, step_index).await? {
+            match self
+                .append_terminal_egress(movements, movement_index)
+                .await?
+            {
                 TerminalEgressOutcome::NotApplicable => {}
                 TerminalEgressOutcome::Appended => continue,
                 TerminalEgressOutcome::Invalid => return Ok(None),
             }
-            if !self.append_step(step).await? {
+            if !self.append_movement(movement).await? {
                 return Ok(None);
             }
-            self.current_anchor = step.to_anchor;
+            self.current_anchor = movement.to_anchor;
         }
         if self.current_anchor != self.final_anchor {
             return Ok(None);
@@ -134,12 +139,15 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
 
     async fn append_terminal_egress(
         &mut self,
-        steps: &[JourneyPathStep],
-        step_index: usize,
+        movements: &[JourneyMovement],
+        movement_index: usize,
     ) -> Result<TerminalEgressOutcome, PlanningError> {
-        let Some((from_stop, egress_stop, duration_seconds)) =
-            terminal_surface_transfer_egress(self.variant, steps, step_index, self.final_anchor)
-        else {
+        let Some((from_stop, egress_stop, duration_seconds)) = terminal_surface_transfer_egress(
+            self.journey,
+            movements,
+            movement_index,
+            self.final_anchor,
+        ) else {
             return Ok(TerminalEgressOutcome::NotApplicable);
         };
         if self.current_stop.as_ref() != Some(&from_stop) {
@@ -160,70 +168,56 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
         )
         .await?;
         self.current_stop = Some(egress_stop);
-        self.current_anchor = steps[step_index + 1].to_anchor;
-        self.skip_next_step = true;
+        self.current_anchor = movements[movement_index + 1].to_anchor;
+        self.skip_next_movement = true;
         Ok(TerminalEgressOutcome::Appended)
     }
 
-    async fn append_step(&mut self, step: &JourneyPathStep) -> Result<bool, PlanningError> {
-        match &step.movement {
-            JourneyPathMovement::Walking { movement_index }
-            | JourneyPathMovement::Transit { movement_index } => {
-                let variant = self.variant;
-                let movement = variant
-                    .skeleton()
-                    .movements()
-                    .get(*movement_index)
-                    .ok_or(PlanningError::Internal)?;
-                if movement.from_anchor != step.from_anchor || movement.to_anchor != step.to_anchor
-                {
-                    return Ok(false);
-                }
-                if movement.street_path.is_some() {
-                    return self.append_realized_walk(step, movement);
-                }
-                match &movement.kind {
-                    JourneyMovementKind::BikeShare { .. } => Ok(false),
-                    JourneyMovementKind::Walking {
-                        kind: WalkingMovementKind::Access,
-                        duration_seconds,
-                        distance_metres,
-                    } => {
-                        self.append_access(step, *duration_seconds, *distance_metres)
-                            .await
-                    }
-                    JourneyMovementKind::Walking {
-                        kind: WalkingMovementKind::Transfer,
-                        duration_seconds,
-                        distance_metres,
-                    } => self.append_surface_transfer(step, *duration_seconds, *distance_metres),
-                    JourneyMovementKind::Walking {
-                        kind: WalkingMovementKind::Egress,
-                        duration_seconds,
-                        distance_metres,
-                    } => {
-                        self.append_egress(step, *duration_seconds, *distance_metres)
-                            .await
-                    }
-                    JourneyMovementKind::Walking {
-                        kind: WalkingMovementKind::Direct,
-                        ..
-                    } => self.append_direct_walk(step, movement),
-                    JourneyMovementKind::Transit {
-                        trip,
-                        board_index,
-                        alight_index,
-                    } => self.append_transit(trip, *board_index, *alight_index),
-                }
+    async fn append_movement(&mut self, movement: &JourneyMovement) -> Result<bool, PlanningError> {
+        if movement.street_path.is_some() {
+            return self.append_realized_walk(movement);
+        }
+        match &movement.kind {
+            JourneyMovementKind::Walking {
+                kind: WalkingMovementKind::Access,
+                duration_seconds,
+                distance_metres,
+            } => {
+                self.append_access(movement, *duration_seconds, *distance_metres)
+                    .await
             }
-            JourneyPathMovement::BikeShare { shortcut } => self.append_bike(step, shortcut).await,
+            JourneyMovementKind::Walking {
+                kind: WalkingMovementKind::Transfer,
+                duration_seconds,
+                distance_metres,
+            } => self.append_surface_transfer(movement, *duration_seconds, *distance_metres),
+            JourneyMovementKind::Walking {
+                kind: WalkingMovementKind::Egress,
+                duration_seconds,
+                distance_metres,
+            } => {
+                self.append_egress(movement, *duration_seconds, *distance_metres)
+                    .await
+            }
+            JourneyMovementKind::Walking {
+                kind: WalkingMovementKind::Direct,
+                ..
+            } => Ok(false),
+            JourneyMovementKind::Transit {
+                trip,
+                board_index,
+                alight_index,
+            } => self.append_transit(trip, *board_index, *alight_index),
+            JourneyMovementKind::BikeShare { shortcut } => {
+                self.append_bike(movement, shortcut).await
+            }
         }
     }
 }
 
 fn terminal_surface_transfer_egress(
-    variant: &JourneyVariant,
-    steps: &[JourneyPathStep],
+    journey: &RealizedJourney,
+    movements: &[JourneyMovement],
     index: usize,
     final_anchor: usize,
 ) -> Option<(
@@ -231,22 +225,8 @@ fn terminal_surface_transfer_egress(
     crate::domain::ids::BoardingPointId,
     u32,
 )> {
-    let transfer_step = steps.get(index)?;
-    let egress_step = steps.get(index + 1)?;
-    let JourneyPathMovement::Walking {
-        movement_index: transfer_index,
-    } = &transfer_step.movement
-    else {
-        return None;
-    };
-    let JourneyPathMovement::Walking {
-        movement_index: egress_index,
-    } = &egress_step.movement
-    else {
-        return None;
-    };
-    let transfer_movement = variant.skeleton().movements().get(*transfer_index)?;
-    let egress_movement = variant.skeleton().movements().get(*egress_index)?;
+    let transfer_movement = movements.get(index)?;
+    let egress_movement = movements.get(index + 1)?;
     if transfer_movement.street_path.is_some() || egress_movement.street_path.is_some() {
         return None;
     }
@@ -266,12 +246,14 @@ fn terminal_surface_transfer_egress(
     else {
         return None;
     };
-    if transfer_step.to_anchor != egress_step.from_anchor || egress_step.to_anchor != final_anchor {
+    if transfer_movement.to_anchor != egress_movement.from_anchor
+        || egress_movement.to_anchor != final_anchor
+    {
         return None;
     }
     Some((
-        super::street::anchor_boarding_point(variant, transfer_step.from_anchor)?,
-        super::street::anchor_boarding_point(variant, transfer_step.to_anchor)?,
+        super::street::anchor_boarding_point(journey, transfer_movement.from_anchor)?,
+        super::street::anchor_boarding_point(journey, transfer_movement.to_anchor)?,
         (*transfer_seconds).saturating_add(*egress_seconds),
     ))
 }

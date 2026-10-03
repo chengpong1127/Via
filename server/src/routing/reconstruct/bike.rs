@@ -2,7 +2,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::{
     domain::journey::{Geometry, Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
-    routing::{JourneyAnchorKind, JourneyPathStep, model::JourneyPlanningContext},
+    routing::{JourneyAnchorKind, JourneyMovement, model::JourneyPlanningContext},
     street::{StreetPath, StreetTravelMode},
 };
 
@@ -17,22 +17,23 @@ use super::{
 impl ReconstructionState<'_, '_> {
     pub(super) async fn append_bike(
         &mut self,
-        step: &JourneyPathStep,
+        movement: &JourneyMovement,
         shortcut: &crate::routing::BikeShortcut,
     ) -> Result<bool, PlanningError> {
-        if shortcut.from_anchor != step.from_anchor || shortcut.to_anchor != step.to_anchor {
+        if shortcut.from_anchor != movement.from_anchor || shortcut.to_anchor != movement.to_anchor
+        {
             return Ok(false);
         }
         if matches!(
-            self.variant.skeleton().anchors()[step.from_anchor].kind,
+            self.journey.anchors()[movement.from_anchor].kind,
             JourneyAnchorKind::Destination
         ) || matches!(
-            self.variant.skeleton().anchors()[step.to_anchor].kind,
+            self.journey.anchors()[movement.to_anchor].kind,
             JourneyAnchorKind::Origin
         ) {
             return Ok(false);
         }
-        let source_stop = anchor_boarding_point(self.variant, step.from_anchor);
+        let source_stop = anchor_boarding_point(self.journey, movement.from_anchor);
         if source_stop
             .as_ref()
             .is_some_and(|source_stop| self.current_stop.as_ref() != Some(source_stop))
@@ -42,15 +43,15 @@ impl ReconstructionState<'_, '_> {
         let from = anchor_place(
             self.reconstructor,
             self.context.request,
-            self.variant,
-            step.from_anchor,
+            self.journey,
+            movement.from_anchor,
         )
         .ok_or(PlanningError::Internal)?;
         let to = anchor_place(
             self.reconstructor,
             self.context.request,
-            self.variant,
-            step.to_anchor,
+            self.journey,
+            movement.to_anchor,
         )
         .ok_or(PlanningError::Internal)?;
         let connector_start = self.result.legs.len();
@@ -67,7 +68,7 @@ impl ReconstructionState<'_, '_> {
             return Ok(false);
         }
         register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
-        if let Some(to_stop) = anchor_boarding_point(self.variant, step.to_anchor) {
+        if let Some(to_stop) = anchor_boarding_point(self.journey, movement.to_anchor) {
             self.current_stop = Some(to_stop);
         }
 

@@ -48,18 +48,18 @@ Configuration:
 build_runtime → ViaRuntime
 → HTTP app / via-route → RoutingService.plan()
 → transit access / egress when transit modes are selected
-→ TransitPlanner.begin_plan() → MovementSession.evaluate()
+→ MultimodalPlanner.prepare() → PlanningSession.evaluate_primary()
 → Phase 1: static Top-K transit corridors
 → EvaluationCorridors with Origin / BoardingPoint / Destination anchors
 → request-local snapshots for retained transit positions and selected BikeShare
 → Phase 2: fixed-corridor baselines + Walking / BikeShare surface alternatives
-→ trivial Origin → Destination corridor when no candidate survives
+→ PlanningSession.evaluate_fallback() via EvaluationCorridor::surface_only() when needed
 → JourneyReconstructor → rank → JourneyOption[]
 ```
 
 `ViaRuntime` is the shared assembly used by the HTTP server and `via-route`.
 `RoutingService` owns the application planning use case and discovers transit
-access / egress only when a transit mode is selected. `TransitPlanner` owns
+access / egress only when a transit mode is selected. `MultimodalPlanner` owns
 both phases and keeps its topology and transfer indexes private. Phase 1
 retains one global Top-K set of structurally distinct transit corridors across
 selected modes. Phase 2 converts them to `EvaluationCorridor` values with
@@ -69,7 +69,11 @@ skips transit search and timing requests; walking remains implicitly enabled.
 `[bike_share]` also skips transit search and timing while loading one
 BikeShare availability snapshot.
 
-`FixedCorridorEvaluator` uses the retained baselines and a small set of
+`PlanningSession.evaluate_primary()` evaluates retained transit corridors. If
+no primary candidate survives evaluation or reconstruction, its private one-shot
+`evaluate_fallback()` evaluates `EvaluationCorridor::surface_only()`; it reuses
+the same request snapshots and caches. `FixedCorridorEvaluator` uses the
+retained baselines and a small set of
 `SurfaceMovementPlanner` implementations: Walking and BikeShare. Both screen
 with an optimistic lower bound before exact street routing and cache realized
 routes within the request. The evaluator can choose equivalent transit
@@ -79,6 +83,8 @@ trivial Origin-to-Destination corridor through the same evaluator. Bus
 realtime requests are deduplicated by stop and grouped by TDX city scope; the
 evaluator performs no TDX calls.
 
+`RealizedJourney` owns ordered anchors and movements, validates continuity and
+timing, and supplies canonical movement identity for deduplication.
 `JourneyReconstructor` owns place conversion, transit and BikeShare lookups,
 street hydration, and journey candidate assembly. It receives the shared
 request context and does not depend on the planning service. `TransitRuntime`
@@ -94,7 +100,7 @@ while output legs retain the coarse `walking`, `transit`, and `bicycle`
 
 Both the HTTP server and `via-route` load the same `ViaStatic` artifact and use
 the same runtime assembly. BikeShare can realize a movement between corridor
-anchors, including the trivial fallback corridor, when station metadata and
+anchors, including the `surface_only` fallback corridor, when station metadata and
 fresh availability support it.
 
 The server has no database, persistence layer, identity registry, or alternate

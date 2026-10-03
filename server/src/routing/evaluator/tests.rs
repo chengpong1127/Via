@@ -60,8 +60,8 @@ fn network(
     )))
 }
 
-fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> TransitQuery {
-    TransitQuery::new(
+fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> PlanningQuery {
+    PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("origin"),
             datetime!(2026-09-21 10:00 UTC),
@@ -84,7 +84,7 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> T
     .with_max_static_corridors(max_corridors)
 }
 
-fn candidate_corridor(network: &TransitRuntime, query: &TransitQuery) -> RetainedCorridorSet {
+fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> RetainedCorridorSet {
     let topology = TransitTopologyIndex::new(network.network());
     let transfers = TransferShortcutIndex::from_network(network.network());
     generate(network, &topology, &transfers, query).0
@@ -212,7 +212,7 @@ fn static_leg(pattern_id: &str, board: &str, alight: &str) -> StaticCorridorStep
         board_index: 0,
         alight_stop_id: BoardingPointId::new(alight),
         alight_index: 1,
-        cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+        cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
     })
 }
 
@@ -317,12 +317,11 @@ fn phase2_multi_leg_route_keeps_explicit_surface_transfer() {
     assert_eq!(candidates[0].evaluate_timing().unwrap().walking_seconds, 30);
     assert!(matches!(
         candidates[0]
-            .skeleton()
             .movements()
             .get(2)
             .map(|movement| &movement.kind),
-        Some(super::super::variant::JourneyMovementKind::Walking {
-            kind: super::super::variant::WalkingMovementKind::Transfer,
+        Some(super::super::realized::JourneyMovementKind::Walking {
+            kind: super::super::realized::WalkingMovementKind::Transfer,
             ..
         })
     ));
@@ -349,7 +348,7 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "transfer-from"),
                 StaticCorridorStep::SurfaceTransfer {
@@ -414,40 +413,40 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
     assert_eq!(timing.bike_share_uses, 1);
     assert_eq!(timing.walking_seconds, 150);
     let bike_shortcut = variants[0]
-        .path()
+        .movements()
         .iter()
-        .find_map(|step| match &step.movement {
-            super::super::variant::JourneyPathMovement::BikeShare { shortcut } => Some(shortcut),
-            super::super::variant::JourneyPathMovement::Walking { .. }
-            | super::super::variant::JourneyPathMovement::Transit { .. } => None,
+        .find_map(|step| match &step.kind {
+            super::super::realized::JourneyMovementKind::BikeShare { shortcut } => Some(shortcut),
+            super::super::realized::JourneyMovementKind::Walking { .. }
+            | super::super::realized::JourneyMovementKind::Transit { .. } => None,
         })
         .unwrap();
     assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
     assert_eq!(bike_shortcut.walk_from_dropoff.duration_seconds, 90);
     let bike_step = variants[0]
-        .path()
+        .movements()
         .iter()
         .find(|step| {
             matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )
         })
         .unwrap();
     assert!(matches!(
-        &variants[0].skeleton().anchors()[bike_step.from_anchor].kind,
-        super::super::variant::JourneyAnchorKind::BoardingPoint { id }
+        &variants[0].anchors()[bike_step.from_anchor].kind,
+        super::super::realized::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-from")
     ));
     assert!(matches!(
-        &variants[0].skeleton().anchors()[bike_step.to_anchor].kind,
-        super::super::variant::JourneyAnchorKind::BoardingPoint { id }
+        &variants[0].anchors()[bike_step.to_anchor].kind,
+        super::super::realized::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-to")
     ));
     assert_eq!(stats.bike_realizations_selected, 1);
-    assert!(variants[0].path().iter().any(|step| matches!(
-        step.movement,
-        super::super::variant::JourneyPathMovement::BikeShare { .. }
+    assert!(variants[0].movements().iter().any(|step| matches!(
+        step.kind,
+        super::super::realized::JourneyMovementKind::BikeShare { .. }
     )));
 }
 
@@ -468,7 +467,7 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "middle"),
                 static_leg("second", "middle", "destination"),
@@ -499,10 +498,10 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
     let bike_variant = variants
         .iter()
         .find(|variant| {
-            variant.path().iter().any(|step| {
+            variant.movements().iter().any(|step| {
                 matches!(
-                    step.movement,
-                    super::super::variant::JourneyPathMovement::BikeShare { .. }
+                    step.kind,
+                    super::super::realized::JourneyMovementKind::BikeShare { .. }
                 )
             })
         })
@@ -515,10 +514,10 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
         bike_variant.transit_pattern_sequence(),
         vec![TransitPatternId::new("second")]
     );
-    assert!(bike_variant.skeleton().movements().iter().any(|movement| {
+    assert!(bike_variant.movements().iter().any(|movement| {
         matches!(
             &movement.kind,
-            super::super::variant::JourneyMovementKind::Transit { trip, .. }
+            super::super::realized::JourneyMovementKind::Transit { trip, .. }
                 if trip.id == EffectiveTripId::new("second-17")
         )
     }));
@@ -541,7 +540,7 @@ fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "middle"),
                 static_leg("second", "middle", "destination"),
@@ -583,10 +582,10 @@ fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
         .iter()
         .find(|variant| {
             variant.transit_pattern_sequence().is_empty()
-                && variant.path().iter().any(|step| {
+                && variant.movements().iter().any(|step| {
                     matches!(
-                        step.movement,
-                        super::super::variant::JourneyPathMovement::BikeShare { .. }
+                        step.kind,
+                        super::super::realized::JourneyMovementKind::BikeShare { .. }
                     )
                 })
         })
@@ -601,7 +600,7 @@ fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
 #[test]
 fn bike_can_replace_a_surface_walking_edge() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -618,7 +617,7 @@ fn bike_can_replace_a_surface_walking_edge() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 600,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -643,10 +642,10 @@ fn bike_can_replace_a_surface_walking_edge() {
     .0;
 
     assert!(variants.iter().any(|variant| {
-        variant.path().iter().any(|step| {
+        variant.movements().iter().any(|step| {
             matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )
         })
     }));
@@ -655,7 +654,7 @@ fn bike_can_replace_a_surface_walking_edge() {
 #[test]
 fn slower_optimistic_bike_bound_skips_exact_routing() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -672,7 +671,7 @@ fn slower_optimistic_bike_bound_skips_exact_routing() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 300,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -701,9 +700,9 @@ fn slower_optimistic_bike_bound_skips_exact_routing() {
     assert!(
         variants
             .iter()
-            .all(|variant| variant.path().iter().all(|step| !matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+            .all(|variant| variant.movements().iter().all(|step| !matches!(
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
     );
 }
@@ -722,7 +721,7 @@ fn transit_waiting_time_is_included_when_screening_bike() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 4 * 60,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![static_leg("bus", "origin", "destination")],
         }],
     );
@@ -758,7 +757,7 @@ fn transit_waiting_time_is_included_when_screening_bike() {
 #[test]
 fn exact_bike_that_loses_to_walking_is_not_retained() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -775,7 +774,7 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 12 * 60,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -803,9 +802,9 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
     assert!(
         variants
             .iter()
-            .all(|variant| variant.path().iter().all(|step| !matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+            .all(|variant| variant.movements().iter().all(|step| !matches!(
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
     );
 }
@@ -813,7 +812,7 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
 #[test]
 fn identical_physical_bike_movements_use_one_exact_realization() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![
             AccessPoint::new(
                 BoardingPointId::new("a"),
@@ -839,7 +838,7 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 10 * 60,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -874,7 +873,7 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
     let stop_refs = stop_names.iter().map(String::as_str).collect::<Vec<_>>();
     let network = network(Vec::new(), &stop_refs, Vec::new());
     let departure_at = datetime!(2026-09-21 10:00 UTC);
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new(&stop_names[0]),
             departure_at,
@@ -895,7 +894,7 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
             access_stop_id: BoardingPointId::new(&stop_names[0]),
             egress_stop_id: BoardingPointId::new(stop_names.last().unwrap()),
             theoretical_duration_seconds: 12 * 60,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: stop_names
                 .windows(2)
                 .map(|pair| StaticCorridorStep::SurfaceTransfer {
@@ -944,7 +943,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         &["a", "b", "c", "d"],
         Vec::new(),
     );
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -970,7 +969,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("d"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "a", "b"),
                 static_leg("second", "b", "c"),
@@ -1021,12 +1020,12 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         .iter()
         .find(|variant| {
             variant
-                .path()
+                .movements()
                 .iter()
                 .filter(|step| {
                     matches!(
-                        step.movement,
-                        super::super::variant::JourneyPathMovement::BikeShare { .. }
+                        step.kind,
+                        super::super::realized::JourneyMovementKind::BikeShare { .. }
                     )
                 })
                 .count()
@@ -1046,19 +1045,19 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
     assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:25 UTC));
     assert_eq!(timing.bike_share_uses, 2);
     let last_bike = split_rentals
-        .path()
+        .movements()
         .iter()
         .rev()
         .find(|step| {
             matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )
         })
         .unwrap();
     assert!(matches!(
-        &last_bike.movement,
-        super::super::variant::JourneyPathMovement::BikeShare { shortcut }
+        &last_bike.kind,
+        super::super::realized::JourneyMovementKind::BikeShare { shortcut }
             if shortcut.rental_wait_seconds == 5 * 60
     ));
 }
@@ -1066,7 +1065,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
 #[test]
 fn bike_with_no_pareto_benefit_is_pruned() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1083,7 +1082,7 @@ fn bike_with_no_pareto_benefit_is_pruned() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 60,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -1120,9 +1119,9 @@ fn bike_with_no_pareto_benefit_is_pruned() {
     assert!(
         variants
             .iter()
-            .all(|variant| variant.path().iter().all(|step| !matches!(
-                step.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+            .all(|variant| variant.movements().iter().all(|step| !matches!(
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
     );
 }
@@ -1134,7 +1133,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
         &["a", "b"],
         Vec::new(),
     );
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1152,7 +1151,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![static_leg("bus", "a", "b")],
         }],
     );
@@ -1178,9 +1177,9 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
             .transit_pattern_sequence()
             .contains(&TransitPatternId::new("bus"))
     );
-    assert!(variants[0].path().iter().all(|step| !matches!(
-        step.movement,
-        super::super::variant::JourneyPathMovement::BikeShare { .. }
+    assert!(variants[0].movements().iter().all(|step| !matches!(
+        step.kind,
+        super::super::realized::JourneyMovementKind::BikeShare { .. }
     )));
 }
 
@@ -1194,7 +1193,7 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         &["a", "x", "destination"],
         Vec::new(),
     );
-    let mut query = TransitQuery::new(
+    let mut query = PlanningQuery::new(
         vec![
             AccessPoint::new(
                 BoardingPointId::new("a"),
@@ -1222,14 +1221,14 @@ fn pareto_keeps_a_later_route_with_less_walking() {
                 access_stop_id: BoardingPointId::new("a"),
                 egress_stop_id: BoardingPointId::new("destination"),
                 theoretical_duration_seconds: 300,
-                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
                 steps: vec![static_leg("walky", "a", "destination")],
             },
             StaticCorridor {
                 access_stop_id: BoardingPointId::new("x"),
                 egress_stop_id: BoardingPointId::new("destination"),
                 theoretical_duration_seconds: 480,
-                cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+                cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
                 steps: vec![static_leg("lowwalk", "x", "destination")],
             },
         ],
@@ -1357,11 +1356,10 @@ fn phase2_later_departure_can_have_earlier_arrival() {
     );
     assert!(matches!(
         candidates[0]
-            .skeleton()
             .movements()
             .get(1)
             .map(|movement| &movement.kind),
-        Some(super::super::variant::JourneyMovementKind::Transit { .. })
+        Some(super::super::realized::JourneyMovementKind::Transit { .. })
     ));
 }
 
@@ -1383,10 +1381,10 @@ fn phase2_keeps_reliable_candidate_when_fallback_arrives_earlier() {
     let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
 
     assert!(candidates.iter().any(|candidate| {
-        candidate.skeleton().movements().iter().any(|movement| {
+        candidate.movements().iter().any(|movement| {
             matches!(
                 &movement.kind,
-                super::super::variant::JourneyMovementKind::Transit { trip, .. }
+                super::super::realized::JourneyMovementKind::Transit { trip, .. }
                     if trip.timing_reliability == TimingReliability::Reliable
             )
         })
@@ -1421,10 +1419,10 @@ fn phase2_state_pruning_keeps_reliability_alternatives_for_later_legs() {
     let candidates = evaluate(&network, &corridor, &snapshot, query).unwrap();
 
     assert!(candidates.iter().any(|candidate| {
-        candidate.skeleton().movements().iter().any(|movement| {
+        candidate.movements().iter().any(|movement| {
             matches!(
                 &movement.kind,
-                super::super::variant::JourneyMovementKind::Transit { trip, .. }
+                super::super::realized::JourneyMovementKind::Transit { trip, .. }
                     if trip.id == EffectiveTripId::new("z-reliable")
             )
         })
@@ -1694,7 +1692,7 @@ fn phase2_never_combines_different_retained_corridors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 1,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("a-bus-prefix", "origin", "middle"),
                 static_leg("b-bus-suffix", "middle", "destination"),
@@ -1704,7 +1702,7 @@ fn phase2_never_combines_different_retained_corridors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 2,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("c-metro-prefix", "origin", "middle"),
                 static_leg("d-metro-suffix", "middle", "destination"),
@@ -1825,13 +1823,18 @@ async fn evaluate_walking_replacement(
     duplicate: bool,
     with_bike: bool,
 ) -> (EvaluationResult, usize) {
-    use super::super::surface::{SurfaceEndpoint, WalkingMovementPlanner};
-    use crate::street::Coordinate;
+    use super::super::surface::WalkingMovementPlanner;
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
         Vec::new(),
     );
+    let mut static_network = network.network().clone();
+    static_network.stops[1].coordinate = GeoCoordinate {
+        latitude: 25.02,
+        longitude: 121.5,
+    };
+    let network = Arc::new(TransitRuntime::new(Arc::new(static_network)));
     let mut query = query(&[TransitMode::Bus], 0, 10);
     query.latest_arrival =
         latest_seconds.map(|seconds| query.departure_time + Duration::seconds(seconds));
@@ -1864,23 +1867,8 @@ async fn evaluate_walking_replacement(
             hits: 0,
         }));
     }
-    let make_corridor = || {
-        let mut corridor =
-            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
-        corridor.anchors[1] = SurfaceEndpoint {
-            kind: JourneyAnchorKind::BoardingPoint {
-                id: BoardingPointId::new("origin"),
-            },
-            coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
-        };
-        corridor.anchors[2] = SurfaceEndpoint {
-            kind: JourneyAnchorKind::BoardingPoint {
-                id: BoardingPointId::new("destination"),
-            },
-            coordinate: Coordinate::try_new(25.02, 121.5).unwrap(),
-        };
-        corridor
-    };
+    let make_corridor =
+        || EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
     let corridors = if duplicate {
         vec![make_corridor(), make_corridor()]
     } else {
@@ -1897,12 +1885,9 @@ async fn evaluate_walking_replacement(
 async fn competitive_walking_replaces_transit_and_keeps_exact_geometry() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, false, false).await;
     assert_eq!(calls, 1);
-    assert!(result.variants.iter().any(|v| {
+    assert!(result.journeys.iter().any(|v| {
         v.transit_pattern_sequence().is_empty()
-            && v.skeleton()
-                .movements()
-                .iter()
-                .any(|m| m.street_path.is_some())
+            && v.movements().iter().any(|m| m.street_path.is_some())
     }));
 }
 
@@ -1910,9 +1895,9 @@ async fn competitive_walking_replaces_transit_and_keeps_exact_geometry() {
 async fn walking_bound_skips_exact_routing_when_transit_is_faster() {
     let (result, calls) = evaluate_walking_replacement(1, None, None, false, false).await;
     assert_eq!(calls, 0);
-    assert_eq!(result.variants.len(), 1);
+    assert_eq!(result.journeys.len(), 1);
     assert_eq!(
-        result.variants[0].transit_pattern_sequence(),
+        result.journeys[0].transit_pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -1928,10 +1913,10 @@ async fn optional_walking_dependency_failure_preserves_transit() {
     )
     .await;
     assert_eq!(calls, 1);
-    assert_eq!(result.variants.len(), 1);
+    assert_eq!(result.journeys.len(), 1);
     assert!(result.failures.transient);
     assert_eq!(
-        result.variants[0].transit_pattern_sequence(),
+        result.journeys[0].transit_pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -1940,13 +1925,13 @@ async fn optional_walking_dependency_failure_preserves_transit() {
 async fn repeated_corridor_pairs_reuse_exact_walking_routes() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, true, false).await;
     assert_eq!(calls, 1);
-    assert!(!result.variants.is_empty());
+    assert!(!result.journeys.is_empty());
 }
 
 #[tokio::test]
 async fn walking_replacement_respects_latest_arrival() {
     let (result, calls) = evaluate_walking_replacement(20, None, Some(299), false, false).await;
-    assert!(result.variants.is_empty());
+    assert!(result.journeys.is_empty());
     assert_eq!(calls, 0); // Even the optimistic bound cannot arrive in this window.
 }
 
@@ -1955,19 +1940,19 @@ async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, false, true).await;
     assert_eq!(calls, 1);
     assert!(result.stats.bike_realizations_feasible > 0);
-    assert!(result.variants.iter().any(|v| {
-        v.skeleton()
-            .movements()
-            .iter()
-            .any(|m| m.street_path.is_some())
-    }));
     assert!(
         result
-            .variants
+            .journeys
             .iter()
-            .any(|v| v.path().iter().any(|s| matches!(
-                s.movement,
-                super::super::variant::JourneyPathMovement::BikeShare { .. }
+            .any(|v| { v.movements().iter().any(|m| m.street_path.is_some()) })
+    );
+    assert!(
+        result
+            .journeys
+            .iter()
+            .any(|v| v.movements().iter().any(|s| matches!(
+                s.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
     );
 }
@@ -1976,7 +1961,7 @@ async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
 async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
     use super::super::surface::WalkingMovementPlanner;
     let network = network(Vec::new(), &["a", "b"], Vec::new());
-    let query = TransitQuery::new(
+    let query = PlanningQuery::new(
         vec![AccessPoint::new(
             BoardingPointId::new("a"),
             datetime!(2026-09-21 10:00 UTC),
@@ -1993,7 +1978,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 600,
-            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -2028,5 +2013,5 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         .unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(result.stats.bike_realizations_feasible, 1);
-    assert!(!result.variants.is_empty());
+    assert!(!result.journeys.is_empty());
 }

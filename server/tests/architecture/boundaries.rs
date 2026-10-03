@@ -63,7 +63,7 @@ fn reconstruction_does_not_depend_on_the_routing_service() {
 }
 
 #[test]
-fn routing_does_not_access_transit_planner_topology() {
+fn routing_does_not_access_multimodal_planner_topology() {
     let routing = source("src/routing/service.rs");
     for forbidden in ["TransitTopologyIndex", ".topology()", "AccessNetwork"] {
         assert!(
@@ -144,4 +144,21 @@ fn tdx_client_remains_transport_agnostic() {
         );
     }
     assert!(client.contains("pub async fn get_json<T: DeserializeOwned>"));
+}
+
+#[test]
+fn realized_journey_is_the_only_realized_path_representation() {
+    let realized = source_tree("src/routing/realized");
+    assert!(realized.contains("pub struct RealizedJourney {"));
+    for legacy_declaration in [
+        "pub struct JourneyVariant {",
+        "pub struct JourneySkeleton {",
+        "pub struct JourneyPathStep {",
+        "pub enum JourneyPathMovement {",
+    ] {
+        assert!(
+            !realized.contains(legacy_declaration),
+            "routing must not retain a parallel realized path type: {legacy_declaration}"
+        );
+    }
 }

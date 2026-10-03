@@ -6,22 +6,24 @@ The server's canonical planning flow is:
 
 ```text
 RoutingService
-  → TransitPlanner.begin_plan → MovementSession.evaluate
+  → MultimodalPlanner.prepare → PlanningSession.evaluate_primary / evaluate_fallback
   → static transit corridors → EvaluationCorridor anchors
   → request-local timing / availability snapshots
   → FixedCorridorEvaluator (baseline + Walking / BikeShare surface movement)
-  → typed realized path → reconstruct → rank
+  → RealizedJourney → reconstruct → rank
 ```
 
-`TransitPlanner` owns both phases. Phase 1 runs one global, bounded forward
+`MultimodalPlanner` owns both phases. Phase 1 runs one global, bounded forward
 Top-K search over selected transit modes using static schedule costs, derived
 Bus segment costs, or optimistic geometry estimates. It retains transit
 corridors only. Phase 2 represents each retained corridor as an
 `EvaluationCorridor` whose anchors include Origin, boarding points, and
 Destination; bounded access and egress alternatives remain attached to their
-edges. With no transit mode selected, Phase 1 is skipped and a trivial
-Origin-to-Destination corridor is evaluated. If transit evaluation yields no
-candidate, the same trivial corridor is evaluated as fallback.
+edges. With no transit mode selected, Phase 1 is skipped and the planner builds
+a surface-only Origin-to-Destination corridor. The session evaluates primary
+corridors with `evaluate_primary()` and can evaluate its one-shot fallback with
+`evaluate_fallback()` if evaluation or reconstruction yields no candidate.
+Fallback state stays private to the session.
 
 `selected_modes` lists only optional non-walking modes. `[]` enables walking
 alone; `[bike_share]` enables walking and BikeShare without transit search.
@@ -33,10 +35,12 @@ cheap optimistic bounds before exact street routing and request-local caches.
 BikeShare may extend one continuous rental across later anchors. The evaluator
 cannot add anchors or combine corridors and makes no additional TDX calls.
 Static `TransferShortcutIndex` lookups are directional; Bus realtime is fetched
-by unique stop and scope, then filtered locally. Reconstruction consumes typed
-realized path movements. There is no `RouteGraph` in the canonical routing
-path. Keep the dependency direction `domain ← routing ← app/api`, with
-providers implementing domain-facing interfaces. Do not reintroduce the
+by unique stop and scope, then filtered locally. `RealizedJourney` owns the
+ordered anchors and movements, validates their continuity and timing, and
+supplies canonical movement identity for deduplication. Reconstruction consumes
+that journey directly. There is no `RouteGraph` in the canonical routing path.
+Keep the dependency direction `domain ← routing ← app/api`, with providers
+implementing domain-facing interfaces. Do not reintroduce the
 removed `planner`, `normalization`, or `routing/engine` modules, a generic
 routing-algorithm boundary, Trip-Based routing, async transfer resolvers, or a
 `JourneyPlanningService` wrapper.

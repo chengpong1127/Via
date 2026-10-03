@@ -95,11 +95,11 @@ The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
 `--json`. `--modes` selects optional non-walking modes: `bus`, `metro`, `tra`,
 `thsr`, and `bike_share`. Omitting `--modes` or passing `--modes ''` selects
 walking only; `walk` is not a mode value. Walking is always available. With no
-transit mode, the planner skips transit search and timing, then evaluates a
-trivial Origin-to-Destination corridor; selecting BikeShare also loads one
-request-local availability snapshot. BikeShare can realize movements between
-anchors in a retained corridor or that fallback corridor when station
-metadata, routes, and fresh availability support it. Surface movement cannot
+transit mode, the planner skips transit search and timing, then evaluates the
+surface-only fallback corridor; selecting BikeShare also loads one request-local
+availability snapshot. BikeShare can realize movements between
+anchors in a retained corridor or the surface-only fallback corridor when
+station metadata, routes, and fresh availability support it. Surface movement cannot
 add transit topology.
 
 ## Run the server

@@ -4,21 +4,13 @@ use super::*;
 pub(super) struct EvaluationState {
     pub ready_at: OffsetDateTime,
     pub last_was_transit: bool,
-    pub active_bike_run: Option<ActiveBikeRun>,
+    pub active_bike_run: Option<super::bike::ActiveBikeRental>,
     pub bike_reuse_available_at: Option<OffsetDateTime>,
     pub movements: Vec<JourneyMovement>,
 }
 
-#[derive(Clone)]
-pub(super) struct ActiveBikeRun {
-    pub start_anchor: usize,
-    pub started_at: OffsetDateTime,
-    pub prefix_movements: Vec<JourneyMovement>,
-    pub shortcut: BikeShortcut,
-}
-
 impl EvaluationState {
-    pub fn initial(query: &TransitQuery) -> Self {
+    pub fn initial(query: &PlanningQuery) -> Self {
         Self {
             ready_at: query.departure_time,
             last_was_transit: false,
@@ -31,14 +23,7 @@ impl EvaluationState {
     pub fn after_movement(&self, movement: JourneyMovement) -> Self {
         let mut next = self.clone();
         if let Some(run) = &self.active_bike_run {
-            let return_at = run.started_at
-                + Duration::seconds(i64::from(
-                    run.shortcut
-                        .walk_to_pickup
-                        .duration_seconds
-                        .saturating_add(run.shortcut.bicycle_duration_seconds),
-                ))
-                + Duration::minutes(15);
+            let return_at = run.reuse_available_at();
             next.bike_reuse_available_at = Some(
                 next.bike_reuse_available_at
                     .map_or(return_at, |known| known.max(return_at)),

@@ -20,19 +20,19 @@ use crate::{
 };
 
 use super::{
-    model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline, TransitQuery},
-    planner::TransitPlanner,
+    model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline, PlanningQuery},
+    planner::MultimodalPlanner,
+    realized::RealizedJourney,
     reconstruct::{
         JourneyCandidate, JourneyReconstructor, apply_ranked_journey, assign_result_local_ids,
         taipei_now, to_street_coordinate,
     },
-    variant::JourneyVariant,
 };
 
 #[derive(Clone)]
 pub struct RoutingService {
     street_routing: Arc<dyn StreetRouter>,
-    transit_planner: TransitPlanner,
+    planner: MultimodalPlanner,
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
     limits: JourneyPlanningLimits,
@@ -48,7 +48,7 @@ impl RoutingService {
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
     ) -> Self {
-        let transit_planner = TransitPlanner::new(transit_runtime.clone(), timing)
+        let planner = MultimodalPlanner::new(transit_runtime.clone(), timing)
             .with_street_router(street_routing.clone())
             .with_bike_share(
                 bike_share_network.clone(),
@@ -60,7 +60,7 @@ impl RoutingService {
         let limits = limits.normalized();
         Self {
             street_routing,
-            transit_planner,
+            planner,
             reconstructor,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
@@ -114,7 +114,7 @@ impl RoutingService {
         )?;
         context.ensure_before_deadline()?;
 
-        let alternatives = self.discover_movements(&context).await?;
+        let alternatives = self.plan_candidates(&context).await?;
         self.finalize_plan(
             request_started_at,
             &context,
@@ -124,13 +124,13 @@ impl RoutingService {
         )
     }
 
-    async fn discover_movements(
+    async fn plan_candidates(
         &self,
         context: &JourneyPlanningContext<'_>,
-    ) -> Result<TransitAlternatives, PlanningError> {
+    ) -> Result<PlanningCandidates, PlanningError> {
         let request = context.request;
         let allowed_transit_modes = request.allowed_transit_modes();
-        let mut alternatives = TransitAlternatives::default();
+        let mut alternatives = PlanningCandidates::default();
 
         let (origin, destination) = (
             to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?,
@@ -138,12 +138,12 @@ impl RoutingService {
                 .map_err(|_| PlanningError::Internal)?,
         );
         let query = if allowed_transit_modes.is_empty() {
-            TransitQuery::new(Vec::new(), Vec::new(), context.search_start)
+            PlanningQuery::new(Vec::new(), Vec::new(), context.search_start)
                 .with_allowed_transit_modes([])
         } else {
             let access_started = Instant::now();
             let access = self
-                .transit_planner
+                .planner
                 .discover_access_points(
                     self.street_routing.as_ref(),
                     request.origin.coordinate,
@@ -155,7 +155,7 @@ impl RoutingService {
                 .await;
             context.ensure_before_deadline()?;
             let egress = self
-                .transit_planner
+                .planner
                 .discover_egress_points(
                     self.street_routing.as_ref(),
                     request.destination.coordinate,
@@ -178,18 +178,18 @@ impl RoutingService {
                 target: "via_server::routing",
                 access = ?access.iter().map(|point| (
                     point.stop_id.as_str(),
-                    self.transit_planner.modes_at_stop(&point.stop_id),
+                    self.planner.modes_at_stop(&point.stop_id),
                     point.walking_seconds,
                 )).collect::<Vec<_>>(),
                 egress = ?egress.iter().map(|point| (
                     point.stop_id.as_str(),
-                    self.transit_planner.modes_at_stop(&point.stop_id),
+                    self.planner.modes_at_stop(&point.stop_id),
                     point.walking_seconds,
                 )).collect::<Vec<_>>(),
                 "discovered transit access and egress"
             );
 
-            TransitQuery::new(access, egress, context.search_start)
+            PlanningQuery::new(access, egress, context.search_start)
                 .with_allowed_transit_modes(allowed_transit_modes)
         };
         let mut query = query
@@ -202,34 +202,34 @@ impl RoutingService {
         {
             let search_started = Instant::now();
             let planned = async {
-                let mut session = self.transit_planner.begin_plan(query).await?;
-                let variants = session.evaluate(false).await?;
+                let mut session = self.planner.prepare(query).await?;
+                let journeys = session.evaluate_primary().await?;
                 context
                     .ensure_before_deadline()
                     .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
-                alternatives.metrics.transit_realtime_evidence_values = variants
+                alternatives.metrics.transit_realtime_evidence_values = journeys
                     .iter()
-                    .map(JourneyVariant::realtime_evidence_count)
+                    .map(RealizedJourney::realtime_evidence_count)
                     .sum();
-                for variant in variants {
-                    match self.reconstructor.reconstruct(&variant, context).await {
+                for journey in journeys {
+                    match self.reconstructor.reconstruct(&journey, context).await {
                         Ok(Some(candidate)) => alternatives.candidates.push(candidate),
                         Ok(None) => {}
                         Err(error) => alternatives.failures.record_planning(&error),
                     }
                 }
-                if alternatives.candidates.is_empty() && !session.fallback_used {
-                    for variant in session.evaluate(true).await? {
-                        match self.reconstructor.reconstruct(&variant, context).await {
+                if alternatives.candidates.is_empty() {
+                    for journey in session.evaluate_fallback().await? {
+                        match self.reconstructor.reconstruct(&journey, context).await {
                             Ok(Some(candidate)) => alternatives.candidates.push(candidate),
                             Ok(None) => {}
                             Err(error) => alternatives.failures.record_planning(&error),
                         }
                     }
                 }
-                alternatives.failures.transient |= session.failures.transient;
-                alternatives.failures.internal |= session.failures.internal;
-                Ok::<_, super::model::RoutingError>(session.stats)
+                alternatives.failures.transient |= session.failures().transient;
+                alternatives.failures.internal |= session.failures().internal;
+                Ok::<_, super::model::RoutingError>(session.stats().clone())
             }
             .await;
             match planned {
@@ -375,7 +375,7 @@ impl RoutingService {
 }
 
 #[derive(Default)]
-struct TransitAlternatives {
+struct PlanningCandidates {
     candidates: Vec<JourneyCandidate>,
     failures: PlanningFailures,
     metrics: PlannerStageMetrics,
@@ -438,7 +438,7 @@ mod limits_tests {
     }
     #[test]
     fn routing_and_query_share_planner_defaults() {
-        let query = TransitQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc());
+        let query = PlanningQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc());
         assert_eq!(JourneyPlanningLimits::default().planner, query.limits);
         assert_eq!(query.limits, PlannerLimits::default());
     }
@@ -449,7 +449,7 @@ mod limits_tests {
             max_phase2_expansions: 0,
             ..PlannerLimits::default()
         };
-        let query = TransitQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc())
+        let query = PlanningQuery::new(Vec::new(), Vec::new(), OffsetDateTime::now_utc())
             .with_limits(limits);
         assert_eq!(query.limits.max_phase2_expansions, 0);
         assert_eq!(

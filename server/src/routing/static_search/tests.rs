@@ -17,7 +17,7 @@ use crate::{
         transit_runtime::TransitRuntime,
     },
     routing::{
-        AccessPoint, EgressPoint, model::TransitQuery, topology::TransitTopologyIndex,
+        AccessPoint, EgressPoint, model::PlanningQuery, topology::TransitTopologyIndex,
         transfers::TransferShortcutIndex,
     },
 };
@@ -88,8 +88,8 @@ fn query(
     modes: &[TransitMode],
     max_transfers: usize,
     k: usize,
-) -> TransitQuery {
-    TransitQuery::new(
+) -> PlanningQuery {
+    PlanningQuery::new(
         vec![AccessPoint::new(
             id(origin),
             datetime!(2026-09-21 10:00 UTC),
@@ -112,7 +112,7 @@ fn query(
     .with_max_static_corridors(k)
 }
 
-fn run(network: &TransitNetwork, query: &TransitQuery) -> RetainedCorridorSet {
+fn run(network: &TransitNetwork, query: &PlanningQuery) -> RetainedCorridorSet {
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
     let topology = TransitTopologyIndex::new(runtime.network());
     let transfers = TransferShortcutIndex::from_network(runtime.network());

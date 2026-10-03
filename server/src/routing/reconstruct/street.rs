@@ -8,7 +8,7 @@ use crate::{
     },
     routing::{
         model::JourneyPlanningContext,
-        variant::{JourneyAnchorKind, JourneyMovement, JourneyPathStep, JourneyVariant},
+        realized::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
     },
     street::{
         Coordinate, ProviderFailureClass, RouteQuery, RoutingTimeKind, StreetPath, StreetTravelMode,
@@ -25,7 +25,6 @@ use super::{
 impl ReconstructionState<'_, '_> {
     pub(super) fn append_realized_walk(
         &mut self,
-        step: &JourneyPathStep,
         movement: &JourneyMovement,
     ) -> Result<bool, PlanningError> {
         let Some(path) = movement.street_path.as_deref() else {
@@ -34,15 +33,15 @@ impl ReconstructionState<'_, '_> {
         let from = anchor_place(
             self.reconstructor,
             self.context.request,
-            self.variant,
-            step.from_anchor,
+            self.journey,
+            movement.from_anchor,
         )
         .ok_or(PlanningError::Internal)?;
         let to = anchor_place(
             self.reconstructor,
             self.context.request,
-            self.variant,
-            step.to_anchor,
+            self.journey,
+            movement.to_anchor,
         )
         .ok_or(PlanningError::Internal)?;
         let connector_start = self.result.legs.len();
@@ -56,13 +55,13 @@ impl ReconstructionState<'_, '_> {
         ) {
             register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
         }
-        self.current_stop = anchor_boarding_point(self.variant, step.to_anchor);
+        self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
         Ok(true)
     }
 
     pub(super) async fn append_access(
         &mut self,
-        step: &JourneyPathStep,
+        movement: &JourneyMovement,
         duration_seconds: u32,
         distance_metres: u32,
     ) -> Result<bool, PlanningError> {
@@ -72,7 +71,7 @@ impl ReconstructionState<'_, '_> {
         let first_stop = self
             .reconstructor
             .stop_place(
-                &anchor_boarding_point(self.variant, step.to_anchor)
+                &anchor_boarding_point(self.journey, movement.to_anchor)
                     .ok_or(PlanningError::Internal)?,
             )
             .ok_or(PlanningError::Internal)?;
@@ -86,28 +85,28 @@ impl ReconstructionState<'_, '_> {
             &mut self.result,
         )
         .await?;
-        self.current_stop = anchor_boarding_point(self.variant, step.to_anchor);
+        self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
 
         Ok(true)
     }
 
     pub(super) fn append_surface_transfer(
         &mut self,
-        step: &JourneyPathStep,
+        movement: &JourneyMovement,
         duration_seconds: u32,
         distance_metres: u32,
     ) -> Result<bool, PlanningError> {
         let from_stop = self
             .current_stop
             .clone()
-            .or_else(|| anchor_boarding_point(self.variant, step.from_anchor))
+            .or_else(|| anchor_boarding_point(self.journey, movement.from_anchor))
             .ok_or(PlanningError::Internal)?;
         let from = self
             .reconstructor
             .stop_place(&from_stop)
             .ok_or(PlanningError::Internal)?;
-        let to_stop =
-            anchor_boarding_point(self.variant, step.to_anchor).ok_or(PlanningError::Internal)?;
+        let to_stop = anchor_boarding_point(self.journey, movement.to_anchor)
+            .ok_or(PlanningError::Internal)?;
         if Some(to_stop.clone()) == self.current_stop {
             return Ok(false);
         }
@@ -131,17 +130,17 @@ impl ReconstructionState<'_, '_> {
 
     pub(super) async fn append_egress(
         &mut self,
-        step: &JourneyPathStep,
+        movement: &JourneyMovement,
         duration_seconds: u32,
         distance_metres: u32,
     ) -> Result<bool, PlanningError> {
-        if step.to_anchor != self.final_anchor {
+        if movement.to_anchor != self.final_anchor {
             return Ok(false);
         }
         let final_stop_id = self
             .current_stop
             .clone()
-            .or_else(|| anchor_boarding_point(self.variant, step.from_anchor))
+            .or_else(|| anchor_boarding_point(self.journey, movement.from_anchor))
             .ok_or(PlanningError::Internal)?;
         let final_stop = self
             .reconstructor
@@ -160,34 +159,13 @@ impl ReconstructionState<'_, '_> {
 
         Ok(true)
     }
-
-    pub(super) fn append_direct_walk(
-        &mut self,
-        step: &JourneyPathStep,
-        movement: &JourneyMovement,
-    ) -> Result<bool, PlanningError> {
-        if self.current_anchor != 0 || step.to_anchor != self.final_anchor {
-            return Ok(false);
-        }
-        let Some(path) = movement.street_path.as_deref() else {
-            return Err(PlanningError::Internal);
-        };
-        append_routed_walking(
-            &self.origin,
-            &self.destination,
-            path.clone(),
-            &mut self.result,
-        );
-
-        Ok(true)
-    }
 }
 
 pub(super) fn anchor_boarding_point(
-    variant: &JourneyVariant,
+    journey: &RealizedJourney,
     anchor: usize,
 ) -> Option<BoardingPointId> {
-    match &variant.skeleton().anchors().get(anchor)?.kind {
+    match &journey.anchors().get(anchor)?.kind {
         JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
         JourneyAnchorKind::Origin | JourneyAnchorKind::Destination => None,
     }
@@ -196,10 +174,10 @@ pub(super) fn anchor_boarding_point(
 pub(super) fn anchor_place(
     reconstructor: &JourneyReconstructor,
     request: &PlanningRequest,
-    variant: &JourneyVariant,
+    journey: &RealizedJourney,
     anchor: usize,
 ) -> Option<Place> {
-    match &variant.skeleton().anchors().get(anchor)?.kind {
+    match &journey.anchors().get(anchor)?.kind {
         JourneyAnchorKind::Origin => Some(reconstructor.origin_place(request)),
         JourneyAnchorKind::BoardingPoint { id } => reconstructor.stop_place(id),
         JourneyAnchorKind::Destination => Some(reconstructor.destination_place(request)),

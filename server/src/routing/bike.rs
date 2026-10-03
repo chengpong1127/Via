@@ -17,11 +17,11 @@ use crate::{
 };
 
 use super::{
+    realized::{BikeRide, BikeShortcut},
     surface::{
-        EndpointKey, SurfaceEndpoint, SurfaceKind, SurfaceMovement, SurfaceMovementPlanner,
-        SurfaceRequest,
+        CorridorAnchor, CorridorAnchorKey, SurfaceKind, SurfaceMovement, SurfaceMovementPlanner,
+        SurfaceRealizationStats, SurfaceRequest,
     },
-    variant::{BikeRide, BikeShortcut},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -75,8 +75,8 @@ impl BikeShareMovementPlanner {
 
     pub(crate) fn movement_candidate(
         &self,
-        from: &SurfaceEndpoint,
-        to: &SurfaceEndpoint,
+        from: &CorridorAnchor,
+        to: &CorridorAnchor,
         snapshot: &BikeAvailabilitySnapshot,
         now: OffsetDateTime,
     ) -> Option<BikeMovementCandidate> {
@@ -330,7 +330,10 @@ pub(crate) struct BikeShareSession {
     planner: BikeShareMovementPlanner,
     snapshot: Arc<BikeAvailabilitySnapshot>,
     now: OffsetDateTime,
-    cache: HashMap<(EndpointKey, EndpointKey), Result<Vec<BikeShortcut>, StreetRoutingError>>,
+    cache: HashMap<
+        (CorridorAnchorKey, CorridorAnchorKey),
+        Result<Vec<BikeShortcut>, StreetRoutingError>,
+    >,
     pub stats: BikePlanningStats,
     pub cache_hits: usize,
 }
@@ -354,11 +357,12 @@ impl BikeShareSession {
 
 #[async_trait]
 impl SurfaceMovementPlanner for BikeShareSession {
-    fn cache_hits(&self) -> usize {
-        self.cache_hits
-    }
-    fn matrix_requests(&self) -> usize {
-        self.stats.matrix_requests
+    fn realization_stats(&self) -> SurfaceRealizationStats {
+        SurfaceRealizationStats {
+            exact_requests: self.cache.len(),
+            cache_hits: self.cache_hits,
+            matrix_requests: self.stats.matrix_requests,
+        }
     }
     fn kind(&self) -> SurfaceKind {
         SurfaceKind::BikeShare
@@ -558,7 +562,7 @@ fn station_choices<'a>(
 fn endpoint_station_choices(
     network: &BikeShareNetwork,
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
-    endpoint: &SurfaceEndpoint,
+    endpoint: &CorridorAnchor,
     pickup: bool,
 ) -> Vec<StationChoice> {
     if let Some(id) = endpoint.boarding_point() {
@@ -734,12 +738,12 @@ mod tests {
             Arc::new(FakeStreetRouter::builder().build()),
         );
 
-        let from_endpoint = SurfaceEndpoint {
-            kind: super::super::variant::JourneyAnchorKind::BoardingPoint { id: from.clone() },
+        let from_endpoint = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::BoardingPoint { id: from.clone() },
             coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
         };
-        let to_endpoint = SurfaceEndpoint {
-            kind: super::super::variant::JourneyAnchorKind::BoardingPoint { id: to.clone() },
+        let to_endpoint = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::BoardingPoint { id: to.clone() },
             coordinate: Coordinate::try_new(25.001, 121.501).unwrap(),
         };
         let candidate = planner
@@ -772,7 +776,7 @@ mod tests {
     }
     #[tokio::test]
     async fn generic_endpoints_share_bicycle_realization_and_cache() {
-        use super::super::variant::JourneyAnchorKind;
+        use super::super::realized::JourneyAnchorKind;
         use crate::street::{Metres, Seconds};
         let now = datetime!(2026-09-21 10:00 UTC);
         let origin = Coordinate::try_new(25.0, 121.5).unwrap();
@@ -842,16 +846,17 @@ mod tests {
                     .build(),
             ),
         );
-        let from = SurfaceEndpoint {
+        let from = CorridorAnchor {
             kind: JourneyAnchorKind::Origin,
             coordinate: origin,
         };
-        let to = SurfaceEndpoint {
+        let to = CorridorAnchor {
             kind: JourneyAnchorKind::BoardingPoint { id: to_id },
             coordinate: dropoff,
         };
         let mut session = BikeShareSession::new(planner.clone(), Arc::new(snapshot.clone()), now);
         let request = SurfaceRequest {
+            retained_walking_baseline: false,
             from: &from,
             to: &to,
             departure_at: now,
