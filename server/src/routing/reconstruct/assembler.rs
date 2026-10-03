@@ -61,7 +61,7 @@ pub(super) struct ReconstructionState<'a, 'request> {
     pub(super) context: &'a JourneyPlanningContext<'request>,
     pub(super) origin: Place,
     pub(super) destination: Place,
-    pub(super) result: JourneyAssembly,
+    pub(super) assembly: JourneyAssembly,
     pub(super) pending_transfer: Option<PendingTransfer>,
     pub(super) previous_transit: Option<PreviousTransit>,
     pub(super) current_stop: Option<BoardingPointId>,
@@ -82,7 +82,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             context,
             origin: reconstructor.origin_place(context.request),
             destination: reconstructor.destination_place(context.request),
-            result: JourneyAssembly {
+            assembly: JourneyAssembly {
                 legs: Vec::new(),
                 arrival_time: journey.departure_at(),
                 live_evidence: Vec::new(),
@@ -134,7 +134,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
         if self.current_anchor != self.final_anchor {
             return Ok(None);
         }
-        Ok((!self.result.legs.is_empty()).then_some(self.result))
+        Ok((!self.assembly.legs.is_empty()).then_some(self.assembly))
     }
 
     async fn append_terminal_egress(
@@ -164,7 +164,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             &self.destination,
             duration_seconds,
             0,
-            &mut self.result,
+            &mut self.assembly,
         )
         .await?;
         self.current_stop = Some(egress_stop);
@@ -208,9 +208,9 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
                 board_index,
                 alight_index,
             } => self.append_transit(trip, *board_index, *alight_index),
-            JourneyMovementKind::BikeShare { shortcut } => {
-                self.append_bike(movement, shortcut).await
-            }
+            JourneyMovementKind::BikeShare {
+                movement: bike_movement,
+            } => self.append_bike(movement, bike_movement).await,
         }
     }
 }

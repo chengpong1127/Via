@@ -19,8 +19,8 @@ pub use model::{
 };
 pub use planner::{MultimodalPlanner, MultimodalPlannerStats};
 pub use realized::{
-    BikeRide, BikeShortcut, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
-    WalkingMovementKind,
+    BikeRide, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
+    JourneyMovementKind, WalkingMovementKind,
 };
 pub use realized::{JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJourneyError};
 pub use service::RoutingService;

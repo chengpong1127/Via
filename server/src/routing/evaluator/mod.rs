@@ -9,7 +9,7 @@ use super::{
     corridor::{BaselineMovement, EvaluationCorridor},
     model::{PlanningQuery, RoutingError},
     realized::{
-        BikeShortcut, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
+        BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
         RealizedJourney, WalkingMovementKind,
     },
     static_search::{RetainedCorridorSet, StaticTransitLeg},
@@ -80,7 +80,7 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     corridor: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
     query: &'a PlanningQuery,
-    surface: &'a mut [Box<dyn SurfaceMovementPlanner>],
+    surface_planners: &'a mut [Box<dyn SurfaceMovementPlanner>],
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
 }
@@ -91,14 +91,14 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &'a RetainedCorridorSet,
         snapshot: &'a TimingSnapshot,
         query: &'a PlanningQuery,
-        surface: &'a mut [Box<dyn SurfaceMovementPlanner>],
+        surface_planners: &'a mut [Box<dyn SurfaceMovementPlanner>],
     ) -> Self {
         Self {
             network,
             corridor,
             snapshot,
             query,
-            surface,
+            surface_planners,
             stats: Phase2EvaluationStats::default(),
             failures: EvaluationFailures::default(),
         }
@@ -121,7 +121,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let bike_work = self
-            .surface
+            .surface_planners
             .iter()
             .filter(|planner| planner.kind() == SurfaceKind::BikeShare)
             .map(|planner| planner.realization_stats())
@@ -238,8 +238,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 }
                 let best_baseline_arrival = baseline.iter().map(|s| s.ready_at).min();
                 next.extend(baseline);
-                for planner_index in 0..self.surface.len() {
-                    let kind = self.surface[planner_index].kind();
+                for planner_index in 0..self.surface_planners.len() {
+                    let kind = self.surface_planners[planner_index].kind();
                     let (start_anchor, started_at) = if kind == SurfaceKind::BikeShare {
                         state.bike_departure(index)
                     } else {
@@ -256,7 +256,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
                         from_anchor: start_anchor,
                         to_anchor: index + 1,
                     };
-                    let Some(bound) = self.surface[planner_index].optimistic_duration(&request)
+                    let Some(bound) =
+                        self.surface_planners[planner_index].optimistic_duration(&request)
                     else {
                         continue;
                     };
@@ -273,7 +274,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
                         continue;
                     }
                     self.charge()?;
-                    let movements = self.surface[planner_index].realize(&request).await;
+                    let movements = self.surface_planners[planner_index].realize(&request).await;
                     self.check_deadline()?;
                     let movements = match movements {
                         Ok(items) => items,
@@ -321,9 +322,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                     street_path: Some(path),
                                 }));
                             }
-                            SurfaceMovement::BikeShare(shortcut) => {
+                            SurfaceMovement::BikeShare(bike_movement) => {
                                 self.stats.bike_realizations_considered += 1;
-                                let route_seconds = shortcut.total_seconds;
+                                let route_seconds = bike_movement.total_seconds;
                                 let arrival =
                                     started_at + Duration::seconds(i64::from(route_seconds));
                                 if best_baseline_arrival.is_some_and(|baseline| arrival >= baseline)
@@ -332,14 +333,14 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                     continue;
                                 }
                                 if let Some(next_state) = state.after_bike_share(
-                                    shortcut,
+                                    bike_movement,
                                     start_anchor,
                                     index + 1,
                                     started_at,
                                     arrival,
                                     self.query.departure_time,
                                 ) {
-                                    if state.active_bike_run.is_some() {
+                                    if state.active_bike_rental.is_some() {
                                         self.stats.bike_continuous_extensions += 1;
                                     }
                                     self.stats.bike_realizations_feasible += 1;
@@ -419,12 +420,12 @@ struct CorridorMovement {
     to: BoardingPointId,
 }
 #[cfg(test)]
-type TestBikeRoutes = std::collections::HashMap<CorridorMovement, Vec<BikeShortcut>>;
+type TestBikeRoutes = std::collections::HashMap<CorridorMovement, Vec<BikeShareMovement>>;
 
 #[cfg(test)]
 struct TestBikePlanner {
     routes: TestBikeRoutes,
-    cache: std::collections::HashMap<(BoardingPointId, BoardingPointId), Vec<BikeShortcut>>,
+    cache: std::collections::HashMap<(BoardingPointId, BoardingPointId), Vec<BikeShareMovement>>,
     hits: usize,
 }
 #[cfg(test)]
@@ -472,9 +473,9 @@ impl SurfaceMovementPlanner for TestBikePlanner {
             self.cache.insert(key, options.clone());
             options
         };
-        for shortcut in &mut options {
-            shortcut.from_anchor = request.from_anchor;
-            shortcut.to_anchor = request.to_anchor;
+        for bike_movement in &mut options {
+            bike_movement.from_anchor = request.from_anchor;
+            bike_movement.to_anchor = request.to_anchor;
         }
         Ok(options
             .into_iter()
@@ -531,7 +532,7 @@ fn run_test_evaluation(
                 .iter()
                 .filter_map(|retained| EvaluationCorridor::from_transit(network, retained, &query))
                 .collect::<Vec<_>>();
-            let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> = routes
+            let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = routes
                 .map(|routes| {
                     vec![Box::new(TestBikePlanner {
                         routes: routes.clone(),
@@ -540,10 +541,15 @@ fn run_test_evaluation(
                     }) as Box<dyn SurfaceMovementPlanner>]
                 })
                 .unwrap_or_default();
-            let result =
-                FixedCorridorEvaluator::new(network, corridor, snapshot, &query, &mut surface)
-                    .evaluate(&evaluation_corridors)
-                    .await?;
+            let result = FixedCorridorEvaluator::new(
+                network,
+                corridor,
+                snapshot,
+                &query,
+                &mut surface_planners,
+            )
+            .evaluate(&evaluation_corridors)
+            .await?;
             Ok((result.journeys, result.stats))
         })
 }

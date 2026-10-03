@@ -94,10 +94,10 @@ pub fn generate(
     finalize_expansion_stats(&mut stats, expansion_stats);
 
     let retention_started = Instant::now();
-    let surface = retention.finish(network, &equivalent_legs, &mut stats);
+    let retained_corridors = retention.finish(network, &equivalent_legs, &mut stats);
     stats.static_retention_latency_us = elapsed_microseconds(retention_started);
     stats.static_search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    (surface, stats)
+    (retained_corridors, stats)
 }
 
 fn prepare_search<'a>(
@@ -462,15 +462,8 @@ fn expand_transit_rides(
                 .entry(mode)
                 .or_default()
                 .downstream_positions_scanned += 1;
-            let Some(alternative) = ride_option.alternatives.first() else {
-                continue;
-            };
-            accounting
-                .stats
-                .static_structurally_equivalent_states_rejected +=
-                ride_option.alternatives.len().saturating_sub(1);
-            let ride_seconds = alternative.duration_seconds;
-            let source = alternative.leg.cost_source;
+            let ride_seconds = ride_option.duration_seconds;
+            let source = ride_option.leg.cost_source;
             let elapsed_seconds = state
                 .elapsed_seconds
                 .saturating_add(transfer_seconds)
@@ -497,7 +490,7 @@ fn expand_transit_rides(
             }
             next.last_transit_mode = Some(mode);
             next.steps
-                .push(StaticCorridorStep::Transit(alternative.leg.clone()));
+                .push(StaticCorridorStep::Transit(ride_option.leg.clone()));
             next.has_exact_cost |= source == StaticCostSource::ExactSchedule;
             next.has_derived_bus_cost |= source == StaticCostSource::DerivedBus;
             next.has_estimated_cost |= source == StaticCostSource::OptimisticEstimate;

@@ -112,7 +112,7 @@ impl MultimodalPlanner {
                 constraints,
             })
             .await?;
-        let mut result = matrix
+        let mut access_points = matrix
             .cells
             .first()
             .into_iter()
@@ -132,7 +132,7 @@ impl MultimodalPlanner {
                 })
             })
             .collect::<Vec<_>>();
-        result.sort_by(|left, right| {
+        access_points.sort_by(|left, right| {
             left.walking_seconds
                 .cmp(&right.walking_seconds)
                 .then(left.distance_metres.cmp(&right.distance_metres))
@@ -140,7 +140,7 @@ impl MultimodalPlanner {
         });
         Ok(super::access::prune_access_coverage(
             &self.topology,
-            result,
+            access_points,
             limits.max_transit_access_stops,
         ))
     }
@@ -174,7 +174,7 @@ impl MultimodalPlanner {
                 constraints,
             })
             .await?;
-        let mut result = matrix
+        let mut egress_points = matrix
             .cells
             .iter()
             .enumerate()
@@ -190,7 +190,7 @@ impl MultimodalPlanner {
                 })
             })
             .collect::<Vec<_>>();
-        result.sort_by(|left, right| {
+        egress_points.sort_by(|left, right| {
             left.walking_seconds
                 .cmp(&right.walking_seconds)
                 .then(left.distance_metres.cmp(&right.distance_metres))
@@ -198,7 +198,7 @@ impl MultimodalPlanner {
         });
         Ok(super::access::prune_egress_coverage(
             &self.topology,
-            result,
+            egress_points,
             limits.max_transit_egress_stops,
         ))
     }
@@ -242,15 +242,15 @@ impl MultimodalPlanner {
         } else {
             loading.await?
         };
-        let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> = Vec::new();
+        let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = Vec::new();
         if query.origin.is_some()
             && query.destination.is_some()
             && let Some(street) = &self.street
         {
-            surface.push(Box::new(WalkingMovementPlanner::new(street.clone())));
+            surface_planners.push(Box::new(WalkingMovementPlanner::new(street.clone())));
         }
         if let Some((bike, snapshot)) = self.bike.as_ref().zip(snapshots.bike.clone()) {
-            surface.push(Box::new(BikeShareSession::new(
+            surface_planners.push(Box::new(BikeShareSession::new(
                 bike.clone(),
                 snapshot,
                 OffsetDateTime::now_utc(),
@@ -261,7 +261,7 @@ impl MultimodalPlanner {
             query,
             retained,
             snapshots,
-            surface,
+            surface_planners,
             stats: MultimodalPlannerStats {
                 phase1: static_stats,
                 ..MultimodalPlannerStats::default()
@@ -288,7 +288,7 @@ impl MultimodalPlanner {
             return Err(RoutingError::InvalidQuery);
         }
         let max_legs = query.limits.max_transfers.saturating_add(1);
-        let (corridor, static_stats) =
+        let (retained_corridors, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, query);
         if static_stats.deadline_exceeded
             || query.deadline.is_some_and(|deadline| deadline.is_elapsed())
@@ -306,7 +306,6 @@ impl MultimodalPlanner {
             static_duplicate_states_rejected = static_stats.static_duplicate_states_rejected,
             static_dominance_states_rejected = static_stats.static_dominance_states_rejected,
             static_structurally_equivalent_states_rejected = static_stats.static_structurally_equivalent_states_rejected,
-            static_equivalent_pattern_occurrences_collapsed = static_stats.static_equivalent_pattern_occurrences_collapsed,
             static_required_endpoint_mode_pairs = ?static_stats.static_required_endpoint_mode_pairs,
             static_complete_endpoint_mode_pairs = ?static_stats.static_complete_endpoint_mode_pairs,
             static_complete_candidates_found = static_stats.static_complete_candidates_found,
@@ -360,7 +359,7 @@ impl MultimodalPlanner {
             retained_mode_sequence_groups = ?static_stats.static_retained_mode_sequence_groups,
             "retained static corridor mode-sequence groups"
         );
-        for (index, retained) in corridor.retained().iter().enumerate() {
+        for (index, retained) in retained_corridors.retained().iter().enumerate() {
             tracing::debug!(
                 target: "via_server::routing",
                 corridor_rank = index + 1,
@@ -386,16 +385,16 @@ impl MultimodalPlanner {
             .increment(static_stats.static_corridor_patterns as u64);
         ::metrics::counter!("via_planner_transit_realtime_stops_requested_total")
             .increment(static_stats.static_corridor_bus_stops as u64);
-        Ok((corridor, static_stats))
+        Ok((retained_corridors, static_stats))
     }
 
     async fn load_request_snapshots(
         &self,
         query: &PlanningQuery,
-        corridor: &static_search::RetainedCorridorSet,
+        retained_corridors: &static_search::RetainedCorridorSet,
         static_stats: &static_search::StaticSearchStats,
     ) -> Result<RequestSnapshots, RoutingError> {
-        let positions = corridor.timing_positions().collect::<Vec<_>>();
+        let positions = retained_corridors.timing_positions().collect::<Vec<_>>();
         let snapshot_limit = usize::try_from(query.limits.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
             .saturating_add(1)
@@ -501,7 +500,7 @@ pub(crate) struct PlanningSession<'a> {
     query: PlanningQuery,
     retained: static_search::RetainedCorridorSet,
     snapshots: RequestSnapshots,
-    surface: Vec<Box<dyn SurfaceMovementPlanner>>,
+    surface_planners: Vec<Box<dyn SurfaceMovementPlanner>>,
     stats: MultimodalPlannerStats,
     failures: evaluator::EvaluationFailures,
     fallback_used: bool,
@@ -553,12 +552,12 @@ impl PlanningSession<'_> {
             &self.retained,
             &self.snapshots.timing,
             &self.query,
-            &mut self.surface,
+            &mut self.surface_planners,
         );
         let lookups_before = self.stats.phase2_evaluation.transit_departure_lookups;
         evaluator.stats = self.stats.phase2_evaluation;
         evaluator.failures = self.failures;
-        let result = if let Some(deadline) = self.query.deadline {
+        let evaluation_result = if let Some(deadline) = self.query.deadline {
             tokio::time::timeout_at(deadline.instant(), evaluator.evaluate(corridors))
                 .await
                 .map_err(|_| RoutingError::DeadlineExceeded)??
@@ -567,12 +566,12 @@ impl PlanningSession<'_> {
         };
         // Evaluation stats survive fallback; emit only this completed pass's work.
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
-            .increment((result.stats.transit_departure_lookups - lookups_before) as u64);
-        self.stats.phase2_evaluation = result.stats;
-        self.failures = result.failures;
+            .increment((evaluation_result.stats.transit_departure_lookups - lookups_before) as u64);
+        self.stats.phase2_evaluation = evaluation_result.stats;
+        self.failures = evaluation_result.failures;
         self.failures.transient |= self.snapshots.failures.transient;
         self.failures.internal |= self.snapshots.failures.internal;
-        Ok(result.journeys)
+        Ok(evaluation_result.journeys)
     }
 }
 

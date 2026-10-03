@@ -11,16 +11,10 @@ use crate::routing::model::PlanningDeadline;
 use super::types::{EquivalentLegKey, StaticCostSource, StaticSearchStats, StaticTransitLeg};
 
 #[derive(Clone, Debug)]
-pub(super) struct PatternRideAlternative {
+pub(super) struct PatternRideOption {
+    pub(super) alight_stop_id: BoardingPointId,
     pub(super) leg: StaticTransitLeg,
     pub(super) duration_seconds: u32,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct PatternRideOption {
-    pub(super) alight_index: usize,
-    pub(super) alight_stop_id: BoardingPointId,
-    pub(super) alternatives: Vec<PatternRideAlternative>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,7 +87,7 @@ impl StaticPhase1PatternIndex {
         if group.rides_by_board_index.contains_key(&board_index) {
             return false;
         }
-        let mut options_by_alight = HashMap::<usize, Vec<PatternRideAlternative>>::new();
+        let mut ride_options = Vec::new();
         {
             let pattern_id = &group.pattern_id;
             stats.static_ride_profile_patterns_scanned += 1;
@@ -140,43 +134,22 @@ impl StaticPhase1PatternIndex {
                     board_stop_id: leg.board_stop_id.clone(),
                     alight_stop_id: leg.alight_stop_id.clone(),
                 };
-                let aliases = equivalent_legs.entry(key).or_default();
-                if !aliases.iter().any(|known| {
+                let legs_for_key = equivalent_legs.entry(key).or_default();
+                if !legs_for_key.iter().any(|known| {
                     known.pattern_id == leg.pattern_id
                         && known.board_index == leg.board_index
                         && known.alight_index == leg.alight_index
                 }) {
-                    aliases.push(leg.clone());
+                    legs_for_key.push(leg.clone());
                 }
-                options_by_alight
-                    .entry(alight_index)
-                    .or_default()
-                    .push(PatternRideAlternative {
-                        leg,
-                        duration_seconds,
-                    });
+                ride_options.push(PatternRideOption {
+                    alight_stop_id: leg.alight_stop_id.clone(),
+                    leg,
+                    duration_seconds,
+                });
             }
         }
-        let mut options = options_by_alight
-            .into_iter()
-            .map(|(alight_index, mut alternatives)| {
-                alternatives.sort_by(|left, right| {
-                    left.duration_seconds.cmp(&right.duration_seconds).then(
-                        left.leg
-                            .pattern_id
-                            .as_str()
-                            .cmp(right.leg.pattern_id.as_str()),
-                    )
-                });
-                PatternRideOption {
-                    alight_index,
-                    alight_stop_id: group.stops[alight_index].clone(),
-                    alternatives,
-                }
-            })
-            .collect::<Vec<_>>();
-        options.sort_by_key(|option| option.alight_index);
-        group.rides_by_board_index.insert(board_index, options);
+        group.rides_by_board_index.insert(board_index, ride_options);
         true
     }
 

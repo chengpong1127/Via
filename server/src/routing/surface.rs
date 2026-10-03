@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use super::realized::{BikeShortcut, JourneyAnchorKind};
+use super::realized::{BikeShareMovement, JourneyAnchorKind};
 use crate::{
     domain::{ids::BoardingPointId, location::GeoCoordinate, normalize_to_taipei},
     street::{
@@ -68,7 +68,7 @@ pub(crate) struct SurfaceRequest<'a> {
 
 pub(crate) enum SurfaceMovement {
     Walking(Arc<StreetPath>),
-    BikeShare(BikeShortcut),
+    BikeShare(BikeShareMovement),
 }
 
 /// Cumulative request-local exact routing work, including failed requests.

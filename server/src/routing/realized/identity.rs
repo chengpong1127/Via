@@ -239,26 +239,26 @@ impl RealizedJourney {
                             self.baseline_movement_identity(movement_index),
                         ))
                     }
-                    JourneyMovementKind::BikeShare { shortcut } => {
-                        RealizedJourneyMovementIdentity::BikeShare {
-                            from: JourneyAnchorIdentity::from_kind(
-                                &self.anchors[movement.from_anchor].kind,
-                            ),
-                            to: JourneyAnchorIdentity::from_kind(
-                                &self.anchors[movement.to_anchor].kind,
-                            ),
-                            pickup_station_id: shortcut.pickup_station_id.clone(),
-                            dropoff_station_id: shortcut.dropoff_station_id.clone(),
-                            walk_to_pickup_seconds: shortcut.walk_to_pickup.duration_seconds,
-                            walk_to_pickup_metres: shortcut.walk_to_pickup.distance_metres,
-                            bicycle_duration_seconds: shortcut.bicycle_duration_seconds,
-                            bicycle_distance_metres: shortcut.bicycle_distance_metres,
-                            walk_from_dropoff_seconds: shortcut.walk_from_dropoff.duration_seconds,
-                            walk_from_dropoff_metres: shortcut.walk_from_dropoff.distance_metres,
-                            rental_wait_seconds: shortcut.rental_wait_seconds,
-                            total_seconds: shortcut.total_seconds,
-                        }
-                    }
+                    JourneyMovementKind::BikeShare {
+                        movement: bike_movement,
+                    } => RealizedJourneyMovementIdentity::BikeShare {
+                        from: JourneyAnchorIdentity::from_kind(
+                            &self.anchors[movement.from_anchor].kind,
+                        ),
+                        to: JourneyAnchorIdentity::from_kind(
+                            &self.anchors[movement.to_anchor].kind,
+                        ),
+                        pickup_station_id: bike_movement.pickup_station_id.clone(),
+                        dropoff_station_id: bike_movement.dropoff_station_id.clone(),
+                        walk_to_pickup_seconds: bike_movement.walk_to_pickup.duration_seconds,
+                        walk_to_pickup_metres: bike_movement.walk_to_pickup.distance_metres,
+                        bicycle_duration_seconds: bike_movement.bicycle_duration_seconds,
+                        bicycle_distance_metres: bike_movement.bicycle_distance_metres,
+                        walk_from_dropoff_seconds: bike_movement.walk_from_dropoff.duration_seconds,
+                        walk_from_dropoff_metres: bike_movement.walk_from_dropoff.distance_metres,
+                        rental_wait_seconds: bike_movement.rental_wait_seconds,
+                        total_seconds: bike_movement.total_seconds,
+                    },
                 })
                 .collect()
         };

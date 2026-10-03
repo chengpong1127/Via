@@ -71,7 +71,7 @@ pub struct RankingPolicy {
     pub bus_transfer_buffer_seconds: u32,
     pub near_duplicate_arrival_seconds: i64,
     pub material_walking_difference_seconds: u32,
-    pub excessive_alternative_delay_seconds: i64,
+    pub max_sequence_only_option_delay_seconds: i64,
 
     pub reliability_preference_window_seconds: u32,
     pub result_limit: usize,
@@ -84,7 +84,7 @@ impl Default for RankingPolicy {
             bus_transfer_buffer_seconds: 300,
             near_duplicate_arrival_seconds: 300,
             material_walking_difference_seconds: 300,
-            excessive_alternative_delay_seconds: 900,
+            max_sequence_only_option_delay_seconds: 900,
             reliability_preference_window_seconds: 300,
             result_limit: 3,
         }
@@ -193,7 +193,7 @@ impl RankingPolicy {
             return false;
         }
         candidate.arrival_epoch_seconds - current.arrival_epoch_seconds
-            <= self.excessive_alternative_delay_seconds
+            <= self.max_sequence_only_option_delay_seconds
             || fewer_transfers
             || less_walking
             || different_bicycle

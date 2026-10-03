@@ -18,9 +18,10 @@ impl ReconstructionState<'_, '_> {
     pub(super) async fn append_bike(
         &mut self,
         movement: &JourneyMovement,
-        shortcut: &crate::routing::BikeShortcut,
+        bike_movement: &crate::routing::BikeShareMovement,
     ) -> Result<bool, PlanningError> {
-        if shortcut.from_anchor != movement.from_anchor || shortcut.to_anchor != movement.to_anchor
+        if bike_movement.from_anchor != movement.from_anchor
+            || bike_movement.to_anchor != movement.to_anchor
         {
             return Ok(false);
         }
@@ -54,20 +55,20 @@ impl ReconstructionState<'_, '_> {
             movement.to_anchor,
         )
         .ok_or(PlanningError::Internal)?;
-        let connector_start = self.result.legs.len();
+        let connector_start = self.assembly.legs.len();
         if !append_bike_share(
             self.reconstructor,
             self.context,
             &from,
             &to,
-            shortcut,
-            &mut self.result,
+            bike_movement,
+            &mut self.assembly,
         )
         .await?
         {
             return Ok(false);
         }
-        register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
+        register_pending_transfer(&self.assembly, &mut self.pending_transfer, connector_start);
         if let Some(to_stop) = anchor_boarding_point(self.journey, movement.to_anchor) {
             self.current_stop = Some(to_stop);
         }
@@ -81,17 +82,17 @@ async fn append_bike_share(
     context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
-    shortcut: &crate::routing::BikeShortcut,
-    result: &mut JourneyAssembly,
+    bike_movement: &crate::routing::BikeShareMovement,
+    assembly: &mut JourneyAssembly,
 ) -> Result<bool, PlanningError> {
-    let Some(pickup) = reconstructor.bike_station_place(&shortcut.pickup_station_id) else {
+    let Some(pickup) = reconstructor.bike_station_place(&bike_movement.pickup_station_id) else {
         return Ok(false);
     };
-    let Some(dropoff) = reconstructor.bike_station_place(&shortcut.dropoff_station_id) else {
+    let Some(dropoff) = reconstructor.bike_station_place(&bike_movement.dropoff_station_id) else {
         return Ok(false);
     };
 
-    result.arrival_time += Duration::seconds(i64::from(shortcut.rental_wait_seconds));
+    assembly.arrival_time += Duration::seconds(i64::from(bike_movement.rental_wait_seconds));
 
     let Some(to_pickup) = strict_bike_path(
         reconstructor,
@@ -99,13 +100,13 @@ async fn append_bike_share(
         from,
         &pickup,
         StreetTravelMode::Walking,
-        result.arrival_time,
+        assembly.arrival_time,
     )
     .await
     else {
         return Ok(false);
     };
-    append_routed_walking(from, &pickup, to_pickup, result);
+    append_routed_walking(from, &pickup, to_pickup, assembly);
 
     let Some(bicycle) = strict_bike_path(
         reconstructor,
@@ -113,13 +114,13 @@ async fn append_bike_share(
         &pickup,
         &dropoff,
         StreetTravelMode::Bicycle,
-        result.arrival_time,
+        assembly.arrival_time,
     )
     .await
     else {
         return Ok(false);
     };
-    append_bicycle(&pickup, &dropoff, bicycle, result);
+    append_bicycle(&pickup, &dropoff, bicycle, assembly);
 
     let Some(from_dropoff) = strict_bike_path(
         reconstructor,
@@ -127,14 +128,14 @@ async fn append_bike_share(
         &dropoff,
         to,
         StreetTravelMode::Walking,
-        result.arrival_time,
+        assembly.arrival_time,
     )
     .await
     else {
         return Ok(false);
     };
-    append_routed_walking(&dropoff, to, from_dropoff, result);
-    result.bike_share_uses = result.bike_share_uses.saturating_add(1);
+    append_routed_walking(&dropoff, to, from_dropoff, assembly);
+    assembly.bike_share_uses = assembly.bike_share_uses.saturating_add(1);
     Ok(true)
 }
 
@@ -151,11 +152,16 @@ async fn strict_bike_path(
         .unwrap_or_default()
 }
 
-fn append_bicycle(pickup: &Place, dropoff: &Place, path: StreetPath, result: &mut JourneyAssembly) {
-    let departure = result.arrival_time;
+fn append_bicycle(
+    pickup: &Place,
+    dropoff: &Place,
+    path: StreetPath,
+    assembly: &mut JourneyAssembly,
+) {
+    let departure = assembly.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
-    let leg_id = format!("candidate_leg_{}", result.legs.len());
-    result.legs.push(Leg {
+    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    assembly.legs.push(Leg {
         id: leg_id,
         mode: LegMode::Bicycle,
         from: pickup.clone(),
@@ -182,7 +188,7 @@ fn append_bicycle(pickup: &Place, dropoff: &Place, path: StreetPath, result: &mu
         },
         attribution: path.attribution.clone(),
     });
-    result.bicycle_seconds = result.bicycle_seconds.saturating_add(path.duration.0);
-    result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Bicycle);
+    assembly.bicycle_seconds = assembly.bicycle_seconds.saturating_add(path.duration.0);
+    assembly.arrival_time = arrival;
+    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Bicycle);
 }

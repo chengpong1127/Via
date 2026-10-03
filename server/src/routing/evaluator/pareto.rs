@@ -82,12 +82,12 @@ fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
 fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
     left.last_was_transit == right.last_was_transit
         && left.bike_reuse_available_at == right.bike_reuse_available_at
-        && match (&left.active_bike_run, &right.active_bike_run) {
+        && match (&left.active_bike_rental, &right.active_bike_rental) {
             (None, None) => true,
             (Some(left), Some(right)) => {
                 left.start_anchor == right.start_anchor
                     && left.started_at == right.started_at
-                    && left.shortcut == right.shortcut
+                    && left.movement == right.movement
                     && left.prefix_movements == right.prefix_movements
             }
             _ => false,

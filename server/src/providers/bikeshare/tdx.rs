@@ -114,7 +114,7 @@ impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
                 operation = "bike_availability",
                 outcome = bike_availability_outcome(error),
                 error = %error,
-                "bike availability lookup failed; continuing without bike-share variants"
+                "bike availability lookup failed; continuing without BikeShare movements"
             );
         }
         result

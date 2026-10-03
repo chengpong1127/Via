@@ -79,7 +79,7 @@ async fn deterministic_routing_benchmark() {
                 static_search::generate(&runtime, &topology, &transfers, black_box(&query));
             let static_ns = started.elapsed().as_nanos();
             let started = Instant::now();
-            let (variants, planner_stats) = planner
+            let (realized_journeys, planner_stats) = planner
                 .plan_with_stats(black_box(query.clone()))
                 .await
                 .unwrap();
@@ -87,7 +87,7 @@ async fn deterministic_routing_benchmark() {
             let counters = (
                 corridors.retained().len(),
                 static_stats.static_search_states_expanded,
-                variants.len(),
+                realized_journeys.len(),
                 planner_stats.phase2_evaluation.transit_departure_lookups,
             );
             if let Some(expected) = expected {
@@ -102,14 +102,17 @@ async fn deterministic_routing_benchmark() {
         }
         static_samples.sort_unstable();
         planner_samples.sort_unstable();
-        let (corridors, expansions, variants, lookups) = expected.unwrap();
+        let (corridors, expansions, realized_journeys, lookups) = expected.unwrap();
         assert!(
             corridors > 0,
             "benchmark must exercise retained corridors: {label}"
         );
-        assert!(variants > 0, "benchmark must realize journeys: {label}");
+        assert!(
+            realized_journeys > 0,
+            "benchmark must realize journeys: {label}"
+        );
         println!(
-            "{label}: iterations={ITERATIONS} static_median_us={:.3} planner_median_us={:.3} corridors={corridors} expansions={expansions} variants={variants} departure_lookups={lookups}",
+            "{label}: iterations={ITERATIONS} static_median_us={:.3} planner_median_us={:.3} corridors={corridors} expansions={expansions} realized_journeys={realized_journeys} departure_lookups={lookups}",
             static_samples[ITERATIONS / 2] as f64 / 1000.0,
             planner_samples[ITERATIONS / 2] as f64 / 1000.0
         );

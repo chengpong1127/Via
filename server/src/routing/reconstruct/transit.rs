@@ -36,7 +36,7 @@ impl ReconstructionState<'_, '_> {
             .get(alight_index)
             .ok_or(PlanningError::Internal)?;
         if Some(board.stop_id.clone()) != self.current_stop
-            || self.result.arrival_time > board.departure_at
+            || self.assembly.arrival_time > board.departure_at
         {
             return Ok(false);
         }
@@ -61,12 +61,12 @@ impl ReconstructionState<'_, '_> {
             .iter()
             .map(evidence::from_realtime_value)
             .collect::<Vec<_>>();
-        self.result
+        self.assembly
             .required_states
             .extend(trip.evidence.iter().map(|status| status.freshness));
-        self.result.live_evidence.extend(live_evidence);
-        let leg_id = format!("candidate_leg_{}", self.result.legs.len());
-        self.result.legs.push(transit_leg(
+        self.assembly.live_evidence.extend(live_evidence);
+        let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
+        self.assembly.legs.push(transit_leg(
             leg_id.clone(),
             pattern_data,
             route_data,
@@ -77,7 +77,7 @@ impl ReconstructionState<'_, '_> {
         ));
         if let Some(pending) = self.pending_transfer.take() {
             record_transfer(
-                &mut self.result,
+                &mut self.assembly,
                 pending,
                 route_data.mode,
                 board.departure_at,
@@ -86,7 +86,7 @@ impl ReconstructionState<'_, '_> {
             && previous.trip_id != trip.id
         {
             record_transfer(
-                &mut self.result,
+                &mut self.assembly,
                 PendingTransfer {
                     from_leg_id: previous.leg_id.clone(),
                     from_arrival: previous.arrival,
@@ -106,13 +106,13 @@ impl ReconstructionState<'_, '_> {
             arrival: alight.arrival_at,
             mode: route_data.mode,
         });
-        self.result.arrival_time = alight.arrival_at;
-        self.result.timing_bases.push(trip.timing_basis);
+        self.assembly.arrival_time = alight.arrival_at;
+        self.assembly.timing_bases.push(trip.timing_basis);
         if trip.timing_reliability == TimingReliability::Fallback {
-            self.result.timing_reliability = TimingReliability::Fallback;
+            self.assembly.timing_reliability = TimingReliability::Fallback;
         }
-        evidence::push_unique_mode(&mut self.result.travel_modes, LegMode::Transit);
-        self.result
+        evidence::push_unique_mode(&mut self.assembly.travel_modes, LegMode::Transit);
+        self.assembly
             .main_pattern_sequence
             .push(pattern_data.id.as_str().to_owned());
         self.current_stop = Some(alight.stop_id.clone());
@@ -122,11 +122,11 @@ impl ReconstructionState<'_, '_> {
 }
 
 pub(super) fn register_pending_transfer(
-    result: &JourneyAssembly,
+    assembly: &JourneyAssembly,
     pending_transfer: &mut Option<PendingTransfer>,
     connector_start: usize,
 ) {
-    let Some(from_leg) = result
+    let Some(from_leg) = assembly
         .legs
         .iter()
         .rev()
@@ -134,7 +134,7 @@ pub(super) fn register_pending_transfer(
     else {
         return;
     };
-    let connector_legs = result.legs[connector_start..].iter();
+    let connector_legs = assembly.legs[connector_start..].iter();
     let from_mode = match &from_leg.details {
         LegDetails::Transit { transit_mode, .. } => Some(*transit_mode),
         LegDetails::Walking | LegDetails::BikeShare { .. } => None,
@@ -157,14 +157,14 @@ pub(super) fn register_pending_transfer(
 }
 
 fn record_transfer(
-    result: &mut JourneyAssembly,
+    assembly: &mut JourneyAssembly,
     pending: PendingTransfer,
     to_mode: TransitMode,
     departure: OffsetDateTime,
 ) {
     let available_seconds = seconds_between(pending.from_arrival, departure).unwrap_or(0);
     let kind = evidence::transfer_kind(pending.from_mode, Some(to_mode));
-    result.transfer_evidence.push(TransferEvidence {
+    assembly.transfer_evidence.push(TransferEvidence {
         kind,
         physical_seconds: pending.duration_seconds,
         available_seconds,

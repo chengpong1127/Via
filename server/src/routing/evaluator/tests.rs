@@ -230,8 +230,8 @@ fn corridor_movement(
     }
 }
 
-fn bike_shortcut(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShortcut {
-    BikeShortcut::new(
+fn bike_movement(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShareMovement {
+    BikeShareMovement::new(
         from_anchor,
         to_anchor,
         BikeStationId::new(format!("pickup-{from_anchor}")),
@@ -388,7 +388,7 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         from: BoardingPointId::new("transfer-from"),
         to: BoardingPointId::new("transfer-to"),
     };
-    let bike = BikeShortcut::new(
+    let bike = BikeShareMovement::new(
         1,
         2,
         BikeStationId::new("pickup"),
@@ -403,27 +403,29 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
     .unwrap();
     let realizations = HashMap::from([(movement, vec![bike])]);
 
-    let (variants, stats) =
+    let (realized_journeys, stats) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
-    assert_eq!(variants.len(), 1);
-    let timing = variants[0].evaluate_timing().unwrap();
+    assert_eq!(realized_journeys.len(), 1);
+    let timing = realized_journeys[0].evaluate_timing().unwrap();
     assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:10 UTC));
     assert_eq!(timing.bike_share_uses, 1);
     assert_eq!(timing.walking_seconds, 150);
-    let bike_shortcut = variants[0]
+    let bike_movement = realized_journeys[0]
         .movements()
         .iter()
         .find_map(|step| match &step.kind {
-            super::super::realized::JourneyMovementKind::BikeShare { shortcut } => Some(shortcut),
+            super::super::realized::JourneyMovementKind::BikeShare {
+                movement: bike_movement,
+            } => Some(bike_movement),
             super::super::realized::JourneyMovementKind::Walking { .. }
             | super::super::realized::JourneyMovementKind::Transit { .. } => None,
         })
         .unwrap();
-    assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
-    assert_eq!(bike_shortcut.walk_from_dropoff.duration_seconds, 90);
-    let bike_step = variants[0]
+    assert_eq!(bike_movement.walk_to_pickup.duration_seconds, 60);
+    assert_eq!(bike_movement.walk_from_dropoff.duration_seconds, 90);
+    let bike_step = realized_journeys[0]
         .movements()
         .iter()
         .find(|step| {
@@ -434,17 +436,17 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         })
         .unwrap();
     assert!(matches!(
-        &variants[0].anchors()[bike_step.from_anchor].kind,
+        &realized_journeys[0].anchors()[bike_step.from_anchor].kind,
         super::super::realized::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-from")
     ));
     assert!(matches!(
-        &variants[0].anchors()[bike_step.to_anchor].kind,
+        &realized_journeys[0].anchors()[bike_step.to_anchor].kind,
         super::super::realized::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-to")
     ));
     assert_eq!(stats.bike_realizations_selected, 1);
-    assert!(variants[0].movements().iter().any(|step| matches!(
+    assert!(realized_journeys[0].movements().iter().any(|step| matches!(
         step.kind,
         super::super::realized::JourneyMovementKind::BikeShare { .. }
     )));
@@ -489,16 +491,16 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
         ],
     );
     let movement = corridor_movement(0, 1, "origin", "middle");
-    let realizations = HashMap::from([(movement, vec![bike_shortcut(0, 1, 16 * 60)])]);
+    let realizations = HashMap::from([(movement, vec![bike_movement(0, 1, 16 * 60)])]);
 
-    let (variants, _) =
+    let (realized_journeys, _) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
-    let bike_variant = variants
+    let bike_journey = realized_journeys
         .iter()
-        .find(|variant| {
-            variant.movements().iter().any(|step| {
+        .find(|journey| {
+            journey.movements().iter().any(|step| {
                 matches!(
                     step.kind,
                     super::super::realized::JourneyMovementKind::BikeShare { .. }
@@ -507,14 +509,14 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
         })
         .unwrap();
     assert_eq!(
-        bike_variant.evaluate_timing().unwrap().arrival_at,
+        bike_journey.evaluate_timing().unwrap().arrival_at,
         datetime!(2026-09-21 10:27 UTC)
     );
     assert_eq!(
-        bike_variant.transit_pattern_sequence(),
+        bike_journey.transit_pattern_sequence(),
         vec![TransitPatternId::new("second")]
     );
-    assert!(bike_variant.movements().iter().any(|movement| {
+    assert!(bike_journey.movements().iter().any(|movement| {
         matches!(
             &movement.kind,
             super::super::realized::JourneyMovementKind::Transit { trip, .. }
@@ -524,7 +526,7 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
 }
 
 #[test]
-fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
+fn one_bike_movement_can_skip_multiple_transit_anchors() {
     let network = network(
         vec![
             pattern("first", TransitMode::Bus, &["origin", "middle"]),
@@ -566,23 +568,23 @@ fn one_bike_shortcut_can_skip_multiple_transit_anchors() {
     let realizations = HashMap::from([
         (
             corridor_movement(0, 1, "origin", "middle"),
-            vec![bike_shortcut(0, 1, 5 * 60)],
+            vec![bike_movement(0, 1, 5 * 60)],
         ),
         (
             corridor_movement(0, 2, "origin", "destination"),
-            vec![bike_shortcut(0, 2, 15 * 60)],
+            vec![bike_movement(0, 2, 15 * 60)],
         ),
     ]);
 
-    let (variants, stats) =
+    let (realized_journeys, stats) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
-    let cross_anchor = variants
+    let cross_anchor = realized_journeys
         .iter()
-        .find(|variant| {
-            variant.transit_pattern_sequence().is_empty()
-                && variant.movements().iter().any(|step| {
+        .find(|journey| {
+            journey.transit_pattern_sequence().is_empty()
+                && journey.movements().iter().any(|step| {
                     matches!(
                         step.kind,
                         super::super::realized::JourneyMovementKind::BikeShare { .. }
@@ -628,10 +630,10 @@ fn bike_can_replace_a_surface_walking_edge() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
-        vec![bike_shortcut(0, 1, 300)],
+        vec![bike_movement(0, 1, 300)],
     )]);
 
-    let variants = evaluate_with_test_bike_routes(
+    let realized_journeys = evaluate_with_test_bike_routes(
         &network,
         &corridor,
         &TimingSnapshot::default(),
@@ -641,8 +643,8 @@ fn bike_can_replace_a_surface_walking_edge() {
     .unwrap()
     .0;
 
-    assert!(variants.iter().any(|variant| {
-        variant.movements().iter().any(|step| {
+    assert!(realized_journeys.iter().any(|journey| {
+        journey.movements().iter().any(|step| {
             matches!(
                 step.kind,
                 super::super::realized::JourneyMovementKind::BikeShare { .. }
@@ -682,10 +684,10 @@ fn slower_optimistic_bike_bound_skips_exact_routing() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
-        vec![bike_shortcut(0, 1, 20 * 60)],
+        vec![bike_movement(0, 1, 20 * 60)],
     )]);
 
-    let (variants, stats) = evaluate_with_test_bike_routes(
+    let (realized_journeys, stats) = evaluate_with_test_bike_routes(
         &network,
         &corridor,
         &TimingSnapshot::default(),
@@ -698,9 +700,9 @@ fn slower_optimistic_bike_bound_skips_exact_routing() {
     assert_eq!(stats.bike_lower_bound_rejections, 1);
     assert_eq!(stats.bike_exact_candidates_requested, 0);
     assert!(
-        variants
+        realized_journeys
             .iter()
-            .all(|variant| variant.movements().iter().all(|step| !matches!(
+            .all(|journey| journey.movements().iter().all(|step| !matches!(
                 step.kind,
                 super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
@@ -738,15 +740,15 @@ fn transit_waiting_time_is_included_when_screening_bike() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "origin", "destination"),
-        vec![bike_shortcut(0, 1, 16 * 60)],
+        vec![bike_movement(0, 1, 16 * 60)],
     )]);
 
-    let (variants, stats) =
+    let (realized_journeys, stats) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
     assert_eq!(
-        variants[0].evaluate_timing().unwrap().arrival_at,
+        realized_journeys[0].evaluate_timing().unwrap().arrival_at,
         datetime!(2026-09-21 10:11 UTC)
     );
     assert_eq!(stats.bike_lower_bound_checks, 1);
@@ -785,10 +787,10 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
-        vec![bike_shortcut(0, 1, 14 * 60)],
+        vec![bike_movement(0, 1, 14 * 60)],
     )]);
 
-    let (variants, stats) = evaluate_with_test_bike_routes(
+    let (realized_journeys, stats) = evaluate_with_test_bike_routes(
         &network,
         &corridor,
         &TimingSnapshot::default(),
@@ -800,9 +802,9 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
     assert_eq!(stats.bike_exact_candidates_requested, 1);
     assert_eq!(stats.bike_realizations_feasible, 0);
     assert!(
-        variants
+        realized_journeys
             .iter()
-            .all(|variant| variant.movements().iter().all(|step| !matches!(
+            .all(|journey| journey.movements().iter().all(|step| !matches!(
                 step.kind,
                 super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
@@ -849,7 +851,7 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
-        vec![bike_shortcut(0, 1, 5 * 60)],
+        vec![bike_movement(0, 1, 5 * 60)],
     )]);
 
     let (_, stats) = evaluate_with_test_bike_routes(
@@ -912,7 +914,7 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
             (from + 1..stop_names.len()).map(move |to| {
                 (
                     corridor_movement(from, to, &stop_names[from], &stop_names[to]),
-                    vec![bike_shortcut(from, to, 20 * 60)],
+                    vec![bike_movement(from, to, 20 * 60)],
                 )
             })
         })
@@ -993,7 +995,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         0,
         vec![trip("third-trip", "third", &["c", "d"], &[30, 50])],
     );
-    let first_bike = BikeShortcut::new(
+    let first_bike = BikeShareMovement::new(
         0,
         1,
         BikeStationId::new("pickup-a"),
@@ -1006,20 +1008,20 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         BikeWalkingAccess::new(5 * 60, 100),
     )
     .unwrap();
-    let second_bike = bike_shortcut(2, 3, 5 * 60);
+    let second_bike = bike_movement(2, 3, 5 * 60);
     let realizations = HashMap::from([
         (corridor_movement(0, 1, "a", "b"), vec![first_bike]),
         (corridor_movement(2, 3, "c", "d"), vec![second_bike]),
     ]);
 
-    let (variants, stats) =
+    let (realized_journeys, stats) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
-    let split_rentals = variants
+    let split_rentals = realized_journeys
         .iter()
-        .find(|variant| {
-            variant
+        .find(|journey| {
+            journey
                 .movements()
                 .iter()
                 .filter(|step| {
@@ -1033,11 +1035,11 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected two rentals; stats={:?}, variants={:?}",
+                "expected two rentals; stats={:?}, realized_journeys={:?}",
                 stats,
-                variants
+                realized_journeys
                     .iter()
-                    .map(|variant| variant.identity().canonical_signature())
+                    .map(|journey| journey.identity().canonical_signature())
                     .collect::<Vec<_>>()
             )
         });
@@ -1057,8 +1059,8 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         .unwrap();
     assert!(matches!(
         &last_bike.kind,
-        super::super::realized::JourneyMovementKind::BikeShare { shortcut }
-            if shortcut.rental_wait_seconds == 5 * 60
+        super::super::realized::JourneyMovementKind::BikeShare { movement: bike_movement }
+            if bike_movement.rental_wait_seconds == 5 * 60
     ));
 }
 
@@ -1091,7 +1093,7 @@ fn bike_with_no_pareto_benefit_is_pruned() {
             }],
         }],
     );
-    let bike = BikeShortcut::new(
+    let bike = BikeShareMovement::new(
         0,
         1,
         BikeStationId::new("pickup"),
@@ -1106,7 +1108,7 @@ fn bike_with_no_pareto_benefit_is_pruned() {
     .unwrap();
     let realizations = HashMap::from([(corridor_movement(0, 1, "a", "b"), vec![bike])]);
 
-    let variants = evaluate_with_test_bike_routes(
+    let realized_journeys = evaluate_with_test_bike_routes(
         &network,
         &corridor,
         &TimingSnapshot::default(),
@@ -1117,9 +1119,9 @@ fn bike_with_no_pareto_benefit_is_pruned() {
     .0;
 
     assert!(
-        variants
+        realized_journeys
             .iter()
-            .all(|variant| variant.movements().iter().all(|step| !matches!(
+            .all(|journey| journey.movements().iter().all(|step| !matches!(
                 step.kind,
                 super::super::realized::JourneyMovementKind::BikeShare { .. }
             )))
@@ -1163,24 +1165,29 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
     );
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
-        vec![bike_shortcut(0, 1, 10 * 60)],
+        vec![bike_movement(0, 1, 10 * 60)],
     )]);
 
-    let variants =
+    let realized_journeys =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap()
             .0;
 
-    assert_eq!(variants.len(), 1);
+    assert_eq!(realized_journeys.len(), 1);
     assert!(
-        variants[0]
+        realized_journeys[0]
             .transit_pattern_sequence()
             .contains(&TransitPatternId::new("bus"))
     );
-    assert!(variants[0].movements().iter().all(|step| !matches!(
-        step.kind,
-        super::super::realized::JourneyMovementKind::BikeShare { .. }
-    )));
+    assert!(
+        realized_journeys[0]
+            .movements()
+            .iter()
+            .all(|step| !matches!(
+                step.kind,
+                super::super::realized::JourneyMovementKind::BikeShare { .. }
+            ))
+    );
 }
 
 #[test]
@@ -1250,7 +1257,7 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         )],
     );
 
-    let variants = evaluate_with_test_bike_routes(
+    let realized_journeys = evaluate_with_test_bike_routes(
         &network,
         &corridor,
         &snapshot,
@@ -1260,10 +1267,10 @@ fn pareto_keeps_a_later_route_with_less_walking() {
     .unwrap()
     .0;
 
-    assert_eq!(variants.len(), 2);
-    let metrics = variants
+    assert_eq!(realized_journeys.len(), 2);
+    let metrics = realized_journeys
         .iter()
-        .map(|variant| variant.evaluate_timing().unwrap())
+        .map(|journey| journey.evaluate_timing().unwrap())
         .collect::<Vec<_>>();
     assert!(
         metrics
@@ -1392,7 +1399,7 @@ fn phase2_keeps_reliable_candidate_when_fallback_arrives_earlier() {
 }
 
 #[test]
-fn phase2_state_pruning_keeps_reliability_alternatives_for_later_legs() {
+fn phase2_state_pruning_keeps_reliability_tradeoffs_for_later_legs() {
     let network = network(
         vec![
             pattern("first", TransitMode::Bus, &["origin", "transfer"]),
@@ -1643,19 +1650,19 @@ fn phase2_allows_equivalent_pattern_substitution() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let corridor = candidate_corridor(&network, &query);
     let retained_leg = corridor.retained()[0].transit_legs().next().unwrap();
-    let alternatives = corridor.equivalent_legs_for(&network, retained_leg);
-    assert_eq!(alternatives.len(), 2);
-    let alternative = alternatives
+    let equivalent_legs = corridor.equivalent_legs_for(&network, retained_leg);
+    assert_eq!(equivalent_legs.len(), 2);
+    let equivalent_leg = equivalent_legs
         .iter()
         .find(|leg| leg.pattern_id != retained_leg.pattern_id)
         .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
-        alternative.pattern_id.clone(),
-        alternative.board_index,
+        equivalent_leg.pattern_id.clone(),
+        equivalent_leg.board_index,
         vec![trip(
             "equivalent-trip",
-            alternative.pattern_id.as_str(),
+            equivalent_leg.pattern_id.as_str(),
             &["origin", "destination"],
             &[1, 10],
         )],
@@ -1666,7 +1673,7 @@ fn phase2_allows_equivalent_pattern_substitution() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].transit_pattern_sequence(),
-        vec![alternative.pattern_id.clone()]
+        vec![equivalent_leg.pattern_id.clone()]
     );
 }
 
@@ -1855,13 +1862,13 @@ async fn evaluate_walking_replacement(
         calls: calls.clone(),
         error,
     });
-    let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> =
+    let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> =
         vec![Box::new(WalkingMovementPlanner::new(street))];
     if with_bike {
-        surface.push(Box::new(TestBikePlanner {
+        surface_planners.push(Box::new(TestBikePlanner {
             routes: HashMap::from([(
                 corridor_movement(0, 1, "origin", "destination"),
-                vec![bike_shortcut(0, 1, 240)],
+                vec![bike_movement(0, 1, 240)],
             )]),
             cache: HashMap::new(),
             hits: 0,
@@ -1874,10 +1881,16 @@ async fn evaluate_walking_replacement(
     } else {
         vec![make_corridor()]
     };
-    let result = FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut surface)
-        .evaluate(&corridors)
-        .await
-        .unwrap();
+    let result = FixedCorridorEvaluator::new(
+        &network,
+        &retained,
+        &snapshot,
+        &query,
+        &mut surface_planners,
+    )
+    .evaluate(&corridors)
+    .await
+    .unwrap();
     (result, calls.load(std::sync::atomic::Ordering::SeqCst))
 }
 
@@ -1988,7 +2001,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         }],
     );
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> = vec![
+    let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = vec![
         Box::new(WalkingMovementPlanner::new(Arc::new(
             CountingWalkingRouter {
                 calls: calls.clone(),
@@ -1998,7 +2011,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         Box::new(TestBikePlanner {
             routes: HashMap::from([(
                 corridor_movement(0, 1, "a", "b"),
-                vec![bike_shortcut(0, 1, 240)],
+                vec![bike_movement(0, 1, 240)],
             )]),
             cache: HashMap::new(),
             hits: 0,
@@ -2007,10 +2020,16 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
     let corridor =
         EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
     let snapshot = TimingSnapshot::default();
-    let result = FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut surface)
-        .evaluate(&[corridor])
-        .await
-        .unwrap();
+    let result = FixedCorridorEvaluator::new(
+        &network,
+        &retained,
+        &snapshot,
+        &query,
+        &mut surface_planners,
+    )
+    .evaluate(&[corridor])
+    .await
+    .unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(result.stats.bike_realizations_feasible, 1);
     assert!(!result.journeys.is_empty());

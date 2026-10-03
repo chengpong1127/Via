@@ -114,22 +114,22 @@ impl RoutingService {
         )?;
         context.ensure_before_deadline()?;
 
-        let alternatives = self.plan_candidates(&context).await?;
+        let attempt = self.plan_candidates(&context).await?;
         self.finalize_plan(
             request_started_at,
             &context,
-            alternatives.candidates,
-            alternatives.failures,
+            attempt.candidates,
+            attempt.failures,
         )
     }
 
     async fn plan_candidates(
         &self,
         context: &JourneyPlanningContext<'_>,
-    ) -> Result<PlanningCandidates, PlanningError> {
+    ) -> Result<PlanningAttempt, PlanningError> {
         let request = context.request;
         let allowed_transit_modes = request.allowed_transit_modes();
-        let mut alternatives = PlanningCandidates::default();
+        let mut attempt = PlanningAttempt::default();
 
         let (origin, destination) = (
             to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?,
@@ -167,7 +167,7 @@ impl RoutingService {
             let (access, egress) = match (access, egress) {
                 (Ok(access), Ok(egress)) => (access, egress),
                 (Err(error), _) | (_, Err(error)) => {
-                    alternatives.failures.record_provider(&error);
+                    attempt.failures.record_provider(&error);
                     (Vec::new(), Vec::new())
                 }
             };
@@ -210,40 +210,41 @@ impl RoutingService {
 
         {
             let search_started = Instant::now();
-            let planned = async {
+            let planning_result = async {
                 let mut session = self.planner.prepare(query).await?;
-                let journeys = session.evaluate_primary().await?;
+                let primary_journeys = session.evaluate_primary().await?;
                 context
                     .ensure_before_deadline()
                     .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
-                let realtime_evidence_values: usize = journeys
+                let realtime_evidence_values: usize = primary_journeys
                     .iter()
                     .map(RealizedJourney::realtime_evidence_count)
                     .sum();
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
-                for journey in journeys {
+                for journey in primary_journeys {
                     match self.reconstructor.reconstruct(&journey, context).await {
-                        Ok(Some(candidate)) => alternatives.candidates.push(candidate),
+                        Ok(Some(candidate)) => attempt.candidates.push(candidate),
                         Ok(None) => {}
-                        Err(error) => alternatives.failures.record_planning(&error),
+                        Err(error) => attempt.failures.record_planning(&error),
                     }
                 }
-                if alternatives.candidates.is_empty() {
-                    for journey in session.evaluate_fallback().await? {
+                if attempt.candidates.is_empty() {
+                    let fallback_journeys = session.evaluate_fallback().await?;
+                    for journey in fallback_journeys {
                         match self.reconstructor.reconstruct(&journey, context).await {
-                            Ok(Some(candidate)) => alternatives.candidates.push(candidate),
+                            Ok(Some(candidate)) => attempt.candidates.push(candidate),
                             Ok(None) => {}
-                            Err(error) => alternatives.failures.record_planning(&error),
+                            Err(error) => attempt.failures.record_planning(&error),
                         }
                     }
                 }
-                alternatives.failures.transient |= session.failures().transient;
-                alternatives.failures.internal |= session.failures().internal;
+                attempt.failures.transient |= session.failures().transient;
+                attempt.failures.internal |= session.failures().internal;
                 Ok::<_, super::model::RoutingError>(())
             }
             .await;
-            match planned {
+            match planning_result {
                 Ok(()) => {
                     let duration = search_started.elapsed();
                     ::metrics::histogram!("via_planner_multimodal_search_duration_seconds")
@@ -251,18 +252,18 @@ impl RoutingService {
                     tracing::debug!(
                         target: "via_server::routing",
                         multimodal_search_ms = duration.as_millis() as u64,
-                        generated_candidates = alternatives.candidates.len(),
+                        journey_candidates = attempt.candidates.len(),
                         "multimodal planning completed"
                     );
                 }
                 Err(error) => {
                     match &error {
                         super::model::RoutingError::Timing(timing) => {
-                            alternatives.failures.transient |= timing.is_transient();
+                            attempt.failures.transient |= timing.is_transient();
                         }
                         super::model::RoutingError::StaticSearchLimit
                         | super::model::RoutingError::Phase2EvaluationLimit => {
-                            alternatives.failures.internal = true;
+                            attempt.failures.internal = true;
                         }
                         super::model::RoutingError::DeadlineExceeded => {
                             return Err(PlanningError::TemporarilyUnavailable);
@@ -274,7 +275,7 @@ impl RoutingService {
             }
         }
 
-        Ok(alternatives)
+        Ok(attempt)
     }
 
     fn finalize_plan(
@@ -286,7 +287,7 @@ impl RoutingService {
     ) -> Result<PlanningOutcome, PlanningError> {
         tracing::debug!(
             target: "via_server::routing",
-            generated_candidates = candidates.len(),
+            journey_candidates = candidates.len(),
             "journey candidates ready for ranking"
         );
         if candidates.is_empty() && failures.internal {
@@ -304,32 +305,32 @@ impl RoutingService {
             return Err(PlanningError::TemporarilyUnavailable);
         }
         context.ensure_before_deadline()?;
-        self.rank_generated(generated_at, candidates)
+        self.rank_candidates(generated_at, candidates)
     }
 
-    fn rank_generated(
+    fn rank_candidates(
         &self,
         generated_at: OffsetDateTime,
-        generated: Vec<JourneyCandidate>,
+        candidates: Vec<JourneyCandidate>,
     ) -> Result<PlanningOutcome, PlanningError> {
         let mut seen_keys = HashSet::new();
-        let generated = generated
+        let candidates = candidates
             .into_iter()
             .filter(|candidate| seen_keys.insert(candidate.ranking.stable_key.clone()))
             .collect::<Vec<_>>();
-        let ranked = self.ranking.rank(
-            generated
+        let ranked_journeys = self.ranking.rank(
+            candidates
                 .iter()
                 .map(|candidate| candidate.ranking.clone())
                 .collect(),
         );
-        let mut by_key = generated
+        let mut candidates_by_key = candidates
             .into_iter()
             .map(|candidate| (candidate.ranking.stable_key.clone(), candidate))
             .collect::<HashMap<_, _>>();
-        let mut journey_options = Vec::with_capacity(ranked.len());
-        for (index, ranked_journey) in ranked.into_iter().enumerate() {
-            let Some(mut candidate) = by_key.remove(&ranked_journey.stable_key) else {
+        let mut journey_options = Vec::with_capacity(ranked_journeys.len());
+        for (index, ranked_journey) in ranked_journeys.into_iter().enumerate() {
+            let Some(mut candidate) = candidates_by_key.remove(&ranked_journey.stable_key) else {
                 tracing::error!(
                     target: "via_server::routing",
                     "ranking produced a candidate that could not be reconstructed"
@@ -356,7 +357,7 @@ impl RoutingService {
 }
 
 #[derive(Default)]
-struct PlanningCandidates {
+struct PlanningAttempt {
     candidates: Vec<JourneyCandidate>,
     failures: PlanningFailures,
 }

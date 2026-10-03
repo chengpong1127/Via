@@ -9,9 +9,9 @@ impl FixedCorridorEvaluator<'_> {
         saw_missing_departure: &mut bool,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let mut successors = Vec::new();
-        for alternative in self.corridor.equivalent_legs_for(self.network, leg) {
+        for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
             self.charge()?;
-            if !valid_pattern_leg(self.network, self.corridor, leg, &alternative) {
+            if !valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg) {
                 continue;
             }
             let ready_at = if state.last_was_transit {
@@ -25,8 +25,8 @@ impl FixedCorridorEvaluator<'_> {
             }
             self.stats.transit_departure_lookups += 1;
             let departures = self.snapshot.departures(
-                &alternative.pattern_id,
-                alternative.board_index,
+                &equivalent_leg.pattern_id,
+                equivalent_leg.board_index,
                 ready_at,
                 self.query.limits.max_departures_per_query,
             );
@@ -37,7 +37,7 @@ impl FixedCorridorEvaluator<'_> {
             for trip in departures {
                 self.check_deadline()?;
                 let Some(arrival) =
-                    retained_alight_time(self.network, trip, &alternative, ready_at)
+                    retained_alight_time(self.network, trip, &equivalent_leg, ready_at)
                 else {
                     self.stats.malformed_trips += 1;
                     continue;
@@ -48,12 +48,12 @@ impl FixedCorridorEvaluator<'_> {
                 successors.push(state.after_movement(JourneyMovement {
                     from_anchor: anchor,
                     to_anchor: anchor + 1,
-                    departure_at: trip.stop_times[alternative.board_index].departure_at,
+                    departure_at: trip.stop_times[equivalent_leg.board_index].departure_at,
                     arrival_at: arrival,
                     kind: JourneyMovementKind::Transit {
                         trip: Arc::new(trip.clone()),
-                        board_index: alternative.board_index,
-                        alight_index: alternative.alight_index,
+                        board_index: equivalent_leg.board_index,
+                        alight_index: equivalent_leg.alight_index,
                     },
                     street_path: None,
                 }));
@@ -66,17 +66,17 @@ fn valid_pattern_leg(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,
     retained: &StaticTransitLeg,
-    alternative: &StaticTransitLeg,
+    equivalent_leg: &StaticTransitLeg,
 ) -> bool {
-    if !corridor.is_equivalent_leg(network, retained, alternative) {
+    if !corridor.is_equivalent_leg(network, retained, equivalent_leg) {
         return false;
     }
-    let Some(pattern) = network.pattern(&alternative.pattern_id) else {
+    let Some(pattern) = network.pattern(&equivalent_leg.pattern_id) else {
         return false;
     };
-    pattern.stops.get(alternative.board_index) == Some(&retained.board_stop_id)
-        && pattern.stops.get(alternative.alight_index) == Some(&retained.alight_stop_id)
-        && alternative.board_index < alternative.alight_index
+    pattern.stops.get(equivalent_leg.board_index) == Some(&retained.board_stop_id)
+        && pattern.stops.get(equivalent_leg.alight_index) == Some(&retained.alight_stop_id)
+        && equivalent_leg.board_index < equivalent_leg.alight_index
 }
 
 fn retained_alight_time(

@@ -49,7 +49,7 @@ impl RetainedCorridorSet {
                 let key = equivalent_leg_key(network, leg)?;
                 equivalent_legs
                     .get(&key)
-                    .map(|alternatives| (key, alternatives.clone()))
+                    .map(|equivalent_legs| (key, equivalent_legs.clone()))
             })
             .collect::<HashMap<_, _>>();
         let mut timing_positions = HashSet::<PatternPosition>::new();
@@ -57,19 +57,19 @@ impl RetainedCorridorSet {
         let mut selected_bus_stop_ids = HashSet::new();
         for corridor in &retained {
             for leg in corridor.transit_legs() {
-                for alternative in
+                for equivalent_leg in
                     Self::equivalent_legs_from(network, &retained_equivalent_legs, leg)
                 {
                     timing_positions.insert(PatternPosition {
-                        pattern_id: alternative.pattern_id.clone(),
-                        stop_index: alternative.board_index,
+                        pattern_id: equivalent_leg.pattern_id.clone(),
+                        stop_index: equivalent_leg.board_index,
                     });
-                    selected_pattern_ids.insert(alternative.pattern_id.clone());
+                    selected_pattern_ids.insert(equivalent_leg.pattern_id.clone());
                     if network
-                        .pattern(&alternative.pattern_id)
+                        .pattern(&equivalent_leg.pattern_id)
                         .is_some_and(|pattern| network.route_of(pattern).mode == TransitMode::Bus)
                     {
-                        selected_bus_stop_ids.insert(alternative.board_stop_id.clone());
+                        selected_bus_stop_ids.insert(equivalent_leg.board_stop_id.clone());
                     }
                 }
             }
@@ -110,10 +110,10 @@ impl RetainedCorridorSet {
         &self,
         network: &TransitRuntime,
         retained: &StaticTransitLeg,
-        alternative: &StaticTransitLeg,
+        equivalent_leg: &StaticTransitLeg,
     ) -> bool {
         equivalent_leg_key(network, retained).is_some()
-            && equivalent_leg_key(network, retained) == equivalent_leg_key(network, alternative)
+            && equivalent_leg_key(network, retained) == equivalent_leg_key(network, equivalent_leg)
     }
 
     fn equivalent_legs_from(
@@ -121,18 +121,18 @@ impl RetainedCorridorSet {
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         leg: &StaticTransitLeg,
     ) -> Vec<StaticTransitLeg> {
-        let mut alternatives = equivalent_leg_key(network, leg)
+        let mut equivalent_legs = equivalent_leg_key(network, leg)
             .and_then(|key| equivalent_legs.get(&key))
             .cloned()
             .unwrap_or_else(|| vec![leg.clone()]);
-        alternatives.sort_by(|left, right| {
+        equivalent_legs.sort_by(|left, right| {
             left.pattern_id
                 .as_str()
                 .cmp(right.pattern_id.as_str())
                 .then(left.board_index.cmp(&right.board_index))
                 .then(left.alight_index.cmp(&right.alight_index))
         });
-        alternatives
+        equivalent_legs
     }
 
     pub fn timing_positions(&self) -> impl Iterator<Item = PatternPosition> + '_ {
@@ -310,11 +310,11 @@ impl CorridorRetention {
                     transition_sequence.push(mode);
                 }
             }
-            let family_replace = self
+            let replace_mode_sequence_corridor = self
                 .best_by_mode_transition_sequence
                 .get(&transition_sequence)
                 .is_none_or(|known| corridor_order(&corridor, known).is_lt());
-            if family_replace {
+            if replace_mode_sequence_corridor {
                 self.best_by_mode_transition_sequence
                     .insert(transition_sequence, corridor.clone());
             }
@@ -359,16 +359,19 @@ impl CorridorRetention {
         stats: &mut StaticSearchStats,
     ) -> RetainedCorridorSet {
         stats.static_complete_endpoint_mode_pairs = sorted_mode_pairs(&self.complete_mode_pairs);
-        let mut global_candidates = self.retained.into_values().collect::<Vec<_>>();
-        global_candidates.sort_by(corridor_order);
-        let mut structural_families = self
+        let mut global_corridors = self.retained.into_values().collect::<Vec<_>>();
+        global_corridors.sort_by(corridor_order);
+        let mut best_mode_sequence_corridors = self
             .best_by_mode_transition_sequence
             .into_values()
             .collect::<Vec<_>>();
-        structural_families.sort_by(corridor_order);
+        best_mode_sequence_corridors.sort_by(corridor_order);
         let mut selected_structures = HashSet::new();
         let mut selected = Vec::new();
-        for corridor in structural_families.into_iter().chain(global_candidates) {
+        for corridor in best_mode_sequence_corridors
+            .into_iter()
+            .chain(global_corridors)
+        {
             if selected.len() >= self.limit {
                 break;
             }
@@ -385,21 +388,21 @@ impl CorridorRetention {
             }
         }
         selected.sort_by(corridor_order);
-        let (surface, pattern_count, bus_stop_count) =
+        let (retained_corridors, pattern_count, bus_stop_count) =
             RetainedCorridorSet::from_retained(network, equivalent_legs, selected);
         stats.static_retained_pattern_sequence_groups =
-            retained_pattern_sequence_groups(network, surface.retained());
+            retained_pattern_sequence_groups(network, retained_corridors.retained());
         stats.static_retained_mode_sequence_groups =
             retained_mode_sequence_groups(&stats.static_retained_pattern_sequence_groups);
-        stats.static_corridors_retained = surface.retained().len();
+        stats.static_corridors_retained = retained_corridors.retained().len();
         stats.static_corridor_patterns = pattern_count;
-        stats.static_corridor_positions = surface.timing_positions().count();
+        stats.static_corridor_positions = retained_corridors.timing_positions().count();
         stats.static_corridor_bus_stops = bus_stop_count;
-        stats.kth_static_duration_seconds = surface
+        stats.kth_static_duration_seconds = retained_corridors
             .retained()
             .get(self.limit.saturating_sub(1))
             .map(|corridor| corridor.theoretical_duration_seconds);
-        for corridor in surface.retained() {
+        for corridor in retained_corridors.retained() {
             match corridor.cost_source {
                 StaticCostSource::ExactSchedule => stats.exact_schedule_cost += 1,
                 StaticCostSource::DerivedBus => stats.derived_bus_cost += 1,
@@ -407,7 +410,7 @@ impl CorridorRetention {
                 StaticCostSource::Mixed => stats.mixed_cost += 1,
             }
         }
-        surface
+        retained_corridors
     }
 }
 

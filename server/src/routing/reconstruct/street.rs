@@ -44,8 +44,8 @@ impl ReconstructionState<'_, '_> {
             movement.to_anchor,
         )
         .ok_or(PlanningError::Internal)?;
-        let connector_start = self.result.legs.len();
-        append_routed_walking(&from, &to, path.clone(), &mut self.result);
+        let connector_start = self.assembly.legs.len();
+        append_routed_walking(&from, &to, path.clone(), &mut self.assembly);
         if matches!(
             movement.kind,
             crate::routing::JourneyMovementKind::Walking {
@@ -53,7 +53,7 @@ impl ReconstructionState<'_, '_> {
                 ..
             }
         ) {
-            register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
+            register_pending_transfer(&self.assembly, &mut self.pending_transfer, connector_start);
         }
         self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
         Ok(true)
@@ -82,7 +82,7 @@ impl ReconstructionState<'_, '_> {
             &first_stop,
             duration_seconds,
             distance_metres,
-            &mut self.result,
+            &mut self.assembly,
         )
         .await?;
         self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
@@ -114,15 +114,15 @@ impl ReconstructionState<'_, '_> {
             .reconstructor
             .stop_place(&to_stop)
             .ok_or(PlanningError::Internal)?;
-        let connector_start = self.result.legs.len();
+        let connector_start = self.assembly.legs.len();
         append_static_walking(
             &from,
             &to,
             duration_seconds,
             distance_metres,
-            &mut self.result,
+            &mut self.assembly,
         );
-        register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
+        register_pending_transfer(&self.assembly, &mut self.pending_transfer, connector_start);
         self.current_stop = Some(to_stop);
 
         Ok(true)
@@ -153,7 +153,7 @@ impl ReconstructionState<'_, '_> {
             &self.destination,
             duration_seconds,
             distance_metres,
-            &mut self.result,
+            &mut self.assembly,
         )
         .await?;
 
@@ -188,17 +188,17 @@ pub(super) fn append_routed_walking(
     from: &Place,
     to: &Place,
     path: StreetPath,
-    result: &mut JourneyAssembly,
+    assembly: &mut JourneyAssembly,
 ) {
-    let departure = result.arrival_time;
+    let departure = assembly.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
-    let leg_id = format!("candidate_leg_{}", result.legs.len());
-    result
+    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    assembly
         .legs
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
-    result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
-    result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
+    assembly.walking_seconds = assembly.walking_seconds.saturating_add(path.duration.0);
+    assembly.arrival_time = arrival;
+    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Walking);
 }
 
 pub(super) async fn append_hydrated_walking(
@@ -208,7 +208,7 @@ pub(super) async fn append_hydrated_walking(
     to: &Place,
     fallback_seconds: u32,
     fallback_metres: u32,
-    result: &mut JourneyAssembly,
+    assembly: &mut JourneyAssembly,
 ) -> Result<(), PlanningError> {
     let path = hydrated_or_synthetic(
         reconstructor,
@@ -216,19 +216,19 @@ pub(super) async fn append_hydrated_walking(
         from,
         to,
         StreetTravelMode::Walking,
-        result.arrival_time,
+        assembly.arrival_time,
         (fallback_seconds, fallback_metres),
     )
     .await?;
-    let departure = result.arrival_time;
+    let departure = assembly.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
-    let leg_id = format!("candidate_leg_{}", result.legs.len());
-    result
+    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    assembly
         .legs
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
-    result.walking_seconds = result.walking_seconds.saturating_add(path.duration.0);
-    result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
+    assembly.walking_seconds = assembly.walking_seconds.saturating_add(path.duration.0);
+    assembly.arrival_time = arrival;
+    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Walking);
     Ok(())
 }
 
@@ -237,18 +237,18 @@ fn append_static_walking(
     to: &Place,
     duration_seconds: u32,
     distance_metres: u32,
-    result: &mut JourneyAssembly,
+    assembly: &mut JourneyAssembly,
 ) {
     let path = synthetic_street_path(from, to, duration_seconds, distance_metres);
-    let departure = result.arrival_time;
+    let departure = assembly.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(duration_seconds));
-    let leg_id = format!("candidate_leg_{}", result.legs.len());
-    result
+    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    assembly
         .legs
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
-    result.walking_seconds = result.walking_seconds.saturating_add(duration_seconds);
-    result.arrival_time = arrival;
-    evidence::push_unique_mode(&mut result.travel_modes, LegMode::Walking);
+    assembly.walking_seconds = assembly.walking_seconds.saturating_add(duration_seconds);
+    assembly.arrival_time = arrival;
+    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Walking);
 }
 
 async fn hydrated_or_synthetic(

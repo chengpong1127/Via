@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    realized::{BikeRide, BikeShortcut},
+    realized::{BikeRide, BikeShareMovement},
     surface::{
         CorridorAnchor, CorridorAnchorKey, SurfaceKind, SurfaceMovement, SurfaceMovementPlanner,
         SurfaceRealizationStats, SurfaceRequest,
@@ -122,12 +122,12 @@ impl BikeShareMovementPlanner {
         candidate: &BikeMovementCandidate,
         from_anchor: usize,
         to_anchor: usize,
-    ) -> Result<(Vec<BikeShortcut>, BikePlanningStats), StreetRoutingError> {
+    ) -> Result<(Vec<BikeShareMovement>, BikePlanningStats), StreetRoutingError> {
         let mut stats = BikePlanningStats::default();
-        let shortcuts = self
+        let bike_movements = self
             .realize_with_stats(candidate, from_anchor, to_anchor, &mut stats)
             .await?;
-        Ok((shortcuts, stats))
+        Ok((bike_movements, stats))
     }
 
     async fn realize_with_stats(
@@ -136,7 +136,7 @@ impl BikeShareMovementPlanner {
         from_anchor: usize,
         to_anchor: usize,
         stats: &mut BikePlanningStats,
-    ) -> Result<Vec<BikeShortcut>, StreetRoutingError> {
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         let limits = self.street_router.matrix_limits();
         if limits.max_sources == 0 || limits.max_targets == 0 {
             return Ok(Vec::new());
@@ -159,10 +159,10 @@ impl BikeShareMovementPlanner {
                 return Ok(Vec::new());
             }
         }
-        let shortcuts = self
+        let bike_movements = self
             .realize_candidate_matrices(&candidate, from_anchor, to_anchor, limits, stats)
             .await?;
-        Ok(finalize_shortcuts(shortcuts))
+        Ok(finalize_bike_movements(bike_movements))
     }
 
     async fn realize_candidate_matrices(
@@ -172,8 +172,8 @@ impl BikeShareMovementPlanner {
         to_anchor: usize,
         limits: MatrixLimits,
         stats: &mut BikePlanningStats,
-    ) -> Result<Vec<BikeShortcut>, StreetRoutingError> {
-        let mut shortcuts = Vec::new();
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
+        let mut bike_movements = Vec::new();
         let mut failure = None;
         for pickup_chunk in candidate.pickups.chunks(limits.max_sources) {
             for dropoff_chunk in candidate.dropoffs.chunks(limits.max_targets) {
@@ -219,7 +219,7 @@ impl BikeShareMovementPlanner {
                         {
                             continue;
                         }
-                        if let Some(shortcut) = bike_shortcut_from_cell(
+                        if let Some(bike_movement) = bike_movement_from_cell(
                             from_anchor,
                             to_anchor,
                             &pickup_chunk[pickup_index].station_id,
@@ -228,18 +228,18 @@ impl BikeShareMovementPlanner {
                             cell,
                             dropoff_chunk[dropoff_index].walking,
                         ) {
-                            shortcuts.push(shortcut);
+                            bike_movements.push(bike_movement);
                         }
                     }
                 }
             }
         }
-        if shortcuts.is_empty()
+        if bike_movements.is_empty()
             && let Some(error) = failure
         {
             return Err(error);
         }
-        Ok(shortcuts)
+        Ok(bike_movements)
     }
 
     async fn exact_station_walks(
@@ -326,7 +326,7 @@ pub(crate) struct BikeShareSession {
     now: OffsetDateTime,
     cache: HashMap<
         (CorridorAnchorKey, CorridorAnchorKey),
-        Result<Vec<BikeShortcut>, StreetRoutingError>,
+        Result<Vec<BikeShareMovement>, StreetRoutingError>,
     >,
     pub stats: BikePlanningStats,
     pub cache_hits: usize,
@@ -392,13 +392,13 @@ impl SurfaceMovementPlanner for BikeShareSession {
             };
             self.cache.insert(key.clone(), result);
         }
-        self.cache[&key].clone().map(|shortcuts| {
-            shortcuts
+        self.cache[&key].clone().map(|bike_movements| {
+            bike_movements
                 .into_iter()
-                .map(|mut shortcut| {
-                    shortcut.from_anchor = request.from_anchor;
-                    shortcut.to_anchor = request.to_anchor;
-                    SurfaceMovement::BikeShare(shortcut)
+                .map(|mut bike_movement| {
+                    bike_movement.from_anchor = request.from_anchor;
+                    bike_movement.to_anchor = request.to_anchor;
+                    SurfaceMovement::BikeShare(bike_movement)
                 })
                 .collect()
         })
@@ -419,7 +419,7 @@ fn matrix_has_shape(matrix: &MatrixResult, expected_rows: usize, expected_column
         && matrix.cells.iter().all(|row| row.len() == expected_columns)
 }
 
-fn bike_shortcut_from_cell(
+fn bike_movement_from_cell(
     from_anchor: usize,
     to_anchor: usize,
     pickup_station_id: &BikeStationId,
@@ -427,14 +427,14 @@ fn bike_shortcut_from_cell(
     walk_to_pickup: BikeWalkingAccess,
     cell: &MatrixCell,
     walk_from_dropoff: BikeWalkingAccess,
-) -> Option<BikeShortcut> {
+) -> Option<BikeShareMovement> {
     let MatrixCell::Reachable { duration, distance } = cell else {
         return None;
     };
     if duration.0 > MAX_BIKE_DURATION_SECONDS || distance.0 > MAX_BIKE_DISTANCE_METRES {
         return None;
     }
-    BikeShortcut::new(
+    BikeShareMovement::new(
         from_anchor,
         to_anchor,
         pickup_station_id.clone(),
@@ -448,8 +448,8 @@ fn bike_shortcut_from_cell(
     )
 }
 
-fn finalize_shortcuts(mut shortcuts: Vec<BikeShortcut>) -> Vec<BikeShortcut> {
-    shortcuts.sort_by(|left, right| {
+fn finalize_bike_movements(mut bike_movements: Vec<BikeShareMovement>) -> Vec<BikeShareMovement> {
+    bike_movements.sort_by(|left, right| {
         (
             left.total_seconds,
             left.pickup_station_id.as_str(),
@@ -461,8 +461,8 @@ fn finalize_shortcuts(mut shortcuts: Vec<BikeShortcut>) -> Vec<BikeShortcut> {
                 right.dropoff_station_id.as_str(),
             ))
     });
-    shortcuts.dedup();
-    shortcuts
+    bike_movements.dedup();
+    bike_movements
 }
 
 #[derive(Clone)]
@@ -829,11 +829,11 @@ mod tests {
         };
         assert!(session.optimistic_duration(&request).is_some());
         let movements = session.realize(&request).await.unwrap();
-        let SurfaceMovement::BikeShare(shortcut) = &movements[0] else {
+        let SurfaceMovement::BikeShare(bike_movement) = &movements[0] else {
             panic!("expected BikeShare");
         };
-        assert_eq!(shortcut.total_seconds, 130);
-        assert_eq!((shortcut.from_anchor, shortcut.to_anchor), (3, 4));
+        assert_eq!(bike_movement.total_seconds, 130);
+        assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
         assert_eq!(session.stats.matrix_requests, 2);
         let remapped = session
             .realize(&SurfaceRequest {
@@ -843,10 +843,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let SurfaceMovement::BikeShare(shortcut) = &remapped[0] else {
+        let SurfaceMovement::BikeShare(bike_movement) = &remapped[0] else {
             panic!("expected BikeShare");
         };
-        assert_eq!((shortcut.from_anchor, shortcut.to_anchor), (0, 1));
+        assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
         assert_eq!(session.cache_hits, 1);
         assert_eq!(session.stats.matrix_requests, 2);
     }

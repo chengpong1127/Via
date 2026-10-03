@@ -132,22 +132,22 @@ impl SearchFrontier {
         };
         let signature = state.signature();
         let continuation_signature = state.continuation_signature();
-        let alternatives = self.known.entry(key).or_default();
-        if alternatives.iter().any(|known| {
+        let known_states = self.known.entry(key).or_default();
+        if known_states.iter().any(|known| {
             known.signature == signature && known.elapsed_seconds <= state.elapsed_seconds
         }) {
             stats.static_duplicate_states_rejected += 1;
             return;
         }
-        if alternatives.iter().any(|known| {
+        if known_states.iter().any(|known| {
             known.continuation_signature == continuation_signature
                 && known.elapsed_seconds <= state.elapsed_seconds
         }) {
             stats.static_structurally_equivalent_states_rejected += 1;
             return;
         }
-        if alternatives.len() >= self.limit
-            && alternatives
+        if known_states.len() >= self.limit
+            && known_states
                 .iter()
                 .filter(|known| known.elapsed_seconds <= state.elapsed_seconds)
                 .count()
@@ -156,16 +156,16 @@ impl SearchFrontier {
             stats.static_dominance_states_rejected += 1;
             return;
         }
-        alternatives.retain(|known| {
+        known_states.retain(|known| {
             known.signature != signature && known.continuation_signature != continuation_signature
         });
-        alternatives.push(KnownState {
+        known_states.push(KnownState {
             elapsed_seconds: state.elapsed_seconds,
             signature,
             continuation_signature,
         });
-        alternatives.sort_by_key(|known| known.elapsed_seconds);
-        alternatives.truncate(self.limit);
+        known_states.sort_by_key(|known| known.elapsed_seconds);
+        known_states.truncate(self.limit);
         self.queue.push(QueueEntry {
             state,
             sequence: self.sequence,
@@ -180,8 +180,8 @@ impl SearchFrontier {
             transfer_ready: state.transfer_ready,
         };
         let signature = state.signature();
-        self.known.get(&key).is_some_and(|alternatives| {
-            alternatives.iter().any(|known| {
+        self.known.get(&key).is_some_and(|known_states| {
+            known_states.iter().any(|known| {
                 known.signature == signature && known.elapsed_seconds == state.elapsed_seconds
             })
         })

@@ -31,7 +31,7 @@ pub enum WalkingMovementKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JourneyMovementKind {
     BikeShare {
-        shortcut: BikeShortcut,
+        movement: BikeShareMovement,
     },
     Walking {
         kind: WalkingMovementKind,

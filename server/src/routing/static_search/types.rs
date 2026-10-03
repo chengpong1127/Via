@@ -230,7 +230,6 @@ pub struct StaticSearchStats {
     pub static_duplicate_states_rejected: usize,
     pub static_dominance_states_rejected: usize,
     pub static_structurally_equivalent_states_rejected: usize,
-    pub static_equivalent_pattern_occurrences_collapsed: usize,
     pub static_required_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
     pub static_complete_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
     pub static_complete_candidates_found: usize,

@@ -4,7 +4,7 @@ use super::*;
 pub(super) struct EvaluationState {
     pub ready_at: OffsetDateTime,
     pub last_was_transit: bool,
-    pub active_bike_run: Option<super::bike::ActiveBikeRental>,
+    pub active_bike_rental: Option<super::bike::ActiveBikeRental>,
     pub bike_reuse_available_at: Option<OffsetDateTime>,
     pub movements: Vec<JourneyMovement>,
 }
@@ -14,7 +14,7 @@ impl EvaluationState {
         Self {
             ready_at: query.departure_time,
             last_was_transit: false,
-            active_bike_run: None,
+            active_bike_rental: None,
             bike_reuse_available_at: None,
             movements: Vec::new(),
         }
@@ -22,14 +22,14 @@ impl EvaluationState {
 
     pub fn after_movement(&self, movement: JourneyMovement) -> Self {
         let mut next = self.clone();
-        if let Some(run) = &self.active_bike_run {
-            let return_at = run.reuse_available_at();
+        if let Some(rental) = &self.active_bike_rental {
+            let return_at = rental.reuse_available_at();
             next.bike_reuse_available_at = Some(
                 next.bike_reuse_available_at
                     .map_or(return_at, |known| known.max(return_at)),
             );
         }
-        next.active_bike_run = None;
+        next.active_bike_rental = None;
         next.ready_at = movement.arrival_at;
         next.last_was_transit = matches!(movement.kind, JourneyMovementKind::Transit { .. });
         next.movements.push(movement);
@@ -78,14 +78,16 @@ impl PathMetrics {
                         surface_since_transit = true;
                     }
                 }
-                JourneyMovementKind::BikeShare { shortcut } => {
+                JourneyMovementKind::BikeShare {
+                    movement: bike_movement,
+                } => {
                     result.walking_seconds = result
                         .walking_seconds
-                        .saturating_add(shortcut.walk_to_pickup.duration_seconds)
-                        .saturating_add(shortcut.walk_from_dropoff.duration_seconds);
+                        .saturating_add(bike_movement.walk_to_pickup.duration_seconds)
+                        .saturating_add(bike_movement.walk_from_dropoff.duration_seconds);
                     result.bicycle_seconds = result
                         .bicycle_seconds
-                        .saturating_add(shortcut.bicycle_duration_seconds);
+                        .saturating_add(bike_movement.bicycle_duration_seconds);
                     result.bike_share_uses += 1;
                     if last_trip.is_some() {
                         surface_since_transit = true;

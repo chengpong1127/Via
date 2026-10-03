@@ -132,14 +132,14 @@ fn one_global_k_is_shared_across_bus_and_metro() {
         ],
     );
 
-    let surface = run(
+    let retained_corridors = run(
         &network,
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(
-        surface.retained()[0].pattern_sequence(),
+        retained_corridors.retained()[0].pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -162,16 +162,16 @@ fn top_k_does_not_require_every_endpoint_mode_pair() {
     );
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &runtime,
         &TransitTopologyIndex::new(&network),
         &TransferShortcutIndex::from_network(&network),
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(
-        surface.retained()[0].pattern_sequence(),
+        retained_corridors.retained()[0].pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
     assert_eq!(stats.static_required_endpoint_mode_pairs.len(), 4);
@@ -194,19 +194,22 @@ fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
         ],
     );
 
-    let surface = run(
+    let retained_corridors = run(
         &network,
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 1),
     );
 
     assert_eq!(
-        surface.retained()[0].pattern_sequence(),
+        retained_corridors.retained()[0].pattern_sequence(),
         vec![
             TransitPatternId::new("connector"),
             TransitPatternId::new("metro")
         ]
     );
-    assert_eq!(surface.retained()[0].cost_source, StaticCostSource::Mixed);
+    assert_eq!(
+        retained_corridors.retained()[0].cost_source,
+        StaticCostSource::Mixed
+    );
 }
 
 #[test]
@@ -226,14 +229,14 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
         ],
     );
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &TransitRuntime::new(std::sync::Arc::new(network.clone())),
         &TransitTopologyIndex::new(&network),
         &TransferShortcutIndex::from_network(&network),
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 2),
     );
 
-    assert_eq!(surface.retained().len(), 2);
+    assert_eq!(retained_corridors.retained().len(), 2);
     assert_eq!(stats.static_corridor_patterns, 4);
 }
 
@@ -258,14 +261,14 @@ fn top_k_search_expands_equal_cost_bounds_before_terminating() {
         100,
     )]);
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &TransitRuntime::new(std::sync::Arc::new(network.clone())),
         &TransitTopologyIndex::new(&network),
         &TransferShortcutIndex::from_network(&network),
         &query("o", "d", &[TransitMode::Bus], 1, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.static_unique_corridors_found, 2);
 }
 
@@ -285,21 +288,21 @@ fn top_k_stops_when_best_frontier_bound_exceeds_kth_duration() {
     let network = network(patterns, trips);
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &runtime,
         &TransitTopologyIndex::new(&network),
         &TransferShortcutIndex::from_network(&network),
         &query("o", "d", &[TransitMode::Bus], 1, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.kth_static_duration_seconds, Some(3));
     assert_eq!(stats.static_search_states_expanded, 2);
     assert!(stats.static_top_k_early_terminated);
 }
 
 #[test]
-fn equivalent_patterns_share_one_phase1_scan_and_remain_available_for_timing() {
+fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timing() {
     let network = network(
         vec![
             pattern("bus-a", TransitMode::Bus, &["o", "d"]),
@@ -311,16 +314,16 @@ fn equivalent_patterns_share_one_phase1_scan_and_remain_available_for_timing() {
     let transfers = TransferShortcutIndex::from_network(&network);
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &runtime,
         &topology,
         &transfers,
         &query("o", "d", &[TransitMode::Bus], 0, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.static_corridor_patterns, 2);
-    let timing_patterns = surface
+    let timing_patterns = retained_corridors
         .timing_positions()
         .map(|position| position.pattern_id)
         .collect::<HashSet<_>>();
@@ -338,7 +341,7 @@ fn equivalent_patterns_share_one_phase1_scan_and_remain_available_for_timing() {
 }
 
 #[test]
-fn retained_segment_family_keeps_overlapping_patterns() {
+fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
     let network = network(
         vec![
             pattern("direct", TransitMode::Bus, &["o", "d"]),
@@ -357,16 +360,16 @@ fn retained_segment_family_keeps_overlapping_patterns() {
     let transfers = TransferShortcutIndex::from_network(&network);
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-    let (surface, stats) = generate(
+    let (retained_corridors, stats) = generate(
         &runtime,
         &topology,
         &transfers,
         &query("o", "d", &[TransitMode::Bus], 0, 1),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.static_corridor_patterns, 2);
-    let timing_patterns = surface
+    let timing_patterns = retained_corridors
         .timing_positions()
         .map(|position| position.pattern_id)
         .collect::<HashSet<_>>();
@@ -393,12 +396,12 @@ fn competitive_metro_to_bus_corridor_is_found_in_global_top_k() {
     .with_transfer_edges(vec![TransferEdge::new(id("m"), id("x"), 30, 100)]);
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
-    let surface = run(
+    let retained_corridors = run(
         &network,
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 2),
     );
 
-    let mode_sequences = surface
+    let mode_sequences = retained_corridors
         .retained()
         .iter()
         .map(|corridor| {
@@ -423,9 +426,9 @@ fn multiple_departures_of_one_structure_consume_one_slot() {
         ],
     );
 
-    let surface = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 100));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 100));
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
 }
 
 #[test]
@@ -441,10 +444,10 @@ fn much_slower_detour_is_excluded_when_k_is_full() {
         ],
     );
 
-    let surface = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
     assert_eq!(
-        surface.retained()[0].pattern_sequence(),
+        retained_corridors.retained()[0].pattern_sequence(),
         vec![TransitPatternId::new("direct")]
     );
 }
@@ -456,11 +459,11 @@ fn bus_without_exact_schedule_uses_optimistic_geometry() {
         Vec::new(),
     );
 
-    let surface = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(
-        surface.retained()[0].cost_source,
+        retained_corridors.retained()[0].cost_source,
         StaticCostSource::OptimisticEstimate
     );
 }
@@ -478,11 +481,11 @@ fn selected_mode_filtering_is_applied_before_retention() {
         ],
     );
 
-    let surface = run(&network, &query("o", "d", &[TransitMode::Metro], 0, 10));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 0, 10));
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(
-        surface.retained()[0].pattern_sequence(),
+        retained_corridors.retained()[0].pattern_sequence(),
         vec![TransitPatternId::new("metro")]
     );
 }
@@ -525,14 +528,14 @@ fn static_walking_transfer_can_connect_access_to_first_boarding() {
         },
     ));
 
-    let surface = run(
+    let retained_corridors = run(
         &network,
         &query("access", "d", &[TransitMode::Metro], 0, 10),
     );
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert!(matches!(
-        surface.retained()[0].steps.first(),
+        retained_corridors.retained()[0].steps.first(),
         Some(StaticCorridorStep::SurfaceTransfer { .. })
     ));
 }
@@ -554,11 +557,11 @@ fn static_walking_transfer_can_connect_final_alight_to_egress() {
         },
     ));
 
-    let surface = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 10));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 10));
 
-    assert_eq!(surface.retained().len(), 1);
+    assert_eq!(retained_corridors.retained().len(), 1);
     assert!(matches!(
-        surface.retained()[0].steps.last(),
+        retained_corridors.retained()[0].steps.last(),
         Some(StaticCorridorStep::SurfaceTransfer { from, to, .. })
             if from == &id("alight") && to == &id("d")
     ));
@@ -629,5 +632,66 @@ fn endpoint_mode_discovery_cancels_expired_queries_without_partial_results() {
     assert_eq!(
         reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
         None
+    );
+}
+
+#[test]
+fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
+    use super::pattern_index::StaticPhase1PatternIndex;
+
+    let network = network(
+        vec![
+            pattern("loop-a", TransitMode::Bus, &["o", "mid", "o", "d"]),
+            pattern("loop-b", TransitMode::Bus, &["o", "mid", "o", "d"]),
+        ],
+        vec![
+            trip("a", "loop-a", &[0, 10, 20, 30]),
+            trip("b", "loop-b", &[0, 15, 30, 45]),
+        ],
+    );
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+    let mut stats = StaticSearchStats::default();
+    let mut index = StaticPhase1PatternIndex::new(&runtime, &[TransitMode::Bus], &mut stats, None);
+    let mut equivalent_legs = HashMap::new();
+    for (pattern_id, segment_seconds) in [("loop-a", 10), ("loop-b", 15)] {
+        let group_index = index
+            .group_index(&TransitPatternId::new(pattern_id))
+            .unwrap();
+        for board_index in 0..4 {
+            assert!(index.ensure_ride_options(
+                group_index,
+                board_index,
+                &mut stats,
+                &mut equivalent_legs,
+                None
+            ));
+            let rides = index.ride_options(group_index, board_index);
+            assert_eq!(rides.len(), 3 - board_index);
+            for (offset, ride) in rides.iter().enumerate() {
+                let alight_index = board_index + offset + 1;
+                assert_eq!(ride.leg.pattern_id.as_str(), pattern_id);
+                assert_eq!(ride.leg.board_index, board_index);
+                assert_eq!(ride.leg.alight_index, alight_index);
+                assert_eq!(
+                    ride.duration_seconds,
+                    (alight_index - board_index) as u32 * segment_seconds
+                );
+            }
+            assert!(!index.ensure_ride_options(
+                group_index,
+                board_index,
+                &mut stats,
+                &mut equivalent_legs,
+                None
+            ));
+        }
+    }
+    let legs = equivalent_legs
+        .values()
+        .find(|legs| legs.len() == 4)
+        .unwrap();
+    assert!(
+        legs.iter()
+            .all(|leg| leg.board_stop_id == id("o") && leg.alight_stop_id == id("d"))
     );
 }

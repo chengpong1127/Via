@@ -97,23 +97,25 @@ impl RealizedJourney {
                     }
                     current_time = movement.arrival_at;
                 }
-                JourneyMovementKind::BikeShare { shortcut } => {
-                    if shortcut.from_anchor != movement.from_anchor
-                        || shortcut.to_anchor != movement.to_anchor
+                JourneyMovementKind::BikeShare {
+                    movement: bike_movement,
+                } => {
+                    if bike_movement.from_anchor != movement.from_anchor
+                        || bike_movement.to_anchor != movement.to_anchor
                     {
-                        return Err(JourneyTimingError::InvalidBikeShortcut);
+                        return Err(JourneyTimingError::InvalidBikeShareMovement);
                     }
-                    current_time += Duration::seconds(i64::from(shortcut.total_seconds));
+                    current_time += Duration::seconds(i64::from(bike_movement.total_seconds));
                     timing.walking_seconds = timing
                         .walking_seconds
-                        .saturating_add(shortcut.walk_to_pickup.duration_seconds)
-                        .saturating_add(shortcut.walk_from_dropoff.duration_seconds);
+                        .saturating_add(bike_movement.walk_to_pickup.duration_seconds)
+                        .saturating_add(bike_movement.walk_from_dropoff.duration_seconds);
                     timing.bicycle_seconds = timing
                         .bicycle_seconds
-                        .saturating_add(shortcut.bicycle_duration_seconds);
+                        .saturating_add(bike_movement.bicycle_duration_seconds);
                     timing.bicycle_distance_metres = timing
                         .bicycle_distance_metres
-                        .saturating_add(shortcut.bicycle_distance_metres);
+                        .saturating_add(bike_movement.bicycle_distance_metres);
                     timing.bike_share_uses = timing.bike_share_uses.saturating_add(1);
                 }
             }
@@ -146,7 +148,7 @@ impl RealizedJourney {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BikeShortcut {
+pub struct BikeShareMovement {
     pub from_anchor: usize,
     pub to_anchor: usize,
     pub pickup_station_id: BikeStationId,
@@ -159,7 +161,7 @@ pub struct BikeShortcut {
     pub total_seconds: u32,
 }
 
-impl BikeShortcut {
+impl BikeShareMovement {
     pub fn new(
         from_anchor: usize,
         to_anchor: usize,
@@ -222,6 +224,6 @@ pub enum JourneyTimingError {
     IncompletePath,
     #[error("realized journey misses realized transit movement {movement_index}")]
     MissedTransit { movement_index: usize },
-    #[error("realized journey contains an invalid bike-share shortcut")]
-    InvalidBikeShortcut,
+    #[error("realized journey contains an invalid BikeShare movement")]
+    InvalidBikeShareMovement,
 }

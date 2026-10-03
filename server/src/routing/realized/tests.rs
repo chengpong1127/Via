@@ -8,7 +8,7 @@ use super::*;
 fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
     let departure_at = datetime!(2026-09-21 10:00 UTC);
     let arrival_at = departure_at + Duration::seconds(30);
-    let shortcut = BikeShortcut::new(
+    let movement = BikeShareMovement::new(
         1,
         3,
         BikeStationId::new("pickup"),
@@ -53,7 +53,7 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
         },
         street_path: None,
     };
-    let variant = RealizedJourney::from_movements(
+    let journey = RealizedJourney::from_movements(
         anchors,
         vec![
             walk(0, 1, WalkingMovementKind::Access, departure_at),
@@ -62,7 +62,7 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
                 to_anchor: 3,
                 departure_at,
                 arrival_at,
-                kind: JourneyMovementKind::BikeShare { shortcut },
+                kind: JourneyMovementKind::BikeShare { movement },
                 street_path: None,
             },
             walk(3, 4, WalkingMovementKind::Egress, arrival_at),
@@ -71,18 +71,18 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
     )
     .unwrap();
 
-    assert_eq!(variant.movements().len(), 3);
+    assert_eq!(journey.movements().len(), 3);
     assert!(matches!(
-        variant.movements()[1].kind,
+        journey.movements()[1].kind,
         JourneyMovementKind::BikeShare { .. }
     ));
-    assert_eq!(variant.movements()[1].from_anchor, 1);
-    assert_eq!(variant.movements()[1].to_anchor, 3);
+    assert_eq!(journey.movements()[1].from_anchor, 1);
+    assert_eq!(journey.movements()[1].to_anchor, 3);
     assert_eq!(
-        variant.identity().canonical_signature(),
+        journey.identity().canonical_signature(),
         "path:v2:baseline:walking:Access:origin:boarding_point:a:0:0|bike:boarding_point:a:boarding_point:c:pickup:dropoff:0:0:30:100:0:0:0:30|baseline:walking:Egress:boarding_point:c:destination:0:0"
     );
-    let timing = variant.evaluate_timing().unwrap();
+    let timing = journey.evaluate_timing().unwrap();
     assert_eq!(timing.arrival_at, arrival_at);
     assert_eq!(timing.bike_share_uses, 1);
 }
@@ -90,7 +90,7 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
 #[test]
 fn realized_bike_path_needs_no_walking_placeholder() {
     let departure_at = datetime!(2026-09-21 10:00 UTC);
-    let shortcut = BikeShortcut::new(
+    let movement = BikeShareMovement::new(
         0,
         1,
         BikeStationId::new("pickup"),
@@ -104,7 +104,7 @@ fn realized_bike_path_needs_no_walking_placeholder() {
     )
     .unwrap();
     let arrival_at = departure_at + Duration::seconds(60);
-    let variant = RealizedJourney::from_movements(
+    let journey = RealizedJourney::from_movements(
         vec![
             JourneyAnchor {
                 kind: JourneyAnchorKind::Origin,
@@ -120,21 +120,21 @@ fn realized_bike_path_needs_no_walking_placeholder() {
             to_anchor: 1,
             departure_at,
             arrival_at,
-            kind: JourneyMovementKind::BikeShare { shortcut },
+            kind: JourneyMovementKind::BikeShare { movement },
             street_path: None,
         }],
         departure_at,
     )
     .unwrap();
     assert!(matches!(
-        variant.movements()[0].kind,
+        journey.movements()[0].kind,
         JourneyMovementKind::BikeShare { .. }
     ));
-    let timing = variant.evaluate_timing().unwrap();
+    let timing = journey.evaluate_timing().unwrap();
     assert_eq!(timing.arrival_at, arrival_at);
     assert_eq!(timing.walking_seconds, 30);
     assert_eq!(timing.bike_share_uses, 1);
-    assert!(variant.transit_pattern_sequence().is_empty());
+    assert!(journey.transit_pattern_sequence().is_empty());
 }
 
 #[test]

@@ -54,9 +54,9 @@ impl TransferShortcutIndex {
     }
 
     fn insert_unsorted(&mut self, shortcut: TransferShortcut) {
-        let alternatives_from = self.by_from.entry(shortcut.from.clone()).or_default();
-        if !alternatives_from.contains(&shortcut) {
-            alternatives_from.push(shortcut.clone());
+        let outgoing = self.by_from.entry(shortcut.from.clone()).or_default();
+        if !outgoing.contains(&shortcut) {
+            outgoing.push(shortcut.clone());
             self.by_to
                 .entry(shortcut.to.clone())
                 .or_default()
@@ -73,16 +73,16 @@ impl TransferShortcutIndex {
     }
 
     fn sort(&mut self) {
-        for alternatives in self.by_from.values_mut() {
-            alternatives.sort_by(|left, right| {
+        for outgoing in self.by_from.values_mut() {
+            outgoing.sort_by(|left, right| {
                 left.to
                     .as_str()
                     .cmp(right.to.as_str())
                     .then(left.duration_seconds.cmp(&right.duration_seconds))
             });
         }
-        for alternatives in self.by_to.values_mut() {
-            alternatives.sort_by(|left, right| {
+        for incoming in self.by_to.values_mut() {
+            incoming.sort_by(|left, right| {
                 left.from
                     .as_str()
                     .cmp(right.from.as_str())

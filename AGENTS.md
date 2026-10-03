@@ -1,5 +1,9 @@
 ## Agent skills
 
+### Source code comments
+
+Do not add comments to code in `src` directories.
+
 ### Current architecture
 
 The server's canonical planning flow is:
