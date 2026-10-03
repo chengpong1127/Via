@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
     transit::TransitMode,
@@ -224,82 +222,15 @@ pub(super) fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralSt
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StaticSearchStats {
-    pub static_search_states_expanded: usize,
-    pub static_unattributed_states_expanded: usize,
-    pub static_pattern_scans: usize,
-    pub static_positions_scanned: usize,
-    pub static_walking_transfer_expansions: usize,
-    pub static_duplicate_states_rejected: usize,
-    pub static_dominance_states_rejected: usize,
-    pub static_structurally_equivalent_states_rejected: usize,
-    pub static_required_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
-    pub static_complete_endpoint_mode_pairs: Vec<(TransitMode, TransitMode)>,
-    pub static_complete_candidates_found: usize,
-    pub static_unique_corridors_found: usize,
-    pub static_unique_structural_corridors_found: usize,
-    pub static_corridors_retained: usize,
-    pub static_retained_pattern_sequence_groups: Vec<RetainedPatternSequenceStats>,
-    pub static_retained_mode_sequence_groups: Vec<RetainedModeSequenceStats>,
-    pub static_mode_stats: BTreeMap<TransitMode, TransitModeSearchStats>,
-    pub static_expanded_stop_occurrence_samples: usize,
-    pub static_expanded_stop_occurrences_total: usize,
-    pub static_expanded_stop_pattern_occurrences_total: usize,
-    pub static_expanded_stop_occurrences_max: usize,
-    pub static_expanded_stop_occurrences_average_milli: usize,
-    pub static_expanded_stop_pattern_occurrences_average_milli: usize,
-    pub static_expanded_stop_pattern_occurrences_max: usize,
-    pub static_expanded_egress_states: usize,
-    pub static_expanded_terminal_transfer_source_states: usize,
-    pub static_expanded_states_by_leg_count: Vec<(usize, usize)>,
-    pub static_most_expanded_stops: Vec<(BoardingPointId, usize)>,
-    pub static_corridor_patterns: usize,
-    pub static_corridor_positions: usize,
-    pub static_corridor_bus_stops: usize,
-    pub static_search_latency_ms: u64,
-    pub static_pattern_index_build_latency_us: u64,
-    pub static_pattern_index_pattern_edges_scanned: usize,
-    pub static_pattern_index_positions_scanned: usize,
-    pub static_ride_profile_build_latency_us: u64,
-    pub static_ride_profile_patterns_scanned: usize,
-    pub static_ride_profile_positions_scanned: usize,
-    pub static_lower_bound_latency_us: u64,
-    pub static_lower_bound_nodes_settled: usize,
-    pub static_lower_bound_pattern_edges_scanned: usize,
-    pub static_lower_bound_transfer_edges_scanned: usize,
-    pub static_forward_search_latency_us: u64,
-    pub static_retention_latency_us: u64,
-    pub kth_static_duration_seconds: Option<u32>,
-    pub exact_schedule_cost: usize,
-    pub derived_bus_cost: usize,
-    pub estimated_cost: usize,
-    pub mixed_cost: usize,
-    pub static_search_limit_reached: bool,
-    pub static_top_k_early_terminated: bool,
-    pub deadline_exceeded: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TransitModeSearchStats {
     pub states_expanded: usize,
-    pub pattern_scans: usize,
-    pub downstream_positions_scanned: usize,
-    pub distinct_pattern_ids: usize,
-    pub distinct_stop_sequences: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RetainedPatternSequenceStats {
-    pub pattern_sequence: Vec<TransitPatternId>,
-    pub mode_sequence: Vec<TransitMode>,
-    pub corridors: usize,
-    pub best_duration_seconds: u32,
-    pub worst_duration_seconds: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RetainedModeSequenceStats {
-    pub mode_sequence: Vec<TransitMode>,
-    pub corridors: usize,
-    pub best_duration_seconds: u32,
-    pub worst_duration_seconds: u32,
+    pub unique_corridors_found: usize,
+    pub corridors_retained: usize,
+    pub corridor_patterns: usize,
+    pub corridor_positions: usize,
+    pub corridor_bus_stops: usize,
+    pub search_latency_ms: u64,
+    pub kth_duration_seconds: Option<u32>,
+    pub search_limit_reached: bool,
+    pub top_k_early_terminated: bool,
+    pub deadline_exceeded: bool,
 }

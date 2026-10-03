@@ -222,9 +222,7 @@ impl MultimodalPlanner {
             self.execute_phase1(&query)?
         };
         let loading = self.load_request_snapshots(&query, &retained, &static_stats);
-        let snapshots = tokio::time::timeout_at(query.deadline.instant(), loading)
-            .await
-            .map_err(|_| RoutingError::DeadlineExceeded)??;
+        let snapshots = query.deadline.run(loading).await??;
         let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> =
             vec![Box::new(WalkingMovementPlanner::new(self.street.clone()))];
         if let Some(snapshot) = snapshots.bike.clone() {
@@ -265,7 +263,6 @@ impl MultimodalPlanner {
         if query.origin_access.is_empty() || query.destination_egress.is_empty() {
             return Err(RoutingError::InvalidQuery);
         }
-        let max_legs = query.limits.max_transfers.saturating_add(1);
         let (retained_corridors, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, query);
         if static_stats.deadline_exceeded || query.deadline.is_elapsed() {
@@ -274,66 +271,13 @@ impl MultimodalPlanner {
 
         tracing::debug!(
             target: "via_server::routing",
-            static_search_states_expanded = static_stats.static_search_states_expanded,
-            static_unattributed_states_expanded = static_stats.static_unattributed_states_expanded,
-            static_pattern_scans = static_stats.static_pattern_scans,
-            static_positions_scanned = static_stats.static_positions_scanned,
-            static_walking_transfer_expansions = static_stats.static_walking_transfer_expansions,
-            static_duplicate_states_rejected = static_stats.static_duplicate_states_rejected,
-            static_dominance_states_rejected = static_stats.static_dominance_states_rejected,
-            static_structurally_equivalent_states_rejected = static_stats.static_structurally_equivalent_states_rejected,
-            static_required_endpoint_mode_pairs = ?static_stats.static_required_endpoint_mode_pairs,
-            static_complete_endpoint_mode_pairs = ?static_stats.static_complete_endpoint_mode_pairs,
-            static_complete_candidates_found = static_stats.static_complete_candidates_found,
-            static_unique_structural_corridors_found = static_stats.static_unique_structural_corridors_found,
-            static_unique_corridors_found = static_stats.static_unique_corridors_found,
-            static_corridors_retained = static_stats.static_corridors_retained,
-            static_corridor_patterns = static_stats.static_corridor_patterns,
-            static_corridor_positions = static_stats.static_corridor_positions,
-            static_corridor_bus_stops = static_stats.static_corridor_bus_stops,
-            static_search_latency_ms = static_stats.static_search_latency_ms,
-            static_pattern_index_build_latency_us = static_stats.static_pattern_index_build_latency_us,
-            static_pattern_index_pattern_edges_scanned = static_stats.static_pattern_index_pattern_edges_scanned,
-            static_pattern_index_positions_scanned = static_stats.static_pattern_index_positions_scanned,
-            static_ride_profile_build_latency_us = static_stats.static_ride_profile_build_latency_us,
-            static_ride_profile_patterns_scanned = static_stats.static_ride_profile_patterns_scanned,
-            static_ride_profile_positions_scanned = static_stats.static_ride_profile_positions_scanned,
-            static_lower_bound_latency_us = static_stats.static_lower_bound_latency_us,
-            static_lower_bound_nodes_settled = static_stats.static_lower_bound_nodes_settled,
-            static_lower_bound_pattern_edges_scanned = static_stats.static_lower_bound_pattern_edges_scanned,
-            static_lower_bound_transfer_edges_scanned = static_stats.static_lower_bound_transfer_edges_scanned,
-            static_forward_search_latency_us = static_stats.static_forward_search_latency_us,
-            static_retention_latency_us = static_stats.static_retention_latency_us,
-            static_mode_stats = ?static_stats.static_mode_stats,
-            static_expanded_stop_occurrence_samples = static_stats.static_expanded_stop_occurrence_samples,
-            static_expanded_stop_occurrences_average_milli = static_stats.static_expanded_stop_occurrences_average_milli,
-            static_expanded_stop_occurrences_max = static_stats.static_expanded_stop_occurrences_max,
-            static_expanded_stop_pattern_occurrences_average_milli = static_stats.static_expanded_stop_pattern_occurrences_average_milli,
-            static_expanded_stop_pattern_occurrences_max = static_stats.static_expanded_stop_pattern_occurrences_max,
-            static_expanded_egress_states = static_stats.static_expanded_egress_states,
-            static_expanded_terminal_transfer_source_states = static_stats.static_expanded_terminal_transfer_source_states,
-            static_expanded_states_by_leg_count = ?static_stats.static_expanded_states_by_leg_count,
-            static_most_expanded_stops = ?static_stats.static_most_expanded_stops,
-            kth_static_duration_seconds = ?static_stats.kth_static_duration_seconds,
-            exact_schedule_cost = static_stats.exact_schedule_cost,
-            derived_bus_cost = static_stats.derived_bus_cost,
-            estimated_cost = static_stats.estimated_cost,
-            mixed_cost = static_stats.mixed_cost,
-            static_search_limit_reached = static_stats.static_search_limit_reached,
-            static_top_k_early_terminated = static_stats.static_top_k_early_terminated,
-            max_legs,
+            states_expanded = static_stats.states_expanded,
+            corridors_found = static_stats.unique_corridors_found,
+            corridors_retained = static_stats.corridors_retained,
+            kth_duration_seconds = ?static_stats.kth_duration_seconds,
+            latency_ms = static_stats.search_latency_ms,
+            early_terminated = static_stats.top_k_early_terminated,
             "static Top-K corridor search"
-        );
-        tracing::debug!(
-            target: "via_server::routing",
-            pattern_sequence_group_count = static_stats.static_retained_pattern_sequence_groups.len(),
-            retained_pattern_sequence_groups = ?static_stats.static_retained_pattern_sequence_groups,
-            "retained static corridor sequence groups"
-        );
-        tracing::debug!(
-            target: "via_server::routing",
-            retained_mode_sequence_groups = ?static_stats.static_retained_mode_sequence_groups,
-            "retained static corridor mode-sequence groups"
         );
         for (index, retained) in retained_corridors.retained().iter().enumerate() {
             tracing::debug!(
@@ -346,7 +290,7 @@ impl MultimodalPlanner {
                 "retained static corridor"
             );
         }
-        if static_stats.static_search_limit_reached {
+        if static_stats.search_limit_reached {
             tracing::warn!(
                 target: "via_server::routing",
                 max_static_search_expansions = query.limits.max_phase1_expansions,
@@ -356,11 +300,11 @@ impl MultimodalPlanner {
         }
         // Count retained work when Phase 1 completes, even if a later stage fails.
         ::metrics::counter!("via_planner_transit_reachable_boardings_total")
-            .increment(static_stats.static_corridor_positions as u64);
+            .increment(static_stats.corridor_positions as u64);
         ::metrics::counter!("via_planner_transit_reachable_patterns_total")
-            .increment(static_stats.static_corridor_patterns as u64);
+            .increment(static_stats.corridor_patterns as u64);
         ::metrics::counter!("via_planner_transit_realtime_stops_requested_total")
-            .increment(static_stats.static_corridor_bus_stops as u64);
+            .increment(static_stats.corridor_bus_stops as u64);
         Ok((retained_corridors, static_stats))
     }
 
@@ -450,7 +394,7 @@ impl MultimodalPlanner {
             target: "via_server::routing",
             positions_requested = timing_positions_requested,
             snapshot_summary = ?snapshot.trace_summary(),
-            relevant_bus_stops = static_stats.static_corridor_bus_stops,
+            relevant_bus_stops = static_stats.corridor_bus_stops,
             bike_share_enabled = bike_enabled,
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "timing snapshot"
@@ -531,10 +475,11 @@ impl PlanningSession<'_> {
         let lookups_before = self.stats.phase2_evaluation.transit_departure_lookups;
         evaluator.stats = self.stats.phase2_evaluation;
         evaluator.failures = self.failures;
-        let evaluation_result =
-            tokio::time::timeout_at(self.query.deadline.instant(), evaluator.evaluate(corridors))
-                .await
-                .map_err(|_| RoutingError::DeadlineExceeded)??;
+        let evaluation_result = self
+            .query
+            .deadline
+            .run(evaluator.evaluate(corridors))
+            .await??;
         // Evaluation stats survive fallback; emit only this completed pass's work.
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
             .increment((evaluation_result.stats.transit_departure_lookups - lookups_before) as u64);
@@ -824,8 +769,41 @@ mod tests {
                 .iter()
                 .any(|query| query.pattern_id == TransitPatternId::new("realtime-fast"))
         );
-        assert_eq!(stats.phase1.static_corridor_positions, 2);
-        assert_eq!(stats.phase1.static_corridors_retained, 1);
+        assert_eq!(stats.phase1.corridor_positions, 2);
+        assert_eq!(stats.phase1.corridors_retained, 1);
+    }
+
+    struct SlowTimingLoader;
+
+    #[async_trait::async_trait]
+    impl TimingSnapshotLoader for SlowTimingLoader {
+        async fn load_snapshot(&self, _queries: Vec<DepartureQuery>) -> TimingSnapshot {
+            tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+            TimingSnapshot::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disabled_deadline_awaits_slow_snapshot_loading() {
+        let planner = test_planner(network(), Arc::new(SlowTimingLoader));
+        let mut query = query(1);
+        query.deadline = crate::routing::PlanningDeadline::disabled();
+        let started = tokio::time::Instant::now();
+        assert!(planner.prepare(query).await.is_ok());
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(11));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn enabled_deadline_cancels_slow_snapshot_loading() {
+        let planner = test_planner(network(), Arc::new(SlowTimingLoader));
+        let mut query = query(1);
+        query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(5));
+        let started = tokio::time::Instant::now();
+        assert!(matches!(
+            planner.prepare(query).await,
+            Err(RoutingError::DeadlineExceeded)
+        ));
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(5));
     }
 
     #[tokio::test]
@@ -860,7 +838,7 @@ mod tests {
 
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
-        assert_eq!(stats.phase1.static_corridors_retained, 1);
+        assert_eq!(stats.phase1.corridors_retained, 1);
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].transit_pattern_sequence(),
@@ -962,7 +940,7 @@ mod tests {
 
         let (_, stats) = planner.plan_with_stats(bike_query).await.unwrap();
 
-        assert_eq!(stats.phase1.static_corridors_retained, 2);
+        assert_eq!(stats.phase1.corridors_retained, 2);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         planner.plan_with_stats(query(1)).await.unwrap();
@@ -1007,7 +985,7 @@ mod tests {
         .with_allowed_transit_modes([]);
         let (journeys, stats) = planner.plan_with_stats(query).await.unwrap();
         assert_eq!(journeys.len(), 1);
-        assert_eq!(stats.phase1.static_search_states_expanded, 0);
+        assert_eq!(stats.phase1.states_expanded, 0);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 0);
     }
 

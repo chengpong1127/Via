@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
     let runtime_config = RuntimeConfig::from_env(config.environment)?;
     let runtime = build_runtime(via_static, RuntimeOptions::default(), runtime_config).await?;
-    let router = build_router(runtime.routing, runtime.health, metrics);
+    let router = build_router(runtime.routing, runtime.health, metrics, config.environment);
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(port = config.port, "Via server listening");

@@ -10,6 +10,5 @@ mod types;
 pub use retention::RetainedCorridorSet;
 pub use search::generate;
 pub use types::{
-    RetainedModeSequenceStats, RetainedPatternSequenceStats, StaticCorridor, StaticCorridorStep,
-    StaticCostSource, StaticSearchStats, StaticTransitLeg, TransitModeSearchStats,
+    StaticCorridor, StaticCorridorStep, StaticCostSource, StaticSearchStats, StaticTransitLeg,
 };

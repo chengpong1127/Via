@@ -137,6 +137,7 @@ impl ValhallaRuntimeConfig {
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
+    pub(crate) environment: Environment,
     pub(crate) valhalla: ValhallaRuntimeConfig,
     pub(crate) tdx: TdxRuntimeConfig,
 }
@@ -146,7 +147,11 @@ impl RuntimeConfig {
         let valhalla = ValhallaRuntimeConfig::from_env()?;
         let tdx = TdxRuntimeConfig::from_env()?;
         validate_transport_security(environment, &valhalla, &tdx)?;
-        Ok(Self { valhalla, tdx })
+        Ok(Self {
+            environment,
+            valhalla,
+            tdx,
+        })
     }
 }
 

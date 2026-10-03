@@ -303,14 +303,13 @@ fn phase2_single_leg_route() {
         )],
     );
 
-    let (candidates, stats) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
+    let (candidates, _) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(
         candidates[0].evaluate_timing().unwrap().arrival_at,
         datetime!(2026-09-21 10:20 UTC)
     );
-    assert_eq!(stats.corridors_feasible, 1);
 }
 
 #[test]
@@ -439,7 +438,7 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
     .unwrap();
     let realizations = HashMap::from([(movement, vec![bike])]);
 
-    let (realized_journeys, stats) =
+    let (realized_journeys, _) =
         evaluate_with_test_bike_routes(&network, &corridor, &snapshot, query, &realizations)
             .unwrap();
 
@@ -481,7 +480,6 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         super::super::realized::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-to")
     ));
-    assert_eq!(stats.bike_realizations_selected, 1);
     assert!(realized_journeys[0].movements().iter().any(|step| matches!(
         step.kind,
         super::super::realized::JourneyMovementKind::BikeShare { .. }
@@ -632,7 +630,6 @@ fn one_bike_movement_can_skip_multiple_transit_anchors() {
     assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:15 UTC));
     assert_eq!(timing.bike_share_uses, 1);
     assert_eq!(stats.bike_exact_candidates_requested, 2);
-    assert_eq!(stats.bike_continuous_extensions, 1);
 }
 
 #[test]
@@ -795,7 +792,6 @@ fn transit_waiting_time_is_included_when_screening_bike() {
     );
     assert_eq!(stats.bike_lower_bound_checks, 1);
     assert_eq!(stats.bike_exact_candidates_requested, 1);
-    assert_eq!(stats.bike_realizations_feasible, 0);
 }
 
 #[test]
@@ -845,7 +841,6 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
     .unwrap();
 
     assert_eq!(stats.bike_exact_candidates_requested, 1);
-    assert_eq!(stats.bike_realizations_feasible, 0);
     assert!(
         realized_journeys
             .iter()
@@ -1357,10 +1352,9 @@ fn phase2_rejects_corridor_without_a_departure_after_ready_at() {
     let corridor = candidate_corridor(&network, &query);
     let snapshot = TimingSnapshot::default();
 
-    let (candidates, stats) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
+    let (candidates, _) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
     assert!(candidates.is_empty());
-    assert_eq!(stats.infeasible_no_departure, 1);
 }
 
 #[test]
@@ -1388,10 +1382,9 @@ fn phase2_rejects_non_monotonic_effective_trip_times() {
         )],
     );
 
-    let (candidates, stats) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
+    let (candidates, _) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
     assert!(candidates.is_empty());
-    assert!(stats.malformed_trips > 0);
 }
 
 #[test]
@@ -1585,7 +1578,6 @@ fn phase2_respects_candidate_limit_after_pareto_pruning() {
     let (candidates, stats) = evaluate_with_stats(&network, &corridor, &snapshot, query).unwrap();
 
     assert_eq!(stats.final_candidates, 2);
-    assert!(stats.candidates_before_pareto >= stats.final_candidates);
     assert_eq!(candidates.len(), 2);
 }
 
@@ -1604,6 +1596,7 @@ fn phase2_expansion_limit_rejects_partial_candidates() {
         0,
         0,
     ));
+    query.deadline = crate::routing::PlanningDeadline::disabled();
     query.limits.max_phase2_expansions = 1;
     let corridor = candidate_corridor(&network, &query);
     let mut snapshot = TimingSnapshot::default();
@@ -1649,7 +1642,6 @@ fn phase2_applies_same_stop_transfer_time() {
 
     assert!(candidates.is_empty());
     assert!(network.same_stop_transfer_seconds() >= 60);
-    assert_eq!(stats.corridors_feasible, 0);
     assert!(stats.transit_departure_lookups > 0);
 }
 
@@ -2015,7 +2007,6 @@ async fn walking_replacement_respects_latest_arrival() {
 async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, false, true).await;
     assert_eq!(calls, 1);
-    assert!(result.stats.bike_realizations_feasible > 0);
     assert!(
         result
             .journeys
@@ -2097,6 +2088,10 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
     .await
     .unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(result.stats.bike_realizations_feasible, 1);
-    assert!(!result.journeys.is_empty());
+    assert!(result.journeys.iter().any(|journey| {
+        journey
+            .movements()
+            .iter()
+            .any(|movement| matches!(movement.kind, JourneyMovementKind::BikeShare { .. }))
+    }));
 }

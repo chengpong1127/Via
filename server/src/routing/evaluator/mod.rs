@@ -34,31 +34,15 @@ use std::{sync::Arc, time::Instant};
 use time::{Duration, OffsetDateTime};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Phase2EvaluationStats {
-    pub corridors_evaluated: usize,
-    pub corridors_feasible: usize,
     pub corridor_states_evaluated: usize,
     pub transit_departure_lookups: usize,
-    pub effective_trips_examined: usize,
-    pub surface_transfers_evaluated: usize,
-    pub walking_realizations_considered: usize,
-    pub bike_realizations_considered: usize,
-    pub bike_realizations_feasible: usize,
-    pub bike_realizations_selected: usize,
     pub bike_lower_bound_checks: usize,
     pub bike_lower_bound_rejections: usize,
     pub bike_exact_candidates_requested: usize,
     pub bike_exact_cache_hits: usize,
     pub bike_matrix_requests: usize,
-    pub bike_continuous_extensions: usize,
-    pub infeasible_no_departure: usize,
-    pub infeasible_transfer: usize,
-    pub infeasible_access: usize,
-    pub infeasible_constraints: usize,
-    pub malformed_trips: usize,
-    pub candidates_before_pareto: usize,
     pub final_candidates: usize,
     pub phase2_latency_us: u64,
-    pub expansion_limit_reached: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -113,11 +97,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
         for corridor in corridors {
             candidates.extend(self.evaluate_corridor(corridor).await?);
         }
-        self.stats.candidates_before_pareto += candidates.len();
+
         let candidates = pareto_candidates(candidates, self.query.limits.max_candidates);
         self.stats.final_candidates = candidates.len();
-        self.stats.bike_realizations_selected =
-            candidates.iter().map(|c| c.metrics.bike_share_uses).sum();
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let bike_work = self
@@ -134,20 +116,19 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.stats.bike_exact_candidates_requested = bike_work.exact_requests;
         self.stats.bike_exact_cache_hits = bike_work.cache_hits;
         self.stats.bike_matrix_requests = bike_work.matrix_requests;
-        tracing::debug!(target:"via_server::routing",
-            corridors_evaluated=self.stats.corridors_evaluated,
-            corridor_states_evaluated=self.stats.corridor_states_evaluated,
-            transit_departure_lookups=self.stats.transit_departure_lookups,
-            walking_realizations_considered=self.stats.walking_realizations_considered,
-            bike_lower_bound_checks=self.stats.bike_lower_bound_checks,
-            bike_lower_bound_rejections=self.stats.bike_lower_bound_rejections,
-            bike_exact_candidates_requested=self.stats.bike_exact_candidates_requested,
-            bike_exact_cache_hits=self.stats.bike_exact_cache_hits,
-            bike_matrix_requests=self.stats.bike_matrix_requests,
-            bike_continuous_extensions=self.stats.bike_continuous_extensions,
-            final_candidates=self.stats.final_candidates,
-            phase2_latency_us=self.stats.phase2_latency_us,
-            "Phase 2 corridor evaluation");
+        tracing::debug!(
+            target: "via_server::routing",
+            states_evaluated = self.stats.corridor_states_evaluated,
+            departure_lookups = self.stats.transit_departure_lookups,
+            bike_lower_bound_checks = self.stats.bike_lower_bound_checks,
+            bike_lower_bound_rejections = self.stats.bike_lower_bound_rejections,
+            bike_exact_requests = self.stats.bike_exact_candidates_requested,
+            bike_cache_hits = self.stats.bike_exact_cache_hits,
+            bike_matrix_requests = self.stats.bike_matrix_requests,
+            final_candidates = self.stats.final_candidates,
+            latency_us = self.stats.phase2_latency_us,
+            "Phase 2 corridor evaluation"
+        );
         Ok(EvaluationResult {
             journeys: candidates.into_iter().map(|c| c.journey).collect(),
             stats: self.stats,
@@ -165,7 +146,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
     fn charge(&mut self) -> Result<(), RoutingError> {
         self.check_deadline()?;
         if self.stats.corridor_states_evaluated >= self.query.limits.max_phase2_expansions {
-            self.stats.expansion_limit_reached = true;
             return Err(RoutingError::Phase2EvaluationLimit);
         }
         self.stats.corridor_states_evaluated += 1;
@@ -177,7 +157,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &EvaluationCorridor,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         self.check_deadline()?;
-        self.stats.corridors_evaluated += 1;
         if corridor
             .edges()
             .iter()
@@ -189,11 +168,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
             .count()
             > self.query.limits.max_transfers.saturating_add(1)
         {
-            self.stats.infeasible_transfer += 1;
             return Ok(Vec::new());
         }
         let mut states = vec![EvaluationState::initial(self.query)];
-        let mut saw_missing_departure = false;
         for (index, edge) in corridor.edges().iter().enumerate() {
             let mut next = Vec::new();
             for state in states {
@@ -201,12 +178,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 let mut baseline = Vec::new();
                 for movement in &edge.baseline {
                     match movement {
-                        BaselineMovement::Transit(leg) => baseline.extend(self.expand_transit(
-                            &state,
-                            leg,
-                            index,
-                            &mut saw_missing_departure,
-                        )?),
+                        BaselineMovement::Transit(leg) => {
+                            baseline.extend(self.expand_transit(&state, leg, index)?)
+                        }
                         BaselineMovement::RetainedWalking {
                             kind,
                             duration_seconds,
@@ -214,12 +188,10 @@ impl<'a> FixedCorridorEvaluator<'a> {
                             access_available_at,
                         } => {
                             self.charge()?;
-                            self.stats.surface_transfers_evaluated += 1;
                             let arrival = access_available_at.unwrap_or(
                                 state.ready_at + Duration::seconds(i64::from(*duration_seconds)),
                             );
                             if within_query_bounds(self.query, arrival) {
-                                self.stats.walking_realizations_considered += 1;
                                 baseline.push(state.after_movement(JourneyMovement {
                                     from_anchor: index,
                                     to_anchor: index + 1,
@@ -295,7 +267,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                 if !within_query_bounds(self.query, arrival) {
                                     continue;
                                 }
-                                self.stats.walking_realizations_considered += 1;
+
                                 let kind = match (
                                     &corridor.anchors()[index].kind,
                                     &corridor.anchors()[index + 1].kind,
@@ -323,7 +295,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                 }));
                             }
                             SurfaceMovement::BikeShare(bike_movement) => {
-                                self.stats.bike_realizations_considered += 1;
                                 let route_seconds = bike_movement.total_seconds;
                                 let arrival =
                                     started_at + Duration::seconds(i64::from(route_seconds));
@@ -340,10 +311,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
                                     arrival,
                                     self.query.departure_time,
                                 ) {
-                                    if state.active_bike_rental.is_some() {
-                                        self.stats.bike_continuous_extensions += 1;
-                                    }
-                                    self.stats.bike_realizations_feasible += 1;
                                     next.push(next_state);
                                 }
                             }
@@ -394,15 +361,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
                     )));
                 }
             }
-        }
-        if candidates.is_empty() {
-            if saw_missing_departure {
-                self.stats.infeasible_no_departure += 1;
-            } else {
-                self.stats.infeasible_constraints += 1;
-            }
-        } else {
-            self.stats.corridors_feasible += 1;
         }
         Ok(candidates)
     }

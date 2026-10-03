@@ -53,9 +53,6 @@ impl StaticPhase1PatternIndex {
             index
                 .group_index_by_pattern
                 .insert(pattern.id.clone(), group_index);
-            stats.static_pattern_index_pattern_edges_scanned +=
-                pattern.static_profile.segments.len();
-            stats.static_pattern_index_positions_scanned += pattern.static_profile.segments.len();
             index.groups.push(PatternRideCache {
                 mode,
                 pattern_id: pattern.id.clone(),
@@ -90,7 +87,6 @@ impl StaticPhase1PatternIndex {
         let mut ride_options = Vec::new();
         {
             let pattern_id = &group.pattern_id;
-            stats.static_ride_profile_patterns_scanned += 1;
             let mut duration_seconds = 0_u32;
             let mut first_source = None;
             let mut mixed_source = false;
@@ -99,7 +95,7 @@ impl StaticPhase1PatternIndex {
                     stats.deadline_exceeded = true;
                     return false;
                 }
-                stats.static_ride_profile_positions_scanned += 1;
+
                 let segment = &group.segments[alight_index - 1];
                 let Some(total) = duration_seconds.checked_add(segment.seconds) else {
                     break;

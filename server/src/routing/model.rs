@@ -10,30 +10,39 @@ use crate::{
 use crate::domain::{ids::BoardingPointId, transit_timing::DepartureError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlanningDeadline {
-    expires_at: Instant,
+pub enum PlanningDeadline {
+    Disabled,
+    At(Instant),
 }
 
 impl PlanningDeadline {
     pub fn after(timeout: std::time::Duration) -> Self {
-        Self {
-            expires_at: Instant::now() + timeout,
-        }
+        Self::At(Instant::now() + timeout)
+    }
+
+    pub fn disabled() -> Self {
+        Self::Disabled
     }
 
     pub fn is_elapsed(self) -> bool {
-        Instant::now() >= self.expires_at
+        matches!(self, Self::At(expires_at) if Instant::now() >= expires_at)
     }
 
-    pub(crate) fn instant(self) -> Instant {
-        self.expires_at
+    pub(crate) async fn run<F: std::future::Future>(
+        self,
+        future: F,
+    ) -> Result<F::Output, RoutingError> {
+        match self {
+            Self::Disabled => Ok(future.await),
+            Self::At(expires_at) => tokio::time::timeout_at(expires_at, future)
+                .await
+                .map_err(|_| RoutingError::DeadlineExceeded),
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn elapsed_for_test() -> Self {
-        Self {
-            expires_at: Instant::now(),
-        }
+        Self::At(Instant::now())
     }
 }
 
@@ -315,4 +324,48 @@ pub enum RoutingError {
     Internal(String),
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::{PlanningDeadline, RoutingError};
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn disabled_deadline_never_expires_and_awaits_the_future() {
+        let deadline = PlanningDeadline::disabled();
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        assert!(!deadline.is_elapsed());
+        let result = deadline
+            .run(async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                42
+            })
+            .await;
+        assert_eq!(result, Ok(42));
+        assert!(!deadline.is_elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn enabled_deadline_cancels_pending_work_at_its_expiration() {
+        let deadline = PlanningDeadline::after(Duration::from_secs(5));
+        assert!(!deadline.is_elapsed());
+        assert_eq!(
+            deadline.run(std::future::pending::<()>()).await,
+            Err(RoutingError::DeadlineExceeded)
+        );
+        assert!(deadline.is_elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn enabled_deadline_allows_work_completed_before_expiration() {
+        let deadline = PlanningDeadline::after(Duration::from_secs(5));
+        assert_eq!(deadline.run(async { 42 }).await, Ok(42));
+        assert!(!deadline.is_elapsed());
+    }
+
+    #[test]
+    fn explicit_expired_deadline_is_elapsed() {
+        assert!(PlanningDeadline::At(tokio::time::Instant::now()).is_elapsed());
+    }
 }

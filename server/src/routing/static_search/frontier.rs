@@ -6,8 +6,7 @@ use std::{
 use crate::domain::{ids::BoardingPointId, transit::TransitMode};
 
 use super::types::{
-    ContinuationSignature, PartialSignature, StaticCorridorStep, StaticCostSource,
-    StaticSearchStats, structural_steps,
+    ContinuationSignature, PartialSignature, StaticCorridorStep, StaticCostSource, structural_steps,
 };
 
 #[derive(Clone, Debug)]
@@ -124,7 +123,7 @@ impl SearchFrontier {
         self.queue.pop()
     }
 
-    pub(super) fn enqueue(&mut self, state: StaticState, stats: &mut StaticSearchStats) {
+    pub(super) fn enqueue(&mut self, state: StaticState) {
         let key = DominanceKey {
             stop_id: state.stop_id.clone(),
             transit_legs_used: state.transit_legs_used,
@@ -136,14 +135,12 @@ impl SearchFrontier {
         if known_states.iter().any(|known| {
             known.signature == signature && known.elapsed_seconds <= state.elapsed_seconds
         }) {
-            stats.static_duplicate_states_rejected += 1;
             return;
         }
         if known_states.iter().any(|known| {
             known.continuation_signature == continuation_signature
                 && known.elapsed_seconds <= state.elapsed_seconds
         }) {
-            stats.static_structurally_equivalent_states_rejected += 1;
             return;
         }
         if known_states.len() >= self.limit
@@ -153,7 +150,6 @@ impl SearchFrontier {
                 .count()
                 >= self.limit
         {
-            stats.static_dominance_states_rejected += 1;
             return;
         }
         known_states.retain(|known| {

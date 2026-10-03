@@ -2,10 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use time::{Time, Weekday, macros::datetime};
 
-use super::{
-    heuristic::{EndpointModePair, reachable_endpoint_mode_pairs},
-    *,
-};
+use super::*;
 use crate::{
     api::GeoCoordinate,
     domain::{
@@ -177,10 +174,8 @@ fn top_k_does_not_require_every_endpoint_mode_pair() {
         retained_corridors.retained()[0].pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
-    assert_eq!(stats.static_required_endpoint_mode_pairs.len(), 4);
-    assert_eq!(stats.static_complete_endpoint_mode_pairs.len(), 2);
-    assert_eq!(stats.static_search_states_expanded, 2);
-    assert!(stats.static_top_k_early_terminated);
+    assert_eq!(stats.states_expanded, 2);
+    assert!(stats.top_k_early_terminated);
 }
 
 #[test]
@@ -240,7 +235,7 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
     );
 
     assert_eq!(retained_corridors.retained().len(), 2);
-    assert_eq!(stats.static_corridor_patterns, 4);
+    assert_eq!(stats.corridor_patterns, 4);
 }
 
 #[test]
@@ -272,7 +267,7 @@ fn top_k_search_expands_equal_cost_bounds_before_terminating() {
     );
 
     assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.static_unique_corridors_found, 2);
+    assert_eq!(stats.unique_corridors_found, 2);
 }
 
 #[test]
@@ -299,9 +294,9 @@ fn top_k_stops_when_best_frontier_bound_exceeds_kth_duration() {
     );
 
     assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.kth_static_duration_seconds, Some(3));
-    assert_eq!(stats.static_search_states_expanded, 2);
-    assert!(stats.static_top_k_early_terminated);
+    assert_eq!(stats.kth_duration_seconds, Some(3));
+    assert_eq!(stats.states_expanded, 2);
+    assert!(stats.top_k_early_terminated);
 }
 
 #[test]
@@ -325,22 +320,13 @@ fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timi
     );
 
     assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.static_corridor_patterns, 2);
+    assert_eq!(stats.corridor_patterns, 2);
     let timing_patterns = retained_corridors
         .timing_positions()
         .map(|position| position.pattern_id)
         .collect::<HashSet<_>>();
     assert!(timing_patterns.contains(&TransitPatternId::new("bus-a")));
     assert!(timing_patterns.contains(&TransitPatternId::new("bus-b")));
-    assert_eq!(
-        stats.static_mode_stats[&TransitMode::Bus].distinct_pattern_ids,
-        2
-    );
-    assert_eq!(
-        stats.static_mode_stats[&TransitMode::Bus].distinct_stop_sequences,
-        1
-    );
-    assert!(stats.static_structurally_equivalent_states_rejected > 0);
 }
 
 #[test]
@@ -371,7 +357,7 @@ fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
     );
 
     assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.static_corridor_patterns, 2);
+    assert_eq!(stats.corridor_patterns, 2);
     let timing_patterns = retained_corridors
         .timing_positions()
         .map(|position| position.pattern_id)
@@ -585,12 +571,13 @@ fn expansion_bound_is_reported_instead_of_silently_certifying_partial_top_k() {
     let topology = TransitTopologyIndex::new(&network);
     let transfers = TransferShortcutIndex::from_network(&network);
     let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
+    query.deadline = crate::routing::PlanningDeadline::disabled();
     query.limits.max_phase1_expansions = 1;
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
 
     let (_, stats) = generate(&runtime, &topology, &transfers, &query);
 
-    assert!(stats.static_search_limit_reached);
+    assert!(stats.search_limit_reached);
 }
 
 #[test]
@@ -608,36 +595,9 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
     let (corridors, stats) = generate(&runtime, &topology, &transfers, &query);
 
     assert!(stats.deadline_exceeded);
-    assert_eq!(stats.static_search_states_expanded, 0);
+    assert_eq!(stats.states_expanded, 0);
     assert!(corridors.is_empty());
 }
-#[test]
-fn endpoint_mode_discovery_cancels_expired_queries_without_partial_results() {
-    let network = network(
-        (0..256)
-            .map(|index| pattern(&format!("bus-{index}"), TransitMode::Bus, &["o", "d"]))
-            .collect(),
-        Vec::new(),
-    );
-    let topology = TransitTopologyIndex::new(&network);
-    let transfers = TransferShortcutIndex::from_network(&network);
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-    let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
-    let lower_bounds = HashMap::from([(id("o"), 100), (id("d"), 0)]);
-    assert_eq!(
-        reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
-        Some(HashSet::from([EndpointModePair {
-            first: TransitMode::Bus,
-            last: TransitMode::Bus
-        }])),
-    );
-    query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
-    assert_eq!(
-        reachable_endpoint_mode_pairs(&runtime, &topology, &transfers, &query, &lower_bounds),
-        None
-    );
-}
-
 #[test]
 fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
     use super::pattern_index::StaticPhase1PatternIndex;

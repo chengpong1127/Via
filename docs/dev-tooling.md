@@ -131,6 +131,13 @@ timeout. The included Compose stack forwards `VIA_ENV` and
 `VIA_VALHALLA_URL`; its default Valhalla endpoint uses HTTP for local
 development, so the stack's default settings are not suitable for production.
 
+`VIA_ENV=development` disables wall-clock planning and HTTP timeouts for
+debugging, including the live `via-route` planning deadline. `VIA_ENV=production`
+enables the normal planning timeout (5 seconds by default) and the server's
+10-second HTTP timeout. Expansion, candidate, corridor, transfer, and
+journey-duration limits remain active in both modes. Provider request timeouts
+are unchanged; the CLI's Valhalla timeout flag still controls upstream requests.
+
 The server exposes `POST /v1/journey-plans`. The request API and journey
 response shape are unchanged by the static-data workflow.
 

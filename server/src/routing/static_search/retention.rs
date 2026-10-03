@@ -5,18 +5,12 @@ use std::{
 
 use crate::routing::topology::PatternPosition;
 
-use crate::domain::{
-    ids::{BoardingPointId, TransitPatternId},
-    transit::TransitMode,
-    transit_runtime::TransitRuntime,
-};
+use crate::domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime};
 
 use super::{
     frontier::StaticState,
-    heuristic::{EndpointModePair, sorted_mode_pairs},
     types::{
-        CorridorSignature, EquivalentCorridorSignature, EquivalentLegKey,
-        RetainedModeSequenceStats, RetainedPatternSequenceStats, StaticCorridor, StaticCostSource,
+        CorridorSignature, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
         StaticSearchStats, StaticTransitLeg, equivalent_leg_key, equivalent_steps,
     },
 };
@@ -144,98 +138,10 @@ impl RetainedCorridorSet {
     }
 }
 
-fn retained_pattern_sequence_groups(
-    network: &TransitRuntime,
-    corridors: &[StaticCorridor],
-) -> Vec<RetainedPatternSequenceStats> {
-    let mut groups =
-        HashMap::<(Vec<TransitPatternId>, Vec<TransitMode>), RetainedPatternSequenceStats>::new();
-    for corridor in corridors {
-        let pattern_sequence = corridor.pattern_sequence();
-        let mode_sequence = pattern_sequence
-            .iter()
-            .map(|pattern_id| network.route_of(network.required_pattern(pattern_id)).mode)
-            .collect::<Vec<_>>();
-        let key = (pattern_sequence.clone(), mode_sequence.clone());
-        groups
-            .entry(key)
-            .and_modify(|group| {
-                group.corridors += 1;
-                group.best_duration_seconds = group
-                    .best_duration_seconds
-                    .min(corridor.theoretical_duration_seconds);
-                group.worst_duration_seconds = group
-                    .worst_duration_seconds
-                    .max(corridor.theoretical_duration_seconds);
-            })
-            .or_insert_with(|| RetainedPatternSequenceStats {
-                pattern_sequence,
-                mode_sequence,
-                corridors: 1,
-                best_duration_seconds: corridor.theoretical_duration_seconds,
-                worst_duration_seconds: corridor.theoretical_duration_seconds,
-            });
-    }
-    let mut groups = groups.into_values().collect::<Vec<_>>();
-    groups.sort_by(|left, right| {
-        right
-            .corridors
-            .cmp(&left.corridors)
-            .then(
-                left.pattern_sequence
-                    .len()
-                    .cmp(&right.pattern_sequence.len()),
-            )
-            .then_with(|| {
-                left.pattern_sequence
-                    .iter()
-                    .map(TransitPatternId::as_str)
-                    .cmp(right.pattern_sequence.iter().map(TransitPatternId::as_str))
-            })
-    });
-    groups
-}
-
-fn retained_mode_sequence_groups(
-    pattern_groups: &[RetainedPatternSequenceStats],
-) -> Vec<RetainedModeSequenceStats> {
-    let mut groups = HashMap::<Vec<TransitMode>, RetainedModeSequenceStats>::new();
-    for pattern_group in pattern_groups {
-        groups
-            .entry(pattern_group.mode_sequence.clone())
-            .and_modify(|group| {
-                group.corridors += pattern_group.corridors;
-                group.best_duration_seconds = group
-                    .best_duration_seconds
-                    .min(pattern_group.best_duration_seconds);
-                group.worst_duration_seconds = group
-                    .worst_duration_seconds
-                    .max(pattern_group.worst_duration_seconds);
-            })
-            .or_insert_with(|| RetainedModeSequenceStats {
-                mode_sequence: pattern_group.mode_sequence.clone(),
-                corridors: pattern_group.corridors,
-                best_duration_seconds: pattern_group.best_duration_seconds,
-                worst_duration_seconds: pattern_group.worst_duration_seconds,
-            });
-    }
-    let mut groups = groups.into_values().collect::<Vec<_>>();
-    groups.sort_by(|left, right| {
-        right
-            .corridors
-            .cmp(&left.corridors)
-            .then(left.mode_sequence.len().cmp(&right.mode_sequence.len()))
-            .then(left.mode_sequence.cmp(&right.mode_sequence))
-    });
-    groups
-}
-
 pub(super) struct CorridorRetention {
     retained: HashMap<CorridorSignature, StaticCorridor>,
     best_by_mode_transition_sequence: HashMap<Vec<TransitMode>, StaticCorridor>,
     all_unique: HashSet<CorridorSignature>,
-    all_structurally_unique: HashSet<EquivalentCorridorSignature>,
-    complete_mode_pairs: HashSet<EndpointModePair>,
     limit: usize,
 }
 
@@ -245,8 +151,6 @@ impl CorridorRetention {
             retained: HashMap::new(),
             best_by_mode_transition_sequence: HashMap::new(),
             all_unique: HashSet::new(),
-            all_structurally_unique: HashSet::new(),
-            complete_mode_pairs: HashSet::new(),
             limit,
         }
     }
@@ -264,7 +168,7 @@ impl CorridorRetention {
             if duration > max_journey_duration_seconds {
                 continue;
             }
-            stats.static_complete_candidates_found += 1;
+
             let corridor = StaticCorridor {
                 access_stop_id: state.access_stop_id.clone(),
                 egress_stop_id: state.stop_id.clone(),
@@ -274,18 +178,7 @@ impl CorridorRetention {
             };
             let signature = corridor.signature();
             if self.all_unique.insert(signature.clone()) {
-                stats.static_unique_corridors_found += 1;
-            }
-            {
-                let steps = equivalent_steps(network, &corridor.steps);
-                let structural_signature = EquivalentCorridorSignature {
-                    access_stop_id: corridor.access_stop_id.clone(),
-                    steps,
-                    egress_stop_id: corridor.egress_stop_id.clone(),
-                };
-                if self.all_structurally_unique.insert(structural_signature) {
-                    stats.static_unique_structural_corridors_found += 1;
-                }
+                stats.unique_corridors_found += 1;
             }
             let modes = corridor
                 .transit_legs()
@@ -295,12 +188,6 @@ impl CorridorRetention {
                         .mode
                 })
                 .collect::<Vec<_>>();
-            if let (Some(first), Some(last)) = (modes.first(), modes.last()) {
-                self.complete_mode_pairs.insert(EndpointModePair {
-                    first: *first,
-                    last: *last,
-                });
-            }
             let mut transition_sequence = Vec::new();
             for mode in modes {
                 if transition_sequence.last() != Some(&mode) {
@@ -355,7 +242,6 @@ impl CorridorRetention {
         equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         stats: &mut StaticSearchStats,
     ) -> RetainedCorridorSet {
-        stats.static_complete_endpoint_mode_pairs = sorted_mode_pairs(&self.complete_mode_pairs);
         let mut global_corridors = self.retained.into_values().collect::<Vec<_>>();
         global_corridors.sort_by(corridor_order);
         let mut best_mode_sequence_corridors = self
@@ -385,26 +271,14 @@ impl CorridorRetention {
         selected.sort_by(corridor_order);
         let (retained_corridors, pattern_count, bus_stop_count) =
             RetainedCorridorSet::from_retained(network, equivalent_legs, selected);
-        stats.static_retained_pattern_sequence_groups =
-            retained_pattern_sequence_groups(network, retained_corridors.retained());
-        stats.static_retained_mode_sequence_groups =
-            retained_mode_sequence_groups(&stats.static_retained_pattern_sequence_groups);
-        stats.static_corridors_retained = retained_corridors.retained().len();
-        stats.static_corridor_patterns = pattern_count;
-        stats.static_corridor_positions = retained_corridors.timing_positions().count();
-        stats.static_corridor_bus_stops = bus_stop_count;
-        stats.kth_static_duration_seconds = retained_corridors
+        stats.corridors_retained = retained_corridors.retained().len();
+        stats.corridor_patterns = pattern_count;
+        stats.corridor_positions = retained_corridors.timing_positions().count();
+        stats.corridor_bus_stops = bus_stop_count;
+        stats.kth_duration_seconds = retained_corridors
             .retained()
             .get(self.limit.saturating_sub(1))
             .map(|corridor| corridor.theoretical_duration_seconds);
-        for corridor in retained_corridors.retained() {
-            match corridor.cost_source {
-                StaticCostSource::ExactSchedule => stats.exact_schedule_cost += 1,
-                StaticCostSource::DerivedBus => stats.derived_bus_cost += 1,
-                StaticCostSource::OptimisticEstimate => stats.estimated_cost += 1,
-                StaticCostSource::Mixed => stats.mixed_cost += 1,
-            }
-        }
         retained_corridors
     }
 }

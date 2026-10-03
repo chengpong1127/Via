@@ -10,7 +10,7 @@ use tower_http::{
 };
 use utoipa::openapi::OpenApi;
 
-use crate::{health::Health, routing::RoutingService};
+use crate::{config::Environment, health::Health, routing::RoutingService};
 
 #[derive(Clone)]
 struct AppState {
@@ -20,10 +20,15 @@ struct AppState {
     openapi: OpenApi,
 }
 
-pub fn build_router(routing: RoutingService, health: Health, metrics: PrometheusHandle) -> Router {
+pub fn build_router(
+    routing: RoutingService,
+    health: Health,
+    metrics: PrometheusHandle,
+    environment: Environment,
+) -> Router {
     let (router, openapi) = openapi::documented_router().split_for_parts();
     let openapi = openapi::configure_openapi(openapi);
-    router
+    let router = router
         .route(
             "/openapi.json",
             axum::routing::get(handlers::openapi_document_endpoint),
@@ -34,8 +39,8 @@ pub fn build_router(routing: RoutingService, health: Health, metrics: Prometheus
             metrics,
             openapi,
         })
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
-        .layer(axum::middleware::from_fn(middleware::http_timeout))
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024));
+    with_http_timeout(router, environment)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(
             TraceLayer::new_for_http()
@@ -50,4 +55,12 @@ pub fn build_router(routing: RoutingService, health: Health, metrics: Prometheus
 
 pub fn openapi_document() -> OpenApi {
     openapi::openapi_document()
+}
+
+fn with_http_timeout(router: Router, environment: Environment) -> Router {
+    if environment.is_production() {
+        router.layer(axum::middleware::from_fn(middleware::http_timeout))
+    } else {
+        router
+    }
 }

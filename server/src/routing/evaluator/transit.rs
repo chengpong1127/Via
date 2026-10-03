@@ -6,7 +6,6 @@ impl FixedCorridorEvaluator<'_> {
         state: &EvaluationState,
         leg: &StaticTransitLeg,
         anchor: usize,
-        saw_missing_departure: &mut bool,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let mut successors = Vec::new();
         for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
@@ -28,16 +27,11 @@ impl FixedCorridorEvaluator<'_> {
                 ready_at,
                 self.query.limits.max_departures_per_query,
             );
-            if departures.is_empty() {
-                *saw_missing_departure = true;
-            }
-            self.stats.effective_trips_examined += departures.len();
             for trip in departures {
                 self.check_deadline()?;
                 let Some(arrival) =
                     retained_alight_time(self.network, trip, &equivalent_leg, ready_at)
                 else {
-                    self.stats.malformed_trips += 1;
                     continue;
                 };
                 if !within_query_bounds(self.query, arrival) {

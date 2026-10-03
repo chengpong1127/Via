@@ -36,6 +36,7 @@ pub struct RoutingService {
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
     limits: JourneyPlanningLimits,
+    request_timeout: Option<std::time::Duration>,
     request_slots: Arc<tokio::sync::Semaphore>,
 }
 
@@ -47,6 +48,7 @@ impl RoutingService {
         bike_share_network: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
+        request_timeouts_enabled: bool,
     ) -> Self {
         let planner = MultimodalPlanner::new(
             transit_runtime.clone(),
@@ -64,6 +66,7 @@ impl RoutingService {
             reconstructor,
             ranking: RankingPolicy::default(),
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
+            request_timeout: request_timeouts_enabled.then_some(limits.request_timeout),
             limits,
         }
     }
@@ -71,28 +74,30 @@ impl RoutingService {
 
 impl RoutingService {
     pub async fn plan(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
-        let timeout = self.limits.request_timeout;
-        let deadline = PlanningDeadline::after(timeout);
-        match tokio::time::timeout_at(deadline.instant(), async {
-            let _permit = match self.request_slots.clone().try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    tracing::warn!(
-                        target: "via_server::routing",
-                        "journey planning rejected because routing capacity is exhausted"
-                    );
-                    return Err(PlanningError::TemporarilyUnavailable);
-                }
-            };
-            self.plan_multimodal_inner(request, deadline).await
-        })
-        .await
+        let deadline = self
+            .request_timeout
+            .map_or_else(PlanningDeadline::disabled, PlanningDeadline::after);
+        match deadline
+            .run(async {
+                let _permit = match self.request_slots.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        tracing::warn!(
+                            target: "via_server::routing",
+                            "journey planning rejected because routing capacity is exhausted"
+                        );
+                        return Err(PlanningError::TemporarilyUnavailable);
+                    }
+                };
+                self.plan_multimodal_inner(request, deadline).await
+            })
+            .await
         {
             Ok(result) => result,
             Err(_) => {
                 tracing::warn!(
                     target: "via_server::routing",
-                    timeout_ms = timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+                    timeout_ms = self.limits.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
                     "journey planning timed out"
                 );
                 Err(PlanningError::TemporarilyUnavailable)

@@ -1,13 +1,6 @@
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    time::Instant,
-};
+use std::{collections::HashMap, time::Instant};
 
-use crate::domain::{
-    ids::{BoardingPointId, TransitPatternId},
-    transit::TransitMode,
-    transit_runtime::TransitRuntime,
-};
+use crate::domain::{ids::BoardingPointId, transit_runtime::TransitRuntime};
 
 use crate::routing::{
     model::PlanningQuery,
@@ -17,35 +10,13 @@ use crate::routing::{
 
 use super::{
     frontier::{SearchFrontier, StaticState},
-    heuristic::{destination_lower_bounds, reachable_endpoint_mode_pairs, sorted_mode_pairs},
+    heuristic::destination_lower_bounds,
     pattern_index::StaticPhase1PatternIndex,
     retention::{CorridorRetention, RetainedCorridorSet},
     types::{
-        EquivalentLegKey, StaticCorridorStep, StaticCostSource, StaticSearchStats,
-        StaticTransitLeg, TransitModeSearchStats,
+        EquivalentLegKey, StaticCorridorStep, StaticCostSource, StaticSearchStats, StaticTransitLeg,
     },
 };
-
-#[derive(Default)]
-struct ModeSearchAccumulator {
-    states_expanded: usize,
-    pattern_scans: usize,
-    downstream_positions_scanned: usize,
-    pattern_ids: HashSet<TransitPatternId>,
-    stop_sequences: HashSet<Vec<BoardingPointId>>,
-}
-
-#[derive(Default)]
-struct SearchExpansionStats {
-    states_by_leg_count: HashMap<usize, usize>,
-    expanded_stops: HashMap<BoardingPointId, usize>,
-    modes: HashMap<TransitMode, ModeSearchAccumulator>,
-}
-
-struct SearchAccounting<'a> {
-    stats: &'a mut StaticSearchStats,
-    expansion_stats: &'a mut SearchExpansionStats,
-}
 
 struct PreparedSearch<'a> {
     network: &'a TransitRuntime,
@@ -54,7 +25,6 @@ struct PreparedSearch<'a> {
     query: &'a PlanningQuery,
     patterns: StaticPhase1PatternIndex,
     egress_by_stop: HashMap<BoardingPointId, Vec<u32>>,
-    terminal_transfer_source_stops: HashSet<BoardingPointId>,
     destination_lower_bounds: HashMap<BoardingPointId, u32>,
     max_legs: usize,
 }
@@ -71,32 +41,23 @@ pub fn generate(
     let Some(mut search) = prepare_search(network, topology, transfers, query, &mut stats) else {
         return finish_deadline(started, stats);
     };
-    let mut frontier = seed_frontier(&search, limit, &mut stats);
-    let forward_search_started = Instant::now();
+    let mut frontier = seed_frontier(&search, limit);
     let mut retention = CorridorRetention::new(limit);
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
-    let mut expansion_stats = SearchExpansionStats::default();
     run_forward_search(
         &mut search,
         &mut frontier,
         &mut retention,
         &mut equivalent_legs,
         &mut stats,
-        &mut expansion_stats,
     );
 
     if stats.deadline_exceeded || query.deadline.is_elapsed() {
-        stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
         return finish_deadline(started, stats);
     }
 
-    stats.static_forward_search_latency_us = elapsed_microseconds(forward_search_started);
-    finalize_expansion_stats(&mut stats, expansion_stats);
-
-    let retention_started = Instant::now();
     let retained_corridors = retention.finish(network, &equivalent_legs, &mut stats);
-    stats.static_retention_latency_us = elapsed_microseconds(retention_started);
-    stats.static_search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     (retained_corridors, stats)
 }
 
@@ -112,43 +73,21 @@ fn prepare_search<'a>(
         return None;
     }
 
-    let pattern_index_started = Instant::now();
     let patterns =
         StaticPhase1PatternIndex::new(network, &query.allowed_transit_modes, stats, query.deadline);
-    stats.static_pattern_index_build_latency_us = elapsed_microseconds(pattern_index_started);
     if stats.deadline_exceeded || deadline_exceeded(query) {
         stats.deadline_exceeded = true;
         return None;
     }
 
     let egress_by_stop = build_egress_index(query);
-    let terminal_transfer_source_stops =
-        collect_terminal_transfer_sources(&egress_by_stop, transfers);
-
-    let lower_bound_started = Instant::now();
     let destination_lower_bounds =
         destination_lower_bounds(&patterns, topology, transfers, query, stats);
-    stats.static_lower_bound_latency_us = elapsed_microseconds(lower_bound_started);
+
     if stats.deadline_exceeded || deadline_exceeded(query) {
         stats.deadline_exceeded = true;
         return None;
     }
-
-    let Some(required_mode_pairs) = reachable_endpoint_mode_pairs(
-        network,
-        topology,
-        transfers,
-        query,
-        &destination_lower_bounds,
-    ) else {
-        stats.deadline_exceeded = true;
-        return None;
-    };
-    if deadline_exceeded(query) {
-        stats.deadline_exceeded = true;
-        return None;
-    }
-    stats.static_required_endpoint_mode_pairs = sorted_mode_pairs(&required_mode_pairs);
 
     Some(PreparedSearch {
         network,
@@ -157,7 +96,6 @@ fn prepare_search<'a>(
         query,
         patterns,
         egress_by_stop,
-        terminal_transfer_source_stops,
         destination_lower_bounds,
         max_legs: query.limits.max_transfers.saturating_add(1),
     })
@@ -176,22 +114,7 @@ fn build_egress_index(query: &PlanningQuery) -> HashMap<BoardingPointId, Vec<u32
     )
 }
 
-fn collect_terminal_transfer_sources(
-    egress_by_stop: &HashMap<BoardingPointId, Vec<u32>>,
-    transfers: &TransferShortcutIndex,
-) -> HashSet<BoardingPointId> {
-    egress_by_stop
-        .keys()
-        .flat_map(|egress_stop| transfers.transfers_to(egress_stop))
-        .map(|shortcut| shortcut.from.clone())
-        .collect()
-}
-
-fn seed_frontier(
-    search: &PreparedSearch<'_>,
-    limit: usize,
-    stats: &mut StaticSearchStats,
-) -> SearchFrontier {
+fn seed_frontier(search: &PreparedSearch<'_>, limit: usize) -> SearchFrontier {
     let mut frontier = SearchFrontier::new(limit);
     for access in &search.query.origin_access {
         let Some(remaining_seconds) = search
@@ -202,24 +125,21 @@ fn seed_frontier(
             continue;
         };
         let elapsed_seconds = access.walking_seconds;
-        frontier.enqueue(
-            StaticState {
-                stop_id: access.stop_id.clone(),
-                elapsed_seconds,
-                lower_bound_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-                priority_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-                access_stop_id: access.stop_id.clone(),
-                transit_legs_used: 0,
-                last_transit_mode: None,
-                mode_transition_sequence: Vec::new(),
-                steps: Vec::new(),
-                has_exact_cost: false,
-                has_derived_bus_cost: false,
-                has_estimated_cost: false,
-                transfer_ready: false,
-            },
-            stats,
-        );
+        frontier.enqueue(StaticState {
+            stop_id: access.stop_id.clone(),
+            elapsed_seconds,
+            lower_bound_seconds: elapsed_seconds.saturating_add(remaining_seconds),
+            priority_seconds: elapsed_seconds.saturating_add(remaining_seconds),
+            access_stop_id: access.stop_id.clone(),
+            transit_legs_used: 0,
+            last_transit_mode: None,
+            mode_transition_sequence: Vec::new(),
+            steps: Vec::new(),
+            has_exact_cost: false,
+            has_derived_bus_cost: false,
+            has_estimated_cost: false,
+            transfer_ready: false,
+        });
     }
     frontier
 }
@@ -230,39 +150,31 @@ fn run_forward_search(
     retention: &mut CorridorRetention,
     equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     stats: &mut StaticSearchStats,
-    expansion_stats: &mut SearchExpansionStats,
 ) {
-    let mut accounting = SearchAccounting {
-        stats,
-        expansion_stats,
-    };
     while let Some(entry) = frontier.pop() {
         if deadline_exceeded(search.query) {
-            accounting.stats.deadline_exceeded = true;
+            stats.deadline_exceeded = true;
             break;
         }
         if retention
             .kth_duration()
             .is_some_and(|kth| entry.state.priority_seconds > kth)
         {
-            accounting.stats.static_top_k_early_terminated = true;
+            stats.top_k_early_terminated = true;
             break;
         }
         if !frontier.is_current(&entry.state) {
             continue;
         }
-        if accounting.stats.static_search_states_expanded
-            >= search.query.limits.max_phase1_expansions
-        {
-            accounting.stats.static_search_limit_reached = true;
+        if stats.states_expanded >= search.query.limits.max_phase1_expansions {
+            stats.search_limit_reached = true;
             break;
         }
-        accounting.stats.static_search_states_expanded += 1;
+        stats.states_expanded += 1;
         let state = entry.state;
-        let pattern_occurrences = record_expanded_state_stats(&state, search, &mut accounting);
 
         if !state.transfer_ready
-            && expand_surface_transfers(&state, search, frontier, retention, accounting.stats)
+            && expand_surface_transfers(&state, search, frontier, retention, stats)
         {
             break;
         }
@@ -271,78 +183,23 @@ fn run_forward_search(
             continue;
         }
 
-        if expand_transit_rides(
-            &state,
-            &pattern_occurrences,
-            search,
-            frontier,
-            retention,
-            equivalent_legs,
-            &mut accounting,
-        ) {
+        if expand_transit_rides(&state, search, frontier, retention, equivalent_legs, stats) {
             break;
         }
     }
 }
 
-fn record_expanded_state_stats(
+fn usable_pattern_occurrences(
     state: &StaticState,
     search: &PreparedSearch<'_>,
-    accounting: &mut SearchAccounting<'_>,
 ) -> Vec<PatternPosition> {
-    *accounting
-        .expansion_stats
-        .states_by_leg_count
-        .entry(state.transit_legs_used)
-        .or_default() += 1;
-    *accounting
-        .expansion_stats
-        .expanded_stops
-        .entry(state.stop_id.clone())
-        .or_default() += 1;
-    if search.egress_by_stop.contains_key(&state.stop_id) {
-        accounting.stats.static_expanded_egress_states += 1;
-    }
-    if search
-        .terminal_transfer_source_stops
-        .contains(&state.stop_id)
-    {
-        accounting
-            .stats
-            .static_expanded_terminal_transfer_source_states += 1;
-    }
-    if let Some(mode) = state.last_transit_mode {
-        accounting
-            .expansion_stats
-            .modes
-            .entry(mode)
-            .or_default()
-            .states_expanded += 1;
-    } else {
-        accounting.stats.static_unattributed_states_expanded += 1;
-    }
-    let occurrences = search.topology.occurrences_at(&state.stop_id);
-    let pattern_occurrences = occurrences
+    search
+        .topology
+        .occurrences_at(&state.stop_id)
         .iter()
         .filter(|position| search.patterns.group_index(&position.pattern_id).is_some())
         .cloned()
-        .collect::<Vec<_>>();
-    accounting.stats.static_expanded_stop_occurrence_samples += 1;
-    accounting.stats.static_expanded_stop_occurrences_total += occurrences.len();
-    accounting
-        .stats
-        .static_expanded_stop_pattern_occurrences_total += pattern_occurrences.len();
-    accounting.stats.static_expanded_stop_occurrences_max = accounting
-        .stats
-        .static_expanded_stop_occurrences_max
-        .max(occurrences.len());
-    accounting
-        .stats
-        .static_expanded_stop_pattern_occurrences_max = accounting
-        .stats
-        .static_expanded_stop_pattern_occurrences_max
-        .max(pattern_occurrences.len());
-    pattern_occurrences
+        .collect()
 }
 
 fn expand_surface_transfers(
@@ -357,7 +214,7 @@ fn expand_surface_transfers(
             stats.deadline_exceeded = true;
             return true;
         }
-        stats.static_walking_transfer_expansions += 1;
+
         let elapsed_seconds = state
             .elapsed_seconds
             .saturating_add(shortcut.duration_seconds);
@@ -390,7 +247,7 @@ fn expand_surface_transfers(
             );
         }
         if next.transit_legs_used < search.max_legs {
-            frontier.enqueue(next, stats);
+            frontier.enqueue(next);
         }
     }
     false
@@ -398,16 +255,15 @@ fn expand_surface_transfers(
 
 fn expand_transit_rides(
     state: &StaticState,
-    pattern_occurrences: &[PatternPosition],
     search: &mut PreparedSearch<'_>,
     frontier: &mut SearchFrontier,
     retention: &mut CorridorRetention,
     equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-    accounting: &mut SearchAccounting<'_>,
+    stats: &mut StaticSearchStats,
 ) -> bool {
-    for position in pattern_occurrences {
+    for position in usable_pattern_occurrences(state, search) {
         if deadline_exceeded(search.query) {
-            accounting.stats.deadline_exceeded = true;
+            stats.deadline_exceeded = true;
             return true;
         }
         let group_index = search
@@ -419,27 +275,15 @@ fn expand_transit_rides(
         if !search.query.allowed_transit_modes.contains(&mode) {
             continue;
         }
-        accounting.stats.static_pattern_scans += 1;
-        {
-            let mode_stats = accounting.expansion_stats.modes.entry(mode).or_default();
-            mode_stats.pattern_scans += 1;
-            mode_stats.pattern_ids.insert(group.pattern_id.clone());
-            mode_stats.stop_sequences.insert(group.stops.clone());
-        }
-        let profile_started = Instant::now();
-        if search.patterns.ensure_ride_options(
+
+        search.patterns.ensure_ride_options(
             group_index,
             position.stop_index,
-            accounting.stats,
+            stats,
             equivalent_legs,
             search.query.deadline,
-        ) {
-            accounting.stats.static_ride_profile_build_latency_us = accounting
-                .stats
-                .static_ride_profile_build_latency_us
-                .saturating_add(elapsed_microseconds(profile_started));
-        }
-        if accounting.stats.deadline_exceeded {
+        );
+        if stats.deadline_exceeded {
             return true;
         }
         let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
@@ -452,16 +296,10 @@ fn expand_transit_rides(
             .ride_options(group_index, position.stop_index)
         {
             if deadline_exceeded(search.query) {
-                accounting.stats.deadline_exceeded = true;
+                stats.deadline_exceeded = true;
                 return true;
             }
-            accounting.stats.static_positions_scanned += 1;
-            accounting
-                .expansion_stats
-                .modes
-                .entry(mode)
-                .or_default()
-                .downstream_positions_scanned += 1;
+
             let ride_seconds = ride_option.duration_seconds;
             let source = ride_option.leg.cost_source;
             let elapsed_seconds = state
@@ -503,57 +341,13 @@ fn expand_transit_rides(
                 &next,
                 &search.egress_by_stop,
                 search.query.limits.max_journey_duration_seconds,
-                accounting.stats,
+                stats,
                 search.network,
             );
-            frontier.enqueue(next, accounting.stats);
+            frontier.enqueue(next);
         }
     }
     false
-}
-
-fn finalize_expansion_stats(stats: &mut StaticSearchStats, expansion_stats: SearchExpansionStats) {
-    stats.static_expanded_stop_occurrences_average_milli = stats
-        .static_expanded_stop_occurrences_total
-        .saturating_mul(1_000)
-        .checked_div(stats.static_expanded_stop_occurrence_samples)
-        .unwrap_or_default();
-    stats.static_expanded_stop_pattern_occurrences_average_milli = stats
-        .static_expanded_stop_pattern_occurrences_total
-        .saturating_mul(1_000)
-        .checked_div(stats.static_expanded_stop_occurrence_samples)
-        .unwrap_or_default();
-    stats.static_mode_stats = expansion_stats
-        .modes
-        .into_iter()
-        .map(|(mode, accumulator)| {
-            (
-                mode,
-                TransitModeSearchStats {
-                    states_expanded: accumulator.states_expanded,
-                    pattern_scans: accumulator.pattern_scans,
-                    downstream_positions_scanned: accumulator.downstream_positions_scanned,
-                    distinct_pattern_ids: accumulator.pattern_ids.len(),
-                    distinct_stop_sequences: accumulator.stop_sequences.len(),
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    stats.static_expanded_states_by_leg_count = expansion_stats
-        .states_by_leg_count
-        .into_iter()
-        .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .collect();
-    stats.static_most_expanded_stops = expansion_stats.expanded_stops.into_iter().collect();
-    stats
-        .static_most_expanded_stops
-        .sort_by(|(left_id, left_count), (right_id, right_count)| {
-            right_count
-                .cmp(left_count)
-                .then(left_id.as_str().cmp(right_id.as_str()))
-        });
-    stats.static_most_expanded_stops.truncate(12);
 }
 
 fn deadline_exceeded(query: &PlanningQuery) -> bool {
@@ -565,10 +359,6 @@ fn finish_deadline(
     mut stats: StaticSearchStats,
 ) -> (RetainedCorridorSet, StaticSearchStats) {
     stats.deadline_exceeded = true;
-    stats.static_search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     (RetainedCorridorSet::default(), stats)
-}
-
-fn elapsed_microseconds(started: Instant) -> u64 {
-    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }

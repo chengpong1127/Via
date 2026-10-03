@@ -1,9 +1,9 @@
 use std::{
     cmp::Ordering,
-    collections::{BinaryHeap, HashMap, HashSet},
+    collections::{BinaryHeap, HashMap},
 };
 
-use crate::domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime};
+use crate::domain::ids::BoardingPointId;
 
 use crate::routing::{
     model::PlanningQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
@@ -31,12 +31,6 @@ impl Ord for LowerBoundEntry {
             .cmp(&self.seconds)
             .then(other.sequence.cmp(&self.sequence))
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct EndpointModePair {
-    pub(super) first: TransitMode,
-    pub(super) last: TransitMode,
 }
 
 pub(super) fn destination_lower_bounds(
@@ -76,13 +70,13 @@ pub(super) fn destination_lower_bounds(
         if lower_bounds.get(&entry.stop_id) != Some(&entry.seconds) {
             continue;
         }
-        stats.static_lower_bound_nodes_settled += 1;
+
         for position in topology.occurrences_at(&entry.stop_id) {
             if query.deadline.is_elapsed() {
                 stats.deadline_exceeded = true;
                 break 'lower_bounds;
             }
-            stats.static_lower_bound_pattern_edges_scanned += 1;
+
             let Some(predecessor_index) = position.stop_index.checked_sub(1) else {
                 continue;
             };
@@ -106,7 +100,7 @@ pub(super) fn destination_lower_bounds(
                 stats.deadline_exceeded = true;
                 break 'lower_bounds;
             }
-            stats.static_lower_bound_transfer_edges_scanned += 1;
+
             relax_lower_bound(
                 &shortcut.from,
                 entry.seconds.saturating_add(shortcut.duration_seconds),
@@ -144,103 +138,4 @@ fn relax_lower_bound(
         sequence: *sequence,
     });
     *sequence = sequence.saturating_add(1);
-}
-
-pub(super) fn reachable_endpoint_mode_pairs(
-    network: &TransitRuntime,
-    topology: &TransitTopologyIndex,
-    transfers: &TransferShortcutIndex,
-    query: &PlanningQuery,
-    destination_lower_bounds: &HashMap<BoardingPointId, u32>,
-) -> Option<HashSet<EndpointModePair>> {
-    if query.deadline.is_elapsed() {
-        return None;
-    }
-    let mut origin_modes = HashSet::new();
-    for access in &query.origin_access {
-        if query.deadline.is_elapsed() {
-            return None;
-        }
-        let mut boarding_stops = vec![access.stop_id.clone()];
-        boarding_stops.extend(
-            transfers
-                .transfers_from(&access.stop_id)
-                .iter()
-                .map(|shortcut| shortcut.to.clone()),
-        );
-        for stop_id in boarding_stops {
-            if query.deadline.is_elapsed() {
-                return None;
-            }
-            if !destination_lower_bounds.contains_key(&stop_id) {
-                continue;
-            }
-            for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
-                if index % 64 == 0 && query.deadline.is_elapsed() {
-                    return None;
-                }
-                let pattern = network.required_pattern(&position.pattern_id);
-                if query
-                    .allowed_transit_modes
-                    .contains(&network.route_of(pattern).mode)
-                {
-                    origin_modes.insert(network.route_of(pattern).mode);
-                }
-            }
-        }
-    }
-
-    let mut destination_modes = HashSet::new();
-    for egress in &query.destination_egress {
-        if query.deadline.is_elapsed() {
-            return None;
-        }
-        let mut alighting_stops = vec![egress.stop_id.clone()];
-        alighting_stops.extend(
-            transfers
-                .transfers_to(&egress.stop_id)
-                .iter()
-                .map(|shortcut| shortcut.from.clone()),
-        );
-        for stop_id in alighting_stops {
-            if query.deadline.is_elapsed() {
-                return None;
-            }
-            for (index, position) in topology.occurrences_at(&stop_id).iter().enumerate() {
-                if index % 64 == 0 && query.deadline.is_elapsed() {
-                    return None;
-                }
-                let pattern = network.required_pattern(&position.pattern_id);
-                if query
-                    .allowed_transit_modes
-                    .contains(&network.route_of(pattern).mode)
-                {
-                    destination_modes.insert(network.route_of(pattern).mode);
-                }
-            }
-        }
-    }
-
-    Some(
-        origin_modes
-            .into_iter()
-            .flat_map(|first| {
-                destination_modes
-                    .iter()
-                    .copied()
-                    .map(move |last| EndpointModePair { first, last })
-            })
-            .collect(),
-    )
-}
-
-pub(super) fn sorted_mode_pairs(
-    pairs: &HashSet<EndpointModePair>,
-) -> Vec<(TransitMode, TransitMode)> {
-    let mut pairs = pairs
-        .iter()
-        .map(|pair| (pair.first, pair.last))
-        .collect::<Vec<_>>();
-    pairs.sort();
-    pairs
 }

@@ -78,6 +78,7 @@ where
     let street: Arc<dyn StreetRouter> = provider.clone();
     let street_health: Arc<dyn DependencyHealth> = provider.clone();
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
+        environment: via_server::config::Environment::Development,
         transit_network,
         provider_bindings: TdxProviderBindings::default(),
         bike_share_network: Arc::new(
@@ -89,5 +90,10 @@ where
         bike_availability: bike_availability_source,
         limits: JourneyPlanningLimits::default(),
     });
-    Ok(build_router(runtime.routing, runtime.health, metrics))
+    Ok(build_router(
+        runtime.routing,
+        runtime.health,
+        metrics,
+        via_server::config::Environment::Development,
+    ))
 }

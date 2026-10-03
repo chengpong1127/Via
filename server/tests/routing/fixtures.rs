@@ -99,6 +99,7 @@ pub(crate) async fn route_body_with_sources(
         bike_network,
         availability,
         JourneyPlanningLimits::default(),
+        false,
     );
     serde_json::to_value(service.plan(request).await.unwrap()).unwrap()
 }
@@ -286,6 +287,7 @@ async fn route_body_inner(
         bike_network,
         availability_source,
         limits,
+        false,
     );
     Ok(serde_json::to_value(service.plan(request).await?).unwrap())
 }

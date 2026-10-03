@@ -60,15 +60,24 @@ Prometheus series are registered when their instrumentation runs.
 ## Structured accounting
 
 `MultimodalPlannerStats` and `plan_with_stats()` remain benchmark/debug APIs.
-`StaticSearchStats`, its per-mode/sequence summaries, and `SearchExpansionStats`
-retain search, limit, deadline, test, and trace accounting. `Phase2EvaluationStats`
-retains cumulative evaluation state and diagnostics. `SurfaceRealizationStats`
-and `BikePlanningStats` retain exact routing, cache, and matrix work accounting.
-The unread planner snapshot-latency field and its snapshot copy were removed;
-snapshot latency remains in tracing. Six write-only BikePlanningStats fields were
-removed: `relevant_bike_stations`, `candidate_movements`,
-`pickup_stations_considered`, `dropoff_stations_considered`, `station_pairs`, and
-`realizations_feasible`.
+`StaticSearchStats` retains only expansion count, unique/retained corridor counts,
+retained pattern/position/Bus-stop counts, total search latency, Kth duration,
+and search-limit, early-termination, and deadline status. Pattern, position, and
+Bus-stop counts preserve the timing snapshot and Prometheus accounting.
+Phase 1 emits one compact search summary and traces the retained corridors.
+
+`Phase2EvaluationStats` retains the cumulative expansion count and departure
+lookups, BikeShare lower-bound checks/rejections, exact requests/cache hits/matrix
+requests, final candidate count, and total evaluation latency. The expansion
+count enforces the session's safety bound across primary and fallback evaluation.
+Phase 2 emits one compact evaluation summary. `SurfaceRealizationStats` and
+`BikePlanningStats` retain exact routing, cache, and matrix work accounting;
+snapshot latency remains in tracing.
+
+`VIA_ENV=development` disables wall-clock planning and HTTP timeouts for
+debugging. `VIA_ENV=production` retains the normal planning timeout (5 seconds
+by default) and HTTP timeout (10 seconds). Both modes retain all algorithm
+expansion, candidate, corridor, transfer, and journey-duration limits.
 
 `TransferStatistics`, `BikeAccessDiagnostics`, `GtfsBuildDiagnostics`, and
 `BuildDiagnostics` remain returned offline build output. `PathMetrics`,
