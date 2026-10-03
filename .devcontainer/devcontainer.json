@@ -2,6 +2,7 @@
 	"name": "Rust and Valhalla",
 	"dockerComposeFile": "docker-compose.yml",
 	"service": "app",
-	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+	"postCreateCommand": "bash .devcontainer/setup-codegraph.sh"
 
 }
