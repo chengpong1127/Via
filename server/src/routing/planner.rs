@@ -38,9 +38,9 @@ pub struct MultimodalPlanner {
     street: Option<Arc<dyn StreetRouter>>,
 }
 
+/// Request-local algorithm accounting for diagnostics and deterministic benchmarks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MultimodalPlannerStats {
-    pub timing_snapshot_latency_ms: u64,
     pub phase2_evaluation: Phase2EvaluationStats,
     pub phase1: static_search::StaticSearchStats,
 }
@@ -49,7 +49,6 @@ struct RequestSnapshots {
     timing: crate::domain::transit_timing::TimingSnapshot,
     bike: Option<Arc<crate::domain::bikeshare::BikeAvailabilitySnapshot>>,
     failures: evaluator::EvaluationFailures,
-    latency_ms: u64,
 }
 
 impl MultimodalPlanner {
@@ -380,6 +379,13 @@ impl MultimodalPlanner {
             );
             return Err(RoutingError::StaticSearchLimit);
         }
+        // Count retained work when Phase 1 completes, even if a later stage fails.
+        ::metrics::counter!("via_planner_transit_reachable_boardings_total")
+            .increment(static_stats.static_corridor_positions as u64);
+        ::metrics::counter!("via_planner_transit_reachable_patterns_total")
+            .increment(static_stats.static_corridor_patterns as u64);
+        ::metrics::counter!("via_planner_transit_realtime_stops_requested_total")
+            .increment(static_stats.static_corridor_bus_stops as u64);
         Ok((corridor, static_stats))
     }
 
@@ -472,10 +478,6 @@ impl MultimodalPlanner {
             latency_ms = snapshot_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
             "timing snapshot"
         );
-        let latency_ms = snapshot_started
-            .elapsed()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
         if snapshot.all_positions_failed() {
             failures.transient |= snapshot
                 .first_failure()
@@ -488,7 +490,6 @@ impl MultimodalPlanner {
             timing: snapshot,
             bike: bike_snapshot,
             failures,
-            latency_ms,
         })
     }
 }
@@ -554,6 +555,7 @@ impl PlanningSession<'_> {
             &self.query,
             &mut self.surface,
         );
+        let lookups_before = self.stats.phase2_evaluation.transit_departure_lookups;
         evaluator.stats = self.stats.phase2_evaluation;
         evaluator.failures = self.failures;
         let result = if let Some(deadline) = self.query.deadline {
@@ -563,7 +565,9 @@ impl PlanningSession<'_> {
         } else {
             evaluator.evaluate(corridors).await?
         };
-        self.stats.timing_snapshot_latency_ms = self.snapshots.latency_ms;
+        // Evaluation stats survive fallback; emit only this completed pass's work.
+        ::metrics::counter!("via_planner_transit_departure_lookups_total")
+            .increment((result.stats.transit_departure_lookups - lookups_before) as u64);
         self.stats.phase2_evaluation = result.stats;
         self.failures = result.failures;
         self.failures.transient |= self.snapshots.failures.transient;
@@ -876,6 +880,53 @@ mod tests {
             candidates[0].transit_pattern_sequence(),
             vec![TransitPatternId::new("realtime-fast")]
         );
+    }
+
+    #[tokio::test]
+    async fn operational_metrics_count_completed_stages_and_fallback_once() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = ::metrics::set_default_local_recorder(&recorder);
+        let loader = Arc::new(RecordingTimingLoader {
+            trips: HashMap::from([(
+                TransitPatternId::new("static-fast"),
+                vec![effective_trip("static-fast-live", "static-fast", 20)],
+            )]),
+            ..RecordingTimingLoader::default()
+        });
+        let origin = Coordinate::try_new(25.0, 121.5).unwrap();
+        let destination = Coordinate::try_new(25.001, 121.501).unwrap();
+        let planner = MultimodalPlanner::new(network(), loader);
+        let mut session = planner
+            .prepare(query(1).with_endpoints(origin, destination))
+            .await
+            .unwrap();
+        assert!(!session.evaluate_primary().await.unwrap().is_empty());
+        let lookups = session.stats().phase2_evaluation.transit_departure_lookups;
+        assert!(lookups > 0);
+        // A later reconstruction failure may request fallback from the same session.
+        session.evaluate_fallback().await.unwrap();
+        session.evaluate_fallback().await.unwrap();
+        let rendered = handle.render();
+        assert!(rendered.contains(&format!(
+            "via_planner_transit_departure_lookups_total {lookups}\n"
+        )));
+        assert!(rendered.contains("via_planner_transit_reachable_boardings_total 2\n"));
+        assert!(rendered.contains("via_planner_transit_reachable_patterns_total 2\n"));
+        assert!(rendered.contains("via_planner_transit_realtime_stops_requested_total 1\n"));
+
+        // Completed Phase 1 work remains observable when evaluation hits its bound.
+        let mut limited = query(1);
+        limited.limits.max_phase2_expansions = 0;
+        assert_eq!(
+            planner.plan_with_stats(limited).await.unwrap_err(),
+            RoutingError::Phase2EvaluationLimit
+        );
+        let rendered = handle.render();
+        assert!(rendered.contains("via_planner_transit_reachable_boardings_total 4\n"));
+        assert!(rendered.contains(&format!(
+            "via_planner_transit_departure_lookups_total {lookups}\n"
+        )));
     }
 
     #[tokio::test]

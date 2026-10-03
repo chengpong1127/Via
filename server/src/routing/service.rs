@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
-    time::{Duration as StdDuration, Instant},
+    time::Instant,
 };
 
 use time::OffsetDateTime;
@@ -120,7 +120,6 @@ impl RoutingService {
             &context,
             alternatives.candidates,
             alternatives.failures,
-            alternatives.metrics,
         )
     }
 
@@ -165,7 +164,6 @@ impl RoutingService {
                 )
                 .await;
             context.ensure_before_deadline()?;
-            alternatives.metrics.candidate_discovery_duration = Some(access_started.elapsed());
             let (access, egress) = match (access, egress) {
                 (Ok(access), Ok(egress)) => (access, egress),
                 (Err(error), _) | (_, Err(error)) => {
@@ -173,7 +171,18 @@ impl RoutingService {
                     (Vec::new(), Vec::new())
                 }
             };
-            alternatives.metrics.transit_candidate_stops = access.len() + egress.len();
+            let candidate_stops = access.len() + egress.len();
+            let discovery_duration = access_started.elapsed();
+            ::metrics::counter!("via_planner_transit_candidate_stops_total")
+                .increment(candidate_stops as u64);
+            ::metrics::histogram!("via_planner_candidate_discovery_duration_seconds")
+                .record(discovery_duration.as_secs_f64());
+            tracing::debug!(
+                target: "via_server::routing",
+                candidate_discovery_ms = discovery_duration.as_millis() as u64,
+                transit_candidate_stops = candidate_stops,
+                "transit candidate discovery completed"
+            );
             tracing::debug!(
                 target: "via_server::routing",
                 access = ?access.iter().map(|point| (
@@ -207,10 +216,12 @@ impl RoutingService {
                 context
                     .ensure_before_deadline()
                     .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
-                alternatives.metrics.transit_realtime_evidence_values = journeys
+                let realtime_evidence_values: usize = journeys
                     .iter()
                     .map(RealizedJourney::realtime_evidence_count)
                     .sum();
+                ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
+                    .increment(realtime_evidence_values as u64);
                 for journey in journeys {
                     match self.reconstructor.reconstruct(&journey, context).await {
                         Ok(Some(candidate)) => alternatives.candidates.push(candidate),
@@ -229,21 +240,20 @@ impl RoutingService {
                 }
                 alternatives.failures.transient |= session.failures().transient;
                 alternatives.failures.internal |= session.failures().internal;
-                Ok::<_, super::model::RoutingError>(session.stats().clone())
+                Ok::<_, super::model::RoutingError>(())
             }
             .await;
             match planned {
-                Ok(planner_stats) => {
-                    alternatives.metrics.transit_reachable_boardings =
-                        planner_stats.phase1.static_corridor_positions;
-                    alternatives.metrics.transit_reachable_patterns =
-                        planner_stats.phase1.static_corridor_patterns;
-                    alternatives.metrics.transit_realtime_stops_requested =
-                        planner_stats.phase1.static_corridor_bus_stops;
-                    alternatives.metrics.transit_departure_lookups =
-                        planner_stats.phase2_evaluation.transit_departure_lookups;
-                    alternatives.metrics.multimodal_search_duration =
-                        Some(search_started.elapsed());
+                Ok(()) => {
+                    let duration = search_started.elapsed();
+                    ::metrics::histogram!("via_planner_multimodal_search_duration_seconds")
+                        .record(duration.as_secs_f64());
+                    tracing::debug!(
+                        target: "via_server::routing",
+                        multimodal_search_ms = duration.as_millis() as u64,
+                        generated_candidates = alternatives.candidates.len(),
+                        "multimodal planning completed"
+                    );
                 }
                 Err(error) => {
                     match &error {
@@ -273,40 +283,11 @@ impl RoutingService {
         context: &JourneyPlanningContext<'_>,
         candidates: Vec<JourneyCandidate>,
         failures: PlanningFailures,
-        metrics: PlannerStageMetrics,
     ) -> Result<PlanningOutcome, PlanningError> {
-        ::metrics::counter!("via_planner_transit_candidate_stops_total")
-            .increment(metrics.transit_candidate_stops as u64);
-        ::metrics::counter!("via_planner_transit_reachable_boardings_total")
-            .increment(metrics.transit_reachable_boardings as u64);
-        ::metrics::counter!("via_planner_transit_reachable_patterns_total")
-            .increment(metrics.transit_reachable_patterns as u64);
-        ::metrics::counter!("via_planner_transit_realtime_stops_requested_total")
-            .increment(metrics.transit_realtime_stops_requested as u64);
-        ::metrics::counter!("via_planner_transit_departure_lookups_total")
-            .increment(metrics.transit_departure_lookups as u64);
-        ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
-            .increment(metrics.transit_realtime_evidence_values as u64);
-        if let Some(duration) = metrics.candidate_discovery_duration {
-            ::metrics::histogram!("via_planner_candidate_discovery_duration_seconds")
-                .record(duration.as_secs_f64());
-        }
-        if let Some(duration) = metrics.multimodal_search_duration {
-            ::metrics::histogram!("via_planner_multimodal_search_duration_seconds")
-                .record(duration.as_secs_f64());
-        }
         tracing::debug!(
             target: "via_server::routing",
-            candidate_discovery_ms = metrics.candidate_discovery_duration.map_or(0, |duration| duration.as_millis() as u64),
-            multimodal_search_ms = metrics.multimodal_search_duration.map_or(0, |duration| duration.as_millis() as u64),
-            transit_candidate_stops = metrics.transit_candidate_stops,
-            reachable_boardings = metrics.transit_reachable_boardings,
-            reachable_patterns = metrics.transit_reachable_patterns,
-            realtime_stops_requested = metrics.transit_realtime_stops_requested,
-            transit_departure_lookups = metrics.transit_departure_lookups,
-            realtime_evidence_values = metrics.transit_realtime_evidence_values,
             generated_candidates = candidates.len(),
-            "journey planning routing stages"
+            "journey candidates ready for ranking"
         );
         if candidates.is_empty() && failures.internal {
             tracing::error!(
@@ -378,19 +359,6 @@ impl RoutingService {
 struct PlanningCandidates {
     candidates: Vec<JourneyCandidate>,
     failures: PlanningFailures,
-    metrics: PlannerStageMetrics,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PlannerStageMetrics {
-    transit_candidate_stops: usize,
-    transit_reachable_boardings: usize,
-    transit_reachable_patterns: usize,
-    transit_realtime_stops_requested: usize,
-    transit_departure_lookups: usize,
-    transit_realtime_evidence_values: usize,
-    candidate_discovery_duration: Option<StdDuration>,
-    multimodal_search_duration: Option<StdDuration>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

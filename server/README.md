@@ -30,6 +30,9 @@ The iOS app remains a host process. The API is published at
 The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
 `GET /health/street-routing`. Planning responses are not cached.
 
+`GET /metrics` serves Prometheus telemetry. See the
+[metric inventory and ownership](../docs/observability.md) for names and completion semantics.
+
 Configuration:
 
 | Variable | Purpose |

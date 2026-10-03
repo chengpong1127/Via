@@ -145,13 +145,14 @@ pub(super) async fn journey_plan(
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
     record_request_fields(&request);
-    match state.routing.plan(request).await {
+    let outcome = state.routing.plan(request).await;
+    ::metrics::counter!("via_planning_requests_total").increment(1);
+    match outcome {
         Ok(outcome) => {
             let journey_options = match &outcome {
                 PlanningOutcome::Options(result) => result.journey_options.len(),
                 PlanningOutcome::Empty(_) => 0,
             };
-            ::metrics::counter!("via_planning_requests_total").increment(1);
             if journey_options == 0 {
                 ::metrics::counter!("via_planning_empty_total").increment(1);
             } else {
@@ -169,7 +170,6 @@ pub(super) async fn journey_plan(
             no_store((StatusCode::OK, Json(outcome)))
         }
         Err(PlanningError::TemporarilyUnavailable) => {
-            ::metrics::counter!("via_planning_requests_total").increment(1);
             ::metrics::counter!("via_planning_failures_total").increment(1);
             error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -178,7 +178,6 @@ pub(super) async fn journey_plan(
             )
         }
         Err(PlanningError::Internal) => {
-            ::metrics::counter!("via_planning_requests_total").increment(1);
             ::metrics::counter!("via_planning_failures_total").increment(1);
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }

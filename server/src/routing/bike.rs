@@ -26,13 +26,7 @@ use super::{
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BikePlanningStats {
-    pub relevant_bike_stations: usize,
-    pub candidate_movements: usize,
-    pub pickup_stations_considered: usize,
-    pub dropoff_stations_considered: usize,
-    pub station_pairs: usize,
     pub matrix_requests: usize,
-    pub realizations_feasible: usize,
 }
 
 pub(crate) const MAX_PICKUP_STATIONS_PER_ANCHOR: usize = 3;
@@ -129,7 +123,7 @@ impl BikeShareMovementPlanner {
         from_anchor: usize,
         to_anchor: usize,
     ) -> Result<(Vec<BikeShortcut>, BikePlanningStats), StreetRoutingError> {
-        let mut stats = corridor_candidate_stats(candidate);
+        let mut stats = BikePlanningStats::default();
         let shortcuts = self
             .realize_with_stats(candidate, from_anchor, to_anchor, &mut stats)
             .await?;
@@ -168,7 +162,7 @@ impl BikeShareMovementPlanner {
         let shortcuts = self
             .realize_candidate_matrices(&candidate, from_anchor, to_anchor, limits, stats)
             .await?;
-        Ok(finalize_shortcuts(shortcuts, stats))
+        Ok(finalize_shortcuts(shortcuts))
     }
 
     async fn realize_candidate_matrices(
@@ -386,18 +380,12 @@ impl SurfaceMovementPlanner for BikeShareSession {
                 self.planner
                     .movement_candidate(request.from, request.to, &self.snapshot, self.now)
             {
-                let mut stats = corridor_candidate_stats(&candidate);
+                let mut stats = BikePlanningStats::default();
                 let result = self
                     .planner
                     .realize_with_stats(&candidate, 0, 1, &mut stats)
                     .await;
-                self.stats.relevant_bike_stations += stats.relevant_bike_stations;
-                self.stats.candidate_movements += stats.candidate_movements;
-                self.stats.pickup_stations_considered += stats.pickup_stations_considered;
-                self.stats.dropoff_stations_considered += stats.dropoff_stations_considered;
-                self.stats.station_pairs += stats.station_pairs;
                 self.stats.matrix_requests += stats.matrix_requests;
-                self.stats.realizations_feasible += stats.realizations_feasible;
                 result
             } else {
                 Ok(Vec::new())
@@ -414,26 +402,6 @@ impl SurfaceMovementPlanner for BikeShareSession {
                 })
                 .collect()
         })
-    }
-}
-
-fn corridor_candidate_stats(candidate: &BikeMovementCandidate) -> BikePlanningStats {
-    BikePlanningStats {
-        relevant_bike_stations: candidate.pickups.len() + candidate.dropoffs.len(),
-        candidate_movements: 1,
-        pickup_stations_considered: candidate.pickups.len(),
-        dropoff_stations_considered: candidate.dropoffs.len(),
-        station_pairs: candidate
-            .pickups
-            .iter()
-            .flat_map(|pickup| {
-                candidate
-                    .dropoffs
-                    .iter()
-                    .filter(move |dropoff| pickup.station_id != dropoff.station_id)
-            })
-            .count(),
-        ..BikePlanningStats::default()
     }
 }
 
@@ -480,10 +448,7 @@ fn bike_shortcut_from_cell(
     )
 }
 
-fn finalize_shortcuts(
-    mut shortcuts: Vec<BikeShortcut>,
-    stats: &mut BikePlanningStats,
-) -> Vec<BikeShortcut> {
+fn finalize_shortcuts(mut shortcuts: Vec<BikeShortcut>) -> Vec<BikeShortcut> {
     shortcuts.sort_by(|left, right| {
         (
             left.total_seconds,
@@ -497,7 +462,6 @@ fn finalize_shortcuts(
             ))
     });
     shortcuts.dedup();
-    stats.realizations_feasible = shortcuts.len();
     shortcuts
 }
 

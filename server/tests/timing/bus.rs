@@ -10,6 +10,7 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
+use metrics_exporter_prometheus::PrometheusBuilder;
 use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339, macros::datetime};
 use via_server::{
@@ -316,8 +317,10 @@ fn bus_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureR
     DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let _guard = ::metrics::set_default_local_recorder(&recorder);
     let pattern_ids = (0..20)
         .map(|index| TransitPatternId::new(format!("service-{index}")))
         .collect::<Vec<_>>();
@@ -351,6 +354,10 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
         results[0].as_ref().unwrap()[0].timing_reliability,
         TimingReliability::Reliable
     );
+    let rendered = recorder.handle().render();
+    assert!(rendered.contains("via_bus_timing_logical_departure_needs_total 20"));
+    assert!(rendered.contains("via_bus_timing_realtime_stops_requested_total 1"));
+    assert!(rendered.contains("via_bus_timing_realtime_http_requests_total 1"));
 }
 
 #[tokio::test]
