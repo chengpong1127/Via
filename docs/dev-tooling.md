@@ -77,7 +77,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- inspect nearby-sto
 
 ## Live route debugging
 
-`via-route` uses the same production runtime as the HTTP server, including live
+`via-route` uses the same runtime assembly as the HTTP server, including live
 TDX timing, Valhalla, and BikeShare availability. It accepts the same immutable
 static artifact:
 

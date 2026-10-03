@@ -1,7 +1,6 @@
 use time::OffsetDateTime;
 
 use crate::{
-    api::PlanningRequest,
     domain::{
         ids::BoardingPointId,
         journey::{Leg, LegMode, LiveStatusEvidence, Place, PlanningError},
@@ -12,14 +11,13 @@ use crate::{
     },
     routing::{
         JourneyMovementKind, JourneyPathMovement, JourneyPathStep, JourneyVariant,
-        WalkingMovementKind,
-        service::{PlanningContext, RoutingService},
+        WalkingMovementKind, model::JourneyPlanningContext,
     },
 };
 
-use super::transit::PreviousTransit;
+use super::{JourneyReconstructor, transit::PreviousTransit};
 
-pub(super) struct ReconstructedLegs {
+pub(super) struct JourneyAssembly {
     pub(super) legs: Vec<Leg>,
     pub(super) arrival_time: OffsetDateTime,
     pub(super) live_evidence: Vec<LiveStatusEvidence>,
@@ -42,12 +40,11 @@ pub(super) struct PendingTransfer {
 }
 
 pub(super) async fn assemble(
-    service: &RoutingService,
-    request: &PlanningRequest,
+    reconstructor: &JourneyReconstructor,
     variant: &JourneyVariant,
-    context: &PlanningContext,
-) -> Result<Option<ReconstructedLegs>, PlanningError> {
-    ReconstructionState::new(service, request, variant, context)
+    context: &JourneyPlanningContext<'_>,
+) -> Result<Option<JourneyAssembly>, PlanningError> {
+    ReconstructionState::new(reconstructor, variant, context)
         .assemble()
         .await
 }
@@ -58,14 +55,13 @@ enum TerminalEgressOutcome {
     Invalid,
 }
 
-pub(super) struct ReconstructionState<'a> {
-    pub(super) service: &'a RoutingService,
-    pub(super) request: &'a PlanningRequest,
+pub(super) struct ReconstructionState<'a, 'request> {
+    pub(super) reconstructor: &'a JourneyReconstructor,
     pub(super) variant: &'a JourneyVariant,
-    pub(super) context: &'a PlanningContext,
+    pub(super) context: &'a JourneyPlanningContext<'request>,
     pub(super) origin: Place,
     pub(super) destination: Place,
-    pub(super) result: ReconstructedLegs,
+    pub(super) result: JourneyAssembly,
     pub(super) pending_transfer: Option<PendingTransfer>,
     pub(super) previous_transit: Option<PreviousTransit>,
     pub(super) current_stop: Option<BoardingPointId>,
@@ -74,21 +70,19 @@ pub(super) struct ReconstructionState<'a> {
     pub(super) skip_next_step: bool,
 }
 
-impl<'a> ReconstructionState<'a> {
+impl<'a, 'request> ReconstructionState<'a, 'request> {
     fn new(
-        service: &'a RoutingService,
-        request: &'a PlanningRequest,
+        reconstructor: &'a JourneyReconstructor,
         variant: &'a JourneyVariant,
-        context: &'a PlanningContext,
+        context: &'a JourneyPlanningContext<'request>,
     ) -> Self {
         Self {
-            service,
-            request,
+            reconstructor,
             variant,
             context,
-            origin: service.origin_place(request),
-            destination: service.destination_place(request),
-            result: ReconstructedLegs {
+            origin: reconstructor.origin_place(context.request),
+            destination: reconstructor.destination_place(context.request),
+            result: JourneyAssembly {
                 legs: Vec::new(),
                 arrival_time: variant.skeleton().departure_at(),
                 live_evidence: Vec::new(),
@@ -111,7 +105,7 @@ impl<'a> ReconstructionState<'a> {
         }
     }
 
-    async fn assemble(mut self) -> Result<Option<ReconstructedLegs>, PlanningError> {
+    async fn assemble(mut self) -> Result<Option<JourneyAssembly>, PlanningError> {
         let steps = self.variant.path();
         for (step_index, step) in steps.iter().enumerate() {
             self.context.ensure_before_deadline()?;
@@ -152,11 +146,11 @@ impl<'a> ReconstructionState<'a> {
             return Ok(TerminalEgressOutcome::Invalid);
         }
         let from = self
-            .service
+            .reconstructor
             .stop_place(&from_stop)
             .ok_or(PlanningError::Internal)?;
         super::street::append_hydrated_walking(
-            self.service,
+            self.reconstructor,
             self.context,
             &from,
             &self.destination,

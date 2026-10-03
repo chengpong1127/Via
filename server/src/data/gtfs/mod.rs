@@ -67,12 +67,6 @@ pub struct GtfsBuildDiagnostics {
     pub coverage_by_mode: BTreeMap<String, GtfsModeCoverage>,
 }
 
-#[derive(Clone, Debug)]
-pub struct GtfsBuildOutput {
-    pub build: super::BuildOutput,
-    pub diagnostics: GtfsBuildDiagnostics,
-}
-
 pub(super) fn build_network(
     input: &Path,
 ) -> Result<(TransitNetwork, TdxProviderBindings, GtfsBuildDiagnostics), DataError> {

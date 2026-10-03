@@ -1,17 +1,11 @@
-use time::OffsetDateTime;
-
 use crate::{
     api::GeoCoordinate,
     domain::{transit::TransitMode, transit_runtime::TransitRuntime},
-    street::{
-        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+    street::{Coordinate, MatrixCell},
 };
 
 use super::{
-    model::{AccessPoint, EgressPoint},
-    service::RoutingLimits,
+    model::{AccessPoint, EgressPoint, JourneyPlanningLimits},
     topology::TransitTopologyIndex,
 };
 
@@ -21,136 +15,7 @@ pub(crate) struct StreetMetric {
     pub distance_metres: u32,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct AccessNetwork<'a> {
-    pub runtime: &'a TransitRuntime,
-    pub topology: &'a TransitTopologyIndex,
-}
-
-pub(crate) async fn discover_access_points(
-    street: &dyn StreetRouter,
-    data: AccessNetwork<'_>,
-    origin: GeoCoordinate,
-    departure_time: OffsetDateTime,
-    constraints: RoutingConstraints,
-    allowed_transit_modes: &[TransitMode],
-    limits: &RoutingLimits,
-) -> Result<Vec<AccessPoint>, StreetRoutingError> {
-    let AccessNetwork { runtime, topology } = data;
-    let origin = Coordinate::try_new(origin.latitude, origin.longitude)?;
-    let stops = nearby_stops(
-        runtime,
-        topology,
-        origin,
-        allowed_transit_modes,
-        limits.max_transit_access_stops,
-        limits,
-    );
-    if stops.is_empty() {
-        return Ok(Vec::new());
-    }
-    let matrix = street
-        .matrix(MatrixQuery {
-            orientation: MatrixOrientation::OneToMany,
-            travel_mode: StreetTravelMode::Walking,
-            sources: vec![origin],
-            targets: stops.iter().map(|(_, coordinate)| *coordinate).collect(),
-            constraints,
-        })
-        .await?;
-    let mut result = matrix
-        .cells
-        .first()
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(index, cell)| {
-            let (stop_id, _) = stops.get(index)?;
-            let metric = street_metric(cell)?;
-            (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
-                AccessPoint::new(
-                    stop_id.clone(),
-                    departure_time,
-                    departure_time + time::Duration::seconds(i64::from(metric.duration_seconds)),
-                    metric.duration_seconds,
-                    metric.distance_metres,
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    result.sort_by(|left, right| {
-        left.walking_seconds
-            .cmp(&right.walking_seconds)
-            .then(left.distance_metres.cmp(&right.distance_metres))
-            .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
-    });
-    Ok(prune_access_coverage(
-        topology,
-        result,
-        limits.max_transit_access_stops,
-    ))
-}
-
-pub(crate) async fn discover_egress_points(
-    street: &dyn StreetRouter,
-    data: AccessNetwork<'_>,
-    destination: GeoCoordinate,
-    constraints: RoutingConstraints,
-    allowed_transit_modes: &[TransitMode],
-    limits: &RoutingLimits,
-) -> Result<Vec<EgressPoint>, StreetRoutingError> {
-    let AccessNetwork { runtime, topology } = data;
-    let destination = Coordinate::try_new(destination.latitude, destination.longitude)?;
-    let stops = nearby_stops(
-        runtime,
-        topology,
-        destination,
-        allowed_transit_modes,
-        limits.max_transit_egress_stops,
-        limits,
-    );
-    if stops.is_empty() {
-        return Ok(Vec::new());
-    }
-    let matrix = street
-        .matrix(MatrixQuery {
-            orientation: MatrixOrientation::ManyToOne,
-            travel_mode: StreetTravelMode::Walking,
-            sources: stops.iter().map(|(_, coordinate)| *coordinate).collect(),
-            targets: vec![destination],
-            constraints,
-        })
-        .await?;
-    let mut result = matrix
-        .cells
-        .iter()
-        .enumerate()
-        .filter_map(|(index, cells)| {
-            let (stop_id, _) = stops.get(index)?;
-            let metric = street_metric(cells.first()?)?;
-            (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
-                EgressPoint::new(
-                    stop_id.clone(),
-                    metric.duration_seconds,
-                    metric.distance_metres,
-                )
-            })
-        })
-        .collect::<Vec<_>>();
-    result.sort_by(|left, right| {
-        left.walking_seconds
-            .cmp(&right.walking_seconds)
-            .then(left.distance_metres.cmp(&right.distance_metres))
-            .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
-    });
-    Ok(prune_egress_coverage(
-        topology,
-        result,
-        limits.max_transit_egress_stops,
-    ))
-}
-
-fn prune_access_coverage(
+pub(super) fn prune_access_coverage(
     topology: &TransitTopologyIndex,
     points: Vec<AccessPoint>,
     limit: usize,
@@ -169,7 +34,7 @@ fn prune_access_coverage(
     retained
 }
 
-fn prune_egress_coverage(
+pub(super) fn prune_egress_coverage(
     topology: &TransitTopologyIndex,
     points: Vec<EgressPoint>,
     limit: usize,
@@ -204,13 +69,13 @@ fn stop_coverage_dominates(
         })
 }
 
-fn nearby_stops(
+pub(super) fn nearby_stops(
     runtime: &TransitRuntime,
     topology: &TransitTopologyIndex,
     coordinate: Coordinate,
     allowed_transit_modes: &[TransitMode],
     limit: usize,
-    limits: &RoutingLimits,
+    limits: &JourneyPlanningLimits,
 ) -> Vec<(crate::domain::ids::BoardingPointId, Coordinate)> {
     let request_coordinate = GeoCoordinate {
         latitude: coordinate.latitude(),
@@ -303,7 +168,7 @@ pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RoutingLimits, nearby_stops, stop_coverage_dominates};
+    use super::{JourneyPlanningLimits, nearby_stops, stop_coverage_dominates};
     use crate::routing::topology::TransitTopologyIndex;
     use crate::{
         api::GeoCoordinate,
@@ -443,8 +308,8 @@ mod tests {
             Vec::new(),
         );
         let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-        let topology = TransitTopologyIndex::new(runtime.data());
-        let limits = RoutingLimits::default();
+        let topology = TransitTopologyIndex::new(runtime.network());
+        let limits = JourneyPlanningLimits::default();
         let nearby = nearby_stops(
             &runtime,
             &topology,
@@ -512,8 +377,8 @@ mod tests {
             Vec::new(),
         );
         let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-        let topology = TransitTopologyIndex::new(runtime.data());
-        let limits = RoutingLimits::default();
+        let topology = TransitTopologyIndex::new(runtime.network());
+        let limits = JourneyPlanningLimits::default();
         let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
 
         let metro_only = nearby_stops(

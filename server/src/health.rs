@@ -25,9 +25,9 @@ impl Health {
 
     pub async fn readiness(&self) -> ReadinessReport {
         let street_routing = self.street.healthy().await;
-        let revisions = self.transit.data().revisions();
+        let revisions = self.transit.revisions();
         let static_network = !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty();
-        let transit_artifact = self.transit.data().validate().is_ok();
+        let transit_artifact = self.transit.validate().is_ok();
         ReadinessReport {
             ready: street_routing && static_network && transit_artifact,
             street_routing,

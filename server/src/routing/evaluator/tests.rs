@@ -85,8 +85,8 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> T
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &TransitQuery) -> RetainedCorridorSet {
-    let topology = TransitTopologyIndex::new(network.data());
-    let transfers = TransferShortcutIndex::from_network(network.data());
+    let topology = TransitTopologyIndex::new(network.network());
+    let transfers = TransferShortcutIndex::from_network(network.network());
     generate(network, &topology, &transfers, query).0
 }
 

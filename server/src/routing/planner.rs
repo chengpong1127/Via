@@ -2,18 +2,27 @@ use std::{sync::Arc, time::Instant};
 
 use time::{Duration, OffsetDateTime};
 
+use crate::api::GeoCoordinate;
 use crate::domain::{
     bikeshare::BikeShareNetwork,
+    ids::BoardingPointId,
+    transit::TransitMode,
     transit_runtime::TransitRuntime,
     transit_timing::{DepartureQuery, TimingSnapshotLoader},
 };
-use crate::street::{Coordinate, StreetPath};
-use crate::{providers::BikeAvailabilitySource, street::StreetRouter};
+use crate::providers::BikeAvailabilitySource;
+use crate::street::{
+    Coordinate, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetPath, StreetRouter,
+    StreetRoutingError, StreetTravelMode,
+};
 
 use super::{
     bike::{BikePlanningStats, BikeSegmentPlanner},
     evaluator::{self, Phase2EvaluationStats},
-    model::{PlanningDeadline, RoutingError, TransitQuery},
+    model::{
+        AccessPoint, EgressPoint, JourneyPlanningLimits, PlanningDeadline, RoutingError,
+        TransitQuery,
+    },
     static_search,
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
@@ -36,7 +45,7 @@ pub struct TransitPlannerStats {
     pub phase1: static_search::StaticSearchStats,
 }
 
-pub(crate) struct DirectBikeJourney {
+pub(crate) struct DirectBikeCandidate {
     pub path: StreetPath,
     pub origin: Coordinate,
     pub destination: Coordinate,
@@ -51,14 +60,10 @@ struct RequestSnapshots {
 }
 
 impl TransitPlanner {
-    pub(crate) fn topology(&self) -> &TransitTopologyIndex {
-        &self.topology
-    }
-
     pub fn new(network: Arc<TransitRuntime>, timing: Arc<dyn TimingSnapshotLoader>) -> Self {
         Self {
-            topology: Arc::new(TransitTopologyIndex::new(network.data())),
-            transfers: Arc::new(TransferShortcutIndex::from_network(network.data())),
+            topology: Arc::new(TransitTopologyIndex::new(network.network())),
+            transfers: Arc::new(TransferShortcutIndex::from_network(network.network())),
             network,
             timing,
             bike: None,
@@ -79,6 +84,131 @@ impl TransitPlanner {
         self
     }
 
+    pub(crate) async fn discover_access_points(
+        &self,
+        street: &dyn StreetRouter,
+        origin: GeoCoordinate,
+        departure_time: OffsetDateTime,
+        constraints: RoutingConstraints,
+        allowed_transit_modes: &[TransitMode],
+        limits: &JourneyPlanningLimits,
+    ) -> Result<Vec<AccessPoint>, StreetRoutingError> {
+        let origin = Coordinate::try_new(origin.latitude, origin.longitude)?;
+        let stops = super::access::nearby_stops(
+            &self.network,
+            &self.topology,
+            origin,
+            allowed_transit_modes,
+            limits.max_transit_access_stops,
+            limits,
+        );
+        if stops.is_empty() {
+            return Ok(Vec::new());
+        }
+        let matrix = street
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::OneToMany,
+                travel_mode: StreetTravelMode::Walking,
+                sources: vec![origin],
+                targets: stops.iter().map(|(_, coordinate)| *coordinate).collect(),
+                constraints,
+            })
+            .await?;
+        let mut result = matrix
+            .cells
+            .first()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(index, cell)| {
+                let (stop_id, _) = stops.get(index)?;
+                let metric = super::access::street_metric(cell)?;
+                (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
+                    AccessPoint::new(
+                        stop_id.clone(),
+                        departure_time,
+                        departure_time + Duration::seconds(i64::from(metric.duration_seconds)),
+                        metric.duration_seconds,
+                        metric.distance_metres,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        result.sort_by(|left, right| {
+            left.walking_seconds
+                .cmp(&right.walking_seconds)
+                .then(left.distance_metres.cmp(&right.distance_metres))
+                .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
+        });
+        Ok(super::access::prune_access_coverage(
+            &self.topology,
+            result,
+            limits.max_transit_access_stops,
+        ))
+    }
+
+    pub(crate) async fn discover_egress_points(
+        &self,
+        street: &dyn StreetRouter,
+        destination: GeoCoordinate,
+        constraints: RoutingConstraints,
+        allowed_transit_modes: &[TransitMode],
+        limits: &JourneyPlanningLimits,
+    ) -> Result<Vec<EgressPoint>, StreetRoutingError> {
+        let destination = Coordinate::try_new(destination.latitude, destination.longitude)?;
+        let stops = super::access::nearby_stops(
+            &self.network,
+            &self.topology,
+            destination,
+            allowed_transit_modes,
+            limits.max_transit_egress_stops,
+            limits,
+        );
+        if stops.is_empty() {
+            return Ok(Vec::new());
+        }
+        let matrix = street
+            .matrix(MatrixQuery {
+                orientation: MatrixOrientation::ManyToOne,
+                travel_mode: StreetTravelMode::Walking,
+                sources: stops.iter().map(|(_, coordinate)| *coordinate).collect(),
+                targets: vec![destination],
+                constraints,
+            })
+            .await?;
+        let mut result = matrix
+            .cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cells)| {
+                let (stop_id, _) = stops.get(index)?;
+                let metric = super::access::street_metric(cells.first()?)?;
+                (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
+                    EgressPoint::new(
+                        stop_id.clone(),
+                        metric.duration_seconds,
+                        metric.distance_metres,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        result.sort_by(|left, right| {
+            left.walking_seconds
+                .cmp(&right.walking_seconds)
+                .then(left.distance_metres.cmp(&right.distance_metres))
+                .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
+        });
+        Ok(super::access::prune_egress_coverage(
+            &self.topology,
+            result,
+            limits.max_transit_egress_stops,
+        ))
+    }
+
+    pub(crate) fn modes_at_stop(&self, stop_id: &BoardingPointId) -> Vec<TransitMode> {
+        super::access::modes_at_stop(&self.network, &self.topology, stop_id)
+    }
+
     pub async fn plan_with_stats(
         &self,
         query: TransitQuery,
@@ -89,7 +219,7 @@ impl TransitPlanner {
     pub(crate) async fn plan_with_stats_and_direct(
         &self,
         query: TransitQuery,
-        direct_bike_journey: Option<DirectBikeJourney>,
+        direct_bike_journey: Option<DirectBikeCandidate>,
     ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
         let (corridor, static_stats) = self.execute_phase1(&query)?;
         let mut planner_stats = TransitPlannerStats {
@@ -356,7 +486,7 @@ impl TransitPlanner {
     async fn realize_direct_bike(
         &self,
         query: &TransitQuery,
-        direct: Option<&DirectBikeJourney>,
+        direct: Option<&DirectBikeCandidate>,
         bike_snapshot: Option<&crate::domain::bikeshare::BikeAvailabilitySnapshot>,
     ) -> Result<(Vec<super::variant::BikeShortcut>, BikePlanningStats), RoutingError> {
         let mut direct_shortcuts = Vec::new();
@@ -383,7 +513,7 @@ impl TransitPlanner {
 
     pub(crate) async fn plan_direct_bike(
         &self,
-        direct: DirectBikeJourney,
+        direct: DirectBikeCandidate,
         deadline: PlanningDeadline,
     ) -> Vec<JourneyVariant> {
         if deadline.is_elapsed() {
@@ -439,7 +569,7 @@ fn log_phase2_metrics(
 }
 
 fn direct_bike_variants(
-    direct: DirectBikeJourney,
+    direct: DirectBikeCandidate,
     shortcuts: Vec<super::variant::BikeShortcut>,
 ) -> Vec<JourneyVariant> {
     let Ok(skeleton) =

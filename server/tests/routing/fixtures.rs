@@ -16,11 +16,11 @@ use via_server::{
     providers::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
         timing::{
-            BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxProviderBindings,
+            BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxProviderBindings,
             ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{RoutingLimits, RoutingService, transfers::TransferShortcutIndex},
+    routing::{JourneyPlanningLimits, RoutingService, transfers::TransferShortcutIndex},
     street::{Coordinate, FakeStreetRouter},
     tdx::TdxClient,
 };
@@ -99,7 +99,7 @@ pub(crate) async fn route_body(
         realtime,
         body,
         None,
-        RoutingLimits::default(),
+        JourneyPlanningLimits::default(),
         network(),
     )
     .await
@@ -117,7 +117,7 @@ pub(crate) async fn route_body_with_network(
         realtime,
         body,
         None,
-        RoutingLimits::default(),
+        JourneyPlanningLimits::default(),
         network,
     )
     .await
@@ -136,7 +136,7 @@ pub(crate) async fn route_body_with_bike(
         realtime,
         body,
         Some((bike_network, availability_source)),
-        RoutingLimits::default(),
+        JourneyPlanningLimits::default(),
         network(),
     )
     .await
@@ -147,7 +147,7 @@ pub(crate) async fn route_body_with_limits(
     street: FakeStreetRouter,
     realtime: FixtureRealtime,
     body: Value,
-    limits: RoutingLimits,
+    limits: JourneyPlanningLimits,
 ) -> Result<Value, PlanningError> {
     route_body_inner(street, realtime, body, None, limits, network()).await
 }
@@ -157,7 +157,7 @@ async fn route_body_inner(
     realtime: FixtureRealtime,
     body: Value,
     bike: Option<(Arc<BikeShareNetwork>, Arc<dyn BikeAvailabilitySource>)>,
-    limits: RoutingLimits,
+    limits: JourneyPlanningLimits,
     transit_network: TransitNetwork,
 ) -> Result<Value, PlanningError> {
     let request: PlanningRequest = serde_json::from_value(body).unwrap();
@@ -181,7 +181,7 @@ async fn route_body_inner(
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
     let tra = Arc::new(TraDepartureSource::new(network.clone()));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
-    let departure = Arc::new(DepartureDispatcher::new(
+    let departure = Arc::new(DepartureResolver::new(
         network.clone(),
         vec![
             bus as Arc<dyn TransitDepartureSource>,
@@ -205,7 +205,7 @@ async fn route_body_inner(
         availability_source,
         limits,
     );
-    Ok(serde_json::to_value(service.route(request).await?).unwrap())
+    Ok(serde_json::to_value(service.plan(request).await?).unwrap())
 }
 
 pub(crate) fn option_for_patterns<'a>(body: &'a Value, services: &[&str]) -> &'a Value {

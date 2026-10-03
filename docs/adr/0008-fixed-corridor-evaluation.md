@@ -74,5 +74,6 @@ station metadata and bounded directional walking links. Without those inputs,
 the BikeShare artifact is empty. TDX remains the source of request-time station
 availability.
 
-The former routing-algorithm trait, Trip-Based implementation, departure
-resolver, and asynchronous transfer resolver are not part of the architecture.
+Runtime wiring uses a concrete `DepartureResolver` for mode-owned timing
+sources. The former routing-algorithm trait, Trip-Based implementation, and
+asynchronous transfer resolver are not part of the architecture.

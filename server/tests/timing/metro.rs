@@ -14,7 +14,7 @@ use via_server::{
         transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
-    providers::timing::{DepartureDispatcher, MetroDepartureSource, TransitDepartureSource},
+    providers::timing::{DepartureResolver, MetroDepartureSource, TransitDepartureSource},
 };
 
 fn network(id: &str, first: &str, second: &str) -> TransitNetwork {
@@ -86,10 +86,10 @@ fn trip(id: &str, pattern_id: &str, departure: u32) -> TransitTrip {
     )
 }
 
-fn resolver(network: TransitNetwork) -> DepartureDispatcher {
+fn resolver(network: TransitNetwork) -> DepartureResolver {
     let network = Arc::new(TransitRuntime::new(Arc::new(network)));
     let metro = Arc::new(MetroDepartureSource::new(network.clone()));
-    DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>])
+    DepartureResolver::new(network, vec![metro as Arc<dyn TransitDepartureSource>])
 }
 
 #[tokio::test]

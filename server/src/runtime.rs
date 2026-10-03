@@ -1,7 +1,7 @@
 use std::{error::Error, sync::Arc, time::Duration};
 
 use crate::{
-    config::ProductionRuntimeConfig,
+    config::RuntimeConfig,
     data::ViaStatic,
     domain::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
@@ -9,22 +9,22 @@ use crate::{
     health::{DependencyHealth, Health},
     providers::tdx_bindings::TdxProviderBindings,
     providers::{
-        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, TdxBikeAvailabilitySource,
+        BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxBikeAvailabilitySource,
         ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
         TransitDepartureSource, ValhallaConfig, ValhallaProvider,
         bikeshare::BikeAvailabilitySource,
     },
-    routing::{RoutingLimits, RoutingService},
+    routing::{JourneyPlanningLimits, RoutingService},
     street::StreetRouter,
     tdx::TdxClient,
 };
 
-pub struct RoutingRuntime {
+pub struct ViaRuntime {
     pub routing: RoutingService,
     pub health: Health,
 }
 
-pub struct RoutingRuntimeDependencies {
+pub struct ViaRuntimeDependencies {
     pub transit_network: TransitNetwork,
     pub provider_bindings: TdxProviderBindings,
     pub bike_share_network: Arc<BikeShareNetwork>,
@@ -32,17 +32,17 @@ pub struct RoutingRuntimeDependencies {
     pub street_health: Arc<dyn DependencyHealth>,
     pub tdx: Option<Arc<TdxClient>>,
     pub bike_availability: Arc<dyn BikeAvailabilitySource>,
-    pub limits: RoutingLimits,
+    pub limits: JourneyPlanningLimits,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ProductionRuntimeOptions {
-    pub limits: RoutingLimits,
+pub struct RuntimeOptions {
+    pub limits: JourneyPlanningLimits,
     pub valhalla_request_timeout: Option<Duration>,
 }
 
-impl RoutingRuntime {
-    pub fn from_dependencies(dependencies: RoutingRuntimeDependencies) -> Self {
+impl ViaRuntime {
+    pub fn from_dependencies(dependencies: ViaRuntimeDependencies) -> Self {
         let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
         let provider_bindings = Arc::new(dependencies.provider_bindings);
         let bus = Arc::new(
@@ -60,7 +60,7 @@ impl RoutingRuntime {
                 .with_tdx(dependencies.tdx),
         );
         let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
-        let departure_resolver = Arc::new(DepartureDispatcher::new(
+        let departure_resolver = Arc::new(DepartureResolver::new(
             transit_runtime.clone(),
             vec![
                 bus as Arc<dyn TransitDepartureSource>,
@@ -82,11 +82,11 @@ impl RoutingRuntime {
     }
 }
 
-pub async fn build_production_runtime(
+pub async fn build_runtime(
     via_static: ViaStatic,
-    options: ProductionRuntimeOptions,
-    config: ProductionRuntimeConfig,
-) -> Result<RoutingRuntime, Box<dyn Error>> {
+    options: RuntimeOptions,
+    config: RuntimeConfig,
+) -> Result<ViaRuntime, Box<dyn Error>> {
     via_static.validate()?;
     let mut valhalla_config = ValhallaConfig::local();
     if let Some(timeout) = options.valhalla_request_timeout {
@@ -110,7 +110,7 @@ pub async fn build_production_runtime(
     let bike_availability: Arc<dyn BikeAvailabilitySource> = Arc::new(
         TdxBikeAvailabilitySource::new(bike_share_network.clone(), tdx.clone()),
     );
-    let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
+    let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
         transit_network: via_static.transit,
         provider_bindings: bindings,
         bike_share_network,

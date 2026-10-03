@@ -9,7 +9,7 @@ pub use bikeshare::{
     UnavailableBikeAvailabilitySource,
 };
 pub use timing::{
-    BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
+    BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
     TraDepartureSource, TransitDepartureSource,
 };
 pub use valhalla::{

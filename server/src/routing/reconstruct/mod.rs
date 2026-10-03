@@ -5,32 +5,58 @@ mod geometry;
 mod street;
 mod transit;
 
+use std::sync::Arc;
+
 use crate::{
     api::PlanningRequest,
     domain::{
+        bikeshare::BikeShareNetwork,
+        ids::BikeStationId,
         journey::{JourneyOption, Place, PlanningError},
-        ranking::RankedJourney,
+        ranking::{RankedJourney, RankingCandidate},
+        transit_runtime::TransitRuntime,
     },
+    street::StreetRouter,
 };
 
-use super::{
-    service::{PlanningContext, ReconstructedCandidate, RoutingService},
-    variant::JourneyVariant,
-};
+use super::{model::JourneyPlanningContext, variant::JourneyVariant};
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
 const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
 
 pub(super) use geometry::{taipei_now, to_street_coordinate};
 
-impl RoutingService {
-    pub(super) async fn reconstruct_multimodal_variant(
+#[derive(Clone)]
+pub(super) struct JourneyReconstructor {
+    street_routing: Arc<dyn StreetRouter>,
+    transit_runtime: Arc<TransitRuntime>,
+    bike_share_network: Arc<BikeShareNetwork>,
+}
+
+pub(super) struct JourneyCandidate {
+    pub(super) ranking: RankingCandidate,
+    pub(super) option: JourneyOption,
+}
+
+impl JourneyReconstructor {
+    pub(super) fn new(
+        street_routing: Arc<dyn StreetRouter>,
+        transit_runtime: Arc<TransitRuntime>,
+        bike_share_network: Arc<BikeShareNetwork>,
+    ) -> Self {
+        Self {
+            street_routing,
+            transit_runtime,
+            bike_share_network,
+        }
+    }
+
+    pub(super) async fn reconstruct(
         &self,
-        request: &PlanningRequest,
         variant: &JourneyVariant,
-        context: &PlanningContext,
-    ) -> Result<Option<ReconstructedCandidate>, PlanningError> {
-        let Some(assembled) = assembler::assemble(self, request, variant, context).await? else {
+        context: &JourneyPlanningContext<'_>,
+    ) -> Result<Option<JourneyCandidate>, PlanningError> {
+        let Some(assembled) = assembler::assemble(self, variant, context).await? else {
             return Ok(None);
         };
         if context
@@ -63,8 +89,8 @@ impl RoutingService {
             matching_key,
             variant.skeleton().departure_at().unix_timestamp()
         );
-        Ok(Some(ReconstructedCandidate {
-            ranking: crate::domain::ranking::RankingCandidate {
+        Ok(Some(JourneyCandidate {
+            ranking: RankingCandidate {
                 stable_key,
                 departure_epoch_seconds: variant.skeleton().departure_at().unix_timestamp(),
                 arrival_epoch_seconds: assembled.arrival_time.unix_timestamp(),
@@ -108,10 +134,7 @@ impl RoutingService {
             .map(transit::transit_place)
     }
 
-    pub(super) fn bike_station_place(
-        &self,
-        station_id: &crate::domain::ids::BikeStationId,
-    ) -> Option<Place> {
+    pub(super) fn bike_station_place(&self, station_id: &BikeStationId) -> Option<Place> {
         self.bike_share_network
             .station(station_id)
             .map(|station| Place {

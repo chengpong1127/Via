@@ -7,26 +7,38 @@ routing, and provider-neutral API models.
 ## Request flow
 
 ```text
+build_runtime
+  → ViaRuntime
+       ├─ routing: RoutingService
+       └─ health: Health
+  ↓
 PlanningRequest
-  → RoutingService
-  ├─ direct walking
-  └─ mode-aware transit access / egress
-       → TransitPlanner
-       → Phase 1: bounded static Top-K structural corridors
-       → one request-local TimingSnapshot
-       → optional BikeAvailabilitySnapshot
-       → Phase 2: forward fixed-corridor time-dependent evaluation
-            ├─ Transit: equivalent Pattern and departure choices
-            ├─ Walking: retained surface movement
-            └─ YouBike: optimistic screening, then lazy street routing
-       → reconstruct → rank → JourneyOption
+  → RoutingService.plan()
+       ├─ direct alternatives
+       │    └─ direct walking and a direct BikeShare seed
+       ├─ transit alternatives
+       │    ├─ TransitPlanner discovers access and egress points
+       │    ├─ Phase 1: bounded static Top-K structural corridors
+       │    ├─ one request-local TimingSnapshot
+       │    ├─ optional BikeAvailabilitySnapshot
+       │    └─ Phase 2: forward fixed-corridor evaluation
+       ├─ merge stage outputs and failures
+       ├─ JourneyReconstructor assembles candidates
+       └─ validate failures → rank → PlanningOutcome
 ```
 
-`TransitPlanner` is the sole concrete transit planner. Phase 2 evaluates each
-retained Phase 1 corridor in order. It cannot search transit topology, add an
-anchor, or combine steps from different corridors. There is no routing
-algorithm interface, Trip-Based implementation, route graph, or wrapper
-planning service.
+`ViaRuntime` is the shared concrete application assembly used by both the HTTP
+server and `via-route`. `RoutingService` owns the complete planning use
+case and combines explicit direct and transit stage outputs. Its request-scoped
+`JourneyPlanningContext` and `JourneyPlanningLimits` live in `routing/model.rs`.
+
+`TransitPlanner` owns transit access and egress discovery as well as the two
+planning phases. Its topology and transfer indexes stay private. Phase 2
+evaluates each retained Phase 1 corridor in order. It cannot add an anchor or
+combine steps from different corridors. `JourneyReconstructor` owns place
+lookups, street hydration, BikeShare station lookup, and candidate assembly;
+it depends on the street router, transit runtime, and BikeShare network rather
+than on `RoutingService`.
 
 ## Static corridor discovery
 
@@ -48,6 +60,12 @@ Retained corridors contain equivalent transit legs, timing positions, and
 selected Bus stops. Equivalent legs share mode and boarding/alighting points;
 Phase 2 can choose any matching Pattern and departure while preserving the
 retained structural steps.
+
+`TransitRuntime::network()` is the explicit raw immutable network access used
+by static search, timing providers, and data inspection. Health reads revisions
+and validates through focused `TransitRuntime` operations. Data builds return
+one `BuildOutput`; `BuildDiagnostics` groups GTFS, transfer, and BikeShare
+diagnostics.
 
 ## Request-local evaluation
 

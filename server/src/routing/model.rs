@@ -1,10 +1,15 @@
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use tokio::time::Instant;
+
+use crate::{
+    api::PlanningRequest,
+    domain::{journey::PlanningError, normalize_to_taipei, transit::TransitMode},
+    street::{RoutingConstraints, RoutingTime, RoutingTimeKind},
+};
 
 use crate::domain::{
     ids::BoardingPointId,
     realtime::NormalizedRealtimeValue,
-    transit::TransitMode,
     transit_timing::{DepartureError, EffectiveTrip, TimingBasis, TimingReliability},
 };
 
@@ -117,6 +122,118 @@ impl PlannerLimits {
             max_phase2_expansions: self.max_phase2_expansions.max(1),
             max_departures_per_query: self.max_departures_per_query.max(1),
             max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct JourneyPlanningLimits {
+    pub planner: PlannerLimits,
+    pub request_timeout: std::time::Duration,
+    pub max_concurrent_requests: usize,
+    pub max_transit_access_stops: usize,
+    pub max_transit_egress_stops: usize,
+    pub max_walking_radius_metres: u32,
+    pub max_walking_seconds: u32,
+}
+
+impl Default for JourneyPlanningLimits {
+    fn default() -> Self {
+        Self {
+            planner: PlannerLimits::default(),
+            request_timeout: std::time::Duration::from_secs(5),
+            max_concurrent_requests: 32,
+            max_transit_access_stops: 24,
+            max_transit_egress_stops: 24,
+            max_walking_radius_metres: 2_000,
+            max_walking_seconds: 30 * 60,
+        }
+    }
+}
+
+impl JourneyPlanningLimits {
+    pub(crate) fn normalized(self) -> Self {
+        Self {
+            planner: self.planner.normalized(),
+            request_timeout: self.request_timeout,
+            max_concurrent_requests: self.max_concurrent_requests.max(1),
+            max_transit_access_stops: self.max_transit_access_stops.max(1),
+            max_transit_egress_stops: self.max_transit_egress_stops.max(1),
+            max_walking_radius_metres: self.max_walking_radius_metres.max(1),
+            max_walking_seconds: self.max_walking_seconds.max(1),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct JourneyPlanningContext<'a> {
+    pub(crate) request: &'a PlanningRequest,
+    pub(crate) search_start: OffsetDateTime,
+    pub(crate) latest_arrival: Option<OffsetDateTime>,
+    pub(crate) deadline: PlanningDeadline,
+}
+
+impl<'a> JourneyPlanningContext<'a> {
+    pub(crate) fn new(
+        request: &'a PlanningRequest,
+        request_started_at: OffsetDateTime,
+        max_journey_duration_seconds: u32,
+        deadline: PlanningDeadline,
+    ) -> Result<Self, PlanningError> {
+        let effective_search_time = request
+            .departure_setting
+            .effective_search_time(request_started_at);
+        let (search_start, latest_arrival) = match request.departure_setting {
+            crate::api::DepartureSetting::ArriveBy { .. } => (
+                effective_search_time - Duration::seconds(i64::from(max_journey_duration_seconds)),
+                Some(effective_search_time),
+            ),
+            crate::api::DepartureSetting::DepartNow
+            | crate::api::DepartureSetting::DepartAt { .. } => (effective_search_time, None),
+        };
+        Ok(Self {
+            request,
+            search_start,
+            latest_arrival,
+            deadline,
+        })
+    }
+
+    pub(crate) fn ensure_before_deadline(&self) -> Result<(), PlanningError> {
+        if self.deadline.is_elapsed() {
+            Err(PlanningError::TemporarilyUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn local_time(&self, instant: OffsetDateTime) -> time::PrimitiveDateTime {
+        let instant = normalize_to_taipei(instant);
+        instant.date().with_time(instant.time())
+    }
+
+    pub(crate) fn constraints(
+        &self,
+        instant: OffsetDateTime,
+        kind: RoutingTimeKind,
+    ) -> RoutingConstraints {
+        RoutingConstraints {
+            time: Some(RoutingTime {
+                kind,
+                local_date_time: self.local_time(instant),
+            }),
+            max_distance: None,
+        }
+    }
+
+    pub(crate) fn access_constraints(&self) -> RoutingConstraints {
+        self.constraints(self.search_start, RoutingTimeKind::DepartAt)
+    }
+
+    pub(crate) fn direct_constraints(&self) -> RoutingConstraints {
+        match self.latest_arrival {
+            Some(latest_arrival) => self.constraints(latest_arrival, RoutingTimeKind::ArriveBy),
+            None => self.constraints(self.search_start, RoutingTimeKind::DepartAt),
         }
     }
 }

@@ -9,7 +9,7 @@ use crate::domain::{
 };
 
 use super::{
-    assembler::{PendingTransfer, ReconstructedLegs, ReconstructionState},
+    assembler::{JourneyAssembly, PendingTransfer, ReconstructionState},
     evidence, geometry,
 };
 
@@ -20,7 +20,7 @@ pub(super) struct PreviousTransit {
     mode: TransitMode,
 }
 
-impl ReconstructionState<'_> {
+impl ReconstructionState<'_, '_> {
     pub(super) fn append_transit(
         &mut self,
         trip: &EffectiveTrip,
@@ -41,18 +41,18 @@ impl ReconstructionState<'_> {
             return Ok(false);
         }
         let pattern_data = self
-            .service
+            .reconstructor
             .transit_runtime
             .pattern(&trip.pattern_id)
             .ok_or(PlanningError::Internal)?;
-        let route_data = self.service.transit_runtime.route_of(pattern_data);
+        let route_data = self.reconstructor.transit_runtime.route_of(pattern_data);
         let boarding = self
-            .service
+            .reconstructor
             .transit_runtime
             .stop(&board.stop_id)
             .ok_or(PlanningError::Internal)?;
         let alighting = self
-            .service
+            .reconstructor
             .transit_runtime
             .stop(&alight.stop_id)
             .ok_or(PlanningError::Internal)?;
@@ -90,7 +90,10 @@ impl ReconstructionState<'_> {
                 PendingTransfer {
                     from_leg_id: previous.leg_id.clone(),
                     from_arrival: previous.arrival,
-                    duration_seconds: self.service.transit_runtime.same_stop_transfer_seconds(),
+                    duration_seconds: self
+                        .reconstructor
+                        .transit_runtime
+                        .same_stop_transfer_seconds(),
                     from_mode: Some(previous.mode),
                 },
                 route_data.mode,
@@ -119,7 +122,7 @@ impl ReconstructionState<'_> {
 }
 
 pub(super) fn register_pending_transfer(
-    result: &ReconstructedLegs,
+    result: &JourneyAssembly,
     pending_transfer: &mut Option<PendingTransfer>,
     connector_start: usize,
 ) {
@@ -154,7 +157,7 @@ pub(super) fn register_pending_transfer(
 }
 
 fn record_transfer(
-    result: &mut ReconstructedLegs,
+    result: &mut JourneyAssembly,
     pending: PendingTransfer,
     to_mode: TransitMode,
     departure: OffsetDateTime,

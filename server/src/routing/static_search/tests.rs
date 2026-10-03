@@ -114,8 +114,8 @@ fn query(
 
 fn run(network: &TransitNetwork, query: &TransitQuery) -> RetainedCorridorSet {
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-    let topology = TransitTopologyIndex::new(runtime.data());
-    let transfers = TransferShortcutIndex::from_network(runtime.data());
+    let topology = TransitTopologyIndex::new(runtime.network());
+    let transfers = TransferShortcutIndex::from_network(runtime.network());
     generate(&runtime, &topology, &transfers, query).0
 }
 

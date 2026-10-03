@@ -20,11 +20,12 @@ pub mod fetch;
 pub mod gtfs;
 pub mod static_transfers;
 pub mod via_static;
-pub use gtfs::{GtfsBuildDiagnostics, GtfsBuildOutput, GtfsModeCoverage};
+pub use gtfs::{GtfsBuildDiagnostics, GtfsModeCoverage};
 pub use via_static::ViaStatic;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildDiagnostics {
+    pub gtfs: GtfsBuildDiagnostics,
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
 }
@@ -59,7 +60,7 @@ pub async fn build_from_fetch_snapshot(
     input: &Path,
     output: &Path,
     street: &dyn StreetRouter,
-) -> Result<GtfsBuildOutput, DataError> {
+) -> Result<BuildOutput, DataError> {
     let fetch_inputs = read_fetch_inputs(input)?;
     let bike_share = bikeshare_catalog::parse_tdx_station_catalog(
         &fetch_inputs.taipei_stations,
@@ -82,8 +83,7 @@ pub async fn build_from_fetch_snapshot(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let (mut network, provider_bindings, diagnostics) =
-        gtfs::build_network(&fetch_inputs.gtfs_path)?;
+    let (mut network, provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
     let static_transfers =
         static_transfers::enrich_network_with_static_transfers(&mut network, street).await?;
     let (bike_share, bike_access) = if bike_share.stations.is_empty() {
@@ -98,7 +98,7 @@ pub async fn build_from_fetch_snapshot(
         .await?;
         (network, Some(diagnostics))
     };
-    let build = finish_gtfs_build(
+    finish_gtfs_build(
         output,
         network,
         provider_bindings,
@@ -106,11 +106,11 @@ pub async fn build_from_fetch_snapshot(
         fetch_inputs.manifest.fetched_at,
         sources,
         BuildDiagnostics {
+            gtfs,
             static_transfers: Some(static_transfers),
             bike_access,
         },
-    )?;
-    Ok(GtfsBuildOutput { build, diagnostics })
+    )
 }
 
 struct FetchInputs {

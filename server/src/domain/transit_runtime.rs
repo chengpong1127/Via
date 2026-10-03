@@ -10,8 +10,8 @@ use super::{
     location::{GeoCoordinate, METRES_PER_DEGREE},
     normalize_to_taipei, taipei_offset,
     transit::{
-        ServiceCalendar, TransitFrequency, TransitNetwork, TransitPattern, TransitRoute,
-        TransitStop, TransitTrip,
+        ServiceCalendar, TransitFrequency, TransitNetwork, TransitNetworkValidationError,
+        TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
 };
 
@@ -30,8 +30,16 @@ impl TransitRuntime {
         Self { network, indexes }
     }
 
-    pub fn data(&self) -> &TransitNetwork {
+    pub fn network(&self) -> &TransitNetwork {
         &self.network
+    }
+
+    pub fn revisions(&self) -> (&str, &str) {
+        self.network.revisions()
+    }
+
+    pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
+        self.network.validate()
     }
 
     pub fn nearest_stops(&self, coordinate: GeoCoordinate, limit: usize) -> Vec<&TransitStop> {

@@ -18,7 +18,7 @@ use via_server::domain::{
     },
 };
 use via_server::providers::timing::{
-    DepartureDispatcher, ThsrDepartureSource, TransitDepartureSource,
+    DepartureResolver, ThsrDepartureSource, TransitDepartureSource,
 };
 
 #[derive(Clone)]
@@ -114,7 +114,7 @@ fn calendar() -> ServiceCalendar {
 }
 
 #[tokio::test]
-async fn dispatcher_routes_by_mode_and_restores_original_order() {
+async fn departure_resolver_routes_by_mode_and_restores_original_order() {
     let services = vec![
         service("bus", TransitMode::Bus),
         service("metro", TransitMode::Metro),
@@ -135,7 +135,7 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
     let metro_calls = Arc::new(Mutex::new(Vec::new()));
     let tra_calls = Arc::new(Mutex::new(Vec::new()));
     let thsr_calls = Arc::new(Mutex::new(Vec::new()));
-    let dispatcher = DepartureDispatcher::new(
+    let resolver = DepartureResolver::new(
         network,
         vec![
             Arc::new(RecordingSource {
@@ -169,7 +169,7 @@ async fn dispatcher_routes_by_mode_and_restores_original_order() {
         })
         .collect();
 
-    let results = dispatcher.next_departures_batch(queries).await;
+    let results = resolver.next_departures_batch(queries).await;
 
     let ids = results
         .into_iter()
@@ -237,10 +237,9 @@ async fn thsr_static_timetable_is_reliable() {
     );
     let network = Arc::new(TransitRuntime::new(network));
     let source = Arc::new(ThsrDepartureSource::new(network.clone()));
-    let dispatcher =
-        DepartureDispatcher::new(network, vec![source as Arc<dyn TransitDepartureSource>]);
+    let resolver = DepartureResolver::new(network, vec![source as Arc<dyn TransitDepartureSource>]);
 
-    let result = dispatcher
+    let result = resolver
         .next_departures(DepartureQuery::new(
             pattern_id,
             board,

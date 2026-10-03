@@ -46,7 +46,7 @@ impl StaticPhase1PatternIndex {
         deadline: Option<PlanningDeadline>,
     ) -> Self {
         let mut index = Self::default();
-        for pattern in &network.data().patterns {
+        for pattern in &network.network().patterns {
             if deadline.is_some_and(|deadline| deadline.is_elapsed()) {
                 stats.deadline_exceeded = true;
                 break;

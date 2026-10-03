@@ -45,16 +45,22 @@ Configuration:
 ## Current routing boundary
 
 ```text
-PlanningRequest → RoutingService → street access / egress
+build_runtime → ViaRuntime
+→ HTTP app / via-route → RoutingService.plan()
+→ direct alternatives + TransitPlanner access / egress
 → TransitPlanner
 → Phase 1: static Top-K structural corridors
 → request-local TimingSnapshot + optional BikeAvailabilitySnapshot
 → Phase 2: fixed corridor evaluation (Transit / Walk / YouBike)
-→ reconstruct → rank → JourneyOption[]
+→ JourneyReconstructor → merge → rank → JourneyOption[]
 ```
 
-`RoutingService` owns the concrete `TransitPlanner`. The planner first retains
-one global Top-K set of structurally distinct corridors across selected modes.
+`ViaRuntime` is the shared assembly used by the HTTP server and `via-route`.
+`RoutingService` owns the application planning use case and combines
+explicit direct and transit stage outputs. `TransitPlanner` owns access and
+egress discovery along with the two transit planning phases. It keeps its
+topology and transfer indexes private and first retains one global Top-K set
+of structurally distinct corridors across selected modes.
 It loads one request-local timing snapshot for their positions and optionally
 loads one BikeShare availability snapshot. The Phase 2 evaluator walks each
 retained corridor in order and uses only immutable networks and those
@@ -64,6 +70,12 @@ transfer anchor or combine different corridors. Bus realtime requests are
 deduplicated by stop and grouped by TDX city scope; the evaluator performs no
 network I/O.
 
+`JourneyReconstructor` owns place conversion, transit and BikeShare lookups,
+street hydration, and journey candidate assembly. It receives the shared
+request context and does not depend on the planning service. `TransitRuntime`
+exposes raw immutable network access as `network()` for search, timing, and data
+inspection; Health uses its focused revision and validation operations.
+
 Static `TransitNetwork.transfer_edges` contain directional transit walking
 transfers. Requests select fine-grained transport systems through
 `selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
@@ -72,7 +84,7 @@ Walking remains an implicit connector, while output legs retain the coarse
 walking-only in this version.
 
 Both the HTTP server and `via-route` load the same `ViaStatic` artifact and use
-the same production runtime assembly. BikeShare can realize a retained surface
+the same runtime assembly. BikeShare can realize a retained surface
 transfer when station metadata and fresh availability support it; it does not
 create direct BikeShare-only routes.
 

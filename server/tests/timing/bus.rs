@@ -26,7 +26,7 @@ use via_server::{
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
-        BusDepartureSource, BusPatternBinding, DepartureDispatcher, TdxProviderBindings,
+        BusDepartureSource, BusPatternBinding, DepartureResolver, TdxProviderBindings,
         TransitDepartureSource,
     },
     tdx::TdxClient,
@@ -307,13 +307,13 @@ fn query(pattern_id: &str, board_stop_id: &str, after: OffsetDateTime) -> Depart
     )
 }
 
-fn bus_dispatcher(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
+fn bus_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(network.data(), &[]))
+            .with_bindings(bindings(network.network(), &[]))
             .with_realtime_endpoint("feed"),
     );
-    DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
+    DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
     );
     let (tdx, stats) = fixture_client(payload, StatusCode::OK).await;
     let network = runtime(network_for(&pattern_ids));
-    let resolver = bus_dispatcher(network, tdx);
+    let resolver = bus_resolver(network, tdx);
     let needs = pattern_ids
         .iter()
         .map(|pattern_id| {
@@ -358,7 +358,7 @@ async fn empty_bus_realtime_falls_back_to_static_schedule() {
     let pattern_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::OK).await;
     let network = runtime(network_for(std::slice::from_ref(&pattern_id)));
-    let resolver = bus_dispatcher(network, tdx);
+    let resolver = bus_resolver(network, tdx);
 
     let result = resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -383,7 +383,7 @@ async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
     assert!(realtime[0].as_ref().is_ok_and(Vec::is_empty));
     assert_eq!(stats.calls.load(Ordering::Relaxed), 0);
 
-    let resolver = bus_dispatcher(network, tdx);
+    let resolver = bus_resolver(network, tdx);
     let departures = resolver
         .next_departures(query("service-without-scope", "stop-x", NOW))
         .await
@@ -407,7 +407,7 @@ async fn bus_batch_keeps_realtime_and_static_reliability_per_query() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
+    let resolver = bus_resolver(runtime(network_for(&pattern_ids)), tdx);
 
     let results = resolver
         .next_departures_batch(vec![
@@ -448,9 +448,9 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
     let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(network.data(), &scopes)),
+            .with_bindings(bindings(network.network(), &scopes)),
     );
-    let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
+    let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
 
     let results = resolver
         .next_departures_batch(vec![
@@ -479,7 +479,7 @@ async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
+    let resolver = bus_resolver(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -506,7 +506,7 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
     .await;
     let mut network = network_for(std::slice::from_ref(&pattern_id));
     network.trips.clear();
-    let resolver = bus_dispatcher(runtime(network), tdx);
+    let resolver = bus_resolver(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -534,7 +534,7 @@ async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_sched
         seconds: 347,
         source: SegmentTimeSource::Derived,
     };
-    let resolver = bus_dispatcher(runtime(network), tdx);
+    let resolver = bus_resolver(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -572,7 +572,7 @@ async fn realtime_bus_uses_position_aligned_profile_on_a_loop() {
             source: SegmentTimeSource::Derived,
         })
         .collect();
-    let resolver = bus_dispatcher(runtime(network), tdx);
+    let resolver = bus_resolver(runtime(network), tdx);
 
     let trip = &resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -597,7 +597,7 @@ async fn malformed_or_stale_realtime_falls_back_safely() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
+    let resolver = bus_resolver(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
     let departures = resolver
         .next_departures(query("service-a", "stop-x", NOW))
         .await
@@ -635,9 +635,9 @@ async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
     let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
     let bus = Arc::new(
         BusDepartureSource::new(network.clone(), Some(tdx))
-            .with_bindings(bindings(network.data(), &scopes)),
+            .with_bindings(bindings(network.network(), &scopes)),
     );
-    let resolver = DepartureDispatcher::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
+    let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
     let needs = pattern_ids
         .iter()
         .map(|pattern_id| {
@@ -687,7 +687,7 @@ async fn duplicate_pairs_are_fetched_once_and_results_are_partitioned_exactly() 
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
+    let resolver = bus_resolver(runtime(network_for(&pattern_ids)), tdx);
     let second_after = OffsetDateTime::now_utc() + Duration::seconds(90);
     let results = resolver
         .next_departures_batch(vec![
@@ -721,7 +721,7 @@ async fn directional_patterns_do_not_cross_satisfy_each_other() {
         StatusCode::OK,
     )
     .await;
-    let resolver = bus_dispatcher(runtime(network_for(&pattern_ids)), tdx);
+    let resolver = bus_resolver(runtime(network_for(&pattern_ids)), tdx);
     let results = resolver
         .next_departures_batch(vec![
             query(direction_zero, "stop-x", NOW),
@@ -743,7 +743,7 @@ async fn directional_patterns_do_not_cross_satisfy_each_other() {
 async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
     let pattern_id = TransitPatternId::new("service-a");
     let (tdx, _) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
-    let resolver = bus_dispatcher(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
+    let resolver = bus_resolver(runtime(network_for(std::slice::from_ref(&pattern_id))), tdx);
 
     let result = resolver
         .next_departures(query("service-a", "stop-x", NOW))
@@ -759,7 +759,7 @@ async fn rate_limited_bus_realtime_falls_back_to_static_schedule() {
 async fn first_rate_limit_stops_remaining_chunks_for_the_scope() {
     let (network, queries) = network_for_unique_stops(201);
     let (tdx, stats) = fixture_client(json!([]), StatusCode::TOO_MANY_REQUESTS).await;
-    let resolver = bus_dispatcher(runtime(network), tdx);
+    let resolver = bus_resolver(runtime(network), tdx);
 
     let results = resolver.next_departures_batch(queries).await;
 
@@ -788,7 +788,7 @@ async fn later_rate_limit_preserves_successful_earlier_chunks() {
             .collect(),
     );
     let (tdx, stats) = rate_limit_after_first_client(payload).await;
-    let resolver = bus_dispatcher(runtime(network), tdx);
+    let resolver = bus_resolver(runtime(network), tdx);
 
     let results = resolver.next_departures_batch(queries).await;
 

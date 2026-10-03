@@ -11,8 +11,8 @@ use via_server::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
         tdx_bindings::TdxProviderBindings,
     },
-    routing::RoutingLimits,
-    runtime::{RoutingRuntime, RoutingRuntimeDependencies},
+    routing::JourneyPlanningLimits,
+    runtime::{ViaRuntime, ViaRuntimeDependencies},
     street::{StreetRouter, StreetRoutingError},
 };
 
@@ -65,7 +65,7 @@ where
         Arc::new(UnavailableBikeAvailabilitySource);
     let street: Arc<dyn StreetRouter> = provider.clone();
     let street_health: Arc<dyn DependencyHealth> = provider.clone();
-    let runtime = RoutingRuntime::from_dependencies(RoutingRuntimeDependencies {
+    let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
         transit_network,
         provider_bindings: TdxProviderBindings::default(),
         bike_share_network: Arc::new(
@@ -75,7 +75,7 @@ where
         street_health,
         tdx: None,
         bike_availability: bike_availability_source,
-        limits: RoutingLimits::default(),
+        limits: JourneyPlanningLimits::default(),
     });
     Ok(build_router(runtime.routing, runtime.health, metrics))
 }

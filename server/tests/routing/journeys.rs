@@ -6,7 +6,7 @@ use via_server::{
         ids::BoardingPointId,
         transit::{TransferEdge, TransitNetwork},
     },
-    routing::RoutingLimits,
+    routing::JourneyPlanningLimits,
     street::{FakeStreetRouter, StreetTravelMode},
 };
 
@@ -302,12 +302,12 @@ async fn zero_transfer_configuration_excludes_interchange_journeys() {
     let network = network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
-    let limits = RoutingLimits {
+    let limits = JourneyPlanningLimits {
         planner: via_server::routing::PlannerLimits {
             max_transfers: 0,
             ..via_server::routing::PlannerLimits::default()
         },
-        ..RoutingLimits::default()
+        ..JourneyPlanningLimits::default()
     };
     let body = route_body_with_limits(
         transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
@@ -343,12 +343,12 @@ async fn phase2_safety_limit_is_returned_as_a_planning_error() {
     let network = network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
-    let limits = RoutingLimits {
+    let limits = JourneyPlanningLimits {
         planner: via_server::routing::PlannerLimits {
             max_phase2_expansions: 1,
             ..via_server::routing::PlannerLimits::default()
         },
-        ..RoutingLimits::default()
+        ..JourneyPlanningLimits::default()
     };
 
     let result = route_body_with_limits(
@@ -367,12 +367,12 @@ async fn phase1_safety_limit_is_not_reported_as_an_empty_result() {
     let network = network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
-    let limits = RoutingLimits {
+    let limits = JourneyPlanningLimits {
         planner: via_server::routing::PlannerLimits {
             max_phase1_expansions: 1,
             ..via_server::routing::PlannerLimits::default()
         },
-        ..RoutingLimits::default()
+        ..JourneyPlanningLimits::default()
     };
 
     let result = route_body_with_limits(

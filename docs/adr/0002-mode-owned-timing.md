@@ -12,7 +12,8 @@ many provider calls and tie transit search to provider behavior.
 
 Phase 1 discovers static Top-K corridors. Before fixed corridor evaluation,
 `TimingSnapshotLoader` loads the timing positions for their retained transit
-legs. The dispatcher delegates to the mode-owned timing providers, which keep
+legs. `DepartureResolver` groups requests by mode and delegates to the
+mode-owned timing providers, which keep
 their parsing and static fallback rules. Bus requests are deduplicated by
 unique stop and TDX scope, chunked at the provider boundary, then filtered
 locally against the requested Via positions. Other modes retain their native

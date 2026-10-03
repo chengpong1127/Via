@@ -107,7 +107,7 @@ impl TraDepartureSource {
 
     fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
         self.network
-            .data()
+            .network()
             .trips
             .iter()
             .filter(|trip| &trip.pattern_id == pattern_id)
@@ -212,7 +212,7 @@ impl TraDepartureSource {
             after: adjusted_after,
             limit: self
                 .network
-                .data()
+                .network()
                 .trips
                 .iter()
                 .filter(|trip| trip.pattern_id == query.pattern_id)

@@ -4,11 +4,11 @@ use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace},
-    config::{Environment, ProductionRuntimeConfig, load_dotenv},
+    config::{Environment, RuntimeConfig, load_dotenv},
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
-    routing::RoutingLimits,
-    runtime::{ProductionRuntimeOptions, build_production_runtime},
+    routing::JourneyPlanningLimits,
+    runtime::{RuntimeOptions, build_runtime},
 };
 
 #[derive(Parser, Debug)]
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let via_static = load_static_artifact(&cli.static_path)?;
     let static_revision = via_static.revisions.transit_static.clone();
     let schedule_revision = via_static.revisions.schedule.clone();
-    let mut limits = RoutingLimits::default();
+    let mut limits = JourneyPlanningLimits::default();
     if let Some(max_departures) = cli.max_departures_per_query {
         limits.planner.max_departures_per_query = max_departures;
     }
@@ -69,13 +69,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         limits.request_timeout = timeout.saturating_mul(5);
     }
     let max_static_corridors = limits.planner.max_static_corridors;
-    let options = ProductionRuntimeOptions {
+    let options = RuntimeOptions {
         limits,
         valhalla_request_timeout: valhalla_timeout,
     };
-    let runtime_config =
-        ProductionRuntimeConfig::from_env(Environment::from_env_or_development()?)?;
-    let runtime = build_production_runtime(via_static, options, runtime_config).await?;
+    let runtime_config = RuntimeConfig::from_env(Environment::from_env_or_development()?)?;
+    let runtime = build_runtime(via_static, options, runtime_config).await?;
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("  max static corridors={max_static_corridors}");
@@ -88,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let result = runtime
         .routing
-        .route(request)
+        .plan(request)
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {

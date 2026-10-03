@@ -54,6 +54,26 @@ fn routing_uses_provider_traits_instead_of_concrete_adapters() {
 }
 
 #[test]
+fn reconstruction_does_not_depend_on_the_routing_service() {
+    let reconstruction = source_tree("src/routing/reconstruct");
+    assert!(
+        !reconstruction.contains("RoutingService"),
+        "reconstruction must not depend on RoutingService"
+    );
+}
+
+#[test]
+fn routing_does_not_access_transit_planner_topology() {
+    let routing = source("src/routing/service.rs");
+    for forbidden in ["TransitTopologyIndex", ".topology()", "AccessNetwork"] {
+        assert!(
+            !routing.contains(forbidden),
+            "RoutingService must not access planner internals through {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn phase1_does_not_depend_on_realtime_or_bikeshare() {
     let static_search = source_tree("src/routing/static_search");
     for forbidden in [

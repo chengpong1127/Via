@@ -136,12 +136,12 @@ impl ValhallaRuntimeConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProductionRuntimeConfig {
+pub struct RuntimeConfig {
     pub(crate) valhalla: ValhallaRuntimeConfig,
     pub(crate) tdx: TdxRuntimeConfig,
 }
 
-impl ProductionRuntimeConfig {
+impl RuntimeConfig {
     pub fn from_env(environment: Environment) -> Result<Self, ConfigError> {
         let valhalla = ValhallaRuntimeConfig::from_env()?;
         let tdx = TdxRuntimeConfig::from_env()?;

@@ -145,7 +145,7 @@ pub(super) async fn journey_plan(
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
     record_request_fields(&request);
-    match state.routing.route(request).await {
+    match state.routing.plan(request).await {
         Ok(outcome) => {
             let journey_options = match &outcome {
                 PlanningOutcome::Options(result) => result.journey_options.len(),

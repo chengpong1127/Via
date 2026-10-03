@@ -7,19 +7,22 @@ use crate::{
         journey::{Geometry, Leg, LegDetails, LegMode, Place, PlanningError},
     },
     routing::{
-        service::{PlanningContext, RoutingService},
+        model::JourneyPlanningContext,
         variant::{JourneyAnchorKind, JourneyMovement, JourneyPathStep, JourneyVariant},
     },
-    street::{Coordinate, ProviderFailureClass, RoutingTimeKind, StreetPath, StreetTravelMode},
+    street::{
+        Coordinate, ProviderFailureClass, RouteQuery, RoutingTimeKind, StreetPath, StreetTravelMode,
+    },
 };
 
 use super::{
-    assembler::{ReconstructedLegs, ReconstructionState},
+    JourneyReconstructor,
+    assembler::{JourneyAssembly, ReconstructionState},
     evidence, geometry,
     transit::register_pending_transfer,
 };
 
-impl ReconstructionState<'_> {
+impl ReconstructionState<'_, '_> {
     pub(super) async fn append_access(
         &mut self,
         step: &JourneyPathStep,
@@ -30,14 +33,14 @@ impl ReconstructionState<'_> {
             return Ok(false);
         }
         let first_stop = self
-            .service
+            .reconstructor
             .stop_place(
                 &anchor_boarding_point(self.variant, step.to_anchor)
                     .ok_or(PlanningError::Internal)?,
             )
             .ok_or(PlanningError::Internal)?;
         append_hydrated_walking(
-            self.service,
+            self.reconstructor,
             self.context,
             &self.origin,
             &first_stop,
@@ -63,7 +66,7 @@ impl ReconstructionState<'_> {
             .or_else(|| anchor_boarding_point(self.variant, step.from_anchor))
             .ok_or(PlanningError::Internal)?;
         let from = self
-            .service
+            .reconstructor
             .stop_place(&from_stop)
             .ok_or(PlanningError::Internal)?;
         let to_stop =
@@ -72,7 +75,7 @@ impl ReconstructionState<'_> {
             return Ok(false);
         }
         let to = self
-            .service
+            .reconstructor
             .stop_place(&to_stop)
             .ok_or(PlanningError::Internal)?;
         let connector_start = self.result.legs.len();
@@ -104,11 +107,11 @@ impl ReconstructionState<'_> {
             .or_else(|| anchor_boarding_point(self.variant, step.from_anchor))
             .ok_or(PlanningError::Internal)?;
         let final_stop = self
-            .service
+            .reconstructor
             .stop_place(&final_stop_id)
             .ok_or(PlanningError::Internal)?;
         append_hydrated_walking(
-            self.service,
+            self.reconstructor,
             self.context,
             &final_stop,
             &self.destination,
@@ -154,15 +157,15 @@ pub(super) fn anchor_boarding_point(
 }
 
 pub(super) fn anchor_place(
-    service: &RoutingService,
+    reconstructor: &JourneyReconstructor,
     request: &PlanningRequest,
     variant: &JourneyVariant,
     anchor: usize,
 ) -> Option<Place> {
     match &variant.skeleton().anchors().get(anchor)?.kind {
-        JourneyAnchorKind::Origin => Some(service.origin_place(request)),
-        JourneyAnchorKind::BoardingPoint { id } => service.stop_place(id),
-        JourneyAnchorKind::Destination => Some(service.destination_place(request)),
+        JourneyAnchorKind::Origin => Some(reconstructor.origin_place(request)),
+        JourneyAnchorKind::BoardingPoint { id } => reconstructor.stop_place(id),
+        JourneyAnchorKind::Destination => Some(reconstructor.destination_place(request)),
     }
 }
 
@@ -170,7 +173,7 @@ pub(super) fn append_routed_walking(
     from: &Place,
     to: &Place,
     path: StreetPath,
-    result: &mut ReconstructedLegs,
+    result: &mut JourneyAssembly,
 ) {
     let departure = result.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
@@ -184,16 +187,16 @@ pub(super) fn append_routed_walking(
 }
 
 pub(super) async fn append_hydrated_walking(
-    service: &RoutingService,
-    context: &PlanningContext,
+    reconstructor: &JourneyReconstructor,
+    context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
     fallback_seconds: u32,
     fallback_metres: u32,
-    result: &mut ReconstructedLegs,
+    result: &mut JourneyAssembly,
 ) -> Result<(), PlanningError> {
     let path = hydrated_or_synthetic(
-        service,
+        reconstructor,
         context,
         from,
         to,
@@ -219,7 +222,7 @@ fn append_static_walking(
     to: &Place,
     duration_seconds: u32,
     distance_metres: u32,
-    result: &mut ReconstructedLegs,
+    result: &mut JourneyAssembly,
 ) {
     let path = synthetic_street_path(from, to, duration_seconds, distance_metres);
     let departure = result.arrival_time;
@@ -234,15 +237,15 @@ fn append_static_walking(
 }
 
 async fn hydrated_or_synthetic(
-    service: &RoutingService,
-    context: &PlanningContext,
+    reconstructor: &JourneyReconstructor,
+    context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
     mode: StreetTravelMode,
     departure: OffsetDateTime,
     fallback: (u32, u32),
 ) -> Result<StreetPath, PlanningError> {
-    match hydrate_path(service, context, from, to, mode, departure).await? {
+    match hydrate_path(reconstructor, context, from, to, mode, departure).await? {
         Some(path) => Ok(path),
         None => Ok(synthetic_street_path(from, to, fallback.0, fallback.1)),
     }
@@ -272,8 +275,8 @@ fn synthetic_street_path(
 }
 
 pub(super) async fn hydrate_path(
-    service: &RoutingService,
-    context: &PlanningContext,
+    reconstructor: &JourneyReconstructor,
+    context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
     mode: StreetTravelMode,
@@ -282,10 +285,18 @@ pub(super) async fn hydrate_path(
     let from = Coordinate::try_from(from.coordinate).map_err(|_| PlanningError::Internal)?;
     let to = Coordinate::try_from(to.coordinate).map_err(|_| PlanningError::Internal)?;
     let constraints = context.constraints(departure, RoutingTimeKind::DepartAt);
-    match service.street_path(mode, from, to, constraints).await {
-        super::super::service::PathAttempt::Found(path) => Ok(Some(path)),
-        super::super::service::PathAttempt::Unreachable => Ok(None),
-        super::super::service::PathAttempt::Failed(error) => match error.failure_class() {
+    match reconstructor
+        .street_routing
+        .route(RouteQuery {
+            travel_mode: mode,
+            origin: from,
+            destination: to,
+            constraints,
+        })
+        .await
+    {
+        Ok(path) => Ok(Some(path)),
+        Err(error) => match error.failure_class() {
             ProviderFailureClass::Unreachable => Ok(None),
             ProviderFailureClass::Transient => Err(PlanningError::TemporarilyUnavailable),
             ProviderFailureClass::Internal => Err(PlanningError::Internal),

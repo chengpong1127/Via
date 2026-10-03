@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use via_server::{
     config::{TdxRuntimeConfig, ValhallaRuntimeConfig, load_dotenv},
     data::{
-        GtfsBuildDiagnostics, GtfsModeCoverage, build_from_fetch_snapshot, fetch,
+        GtfsModeCoverage, build_from_fetch_snapshot, fetch,
         fetch::{FetchSources, fetch_snapshot},
         gtfs::measure_mode_coverage,
         load_static_artifact,
@@ -153,8 +153,8 @@ async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
     let result = build_from_fetch_snapshot(&args.input, &output, street.as_ref()).await?;
     let latest_static = update_latest_static_link(&output)?;
     println!("build latency: {} ms", started.elapsed().as_millis());
-    print_build_diagnostics(&result.diagnostics, &result.build.diagnostics);
-    print_static_counts("built", &result.build.via_static);
+    print_build_diagnostics(&result.diagnostics);
+    print_static_counts("built", &result.via_static);
     println!(
         "static artifact: {}",
         output.join(".via-static.json").display()
@@ -237,7 +237,7 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
 fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static_artifact(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
-    let data = runtime.data();
+    let data = runtime.network();
     let query = args.query.to_lowercase();
     let mut matches = data
         .stops
@@ -274,7 +274,7 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
 fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static_artifact(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
-    let data = runtime.data();
+    let data = runtime.network();
     let query = args.query.to_lowercase();
     let mut matches = data
         .patterns
@@ -352,7 +352,7 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     println!(
         "service-day boundary: {}",
-        runtime.data().service_day_boundary
+        runtime.network().service_day_boundary
     );
     Ok(())
 }
@@ -380,11 +380,9 @@ fn print_static_counts(prefix: &str, via_static: &via_server::data::ViaStatic) {
     );
 }
 
-fn print_build_diagnostics(
-    diagnostics: &GtfsBuildDiagnostics,
-    build_diagnostics: &via_server::data::BuildDiagnostics,
-) {
-    if let Some(stats) = &build_diagnostics.static_transfers {
+fn print_build_diagnostics(diagnostics: &via_server::data::BuildDiagnostics) {
+    let gtfs = &diagnostics.gtfs;
+    if let Some(stats) = &diagnostics.static_transfers {
         println!(
             "walking transfers: boarding_points={} candidates={} matrix_pairs={} reachable={} retained={} removed_by_limits={} removed_by_fanout={} latency_ms={}",
             stats.boarding_points,
@@ -397,7 +395,7 @@ fn print_build_diagnostics(
             stats.elapsed_milliseconds
         );
     }
-    if let Some(stats) = &build_diagnostics.bike_access {
+    if let Some(stats) = &diagnostics.bike_access {
         println!(
             "BikeShare access: boarding_points={} candidates={} walking_matrices={} access_links={} latency_ms={}",
             stats.boarding_points_processed,
@@ -407,42 +405,39 @@ fn print_build_diagnostics(
             stats.build_wall_clock_milliseconds
         );
     }
-    println!("GTFS stops loaded: {}", diagnostics.stops_loaded);
-    println!("GTFS trips loaded: {}", diagnostics.trips_loaded);
+    println!("GTFS stops loaded: {}", gtfs.stops_loaded);
+    println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(
         "exact scheduled trips loaded: {}",
-        diagnostics.scheduled_trips_loaded
+        gtfs.scheduled_trips_loaded
     );
-    println!(
-        "GTFS frequencies loaded: {}",
-        diagnostics.frequencies_loaded
-    );
-    println!("GTFS shape rows loaded: {}", diagnostics.shape_rows_loaded);
+    println!("GTFS frequencies loaded: {}", gtfs.frequencies_loaded);
+    println!("GTFS shape rows loaded: {}", gtfs.shape_rows_loaded);
     println!(
         "GTFS trips skipped for invalid exact timing: {}",
-        diagnostics.invalid_timing_trips
+        gtfs.invalid_timing_trips
     );
     println!(
         "GTFS valid stops with no retained pattern: {}",
-        diagnostics.valid_unreferenced_stops
+        gtfs.valid_unreferenced_stops
     );
     print_warning(
         "valid GTFS stop points are not referenced by any retained pattern",
-        diagnostics.valid_unreferenced_stops,
-        &diagnostics.unreferenced_stop_examples,
+        gtfs.valid_unreferenced_stops,
+        &gtfs.unreferenced_stop_examples,
     );
-    print_mode_coverage(&diagnostics.coverage_by_mode);
+    print_mode_coverage(&gtfs.coverage_by_mode);
     println!(
         "Bus Patterns without a TDX realtime scope: {}",
-        diagnostics.unresolved_bus_realtime_scope_patterns
+        gtfs.unresolved_bus_realtime_scope_patterns
     );
     println!(
         "GTFS stop IDs without current TDX ID mapping: {}",
-        diagnostics.gtfs_stop_ids_without_tdx_mapping
+        gtfs.gtfs_stop_ids_without_tdx_mapping
     );
     println!(
         "Via Pattern IDs without current TDX realtime mapping: {}",
-        diagnostics.gtfs_pattern_ids_without_tdx_mapping
+        gtfs.gtfs_pattern_ids_without_tdx_mapping
     );
 }
 
@@ -545,7 +540,7 @@ fn coordinate(
 
 fn pattern_labels(network: &TransitRuntime, stop_id: &BoardingPointId) -> String {
     network
-        .data()
+        .network()
         .patterns
         .iter()
         .filter(|pattern| pattern.stops.iter().any(|id| id == stop_id))

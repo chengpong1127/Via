@@ -365,18 +365,27 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     let built = build_from_fetch_snapshot(&snapshot, &output, &street)
         .await
         .unwrap();
-    let network = &built.build.via_static.transit;
+    let network = &built.via_static.transit;
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-    assert_eq!(built.diagnostics.stops_loaded, 6);
-    assert_eq!(built.diagnostics.trips_loaded, 4);
-    assert_eq!(built.diagnostics.frequencies_loaded, 1);
-    assert!(built.build.diagnostics.static_transfers.is_some());
-    assert_eq!(built.diagnostics.invalid_timing_trips, 0);
-    assert_eq!(built.diagnostics.exact_static_timing_patterns, 1);
-    assert_eq!(built.diagnostics.derived_bus_timing_patterns, 2);
-    assert_eq!(built.diagnostics.geometric_fallback_patterns, 0);
-    assert_eq!(built.diagnostics.unresolved_bus_realtime_scope_patterns, 0);
-    assert_eq!(built.diagnostics.gtfs_pattern_ids_without_tdx_mapping, 0);
+    assert_eq!(built.diagnostics.gtfs.stops_loaded, 6);
+    assert_eq!(built.diagnostics.gtfs.trips_loaded, 4);
+    assert_eq!(built.diagnostics.gtfs.frequencies_loaded, 1);
+    assert!(built.diagnostics.static_transfers.is_some());
+    assert_eq!(built.diagnostics.gtfs.invalid_timing_trips, 0);
+    assert_eq!(built.diagnostics.gtfs.exact_static_timing_patterns, 1);
+    assert_eq!(built.diagnostics.gtfs.derived_bus_timing_patterns, 2);
+    assert_eq!(built.diagnostics.gtfs.geometric_fallback_patterns, 0);
+    assert_eq!(
+        built
+            .diagnostics
+            .gtfs
+            .unresolved_bus_realtime_scope_patterns,
+        0
+    );
+    assert_eq!(
+        built.diagnostics.gtfs.gtfs_pattern_ids_without_tdx_mapping,
+        0
+    );
     assert!(
         network.trips.is_empty(),
         "sparse Bus stop times are not exact trips"
@@ -432,30 +441,18 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .static_profile,
         bus.static_profile
     );
-    assert_eq!(
-        built.build.via_static.provider_bindings.bus_patterns.len(),
-        2
-    );
-    assert_eq!(
-        built
-            .build
-            .via_static
-            .provider_bindings
-            .metro_patterns
-            .len(),
-        1
-    );
+    assert_eq!(built.via_static.provider_bindings.bus_patterns.len(), 2);
+    assert_eq!(built.via_static.provider_bindings.metro_patterns.len(), 1);
     assert!(
         network
             .stops
             .iter()
             .any(|stop| stop.id.as_str() == "TRTC-BL12")
     );
-    let bus_binding = &built.build.via_static.provider_bindings.bus_patterns[&bus.id];
+    let bus_binding = &built.via_static.provider_bindings.bus_patterns[&bus.id];
     assert_eq!(bus_binding.tdx_service_id, "THB123::direction=0");
     assert_eq!(bus_binding.realtime_scope, "Taipei");
     let metro_binding = built
-        .build
         .via_static
         .provider_bindings
         .metro_patterns

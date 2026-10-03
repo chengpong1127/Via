@@ -163,12 +163,12 @@ pub trait TransitDepartureSource: Send + Sync {
 }
 
 #[derive(Clone)]
-pub struct DepartureDispatcher {
+pub struct DepartureResolver {
     network: Arc<TransitRuntime>,
     sources: HashMap<TransitMode, Arc<dyn TransitDepartureSource>>,
 }
 
-impl DepartureDispatcher {
+impl DepartureResolver {
     pub fn new(
         network: Arc<TransitRuntime>,
         sources: impl IntoIterator<Item = Arc<dyn TransitDepartureSource>>,
@@ -181,7 +181,7 @@ impl DepartureDispatcher {
     }
 }
 
-impl DepartureDispatcher {
+impl DepartureResolver {
     pub async fn next_departures(
         &self,
         query: DepartureQuery,
@@ -244,7 +244,7 @@ impl DepartureDispatcher {
 }
 
 #[async_trait]
-impl TimingSnapshotLoader for DepartureDispatcher {
+impl TimingSnapshotLoader for DepartureResolver {
     async fn load_snapshot(&self, queries: Vec<DepartureQuery>) -> TimingSnapshot {
         let mut snapshot = TimingSnapshot::default();
         let mut grouped = HashMap::<TransitMode, Vec<DepartureQuery>>::new();

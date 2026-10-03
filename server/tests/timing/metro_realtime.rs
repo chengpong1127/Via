@@ -26,7 +26,7 @@ use via_server::{
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
-        DepartureDispatcher, MetroDepartureSource, MetroPatternBinding, TdxProviderBindings,
+        DepartureResolver, MetroDepartureSource, MetroPatternBinding, TdxProviderBindings,
         TransitDepartureSource,
     },
     tdx::TdxClient,
@@ -184,7 +184,7 @@ async fn resolver(
     network: Arc<TransitRuntime>,
     payload: Value,
     status: StatusCode,
-) -> (DepartureDispatcher, FixtureStats) {
+) -> (DepartureResolver, FixtureStats) {
     let (tdx, stats) = fixture_client(payload, status).await;
     let metro = Arc::new(
         MetroDepartureSource::new(network.clone())
@@ -203,7 +203,7 @@ async fn resolver(
             .with_realtime_endpoint("v2/Rail/Metro/LiveBoard/TRTC"),
     );
     (
-        DepartureDispatcher::new(network, vec![metro as Arc<dyn TransitDepartureSource>]),
+        DepartureResolver::new(network, vec![metro as Arc<dyn TransitDepartureSource>]),
         stats,
     )
 }

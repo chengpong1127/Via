@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 use via_server::{
     app::build_router,
-    config::{ProductionRuntimeConfig, ServerConfig, load_dotenv},
+    config::{RuntimeConfig, ServerConfig, load_dotenv},
     data::load_static_artifact,
     metrics,
-    runtime::{ProductionRuntimeOptions, build_production_runtime},
+    runtime::{RuntimeOptions, build_runtime},
 };
 
 #[tokio::main]
@@ -25,13 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let via_static = load_static_artifact(&config.static_path)
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
-    let runtime_config = ProductionRuntimeConfig::from_env(config.environment)?;
-    let runtime = build_production_runtime(
-        via_static,
-        ProductionRuntimeOptions::default(),
-        runtime_config,
-    )
-    .await?;
+    let runtime_config = RuntimeConfig::from_env(config.environment)?;
+    let runtime = build_runtime(via_static, RuntimeOptions::default(), runtime_config).await?;
     let router = build_router(runtime.routing, runtime.health, metrics);
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;

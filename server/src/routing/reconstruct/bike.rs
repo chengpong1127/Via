@@ -2,21 +2,19 @@ use time::{Duration, OffsetDateTime};
 
 use crate::{
     domain::journey::{Geometry, Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
-    routing::{
-        JourneyAnchorKind, JourneyPathStep,
-        service::{PlanningContext, RoutingService},
-    },
+    routing::{JourneyAnchorKind, JourneyPathStep, model::JourneyPlanningContext},
     street::{StreetPath, StreetTravelMode},
 };
 
 use super::{
-    assembler::{ReconstructedLegs, ReconstructionState},
+    JourneyReconstructor,
+    assembler::{JourneyAssembly, ReconstructionState},
     evidence, geometry,
     street::{anchor_boarding_point, anchor_place, append_routed_walking, hydrate_path},
     transit::register_pending_transfer,
 };
 
-impl ReconstructionState<'_> {
+impl ReconstructionState<'_, '_> {
     pub(super) async fn append_bike(
         &mut self,
         step: &JourneyPathStep,
@@ -41,13 +39,23 @@ impl ReconstructionState<'_> {
         {
             return Ok(false);
         }
-        let from = anchor_place(self.service, self.request, self.variant, step.from_anchor)
-            .ok_or(PlanningError::Internal)?;
-        let to = anchor_place(self.service, self.request, self.variant, step.to_anchor)
-            .ok_or(PlanningError::Internal)?;
+        let from = anchor_place(
+            self.reconstructor,
+            self.context.request,
+            self.variant,
+            step.from_anchor,
+        )
+        .ok_or(PlanningError::Internal)?;
+        let to = anchor_place(
+            self.reconstructor,
+            self.context.request,
+            self.variant,
+            step.to_anchor,
+        )
+        .ok_or(PlanningError::Internal)?;
         let connector_start = self.result.legs.len();
         if !append_bike_share(
-            self.service,
+            self.reconstructor,
             self.context,
             &from,
             &to,
@@ -68,22 +76,22 @@ impl ReconstructionState<'_> {
 }
 
 async fn append_bike_share(
-    service: &RoutingService,
-    context: &PlanningContext,
+    reconstructor: &JourneyReconstructor,
+    context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
     shortcut: &crate::routing::BikeShortcut,
-    result: &mut ReconstructedLegs,
+    result: &mut JourneyAssembly,
 ) -> Result<bool, PlanningError> {
-    let Some(pickup) = service.bike_station_place(&shortcut.pickup_station_id) else {
+    let Some(pickup) = reconstructor.bike_station_place(&shortcut.pickup_station_id) else {
         return Ok(false);
     };
-    let Some(dropoff) = service.bike_station_place(&shortcut.dropoff_station_id) else {
+    let Some(dropoff) = reconstructor.bike_station_place(&shortcut.dropoff_station_id) else {
         return Ok(false);
     };
 
     let Some(to_pickup) = strict_bike_path(
-        service,
+        reconstructor,
         context,
         from,
         &pickup,
@@ -97,7 +105,7 @@ async fn append_bike_share(
     append_routed_walking(from, &pickup, to_pickup, result);
 
     let Some(bicycle) = strict_bike_path(
-        service,
+        reconstructor,
         context,
         &pickup,
         &dropoff,
@@ -111,7 +119,7 @@ async fn append_bike_share(
     append_bicycle(&pickup, &dropoff, bicycle, result);
 
     let Some(from_dropoff) = strict_bike_path(
-        service,
+        reconstructor,
         context,
         &dropoff,
         to,
@@ -128,24 +136,19 @@ async fn append_bike_share(
 }
 
 async fn strict_bike_path(
-    service: &RoutingService,
-    context: &PlanningContext,
+    reconstructor: &JourneyReconstructor,
+    context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
     mode: StreetTravelMode,
     departure: OffsetDateTime,
 ) -> Option<StreetPath> {
-    hydrate_path(service, context, from, to, mode, departure)
+    hydrate_path(reconstructor, context, from, to, mode, departure)
         .await
         .unwrap_or_default()
 }
 
-fn append_bicycle(
-    pickup: &Place,
-    dropoff: &Place,
-    path: StreetPath,
-    result: &mut ReconstructedLegs,
-) {
+fn append_bicycle(pickup: &Place, dropoff: &Place, path: StreetPath, result: &mut JourneyAssembly) {
     let departure = result.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
     let leg_id = format!("candidate_leg_{}", result.legs.len());

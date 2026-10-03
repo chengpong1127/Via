@@ -4,7 +4,7 @@ use time::macros::datetime;
 use via_server::{
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     providers::{
-        BusDepartureSource, DepartureDispatcher, MetroDepartureSource, ThsrDepartureSource,
+        BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
         TraDepartureSource, TransitDepartureSource,
     },
     routing::{
@@ -20,8 +20,8 @@ use super::fixtures::network;
 #[ignore = "in-process routing performance comparison"]
 async fn deterministic_routing_benchmark() {
     let runtime = Arc::new(TransitRuntime::new(Arc::new(network())));
-    let topology = TransitTopologyIndex::new(runtime.data());
-    let transfers = TransferShortcutIndex::from_network(runtime.data());
+    let topology = TransitTopologyIndex::new(runtime.network());
+    let transfers = TransferShortcutIndex::from_network(runtime.network());
     let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
         Arc::new(BusDepartureSource::new(runtime.clone(), None)),
         Arc::new(MetroDepartureSource::new(runtime.clone())),
@@ -30,7 +30,7 @@ async fn deterministic_routing_benchmark() {
     ];
     let planner = TransitPlanner::new(
         runtime.clone(),
-        Arc::new(DepartureDispatcher::new(runtime.clone(), sources)),
+        Arc::new(DepartureResolver::new(runtime.clone(), sources)),
     );
     let cases = [
         ("metro", "F-M1", "F-M2-RED", vec![TransitMode::Metro]),

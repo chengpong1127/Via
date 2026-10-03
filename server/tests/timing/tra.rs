@@ -29,7 +29,7 @@ use via_server::{
         transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
-        DepartureDispatcher, TdxProviderBindings, TraDepartureSource, TraTripBinding,
+        DepartureResolver, TdxProviderBindings, TraDepartureSource, TraTripBinding,
         TransitDepartureSource,
     },
     tdx::TdxClient,
@@ -193,13 +193,13 @@ fn query(train_no: &str) -> DepartureQuery {
     )
 }
 
-fn dispatcher(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureDispatcher {
+fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
     let tra = Arc::new(
         TraDepartureSource::new(network.clone())
             .with_tdx(Some(tdx))
             .with_bindings(Arc::new(TdxProviderBindings {
                 tra_trips: network
-                    .data()
+                    .network()
                     .trips
                     .iter()
                     .map(|trip| {
@@ -219,7 +219,7 @@ fn dispatcher(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureDis
             }))
             .with_realtime_endpoint("v3/Rail/TRA/TrainLiveBoard"),
     );
-    DepartureDispatcher::new(network, vec![tra as Arc<dyn TransitDepartureSource>])
+    DepartureResolver::new(network, vec![tra as Arc<dyn TransitDepartureSource>])
 }
 
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule
         StatusCode::OK,
     )
     .await;
-    let resolver = dispatcher(network_for(&["100"]), tdx);
+    let resolver = departure_resolver(network_for(&["100"]), tdx);
 
     let result = resolver.next_departures(query("100")).await.unwrap();
     let trip = &result[0];
@@ -250,7 +250,7 @@ async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule
 async fn empty_tra_realtime_falls_back_to_static_schedule() {
     let update = recent_update();
     let (tdx, _) = fixture_client(payload(Vec::new(), &update), StatusCode::OK).await;
-    let resolver = dispatcher(network_for(&["100"]), tdx);
+    let resolver = departure_resolver(network_for(&["100"]), tdx);
 
     let trip = &resolver.next_departures(query("100")).await.unwrap()[0];
 
@@ -269,7 +269,7 @@ async fn stale_tra_realtime_falls_back_to_static_schedule() {
         StatusCode::OK,
     )
     .await;
-    let resolver = dispatcher(network_for(&["100"]), tdx);
+    let resolver = departure_resolver(network_for(&["100"]), tdx);
 
     let trip = &resolver.next_departures(query("100")).await.unwrap()[0];
 
@@ -281,14 +281,14 @@ async fn stale_tra_realtime_falls_back_to_static_schedule() {
 async fn malformed_and_failed_tra_realtime_fall_back_safely() {
     let (malformed_tdx, _) =
         fixture_client(json!({"TrainLiveBoards": "not-an-array"}), StatusCode::OK).await;
-    let malformed = dispatcher(network_for(&["100"]), malformed_tdx)
+    let malformed = departure_resolver(network_for(&["100"]), malformed_tdx)
         .next_departures(query("100"))
         .await
         .unwrap();
     assert_eq!(malformed[0].timing_basis, TimingBasis::Schedule);
 
     let (failed_tdx, _) = fixture_client(Value::Null, StatusCode::INTERNAL_SERVER_ERROR).await;
-    let failed = dispatcher(network_for(&["100"]), failed_tdx)
+    let failed = departure_resolver(network_for(&["100"]), failed_tdx)
         .next_departures(query("100"))
         .await
         .unwrap();
@@ -303,7 +303,7 @@ async fn train_number_matching_does_not_cross_match_similar_numbers() {
         StatusCode::OK,
     )
     .await;
-    let resolver = dispatcher(network_for(&["100"]), tdx);
+    let resolver = departure_resolver(network_for(&["100"]), tdx);
 
     let trip = &resolver.next_departures(query("100")).await.unwrap()[0];
 
@@ -325,7 +325,7 @@ async fn duplicate_train_queries_are_served_by_one_tdx_request() {
     )
     .await;
     let network = network_for(&["100", "101"]);
-    let resolver = dispatcher(network, tdx);
+    let resolver = departure_resolver(network, tdx);
 
     let results = resolver
         .next_departures_batch(vec![query("100"), query("100"), query("101")])
@@ -351,7 +351,7 @@ async fn duplicate_train_queries_are_served_by_one_tdx_request() {
 async fn tra_static_routing_still_works_without_tdx() {
     let network = network_for(&["100"]);
     let source = TraDepartureSource::new(network.clone());
-    let resolver = DepartureDispatcher::new(
+    let resolver = DepartureResolver::new(
         network,
         vec![Arc::new(source) as Arc<dyn TransitDepartureSource>],
     );
