@@ -167,7 +167,8 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
 
     async fn append_step(&mut self, step: &JourneyPathStep) -> Result<bool, PlanningError> {
         match &step.movement {
-            JourneyPathMovement::Baseline { movement_index } => {
+            JourneyPathMovement::Walking { movement_index }
+            | JourneyPathMovement::Transit { movement_index } => {
                 let variant = self.variant;
                 let movement = variant
                     .skeleton()
@@ -178,7 +179,11 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
                 {
                     return Ok(false);
                 }
+                if movement.street_path.is_some() {
+                    return self.append_realized_walk(step, movement);
+                }
                 match &movement.kind {
+                    JourneyMovementKind::BikeShare { .. } => Ok(false),
                     JourneyMovementKind::Walking {
                         kind: WalkingMovementKind::Access,
                         duration_seconds,
@@ -228,13 +233,13 @@ fn terminal_surface_transfer_egress(
 )> {
     let transfer_step = steps.get(index)?;
     let egress_step = steps.get(index + 1)?;
-    let JourneyPathMovement::Baseline {
+    let JourneyPathMovement::Walking {
         movement_index: transfer_index,
     } = &transfer_step.movement
     else {
         return None;
     };
-    let JourneyPathMovement::Baseline {
+    let JourneyPathMovement::Walking {
         movement_index: egress_index,
     } = &egress_step.movement
     else {
@@ -242,6 +247,9 @@ fn terminal_surface_transfer_egress(
     };
     let transfer_movement = variant.skeleton().movements().get(*transfer_index)?;
     let egress_movement = variant.skeleton().movements().get(*egress_index)?;
+    if transfer_movement.street_path.is_some() || egress_movement.street_path.is_some() {
+        return None;
+    }
     let JourneyMovementKind::Walking {
         kind: WalkingMovementKind::Transfer,
         duration_seconds: transfer_seconds,

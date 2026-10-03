@@ -233,7 +233,8 @@ impl JourneyVariant {
             self.path
                 .iter()
                 .map(|step| match &step.movement {
-                    JourneyPathMovement::Baseline { movement_index } => {
+                    JourneyPathMovement::Walking { movement_index }
+                    | JourneyPathMovement::Transit { movement_index } => {
                         JourneyVariantMovementIdentity::Baseline(Box::new(
                             self.skeleton.baseline_movement_identity(*movement_index),
                         ))
@@ -276,6 +277,9 @@ impl JourneySkeleton {
         let from = JourneyAnchorIdentity::from_kind(&self.anchors[movement.from_anchor].kind);
         let to = JourneyAnchorIdentity::from_kind(&self.anchors[movement.to_anchor].kind);
         match &movement.kind {
+            JourneyMovementKind::BikeShare { .. } => {
+                JourneyVariantMovementIdentity::InvalidMovement(movement_index)
+            }
             JourneyMovementKind::Walking {
                 kind,
                 duration_seconds,
@@ -318,6 +322,9 @@ impl JourneySkeleton {
             let from = JourneyAnchorIdentity::from_kind(&self.anchors[movement.from_anchor].kind);
             let to = JourneyAnchorIdentity::from_kind(&self.anchors[movement.to_anchor].kind);
             match &movement.kind {
+                JourneyMovementKind::BikeShare { .. } => {
+                    unreachable!("bike paths use path identities")
+                }
                 JourneyMovementKind::Walking {
                     kind: WalkingMovementKind::Access,
                     duration_seconds,

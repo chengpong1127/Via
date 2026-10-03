@@ -5,40 +5,29 @@ impl FixedCorridorEvaluator<'_> {
         &mut self,
         state: &EvaluationState,
         leg: &StaticTransitLeg,
+        anchor: usize,
         saw_missing_departure: &mut bool,
-    ) -> Result<ControlFlow<(), Vec<EvaluationState>>, RoutingError> {
-        let mut normal_successors = Vec::new();
-
-        let alternatives = self.corridor.equivalent_legs_for(self.network, leg);
-        for alternative in &alternatives {
-            if self
-                .query
-                .deadline
-                .is_some_and(|deadline| deadline.is_elapsed())
-            {
-                return Err(RoutingError::DeadlineExceeded);
-            }
-            if charge_state(&mut self.stats, self.query.limits.max_phase2_expansions) {
-                self.stats.expansion_limit_reached = true;
-                return Ok(ControlFlow::Break(()));
-            }
-            if !valid_pattern_leg(self.network, self.corridor, leg, alternative) {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let mut successors = Vec::new();
+        for alternative in self.corridor.equivalent_legs_for(self.network, leg) {
+            self.charge()?;
+            if !valid_pattern_leg(self.network, self.corridor, leg, &alternative) {
                 continue;
             }
-            let boarding_ready_at = if state.last_was_transit {
+            let ready_at = if state.last_was_transit {
                 state.ready_at
                     + Duration::seconds(i64::from(self.network.same_stop_transfer_seconds()))
             } else {
                 state.ready_at
             };
-            if !within_query_bounds(self.query, boarding_ready_at) {
+            if !within_query_bounds(self.query, ready_at) {
                 continue;
             }
             self.stats.transit_departure_lookups += 1;
             let departures = self.snapshot.departures(
                 &alternative.pattern_id,
                 alternative.board_index,
-                boarding_ready_at,
+                ready_at,
                 self.query.limits.max_departures_per_query,
             );
             if departures.is_empty() {
@@ -46,47 +35,33 @@ impl FixedCorridorEvaluator<'_> {
             }
             self.stats.effective_trips_examined += departures.len();
             for trip in departures {
-                if self
-                    .query
-                    .deadline
-                    .is_some_and(|deadline| deadline.is_elapsed())
-                {
-                    return Err(RoutingError::DeadlineExceeded);
-                }
-                let Some(arrival_at) =
-                    retained_alight_time(self.network, trip, alternative, boarding_ready_at)
+                self.check_deadline()?;
+                let Some(arrival) =
+                    retained_alight_time(self.network, trip, &alternative, ready_at)
                 else {
                     self.stats.malformed_trips += 1;
                     continue;
                 };
-                if !within_query_bounds(self.query, arrival_at)
-                    || self
-                        .query
-                        .latest_arrival
-                        .is_some_and(|latest| arrival_at > latest)
-                {
+                if !within_query_bounds(self.query, arrival) {
                     continue;
                 }
-                normal_successors.push(
-                    state.after_normal_transition(
-                        alternative.alight_stop_id.clone(),
-                        arrival_at,
-                        state.transit_legs + 1,
-                        true,
-                        state.path.with_ride(
-                            trip,
-                            alternative.board_index,
-                            alternative.alight_index,
-                        ),
-                    ),
-                );
+                successors.push(state.after_movement(JourneyMovement {
+                    from_anchor: anchor,
+                    to_anchor: anchor + 1,
+                    departure_at: trip.stop_times[alternative.board_index].departure_at,
+                    arrival_at: arrival,
+                    kind: JourneyMovementKind::Transit {
+                        trip: Arc::new(trip.clone()),
+                        board_index: alternative.board_index,
+                        alight_index: alternative.alight_index,
+                    },
+                    street_path: None,
+                }));
             }
         }
-
-        Ok(ControlFlow::Continue(normal_successors))
+        Ok(successors)
     }
 }
-
 fn valid_pattern_leg(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,

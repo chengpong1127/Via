@@ -4,33 +4,29 @@ use std::{
     time::{Duration as StdDuration, Instant},
 };
 
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 
 use crate::{
     api::PlanningRequest,
     domain::{
         bikeshare::BikeShareNetwork,
         journey::{EmptyReason, EmptyResult, OptionsResult, PlanningError, PlanningOutcome},
-        normalize_to_taipei,
         ranking::RankingPolicy,
         transit_runtime::TransitRuntime,
         transit_timing::TimingSnapshotLoader,
     },
     providers::BikeAvailabilitySource,
-    street::{
-        Coordinate, ProviderFailureClass, RouteQuery, RoutingConstraints, StreetPath, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+    street::{ProviderFailureClass, StreetRouter, StreetRoutingError},
 };
 
 use super::{
     model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline, TransitQuery},
-    planner::{DirectBikeCandidate, TransitPlanner},
+    planner::TransitPlanner,
     reconstruct::{
         JourneyCandidate, JourneyReconstructor, apply_ranked_journey, assign_result_local_ids,
         taipei_now, to_street_coordinate,
     },
-    variant::{JourneySkeleton, JourneyVariant},
+    variant::JourneyVariant,
 };
 
 #[derive(Clone)]
@@ -52,11 +48,13 @@ impl RoutingService {
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
     ) -> Self {
-        let transit_planner = TransitPlanner::new(transit_runtime.clone(), timing).with_bike_share(
-            bike_share_network.clone(),
-            bike_availability_source,
-            street_routing.clone(),
-        );
+        let transit_planner = TransitPlanner::new(transit_runtime.clone(), timing)
+            .with_street_router(street_routing.clone())
+            .with_bike_share(
+                bike_share_network.clone(),
+                bike_availability_source,
+                street_routing.clone(),
+            );
         let reconstructor =
             JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network);
         let limits = limits.normalized();
@@ -116,89 +114,32 @@ impl RoutingService {
         )?;
         context.ensure_before_deadline()?;
 
-        let direct = self.discover_direct_alternatives(&context).await?;
-        let transit = self
-            .discover_transit_alternatives(&context, direct.direct_bike)
-            .await?;
-        let candidates = direct
-            .candidates
-            .into_iter()
-            .chain(transit.candidates)
-            .collect();
-        let mut failures = direct.failures;
-        failures.merge(transit.failures);
-
+        let alternatives = self.discover_movements(&context).await?;
         self.finalize_plan(
             request_started_at,
             &context,
-            candidates,
-            failures,
-            transit.metrics,
+            alternatives.candidates,
+            alternatives.failures,
+            alternatives.metrics,
         )
     }
 
-    async fn discover_direct_alternatives(
+    async fn discover_movements(
         &self,
         context: &JourneyPlanningContext<'_>,
-    ) -> Result<DirectAlternatives, PlanningError> {
-        let request = context.request;
-        let walking = self.discover_direct_walking(context).await;
-        context.ensure_before_deadline()?;
-        let mut alternatives = DirectAlternatives::default();
-        alternatives.failures.merge(walking.failures);
-
-        if let Some(path) = walking.walking {
-            let departure_at = match request.departure_setting {
-                crate::api::DepartureSetting::ArriveBy { time } => {
-                    normalize_to_taipei(time) - Duration::seconds(i64::from(path.duration.0))
-                }
-                crate::api::DepartureSetting::DepartNow
-                | crate::api::DepartureSetting::DepartAt { .. } => context.search_start,
-            };
-            if request.allows_bike_share()
-                && let (Ok(origin), Ok(destination)) = (
-                    to_street_coordinate(request.origin.coordinate),
-                    to_street_coordinate(request.destination.coordinate),
-                )
-            {
-                alternatives.direct_bike = Some(DirectBikeCandidate {
-                    path: path.clone(),
-                    origin,
-                    destination,
-                    departure_at,
-                });
-            }
-            match JourneySkeleton::from_direct_walking(path, departure_at) {
-                Ok(skeleton) => {
-                    let variant = JourneyVariant::baseline(skeleton);
-                    match self.reconstructor.reconstruct(&variant, context).await {
-                        Ok(Some(candidate)) => alternatives.candidates.push(candidate),
-                        Ok(None) => {}
-                        Err(error) => alternatives.failures.record_planning(&error),
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(error = %error, "direct walking path could not be skeletonized");
-                    alternatives.failures.internal = true;
-                }
-            }
-        }
-
-        Ok(alternatives)
-    }
-
-    async fn discover_transit_alternatives(
-        &self,
-        context: &JourneyPlanningContext<'_>,
-        direct_bike: Option<DirectBikeCandidate>,
     ) -> Result<TransitAlternatives, PlanningError> {
         let request = context.request;
         let allowed_transit_modes = request.allowed_transit_modes();
         let mut alternatives = TransitAlternatives::default();
-        let mut direct_bike = direct_bike;
 
+        let (origin, destination) = (
+            to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?,
+            to_street_coordinate(request.destination.coordinate)
+                .map_err(|_| PlanningError::Internal)?,
+        );
         let query = if allowed_transit_modes.is_empty() {
-            None
+            TransitQuery::new(Vec::new(), Vec::new(), context.search_start)
+                .with_allowed_transit_modes([])
         } else {
             let access_started = Instant::now();
             let access = self
@@ -248,31 +189,51 @@ impl RoutingService {
                 "discovered transit access and egress"
             );
 
-            if !access.is_empty() && !egress.is_empty() {
-                Some(TransitQuery {
-                    origin_access: access,
-                    destination_egress: egress,
-                    allowed_transit_modes,
-                    allow_bike_share: request.allows_bike_share(),
-                    departure_time: context.search_start,
-                    latest_arrival: context.latest_arrival,
-                    limits: self.limits.planner,
-                    deadline: Some(context.deadline),
-                })
-            } else {
-                None
-            }
+            TransitQuery::new(access, egress, context.search_start)
+                .with_allowed_transit_modes(allowed_transit_modes)
         };
+        let mut query = query
+            .with_endpoints(origin, destination)
+            .with_bike_share(request.allows_bike_share())
+            .with_limits(self.limits.planner)
+            .with_deadline(context.deadline);
+        query.latest_arrival = context.latest_arrival;
 
-        if let Some(query) = query {
+        {
             let search_started = Instant::now();
-            match self
-                .transit_planner
-                .plan_with_stats_and_direct(query, direct_bike.take())
-                .await
-            {
-                Ok((variants, planner_stats)) => {
-                    context.ensure_before_deadline()?;
+            let planned = async {
+                let mut session = self.transit_planner.begin_plan(query).await?;
+                let variants = session.evaluate(false).await?;
+                context
+                    .ensure_before_deadline()
+                    .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
+                alternatives.metrics.transit_realtime_evidence_values = variants
+                    .iter()
+                    .map(JourneyVariant::realtime_evidence_count)
+                    .sum();
+                for variant in variants {
+                    match self.reconstructor.reconstruct(&variant, context).await {
+                        Ok(Some(candidate)) => alternatives.candidates.push(candidate),
+                        Ok(None) => {}
+                        Err(error) => alternatives.failures.record_planning(&error),
+                    }
+                }
+                if alternatives.candidates.is_empty() && !session.fallback_used {
+                    for variant in session.evaluate(true).await? {
+                        match self.reconstructor.reconstruct(&variant, context).await {
+                            Ok(Some(candidate)) => alternatives.candidates.push(candidate),
+                            Ok(None) => {}
+                            Err(error) => alternatives.failures.record_planning(&error),
+                        }
+                    }
+                }
+                alternatives.failures.transient |= session.failures.transient;
+                alternatives.failures.internal |= session.failures.internal;
+                Ok::<_, super::model::RoutingError>(session.stats)
+            }
+            .await;
+            match planned {
+                Ok(planner_stats) => {
                     alternatives.metrics.transit_reachable_boardings =
                         planner_stats.phase1.static_corridor_positions;
                     alternatives.metrics.transit_reachable_patterns =
@@ -281,19 +242,8 @@ impl RoutingService {
                         planner_stats.phase1.static_corridor_bus_stops;
                     alternatives.metrics.transit_departure_lookups =
                         planner_stats.phase2_evaluation.transit_departure_lookups;
-                    alternatives.metrics.transit_realtime_evidence_values = variants
-                        .iter()
-                        .map(JourneyVariant::realtime_evidence_count)
-                        .sum();
                     alternatives.metrics.multimodal_search_duration =
                         Some(search_started.elapsed());
-                    for variant in variants {
-                        match self.reconstructor.reconstruct(&variant, context).await {
-                            Ok(Some(candidate)) => alternatives.candidates.push(candidate),
-                            Ok(None) => {}
-                            Err(error) => alternatives.failures.record_planning(&error),
-                        }
-                    }
                 }
                 Err(error) => {
                     match &error {
@@ -310,22 +260,6 @@ impl RoutingService {
                         super::model::RoutingError::InvalidQuery => {}
                     }
                     tracing::error!(error = %error, "transit planning failed");
-                }
-            }
-        }
-
-        if let Some(direct) = direct_bike {
-            context.ensure_before_deadline()?;
-            for variant in self
-                .transit_planner
-                .plan_direct_bike(direct, context.deadline)
-                .await
-            {
-                context.ensure_before_deadline()?;
-                match self.reconstructor.reconstruct(&variant, context).await {
-                    Ok(Some(candidate)) => alternatives.candidates.push(candidate),
-                    Ok(None) => {}
-                    Err(error) => alternatives.failures.record_planning(&error),
                 }
             }
         }
@@ -374,7 +308,7 @@ impl RoutingService {
             generated_candidates = candidates.len(),
             "journey planning routing stages"
         );
-        if failures.internal {
+        if candidates.is_empty() && failures.internal {
             tracing::error!(
                 target: "via_server::routing",
                 "journey planning failed due to an internal routing error"
@@ -441,13 +375,6 @@ impl RoutingService {
 }
 
 #[derive(Default)]
-struct DirectAlternatives {
-    candidates: Vec<JourneyCandidate>,
-    direct_bike: Option<DirectBikeCandidate>,
-    failures: PlanningFailures,
-}
-
-#[derive(Default)]
 struct TransitAlternatives {
     candidates: Vec<JourneyCandidate>,
     failures: PlanningFailures,
@@ -464,12 +391,6 @@ struct PlannerStageMetrics {
     transit_realtime_evidence_values: usize,
     candidate_discovery_duration: Option<StdDuration>,
     multimodal_search_duration: Option<StdDuration>,
-}
-
-enum PathAttempt {
-    Found(StreetPath),
-    Unreachable,
-    Failed(StreetRoutingError),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -492,75 +413,10 @@ impl PlanningFailures {
         self.internal |= *error == PlanningError::Internal;
     }
 
+    #[cfg(test)]
     fn merge(&mut self, other: Self) {
         self.transient |= other.transient;
         self.internal |= other.internal;
-    }
-}
-
-#[derive(Default)]
-struct DirectWalkingOutcome {
-    walking: Option<StreetPath>,
-    failures: PlanningFailures,
-}
-
-impl RoutingService {
-    async fn street_path(
-        &self,
-        mode: StreetTravelMode,
-        origin: Coordinate,
-        destination: Coordinate,
-        constraints: RoutingConstraints,
-    ) -> PathAttempt {
-        match self
-            .street_routing
-            .route(RouteQuery {
-                travel_mode: mode,
-                origin,
-                destination,
-                constraints,
-            })
-            .await
-        {
-            Ok(path) => PathAttempt::Found(path),
-            Err(StreetRoutingError::Unreachable) => PathAttempt::Unreachable,
-            Err(error) => PathAttempt::Failed(error),
-        }
-    }
-
-    async fn discover_direct_walking(
-        &self,
-        context: &JourneyPlanningContext<'_>,
-    ) -> DirectWalkingOutcome {
-        let (Ok(origin), Ok(destination)) = (
-            to_street_coordinate(context.request.origin.coordinate),
-            to_street_coordinate(context.request.destination.coordinate),
-        ) else {
-            return DirectWalkingOutcome::default();
-        };
-        let attempt = self
-            .street_path(
-                StreetTravelMode::Walking,
-                origin,
-                destination,
-                context.direct_constraints(),
-            )
-            .await;
-        match attempt {
-            PathAttempt::Found(path) => DirectWalkingOutcome {
-                walking: Some(path),
-                failures: PlanningFailures::default(),
-            },
-            PathAttempt::Unreachable => DirectWalkingOutcome::default(),
-            PathAttempt::Failed(error) => {
-                let mut failures = PlanningFailures::default();
-                failures.record_provider(&error);
-                DirectWalkingOutcome {
-                    walking: None,
-                    failures,
-                }
-            }
-        }
     }
 }
 

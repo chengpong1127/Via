@@ -1,10 +1,12 @@
 pub(crate) mod access;
 mod bike;
+mod corridor;
 mod evaluator;
 pub mod model;
 pub mod planner;
 pub mod reconstruct;
 pub mod static_search;
+mod surface;
 pub mod topology;
 pub mod transfers;
 mod variant;
@@ -13,8 +15,7 @@ pub(crate) mod service;
 pub use evaluator::Phase2EvaluationStats;
 pub use model::JourneyPlanningLimits;
 pub use model::{
-    AccessPoint, EgressPoint, JourneySegment, PlannerLimits, PlanningDeadline, RealizedJourney,
-    RoutingError, TransitQuery,
+    AccessPoint, EgressPoint, PlannerLimits, PlanningDeadline, RoutingError, TransitQuery,
 };
 pub use planner::{TransitPlanner, TransitPlannerStats};
 pub use service::RoutingService;

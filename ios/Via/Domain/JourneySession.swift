@@ -48,10 +48,11 @@ final class JourneySession {
         self.origin = origin
         self.destination = destination
 
+        let hasStoredSelection = defaults.object(forKey: "selectedTransportModes") != nil
         let stored = defaults.array(forKey: "selectedTransportModes") as? [String] ?? []
         let restored = Set(stored.compactMap(PlanningMode.init(rawValue:)))
             .intersection(Set(PlanningMode.selectable))
-        selectedModes = restored.isEmpty ? Set(PlanningMode.selectable) : restored
+        selectedModes = hasStoredSelection ? restored : Set(PlanningMode.selectable)
     }
 
     var selectedOption: JourneyOption? {
@@ -60,13 +61,12 @@ final class JourneySession {
     }
 
     var canSubmit: Bool {
-        destination != nil && !selectedModes.isEmpty
+        destination != nil
     }
 
     func toggle(_ mode: PlanningMode) {
         guard PlanningMode.selectable.contains(mode) else { return }
         if selectedModes.contains(mode) {
-            guard selectedModes.count > 1 else { return }
             selectedModes.remove(mode)
         } else {
             selectedModes.insert(mode)
@@ -79,7 +79,7 @@ final class JourneySession {
     }
 
     func submit() async {
-        guard destination != nil, !selectedModes.isEmpty else {
+        guard destination != nil else {
             state = .invalidRequest(field: missingField)
             return
         }
@@ -128,7 +128,7 @@ final class JourneySession {
     }
 
     private func makeRequest() async throws -> PlanningRequest {
-        guard let destination, !selectedModes.isEmpty else {
+        guard let destination else {
             throw JourneyPlanningError.invalidRequest(field: missingField)
         }
 

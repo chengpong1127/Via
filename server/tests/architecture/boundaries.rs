@@ -84,6 +84,8 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
         "bikeshare",
         "BikeAvailability",
         "BikeStation",
+        "StreetRouter",
+        "SurfaceMovementPlanner",
         "StreetTravelMode::Bicycle",
         "scheduled_trip",
         "TDX",
@@ -97,13 +99,12 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
 }
 
 #[test]
-fn phase2_evaluator_uses_request_snapshots_and_lazy_bike_routing() {
+fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     let evaluator = source_tree("src/routing/evaluator");
     assert!(evaluator.contains("&TimingSnapshot"));
-    assert!(evaluator.contains("corridor.retained()"));
-    assert!(evaluator.contains("BikeAvailabilitySnapshot"));
-    assert!(evaluator.contains("movement_candidate"));
-    assert!(evaluator.contains("realize_candidate"));
+    assert!(evaluator.contains("SurfaceMovementPlanner"));
+    assert!(evaluator.contains("optimistic_duration"));
+    assert!(evaluator.contains(".realize(&request)"));
     for forbidden in [
         "TDX",
         "TdxClient",
@@ -112,6 +113,9 @@ fn phase2_evaluator_uses_request_snapshots_and_lazy_bike_routing() {
         "crate::providers",
         "TimingProvider",
         "BikeAvailabilitySource",
+        "usable_pickups",
+        "usable_dropoffs",
+        "select_station",
         "static_search::generate",
     ] {
         assert!(

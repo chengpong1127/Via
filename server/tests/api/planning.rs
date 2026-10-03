@@ -147,6 +147,28 @@ fn bike_share_only_is_a_valid_request() {
 }
 
 #[test]
+fn empty_selected_modes_is_a_valid_request() {
+    let request: PlanningRequest = serde_json::from_value(json!({
+        "origin": {
+            "coordinate": {"latitude": 25.04776, "longitude": 121.51706},
+            "display_text": "Origin"
+        },
+        "destination": {
+            "coordinate": {"latitude": 25.03396, "longitude": 121.56447},
+            "display_text": "Destination"
+        },
+        "selected_modes": [],
+        "departure_setting": {"type": "depart_now"}
+    }))
+    .unwrap();
+
+    request.validate().unwrap();
+    assert!(request.allowed_transit_modes().is_empty());
+    assert!(!request.allows_bike_share());
+    assert!(request.canonical_selected_modes().is_empty());
+}
+
+#[test]
 fn planning_request_rejects_duplicate_modes() {
     let duplicate: PlanningRequest = serde_json::from_value(json!({
         "origin": {

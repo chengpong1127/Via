@@ -3,7 +3,6 @@ mod skeleton;
 #[cfg(test)]
 mod tests;
 
-pub(in crate::routing) use identity::JourneyVariantIdentity;
 pub use skeleton::{
     JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind, JourneySkeleton,
     JourneySkeletonError, WalkingMovementKind,
@@ -23,7 +22,7 @@ pub struct JourneyVariant {
 }
 
 impl JourneyVariant {
-    pub fn baseline(skeleton: JourneySkeleton) -> Self {
+    fn from_skeleton(skeleton: JourneySkeleton) -> Self {
         let path = skeleton
             .movements()
             .iter()
@@ -31,7 +30,17 @@ impl JourneyVariant {
             .map(|(movement_index, movement)| JourneyPathStep {
                 from_anchor: movement.from_anchor,
                 to_anchor: movement.to_anchor,
-                movement: JourneyPathMovement::Baseline { movement_index },
+                movement: match &movement.kind {
+                    JourneyMovementKind::Walking { .. } => {
+                        JourneyPathMovement::Walking { movement_index }
+                    }
+                    JourneyMovementKind::Transit { .. } => {
+                        JourneyPathMovement::Transit { movement_index }
+                    }
+                    JourneyMovementKind::BikeShare { shortcut } => JourneyPathMovement::BikeShare {
+                        shortcut: shortcut.clone(),
+                    },
+                },
             })
             .collect();
         Self {
@@ -48,17 +57,42 @@ impl JourneyVariant {
         &self.path
     }
 
-    pub fn is_baseline(&self) -> bool {
-        self.path.len() == self.skeleton.movements().len()
-            && self.path.iter().enumerate().all(|(index, step)| {
-                let movement = &self.skeleton.movements()[index];
-                step.from_anchor == movement.from_anchor
-                    && step.to_anchor == movement.to_anchor
-                    && step.movement
-                        == JourneyPathMovement::Baseline {
-                            movement_index: index,
-                        }
+    /// Construct a path whose movements already contain the evaluated timing and geometry.
+    pub fn from_movements(
+        anchors: Vec<JourneyAnchor>,
+        movements: Vec<JourneyMovement>,
+        departure_at: OffsetDateTime,
+    ) -> Result<Self, JourneySkeletonError> {
+        if anchors.len() < 2 || movements.is_empty() {
+            return Err(JourneySkeletonError::NoMovements);
+        }
+        if anchors[0].reached_at != departure_at
+            || movements.iter().any(|movement| {
+                movement.from_anchor >= anchors.len()
+                    || movement.to_anchor >= anchors.len()
+                    || movement.arrival_at < movement.departure_at
+                    || (movement.street_path.is_some()
+                        && !matches!(movement.kind, JourneyMovementKind::Walking { .. }))
             })
+        {
+            return Err(JourneySkeletonError::InvalidRealizedPath);
+        }
+        let variant = Self::from_skeleton(JourneySkeleton {
+            anchors,
+            movements,
+            departure_at,
+        });
+        variant
+            .evaluate_timing()
+            .map_err(|_| JourneySkeletonError::InvalidRealizedPath)?;
+        Ok(variant)
+    }
+
+    pub fn is_baseline(&self) -> bool {
+        !self
+            .path
+            .iter()
+            .any(|step| matches!(step.movement, JourneyPathMovement::BikeShare { .. }))
     }
 
     pub fn evaluate_timing(&self) -> Result<JourneyVariantTiming, JourneyTimingError> {
@@ -79,16 +113,17 @@ impl JourneyVariant {
             }
 
             match &step.movement {
-                JourneyPathMovement::Baseline { movement_index } => {
+                JourneyPathMovement::Walking { movement_index }
+                | JourneyPathMovement::Transit { movement_index } => {
                     let movement = self.skeleton.movements().get(*movement_index).ok_or(
-                        JourneyTimingError::InvalidBaselineMovement {
+                        JourneyTimingError::InvalidRealizedMovement {
                             movement_index: *movement_index,
                         },
                     )?;
                     if movement.from_anchor != step.from_anchor
                         || movement.to_anchor != step.to_anchor
                     {
-                        return Err(JourneyTimingError::InvalidBaselineMovement {
+                        return Err(JourneyTimingError::InvalidRealizedMovement {
                             movement_index: *movement_index,
                         });
                     }
@@ -100,6 +135,9 @@ impl JourneyVariant {
                             current_time += Duration::seconds(i64::from(duration_seconds));
                             timing.walking_seconds =
                                 timing.walking_seconds.saturating_add(duration_seconds);
+                        }
+                        JourneyMovementKind::BikeShare { .. } => {
+                            return Err(JourneyTimingError::InvalidBikeShortcut);
                         }
                         JourneyMovementKind::Transit { .. } => {
                             if current_time > movement.departure_at {
@@ -142,49 +180,16 @@ impl JourneyVariant {
         Ok(timing)
     }
 
-    pub(super) fn with_shortcut(baseline: &Self, shortcut: BikeShortcut) -> Option<Self> {
-        if shortcut.to_anchor <= shortcut.from_anchor {
-            return None;
-        }
-        let mut path = baseline.path.clone();
-        let start = path
-            .iter()
-            .position(|step| step.from_anchor == shortcut.from_anchor)?;
-        let mut end = start;
-        let mut anchor = shortcut.from_anchor;
-        while anchor < shortcut.to_anchor {
-            let step = path.get(end)?;
-            if step.from_anchor != anchor || step.to_anchor > shortcut.to_anchor {
-                return None;
-            }
-            anchor = step.to_anchor;
-            end += 1;
-        }
-        if anchor != shortcut.to_anchor {
-            return None;
-        }
-        path.splice(
-            start..end,
-            [JourneyPathStep {
-                from_anchor: shortcut.from_anchor,
-                to_anchor: shortcut.to_anchor,
-                movement: JourneyPathMovement::BikeShare { shortcut },
-            }],
-        );
-        Some(Self {
-            skeleton: baseline.skeleton.clone(),
-            path,
-        })
-    }
-
     pub fn transit_pattern_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
         self.path
             .iter()
             .filter_map(|step| match &step.movement {
-                JourneyPathMovement::Baseline { movement_index } => {
+                JourneyPathMovement::Walking { movement_index }
+                | JourneyPathMovement::Transit { movement_index } => {
                     match &self.skeleton.movements().get(*movement_index)?.kind {
                         JourneyMovementKind::Transit { trip, .. } => Some(trip.pattern_id.clone()),
-                        JourneyMovementKind::Walking { .. } => None,
+                        JourneyMovementKind::Walking { .. }
+                        | JourneyMovementKind::BikeShare { .. } => None,
                     }
                 }
                 JourneyPathMovement::BikeShare { .. } => None,
@@ -196,10 +201,12 @@ impl JourneyVariant {
         self.path
             .iter()
             .filter_map(|step| match &step.movement {
-                JourneyPathMovement::Baseline { movement_index } => {
+                JourneyPathMovement::Walking { movement_index }
+                | JourneyPathMovement::Transit { movement_index } => {
                     match &self.skeleton.movements().get(*movement_index)?.kind {
                         JourneyMovementKind::Transit { trip, .. } => Some(trip.evidence.len()),
-                        JourneyMovementKind::Walking { .. } => None,
+                        JourneyMovementKind::Walking { .. }
+                        | JourneyMovementKind::BikeShare { .. } => None,
                     }
                 }
                 JourneyPathMovement::BikeShare { .. } => None,
@@ -217,7 +224,8 @@ pub struct JourneyPathStep {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JourneyPathMovement {
-    Baseline { movement_index: usize },
+    Walking { movement_index: usize },
+    Transit { movement_index: usize },
     BikeShare { shortcut: BikeShortcut },
 }
 
@@ -296,9 +304,9 @@ pub enum JourneyTimingError {
     NonContiguousPath,
     #[error("journey variant path is incomplete")]
     IncompletePath,
-    #[error("journey variant references invalid baseline movement {movement_index}")]
-    InvalidBaselineMovement { movement_index: usize },
-    #[error("journey variant misses baseline transit movement {movement_index}")]
+    #[error("journey variant references invalid realized movement {movement_index}")]
+    InvalidRealizedMovement { movement_index: usize },
+    #[error("journey variant misses realized transit movement {movement_index}")]
     MissedTransit { movement_index: usize },
     #[error("journey variant contains an invalid bike-share shortcut")]
     InvalidBikeShortcut,

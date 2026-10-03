@@ -7,38 +7,36 @@ routing, and provider-neutral API models.
 ## Request flow
 
 ```text
-build_runtime
-  → ViaRuntime
-       ├─ routing: RoutingService
-       └─ health: Health
-  ↓
 PlanningRequest
   → RoutingService.plan()
-       ├─ direct alternatives
-       │    └─ direct walking and a direct BikeShare seed
-       ├─ transit alternatives
-       │    ├─ TransitPlanner discovers access and egress points
-       │    ├─ Phase 1: bounded static Top-K structural corridors
-       │    ├─ one request-local TimingSnapshot
-       │    ├─ optional BikeAvailabilitySnapshot
-       │    └─ Phase 2: forward fixed-corridor evaluation
-       ├─ merge stage outputs and failures
+       ├─ discover transit access / egress when transit is selected
+       ├─ TransitPlanner.begin_plan() → MovementSession.evaluate()
+       │    ├─ Phase 1: bounded static Top-K transit corridors
+       │    ├─ load request-local snapshots for retained transit positions
+       │    ├─ convert retained corridors to EvaluationCorridors
+       │    └─ Phase 2: fixed-corridor movement evaluation
+       ├─ trivial Origin → Destination corridor if no candidate survives
        ├─ JourneyReconstructor assembles candidates
        └─ validate failures → rank → PlanningOutcome
 ```
 
 `ViaRuntime` is the shared concrete application assembly used by both the HTTP
-server and `via-route`. `RoutingService` owns the complete planning use
-case and combines explicit direct and transit stage outputs. Its request-scoped
-`JourneyPlanningContext` and `JourneyPlanningLimits` live in `routing/model.rs`.
+server and `via-route`. `RoutingService` owns the complete planning use case.
+Its request-scoped `JourneyPlanningContext` and `JourneyPlanningLimits` live in
+`routing/model.rs`.
 
-`TransitPlanner` owns transit access and egress discovery as well as the two
-planning phases. Its topology and transfer indexes stay private. Phase 2
-evaluates each retained Phase 1 corridor in order. It cannot add an anchor or
+`RoutingService` discovers access and egress for selected transit modes, then
+calls `TransitPlanner.begin_plan()` and evaluates the request-local
+`MovementSession`. The planner owns static corridor discovery, request
+snapshots, and Phase 2. Its topology and transfer indexes
+stay private. A Phase-2 `EvaluationCorridor` has explicit Origin,
+BoardingPoint, and Destination anchors. Its edge baseline can hold bounded
+access or egress alternatives, transit, retained walking, or no movement.
+Phase 2 evaluates each corridor independently and cannot add anchors or
 combine steps from different corridors. `JourneyReconstructor` owns place
-lookups, street hydration, BikeShare station lookup, and candidate assembly;
-it depends on the street router, transit runtime, and BikeShare network rather
-than on `RoutingService`.
+lookups, remaining street geometry hydration, BikeShare station lookup, and
+candidate assembly; it depends on the street router, transit runtime, and
+BikeShare network rather than on `RoutingService`.
 
 ## Static corridor discovery
 
@@ -69,35 +67,35 @@ diagnostics.
 
 ## Request-local evaluation
 
-The planner loads one timing snapshot for the retained timing positions and,
-when selected, one BikeShare availability snapshot. Bus realtime is fetched by
-unique stop and scope, then filtered locally. Other modes keep their
-provider-native batching and static fallback behavior.
+Walking is always implicit and is not a `selected_modes` value. An empty mode
+list skips transit discovery and Phase 1, then evaluates a trivial
+Origin-to-Destination corridor as walking. Selecting only BikeShare also skips
+transit search and timing requests while loading one BikeShare availability
+snapshot. If transit corridors evaluate to no candidate, the planner evaluates
+the same trivial corridor as a fallback. It does not append a direct route to
+successful transit results. The session retains its snapshots, movement
+caches, and expansion accounting through reconstruction, so failed
+reconstruction can use the same fallback without additional snapshot loads.
 
-Phase 2 evaluates normal transit and walking successors before screening a
-BikeShare movement with a cheap optimistic lower bound. Competitive movements
-are routed lazily through the street provider. The evaluator advances only
-along retained corridor anchors. An active rental can extend from its original
-pickup anchor to the next corridor anchor, so intermediate anchors need no
-station and the rental remains continuous. Each movement requires a fresh,
-serviceable pickup with a bike and a return station with a dock, and includes
-walking access, one bicycle route, and walking from the return station. At
-each endpoint it considers no more than three pickup and three return
-stations. Transit departures after a movement are selected from the same
-timing snapshot using the new arrival time. State expansion and retained
-frontiers are bounded by the query's expansion and candidate limits.
+For each edge, `FixedCorridorEvaluator` evaluates its baseline and asks the
+enabled `SurfaceMovementPlanner`s about alternatives. Walking and BikeShare
+first use cheap optimistic duration bounds; competitive routes are realized
+lazily through the street provider and cached within the request. Walking
+alternatives are retained as already-routed path movements, avoiding a second
+route lookup during reconstruction. BikeShare considers up to three pickup
+and three return stations per endpoint. A continuous rental can extend from
+its original anchor to a later corridor anchor, so intermediate anchors need
+no station. Separate rentals obey the 15-minute reuse rule. BikeShare requires
+a fresh, serviceable pickup with a bike and a return station with a dock; it
+includes station access, one bicycle route, and station exit walking. Exact
+bicycle legs are capped at 60 minutes and 20 kilometres. Availability is
+observed at request time; future DepartAt and ArriveBy inventory is not
+forecast.
 
-The direct walking candidate uses the same journey path representation and may
-have a separate direct origin-to-destination BikeShare alternative. It
-considers three nearby serviceable stations at each endpoint and caps station
-access walks at 15 minutes, bicycle legs at 60 minutes, and bicycle distance
-at 20 kilometres. BikeShare never adds arbitrary transit stops, patterns, or
-connections. Availability is observed at request time; future DepartAt and
-ArriveBy inventory is not forecast.
-
-Static transfer edges are directional facts in `TransitNetwork.transfer_edges`.
-`TransferShortcutIndex` provides incoming and outgoing lookups; there is no
-async transfer resolver.
+Transit departures after a movement are selected from the same timing
+snapshot using the new arrival time. State expansion and retained frontiers
+are bounded by the query's expansion and candidate limits. Walking and
+BikeShare cannot add transit stops, patterns, or connections.
 
 ## Static and live data
 

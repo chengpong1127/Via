@@ -124,7 +124,7 @@ fn generated_openapi_covers_the_http_contract() {
     let planning_properties = &openapi["components"]["schemas"]["PlanningRequest"]["properties"];
     assert!(planning_properties["selected_modes"].is_object());
     assert!(planning_properties["departure_setting"].is_object());
-    assert_eq!(planning_properties["selected_modes"]["minItems"], 1);
+    assert!(planning_properties["selected_modes"]["minItems"].is_null());
     assert!(planning_properties["selected_modes"]["maxItems"].is_null());
     assert_eq!(planning_properties["selected_modes"]["uniqueItems"], true);
     assert_eq!(

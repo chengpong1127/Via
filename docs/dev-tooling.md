@@ -92,10 +92,15 @@ cargo run --manifest-path server/Cargo.toml --bin via-route -- \
 ```
 
 The CLI also accepts `--depart-at <RFC3339>`, `--arrive-by <RFC3339>`, and
-`--json`. `--modes` accepts comma-separated `bus`, `metro`, `tra`, `thsr`, and
-`bike_share`. BikeShare can shortcut forward between anchors in a retained
-corridor or replace a direct walking journey when station metadata, street
-routes, and fresh availability support it. It does not add transit topology.
+`--json`. `--modes` selects optional non-walking modes: `bus`, `metro`, `tra`,
+`thsr`, and `bike_share`. Omitting `--modes` or passing `--modes ''` selects
+walking only; `walk` is not a mode value. Walking is always available. With no
+transit mode, the planner skips transit search and timing, then evaluates a
+trivial Origin-to-Destination corridor; selecting BikeShare also loads one
+request-local availability snapshot. BikeShare can realize movements between
+anchors in a retained corridor or that fallback corridor when station
+metadata, routes, and fresh availability support it. Surface movement cannot
+add transit topology.
 
 ## Run the server
 

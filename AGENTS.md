@@ -5,34 +5,41 @@
 The server's canonical planning flow is:
 
 ```text
-street access/egress → TransitPlanner
-  → static Top-K structural corridors → request-local snapshots
-  → forward fixed corridor evaluator (Transit / Walk / lazy YouBike routing)
-  → reconstruct → rank
+RoutingService
+  → TransitPlanner.begin_plan → MovementSession.evaluate
+  → static transit corridors → EvaluationCorridor anchors
+  → request-local timing / availability snapshots
+  → FixedCorridorEvaluator (baseline + Walking / BikeShare surface movement)
+  → typed realized path → reconstruct → rank
 ```
 
-`TransitPlanner` is the single concrete transit planner. Phase 1 performs one
-global, bounded forward Top-K search across the selected transit modes using
-static schedule durations or optimistic geometry estimates. Phase 2 loads one
-request-local timing snapshot for retained corridors and, when selected, one
-BikeShare availability snapshot. An asynchronous forward fixed-corridor
-evaluator chooses equivalent transit Patterns and departures, then evaluates
-Walk and normal successors before screening BikeShare with a cheap optimistic
-lower bound. Competitive BikeShare movements are routed lazily through the
-street provider, and a continuous rental may extend from its original anchor
-to the next corridor anchor. The evaluator cannot add anchors or combine
-corridors and makes no additional TDX calls. A direct origin-to-destination
-BikeShare alternative remains separate. The
-static `TransferShortcutIndex` exposes directional `transfers_from` and
-`transfers_to` lookups. Bus realtime is fetched by unique stop and scope, then
-filtered locally. BikeShare does not add transit connectivity, replace access
-or egress, or create direct BikeShare-only routes. Reconstruction consumes the
-planner's final path variants and there is no `RouteGraph` in the canonical
-routing path. Keep the dependency
-direction `domain ← routing ← app/api`, with providers implementing domain-facing
-interfaces. Do not reintroduce the removed `planner`, `normalization`, or
-`routing/engine` modules, a generic routing-algorithm boundary, Trip-Based
-routing, async transfer resolvers, or a `JourneyPlanningService` wrapper.
+`TransitPlanner` owns both phases. Phase 1 runs one global, bounded forward
+Top-K search over selected transit modes using static schedule costs, derived
+Bus segment costs, or optimistic geometry estimates. It retains transit
+corridors only. Phase 2 represents each retained corridor as an
+`EvaluationCorridor` whose anchors include Origin, boarding points, and
+Destination; bounded access and egress alternatives remain attached to their
+edges. With no transit mode selected, Phase 1 is skipped and a trivial
+Origin-to-Destination corridor is evaluated. If transit evaluation yields no
+candidate, the same trivial corridor is evaluated as fallback.
+
+`selected_modes` lists only optional non-walking modes. `[]` enables walking
+alone; `[bike_share]` enables walking and BikeShare without transit search.
+The planner loads timing only for retained transit positions and loads one
+request-local BikeShare availability snapshot only when BikeShare is selected.
+`FixedCorridorEvaluator` evaluates each baseline and uses
+`SurfaceMovementPlanner` implementations for Walking and BikeShare. Both use
+cheap optimistic bounds before exact street routing and request-local caches.
+BikeShare may extend one continuous rental across later anchors. The evaluator
+cannot add anchors or combine corridors and makes no additional TDX calls.
+Static `TransferShortcutIndex` lookups are directional; Bus realtime is fetched
+by unique stop and scope, then filtered locally. Reconstruction consumes typed
+realized path movements. There is no `RouteGraph` in the canonical routing
+path. Keep the dependency direction `domain ← routing ← app/api`, with
+providers implementing domain-facing interfaces. Do not reintroduce the
+removed `planner`, `normalization`, or `routing/engine` modules, a generic
+routing-algorithm boundary, Trip-Based routing, async transfer resolvers, or a
+`JourneyPlanningService` wrapper.
 
 iOS remains feature-oriented (`App`, `Components`, `Domain`, `Features`,
 `Resources`, `Services`). Production planning flows through

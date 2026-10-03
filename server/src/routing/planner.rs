@@ -12,21 +12,20 @@ use crate::domain::{
 };
 use crate::providers::BikeAvailabilitySource;
 use crate::street::{
-    Coordinate, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetPath, StreetRouter,
+    Coordinate, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
     StreetRoutingError, StreetTravelMode,
 };
 
 use super::{
-    bike::{BikePlanningStats, BikeSegmentPlanner},
+    bike::{BikeShareMovementPlanner, BikeShareSession},
+    corridor::EvaluationCorridor,
     evaluator::{self, Phase2EvaluationStats},
-    model::{
-        AccessPoint, EgressPoint, JourneyPlanningLimits, PlanningDeadline, RoutingError,
-        TransitQuery,
-    },
+    model::{AccessPoint, EgressPoint, JourneyPlanningLimits, RoutingError, TransitQuery},
     static_search,
+    surface::{SurfaceMovementPlanner, WalkingMovementPlanner},
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
-    variant::{JourneySkeleton, JourneyVariant},
+    variant::JourneyVariant,
 };
 
 #[derive(Clone)]
@@ -35,7 +34,8 @@ pub struct TransitPlanner {
     topology: Arc<TransitTopologyIndex>,
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
-    bike: Option<BikeSegmentPlanner>,
+    bike: Option<BikeShareMovementPlanner>,
+    street: Option<Arc<dyn StreetRouter>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,17 +45,10 @@ pub struct TransitPlannerStats {
     pub phase1: static_search::StaticSearchStats,
 }
 
-pub(crate) struct DirectBikeCandidate {
-    pub path: StreetPath,
-    pub origin: Coordinate,
-    pub destination: Coordinate,
-    pub departure_at: OffsetDateTime,
-}
-
 struct RequestSnapshots {
     timing: crate::domain::transit_timing::TimingSnapshot,
     bike: Option<Arc<crate::domain::bikeshare::BikeAvailabilitySnapshot>>,
-    bike_enabled: bool,
+    failures: evaluator::EvaluationFailures,
     latency_ms: u64,
 }
 
@@ -67,7 +60,13 @@ impl TransitPlanner {
             network,
             timing,
             bike: None,
+            street: None,
         }
+    }
+
+    pub fn with_street_router(mut self, street_router: Arc<dyn StreetRouter>) -> Self {
+        self.street = Some(street_router);
+        self
     }
 
     pub fn with_bike_share(
@@ -76,7 +75,7 @@ impl TransitPlanner {
         availability_source: Arc<dyn BikeAvailabilitySource>,
         street_router: Arc<dyn StreetRouter>,
     ) -> Self {
-        self.bike = Some(BikeSegmentPlanner::new(
+        self.bike = Some(BikeShareMovementPlanner::new(
             network,
             availability_source,
             street_router,
@@ -213,71 +212,64 @@ impl TransitPlanner {
         &self,
         query: TransitQuery,
     ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
-        self.plan_with_stats_and_direct(query, None).await
+        let mut session = self.begin_plan(query).await?;
+        let variants = session.evaluate(false).await?;
+        Ok((variants, session.stats))
     }
 
-    pub(crate) async fn plan_with_stats_and_direct(
+    pub(crate) async fn begin_plan(
         &self,
         query: TransitQuery,
-        direct_bike_journey: Option<DirectBikeCandidate>,
-    ) -> Result<(Vec<JourneyVariant>, TransitPlannerStats), RoutingError> {
-        let (corridor, static_stats) = self.execute_phase1(&query)?;
-        let mut planner_stats = TransitPlannerStats {
-            phase1: static_stats,
-            ..TransitPlannerStats::default()
-        };
-        if corridor.is_empty() && direct_bike_journey.is_none() {
-            return Ok((Vec::new(), planner_stats));
-        }
-        let RequestSnapshots {
-            timing: snapshot,
-            bike: bike_snapshot,
-            bike_enabled,
-            latency_ms,
-        } = self
-            .load_request_snapshots(
-                &query,
-                &corridor,
-                &planner_stats.phase1,
-                direct_bike_journey.is_some(),
-            )
-            .await?;
-        planner_stats.timing_snapshot_latency_ms = latency_ms;
-        let (direct_shortcuts, direct_bike_stats) = self
-            .realize_direct_bike(
-                &query,
-                direct_bike_journey.as_ref(),
-                bike_snapshot.as_deref(),
-            )
-            .await?;
-        let bike_context = self
-            .bike
-            .as_ref()
-            .zip(bike_snapshot.as_deref())
-            .map(|(bike, snapshot)| (bike, snapshot, OffsetDateTime::now_utc()));
+    ) -> Result<MovementSession<'_>, RoutingError> {
         if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
             return Err(RoutingError::DeadlineExceeded);
         }
-        let (mut variants, mut phase2_stats) =
-            evaluator::evaluate_with_bike(&self.network, &corridor, &snapshot, query, bike_context)
-                .await?;
-        if let Some(direct) = direct_bike_journey {
-            let direct_variants = direct_bike_variants(direct, direct_shortcuts);
-            phase2_stats.candidates_before_pareto += direct_bike_stats.realizations_feasible;
-            phase2_stats.bike_realizations_considered += direct_bike_stats.station_pairs;
-            phase2_stats.bike_realizations_feasible += direct_bike_stats.realizations_feasible;
-            phase2_stats.bike_realizations_selected += direct_variants.len();
-            variants.extend(direct_variants);
+        let (retained, static_stats) = if query.allowed_transit_modes.is_empty()
+            || query.origin_access.is_empty()
+            || query.destination_egress.is_empty()
+        {
+            (
+                static_search::RetainedCorridorSet::default(),
+                static_search::StaticSearchStats::default(),
+            )
+        } else {
+            self.execute_phase1(&query)?
+        };
+        let loading = self.load_request_snapshots(&query, &retained, &static_stats);
+        let snapshots = if let Some(deadline) = query.deadline {
+            tokio::time::timeout_at(deadline.instant(), loading)
+                .await
+                .map_err(|_| RoutingError::DeadlineExceeded)??
+        } else {
+            loading.await?
+        };
+        let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> = Vec::new();
+        if query.origin.is_some()
+            && query.destination.is_some()
+            && let Some(street) = &self.street
+        {
+            surface.push(Box::new(WalkingMovementPlanner::new(street.clone())));
         }
-        phase2_stats.final_candidates = variants.len();
-        planner_stats.phase2_evaluation = phase2_stats;
-        log_phase2_metrics(
-            bike_enabled,
-            &direct_bike_stats,
-            &planner_stats.phase2_evaluation,
-            variants.len(),
-        );
-        Ok((variants, planner_stats))
+        if let Some((bike, snapshot)) = self.bike.as_ref().zip(snapshots.bike.clone()) {
+            surface.push(Box::new(BikeShareSession::new(
+                bike.clone(),
+                snapshot,
+                OffsetDateTime::now_utc(),
+            )));
+        }
+        Ok(MovementSession {
+            network: &self.network,
+            query,
+            retained,
+            snapshots,
+            surface,
+            stats: TransitPlannerStats {
+                phase1: static_stats,
+                ..TransitPlannerStats::default()
+            },
+            failures: evaluator::EvaluationFailures::default(),
+            fallback_used: false,
+        })
     }
 
     fn execute_phase1(
@@ -396,7 +388,6 @@ impl TransitPlanner {
         query: &TransitQuery,
         corridor: &static_search::RetainedCorridorSet,
         static_stats: &static_search::StaticSearchStats,
-        has_direct_bike: bool,
     ) -> Result<RequestSnapshots, RoutingError> {
         let positions = corridor.timing_positions().collect::<Vec<_>>();
         let snapshot_limit = usize::try_from(query.limits.max_journey_duration_seconds)
@@ -427,19 +418,26 @@ impl TransitPlanner {
             .collect::<Vec<_>>();
         let timing_positions_requested = timing_queries.len();
         let snapshot_started = Instant::now();
-        let bike_enabled = query.allow_bike_share
-            && self.bike.is_some()
-            && (!corridor.is_empty() || has_direct_bike);
+        let bike_enabled = query.allow_bike_share && self.bike.is_some();
+        let mut failures = evaluator::EvaluationFailures::default();
         let (snapshot, bike_snapshot) = if bike_enabled {
             let bike = self.bike.as_ref().expect("bike planner checked above");
 
             let (snapshot, bike_snapshot) = tokio::join!(
-                self.timing.load_snapshot(timing_queries),
+                async {
+                    if timing_queries.is_empty() {
+                        crate::domain::transit_timing::TimingSnapshot::default()
+                    } else {
+                        self.timing.load_snapshot(timing_queries).await
+                    }
+                },
                 bike.availability_source.snapshot()
             );
             let bike_snapshot = match bike_snapshot {
                 Ok(snapshot) => Some(snapshot),
                 Err(error) => {
+                    failures.transient |= error.is_transient();
+                    failures.internal |= !error.is_transient();
                     tracing::debug!(
                         target: "via_server::routing",
                         error = %error,
@@ -450,7 +448,17 @@ impl TransitPlanner {
             };
             (snapshot, bike_snapshot)
         } else {
-            (self.timing.load_snapshot(timing_queries).await, None)
+            (
+                async {
+                    if timing_queries.is_empty() {
+                        crate::domain::transit_timing::TimingSnapshot::default()
+                    } else {
+                        self.timing.load_snapshot(timing_queries).await
+                    }
+                }
+                .await,
+                None,
+            )
         };
         if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
             return Err(RoutingError::DeadlineExceeded);
@@ -469,127 +477,84 @@ impl TransitPlanner {
             .as_millis()
             .min(u128::from(u64::MAX)) as u64;
         if snapshot.all_positions_failed() {
-            return Err(snapshot
+            failures.transient |= snapshot
                 .first_failure()
-                .cloned()
-                .unwrap_or(crate::domain::transit_timing::DepartureError::TemporarilyUnavailable)
-                .into());
+                .is_some_and(|error| error.is_transient());
+            failures.internal |= snapshot
+                .first_failure()
+                .is_some_and(|error| !error.is_transient());
         }
         Ok(RequestSnapshots {
             timing: snapshot,
             bike: bike_snapshot,
-            bike_enabled,
+            failures,
             latency_ms,
         })
     }
+}
 
-    async fn realize_direct_bike(
-        &self,
-        query: &TransitQuery,
-        direct: Option<&DirectBikeCandidate>,
-        bike_snapshot: Option<&crate::domain::bikeshare::BikeAvailabilitySnapshot>,
-    ) -> Result<(Vec<super::variant::BikeShortcut>, BikePlanningStats), RoutingError> {
-        let mut direct_shortcuts = Vec::new();
-        let mut direct_bike_stats = BikePlanningStats::default();
-        if let (Some(direct), Some(bike), Some(snapshot)) =
-            (direct, self.bike.as_ref(), bike_snapshot)
-        {
-            let (shortcuts, direct_stats) = bike
-                .direct_realizations(
-                    direct.origin,
-                    direct.destination,
-                    snapshot,
-                    OffsetDateTime::now_utc(),
-                )
-                .await;
-            if query.deadline.is_some_and(|deadline| deadline.is_elapsed()) {
-                return Err(RoutingError::DeadlineExceeded);
+/// Request-local snapshots, movement caches and expansion accounting survive reconstruction.
+/// A failed reconstruction can therefore use the same evaluator capabilities for fallback.
+pub(crate) struct MovementSession<'a> {
+    network: &'a TransitRuntime,
+    query: TransitQuery,
+    retained: static_search::RetainedCorridorSet,
+    snapshots: RequestSnapshots,
+    surface: Vec<Box<dyn SurfaceMovementPlanner>>,
+    pub stats: TransitPlannerStats,
+    pub failures: evaluator::EvaluationFailures,
+    pub fallback_used: bool,
+}
+
+impl MovementSession<'_> {
+    pub async fn evaluate(&mut self, fallback: bool) -> Result<Vec<JourneyVariant>, RoutingError> {
+        let corridors = if fallback {
+            Vec::new()
+        } else {
+            self.retained
+                .retained()
+                .iter()
+                .filter_map(|corridor| {
+                    EvaluationCorridor::from_transit(self.network, corridor, &self.query)
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut evaluator = evaluator::FixedCorridorEvaluator::new(
+            self.network,
+            &self.retained,
+            &self.snapshots.timing,
+            &self.query,
+            &mut self.surface,
+        );
+        evaluator.stats = self.stats.phase2_evaluation;
+        evaluator.failures = self.failures;
+        let evaluation = async {
+            let mut result = evaluator.evaluate(&corridors).await?;
+            if result.variants.is_empty()
+                && !self.fallback_used
+                && let Some((origin, destination)) = self.query.origin.zip(self.query.destination)
+            {
+                self.fallback_used = true;
+                result = evaluator
+                    .evaluate(&[EvaluationCorridor::trivial(origin, destination)])
+                    .await?;
             }
-            direct_bike_stats = direct_stats;
-            direct_shortcuts = shortcuts;
-        }
-        Ok((direct_shortcuts, direct_bike_stats))
-    }
-
-    pub(crate) async fn plan_direct_bike(
-        &self,
-        direct: DirectBikeCandidate,
-        deadline: PlanningDeadline,
-    ) -> Vec<JourneyVariant> {
-        if deadline.is_elapsed() {
-            return Vec::new();
-        }
-        let Some(bike) = self.bike.as_ref() else {
-            return Vec::new();
+            Ok::<_, RoutingError>(result)
         };
-        let Ok(snapshot) = bike.availability_source.snapshot().await else {
-            return Vec::new();
+        let result = if let Some(deadline) = self.query.deadline {
+            tokio::time::timeout_at(deadline.instant(), evaluation)
+                .await
+                .map_err(|_| RoutingError::DeadlineExceeded)??
+        } else {
+            evaluation.await?
         };
-        if deadline.is_elapsed() {
-            return Vec::new();
-        }
-        let (shortcuts, _) = bike
-            .direct_realizations(
-                direct.origin,
-                direct.destination,
-                &snapshot,
-                OffsetDateTime::now_utc(),
-            )
-            .await;
-        if deadline.is_elapsed() {
-            return Vec::new();
-        }
-        direct_bike_variants(direct, shortcuts)
+        self.stats.timing_snapshot_latency_ms = self.snapshots.latency_ms;
+        self.stats.phase2_evaluation = result.stats;
+        self.failures = result.failures;
+        self.failures.transient |= self.snapshots.failures.transient;
+        self.failures.internal |= self.snapshots.failures.internal;
+        Ok(result.variants)
     }
-}
-
-fn log_phase2_metrics(
-    bike_enabled: bool,
-    direct_bike_stats: &BikePlanningStats,
-    phase2_stats: &Phase2EvaluationStats,
-    variant_count: usize,
-) {
-    tracing::debug!(
-        target: "via_server::routing",
-        bike_share_enabled = bike_enabled,
-        bike_direct_candidate_movements = direct_bike_stats.candidate_movements,
-        bike_direct_station_pairs = direct_bike_stats.station_pairs,
-        bike_direct_matrix_requests = direct_bike_stats.matrix_requests,
-        bike_matrix_requests = direct_bike_stats.matrix_requests + phase2_stats.bike_matrix_requests,
-        bike_lower_bound_checks = phase2_stats.bike_lower_bound_checks,
-        bike_lower_bound_rejections = phase2_stats.bike_lower_bound_rejections,
-        bike_exact_candidates_requested = phase2_stats.bike_exact_candidates_requested,
-        bike_exact_cache_hits = phase2_stats.bike_exact_cache_hits,
-        bike_continuous_extensions = phase2_stats.bike_continuous_extensions,
-        bike_exact_candidates_retained = direct_bike_stats.realizations_feasible + phase2_stats.bike_realizations_feasible,
-        bike_realizations_selected = phase2_stats.bike_realizations_selected,
-        multimodal_variants = variant_count,
-        "Phase 2 corridor evaluation"
-    );
-}
-
-fn direct_bike_variants(
-    direct: DirectBikeCandidate,
-    shortcuts: Vec<super::variant::BikeShortcut>,
-) -> Vec<JourneyVariant> {
-    let Ok(skeleton) =
-        JourneySkeleton::from_direct_walking(direct.path.clone(), direct.departure_at)
-    else {
-        return Vec::new();
-    };
-    let baseline = JourneyVariant::baseline(skeleton);
-    shortcuts
-        .into_iter()
-        .filter(|shortcut| {
-            let bike_walking_seconds = shortcut
-                .walk_to_pickup
-                .duration_seconds
-                .saturating_add(shortcut.walk_from_dropoff.duration_seconds);
-            shortcut.total_seconds < direct.path.duration.0
-                || bike_walking_seconds < direct.path.duration.0
-        })
-        .filter_map(|shortcut| JourneyVariant::with_shortcut(&baseline, shortcut))
-        .collect()
 }
 
 #[cfg(test)]
@@ -947,5 +912,35 @@ mod tests {
         assert_eq!(stats.phase1.static_corridors_retained, 2);
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn walking_is_configured_independently_of_bike_share() {
+        let timing = Arc::new(RecordingTimingLoader::default());
+        let origin = Coordinate::try_new(25.0, 121.5).unwrap();
+        let destination = Coordinate::try_new(25.001, 121.501).unwrap();
+        let street = Arc::new(
+            FakeStreetRouter::builder()
+                .path(
+                    crate::street::StreetTravelMode::Walking,
+                    origin,
+                    destination,
+                    crate::street::StreetPath {
+                        duration: crate::street::Seconds(60),
+                        distance: crate::street::Metres(100),
+                        geometry: vec![origin, destination],
+                        maneuvers: Vec::new(),
+                        attribution: Vec::new(),
+                    },
+                )
+                .build(),
+        );
+        let planner = TransitPlanner::new(network(), timing.clone()).with_street_router(street);
+        let query = TransitQuery::new(Vec::new(), Vec::new(), datetime!(2026-09-21 10:00 UTC))
+            .with_allowed_transit_modes([])
+            .with_endpoints(origin, destination);
+        let (variants, stats) = planner.plan_with_stats(query).await.unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(stats.phase1.static_search_states_expanded, 0);
+        assert_eq!(timing.calls.load(Ordering::SeqCst), 0);
     }
 }

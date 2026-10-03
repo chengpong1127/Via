@@ -30,8 +30,8 @@ struct Cli {
     depart_at: Option<String>,
     #[arg(long, conflicts_with = "depart_at")]
     arrive_by: Option<String>,
-    #[arg(long, default_value = "bus,metro,tra,thsr")]
-    modes: String,
+    #[arg(long)]
+    modes: Option<String>,
     #[arg(long)]
     max_departures_per_query: Option<usize>,
     #[arg(long)]
@@ -81,7 +81,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("ACCESS");
         eprintln!("  origin ({:.6}, {:.6})", cli.from_lat, cli.from_lon);
         eprintln!("  destination ({:.6}, {:.6})", cli.to_lat, cli.to_lon);
-        eprintln!("  modes={}", cli.modes);
+        let modes = cli.modes.as_deref().unwrap_or_default();
+        eprintln!(
+            "  modes={}",
+            if modes.trim().is_empty() {
+                "walking only"
+            } else {
+                modes
+            }
+        );
         eprintln!("  static artifact={}", cli.static_path.display());
         eprintln!("  transit revision={static_revision}");
     }
@@ -111,7 +119,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
-    let selected_modes = parse_modes(&cli.modes)?;
+    let selected_modes = parse_modes(cli.modes.as_deref())?;
     let departure_setting = if let Some(value) = &cli.depart_at {
         DepartureSetting::DepartAt {
             time: parse_time(value)?,
@@ -148,7 +156,10 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
     Ok(request)
 }
 
-fn parse_modes(value: &str) -> Result<Vec<PlanningMode>, Box<dyn Error>> {
+fn parse_modes(value: Option<&str>) -> Result<Vec<PlanningMode>, Box<dyn Error>> {
+    let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
+        return Ok(Vec::new());
+    };
     let mut modes = value
         .split(',')
         .map(str::trim)
@@ -164,9 +175,6 @@ fn parse_modes(value: &str) -> Result<Vec<PlanningMode>, Box<dyn Error>> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     modes.sort();
-    if modes.is_empty() {
-        return Err("at least one routing mode is required".into());
-    }
     if modes.windows(2).any(|modes| modes[0] == modes[1]) {
         return Err("routing modes must not contain duplicates".into());
     }
@@ -281,9 +289,23 @@ mod tests {
     use via_server::api::PlanningMode;
 
     #[test]
+    fn omitted_or_empty_modes_selects_walking_only() {
+        assert!(parse_modes(None).unwrap().is_empty());
+        assert!(parse_modes(Some("")).unwrap().is_empty());
+        assert!(parse_modes(Some("  ")).unwrap().is_empty());
+    }
+
+    #[test]
     fn accepts_bike_share_with_transit_modes() {
-        let modes = parse_modes("bus,metro,bike_share").unwrap();
+        let modes = parse_modes(Some("bus,metro,bike_share")).unwrap();
         assert_eq!(modes.len(), 3);
         assert!(modes.contains(&PlanningMode::BikeShare));
+    }
+
+    #[test]
+    fn rejects_duplicate_and_unknown_modes() {
+        assert!(parse_modes(Some("bus,bus")).is_err());
+        assert!(parse_modes(Some("walk")).is_err());
+        assert!(parse_modes(Some("bus,,metro")).is_err());
     }
 }

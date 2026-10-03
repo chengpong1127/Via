@@ -90,6 +90,8 @@ async fn append_bike_share(
         return Ok(false);
     };
 
+    result.arrival_time += Duration::seconds(i64::from(shortcut.rental_wait_seconds));
+
     let Some(to_pickup) = strict_bike_path(
         reconstructor,
         context,

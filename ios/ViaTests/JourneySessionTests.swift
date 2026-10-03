@@ -58,6 +58,38 @@ struct JourneySessionTests {
         #expect(session.canSubmit)
     }
 
+    @Test("Empty mode selection submits and survives restoration")
+    func emptyModeSelectionIsValidAndPersisted() async {
+        let suite = UserDefaults(suiteName: UUID().uuidString)!
+        let planner = PlannerStub(results: [.success(Self.result(ids: ["walking"]))])
+        let session = JourneySession(
+            planner: planner,
+            locationProvider: LocationProviderStub(),
+            defaults: suite,
+            origin: .place(Self.place("Origin")),
+            destination: Self.place("Destination")
+        )
+
+        for mode in PlanningMode.selectable {
+            session.toggle(mode)
+        }
+
+        #expect(session.selectedModes.isEmpty)
+        #expect(session.canSubmit)
+        await session.submit()
+
+        let requests = await planner.requests
+        #expect(requests.first?.selectedModes.isEmpty == true)
+        #expect(session.state == .results)
+
+        let restored = JourneySession(
+            planner: PlannerStub(results: []),
+            locationProvider: LocationProviderStub(),
+            defaults: suite
+        )
+        #expect(restored.selectedModes.isEmpty)
+    }
+
     @Test("Current Location resolves before the planner receives a request")
     func currentLocationOriginResolvesForPlanning() async {
         let coordinate = Coordinate(latitude: 24.1477, longitude: 120.6736)

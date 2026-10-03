@@ -21,7 +21,6 @@ pub fn new_request_id() -> String {
 pub struct PlanningRequest {
     pub origin: SelectedPlace,
     pub destination: SelectedPlace,
-    #[schema(min_items = 1)]
     pub selected_modes: Vec<PlanningMode>,
     pub departure_setting: DepartureSetting,
 }
@@ -32,7 +31,7 @@ impl PlanningRequest {
         self.destination.validate("/destination")?;
         let mut modes = self.selected_modes.clone();
         modes.sort();
-        if modes.is_empty() || modes.windows(2).any(|modes| modes[0] == modes[1]) {
+        if modes.windows(2).any(|modes| modes[0] == modes[1]) {
             return Err(RequestValidationError::new(
                 "invalid_selected_modes",
                 "/selected_modes",

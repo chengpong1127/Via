@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+use async_trait::async_trait;
 
 use axum::{Json, Router, http::Method, response::IntoResponse, routing::any};
 use serde_json::{Value, json};
@@ -12,6 +17,7 @@ use via_server::{
         realtime::FreshnessPolicy,
         transit::{TransferEdge, TransitNetwork},
         transit_runtime::TransitRuntime,
+        transit_timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
     },
     providers::{
         BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
@@ -21,7 +27,10 @@ use via_server::{
         },
     },
     routing::{JourneyPlanningLimits, RoutingService, transfers::TransferShortcutIndex},
-    street::{Coordinate, FakeStreetRouter},
+    street::{
+        Coordinate, FakeStreetRouter, MatrixQuery, MatrixResult, RouteQuery, StreetPath,
+        StreetRouter, StreetRoutingError,
+    },
     tdx::TdxClient,
 };
 
@@ -33,6 +42,65 @@ const BINDINGS_JSON: &str = include_str!("../../fixtures/routing/provider-bindin
 
 pub(crate) fn network() -> TransitNetwork {
     TransitNetwork::from_artifact_json(NETWORK_JSON).unwrap()
+}
+
+#[derive(Default)]
+pub(crate) struct CountingTiming {
+    pub(crate) calls: AtomicUsize,
+    pub(crate) snapshot: TimingSnapshot,
+}
+
+#[async_trait]
+impl TimingSnapshotLoader for CountingTiming {
+    async fn load_snapshot(&self, _queries: Vec<DepartureQuery>) -> TimingSnapshot {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.snapshot.clone()
+    }
+}
+
+pub(crate) struct CountingStreet {
+    pub(crate) inner: FakeStreetRouter,
+    pub(crate) origin: Coordinate,
+    pub(crate) destination: Coordinate,
+    pub(crate) direct_calls: AtomicUsize,
+    pub(crate) route_failure_at: Option<(Coordinate, Coordinate)>,
+}
+
+#[async_trait]
+impl StreetRouter for CountingStreet {
+    async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
+        self.inner.matrix(query).await
+    }
+
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        if query.origin == self.origin && query.destination == self.destination {
+            self.direct_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.route_failure_at == Some((query.origin, query.destination)) {
+            return Err(StreetRoutingError::Timeout);
+        }
+        self.inner.route(query).await
+    }
+}
+
+pub(crate) async fn route_body_with_sources(
+    street: Arc<dyn StreetRouter>,
+    timing: Arc<dyn TimingSnapshotLoader>,
+    body: Value,
+    bike_network: Arc<BikeShareNetwork>,
+    availability: Arc<dyn BikeAvailabilitySource>,
+) -> Value {
+    let request: PlanningRequest = serde_json::from_value(body).unwrap();
+    request.validate().unwrap();
+    let service = RoutingService::new(
+        street,
+        Arc::new(TransitRuntime::new(Arc::new(network()))),
+        timing,
+        bike_network,
+        availability,
+        JourneyPlanningLimits::default(),
+    );
+    serde_json::to_value(service.plan(request).await.unwrap()).unwrap()
 }
 
 fn bus_tdx_payload(updated_at: OffsetDateTime) -> Value {
@@ -95,7 +163,7 @@ pub(crate) async fn route_body(
     body: Value,
 ) -> Value {
     route_body_inner(
-        street,
+        Arc::new(street),
         realtime,
         body,
         None,
@@ -113,7 +181,7 @@ pub(crate) async fn route_body_with_network(
     network: TransitNetwork,
 ) -> Value {
     route_body_inner(
-        street,
+        Arc::new(street),
         realtime,
         body,
         None,
@@ -132,7 +200,7 @@ pub(crate) async fn route_body_with_bike(
     availability_source: Arc<dyn BikeAvailabilitySource>,
 ) -> Value {
     route_body_inner(
-        street,
+        Arc::new(street),
         realtime,
         body,
         Some((bike_network, availability_source)),
@@ -149,11 +217,24 @@ pub(crate) async fn route_body_with_limits(
     body: Value,
     limits: JourneyPlanningLimits,
 ) -> Result<Value, PlanningError> {
-    route_body_inner(street, realtime, body, None, limits, network()).await
+    route_body_inner(Arc::new(street), realtime, body, None, limits, network()).await
+}
+
+pub(crate) async fn route_body_with_street(street: Arc<dyn StreetRouter>, body: Value) -> Value {
+    route_body_inner(
+        street,
+        FixtureRealtime::empty(),
+        body,
+        None,
+        JourneyPlanningLimits::default(),
+        network(),
+    )
+    .await
+    .unwrap()
 }
 
 async fn route_body_inner(
-    street: FakeStreetRouter,
+    street: Arc<dyn StreetRouter>,
     realtime: FixtureRealtime,
     body: Value,
     bike: Option<(Arc<BikeShareNetwork>, Arc<dyn BikeAvailabilitySource>)>,
@@ -190,7 +271,7 @@ async fn route_body_inner(
             thsr as Arc<dyn TransitDepartureSource>,
         ],
     ));
-    let service_street = Arc::new(street);
+    let service_street = street;
     let (bike_network, availability_source) = bike.unwrap_or_else(|| {
         (
             Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled")),

@@ -7,13 +7,7 @@ use crate::{
     street::{RoutingConstraints, RoutingTime, RoutingTimeKind},
 };
 
-use crate::domain::{
-    ids::BoardingPointId,
-    realtime::NormalizedRealtimeValue,
-    transit_timing::{DepartureError, EffectiveTrip, TimingBasis, TimingReliability},
-};
-
-use super::transfers::TransferShortcut;
+use crate::domain::{ids::BoardingPointId, transit_timing::DepartureError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlanningDeadline {
@@ -240,6 +234,8 @@ impl<'a> JourneyPlanningContext<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransitQuery {
+    pub origin: Option<crate::street::Coordinate>,
+    pub destination: Option<crate::street::Coordinate>,
     pub origin_access: Vec<AccessPoint>,
     pub destination_egress: Vec<EgressPoint>,
     pub allowed_transit_modes: Vec<TransitMode>,
@@ -258,6 +254,8 @@ impl TransitQuery {
         departure_time: OffsetDateTime,
     ) -> Self {
         Self {
+            origin: None,
+            destination: None,
             origin_access,
             destination_egress,
             allowed_transit_modes: vec![
@@ -284,6 +282,16 @@ impl TransitQuery {
         self
     }
 
+    pub fn with_endpoints(
+        mut self,
+        origin: crate::street::Coordinate,
+        destination: crate::street::Coordinate,
+    ) -> Self {
+        self.origin = Some(origin);
+        self.destination = Some(destination);
+        self
+    }
+
     pub fn with_bike_share(mut self, allow: bool) -> Self {
         self.allow_bike_share = allow;
         self
@@ -302,97 +310,6 @@ impl TransitQuery {
     pub fn with_deadline(mut self, deadline: PlanningDeadline) -> Self {
         self.deadline = Some(deadline);
         self
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum JourneySegment {
-    Transit {
-        trip: EffectiveTrip,
-        board_index: usize,
-        alight_index: usize,
-    },
-    WalkingTransfer {
-        shortcut: TransferShortcut,
-    },
-}
-
-pub(crate) fn physical_transfer_count(segments: &[JourneySegment]) -> u32 {
-    let mut last_trip_id = None;
-    let mut walked_since_last_ride = false;
-    let mut transfers = 0_u32;
-
-    for segment in segments {
-        match segment {
-            JourneySegment::Transit { trip, .. } => {
-                if let Some(previous_trip_id) = &last_trip_id
-                    && (walked_since_last_ride || previous_trip_id != &trip.id)
-                {
-                    transfers = transfers.saturating_add(1);
-                }
-                last_trip_id = Some(trip.id.clone());
-                walked_since_last_ride = false;
-            }
-            JourneySegment::WalkingTransfer { .. } if last_trip_id.is_some() => {
-                walked_since_last_ride = true;
-            }
-            JourneySegment::WalkingTransfer { .. } => {}
-        }
-    }
-
-    transfers
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RealizedJourney {
-    pub access: AccessPoint,
-    pub egress: EgressPoint,
-    pub segments: Vec<JourneySegment>,
-    pub departure_time: OffsetDateTime,
-    pub arrival_time: OffsetDateTime,
-    pub walking_seconds: u32,
-    pub transfer_count: u32,
-    pub uncertainty_seconds: Option<u32>,
-    pub evidence: Vec<NormalizedRealtimeValue>,
-    pub timing_bases: Vec<TimingBasis>,
-    pub timing_reliability: TimingReliability,
-}
-
-impl RealizedJourney {
-    // This key preserves legacy lexical tie ordering; typed identity is used for equality.
-    pub(crate) fn deterministic_order_key(&self) -> String {
-        let mut parts = vec![format!(
-            "access:{}:{}",
-            self.access.stop_id.as_str(),
-            self.access.walking_seconds
-        )];
-        parts.extend(self.segments.iter().map(|segment| match segment {
-            JourneySegment::Transit {
-                trip,
-                board_index,
-                alight_index,
-            } => format!(
-                "transit:{}:{}:{}:{}",
-                trip.id.as_str(),
-                board_index,
-                alight_index,
-                trip.stop_times[*board_index]
-                    .departure_at
-                    .unix_timestamp_nanos()
-            ),
-            JourneySegment::WalkingTransfer { shortcut } => format!(
-                "transfer:{}:{}:{}",
-                shortcut.from.as_str(),
-                shortcut.to.as_str(),
-                shortcut.duration_seconds
-            ),
-        }));
-        parts.push(format!(
-            "egress:{}:{}",
-            self.egress.stop_id.as_str(),
-            self.egress.walking_seconds
-        ));
-        parts.join("|")
     }
 }
 

@@ -23,6 +23,43 @@ use super::{
 };
 
 impl ReconstructionState<'_, '_> {
+    pub(super) fn append_realized_walk(
+        &mut self,
+        step: &JourneyPathStep,
+        movement: &JourneyMovement,
+    ) -> Result<bool, PlanningError> {
+        let Some(path) = movement.street_path.as_deref() else {
+            return Err(PlanningError::Internal);
+        };
+        let from = anchor_place(
+            self.reconstructor,
+            self.context.request,
+            self.variant,
+            step.from_anchor,
+        )
+        .ok_or(PlanningError::Internal)?;
+        let to = anchor_place(
+            self.reconstructor,
+            self.context.request,
+            self.variant,
+            step.to_anchor,
+        )
+        .ok_or(PlanningError::Internal)?;
+        let connector_start = self.result.legs.len();
+        append_routed_walking(&from, &to, path.clone(), &mut self.result);
+        if matches!(
+            movement.kind,
+            crate::routing::JourneyMovementKind::Walking {
+                kind: crate::routing::WalkingMovementKind::Transfer,
+                ..
+            }
+        ) {
+            register_pending_transfer(&self.result, &mut self.pending_transfer, connector_start);
+        }
+        self.current_stop = anchor_boarding_point(self.variant, step.to_anchor);
+        Ok(true)
+    }
+
     pub(super) async fn append_access(
         &mut self,
         step: &JourneyPathStep,

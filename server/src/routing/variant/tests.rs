@@ -1,48 +1,13 @@
 use time::{Duration, macros::datetime};
 
-use crate::{
-    domain::{ids::BoardingPointId, transit_timing::TimingReliability},
-    routing::{AccessPoint, EgressPoint, JourneySegment, RealizedJourney},
-};
+use crate::domain::ids::BoardingPointId;
 
 use super::*;
 
 #[test]
-fn shortcut_replaces_a_contiguous_interval_of_baseline_movements() {
+fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
     let departure_at = datetime!(2026-09-21 10:00 UTC);
-    let a = BoardingPointId::new("a");
-    let b = BoardingPointId::new("b");
-    let c = BoardingPointId::new("c");
-    let candidate = RealizedJourney {
-        access: AccessPoint::new(a.clone(), departure_at, departure_at, 0, 0),
-        egress: EgressPoint::new(c.clone(), 0, 0),
-        segments: vec![
-            JourneySegment::WalkingTransfer {
-                shortcut: crate::routing::transfers::TransferShortcut::new(
-                    a.clone(),
-                    b.clone(),
-                    60,
-                    100,
-                ),
-            },
-            JourneySegment::WalkingTransfer {
-                shortcut: crate::routing::transfers::TransferShortcut::new(b, c, 60, 100),
-            },
-        ],
-        departure_time: departure_at,
-        arrival_time: departure_at + Duration::seconds(120),
-        walking_seconds: 120,
-        transfer_count: 0,
-        uncertainty_seconds: None,
-        evidence: Vec::new(),
-        timing_bases: Vec::new(),
-        timing_reliability: TimingReliability::Reliable,
-    };
-    let baseline = JourneyVariant::baseline(JourneySkeleton::from_candidate(candidate).unwrap());
-    assert_eq!(
-        baseline.identity().canonical_signature(),
-        "access:a:0|transfer:a:b:60|transfer:b:c:60|egress:c:0"
-    );
+    let arrival_at = departure_at + Duration::seconds(30);
     let shortcut = BikeShortcut::new(
         1,
         3,
@@ -56,22 +21,152 @@ fn shortcut_replaces_a_contiguous_interval_of_baseline_movements() {
         BikeWalkingAccess::new(0, 0),
     )
     .unwrap();
+    let anchors = [
+        JourneyAnchorKind::Origin,
+        JourneyAnchorKind::BoardingPoint {
+            id: BoardingPointId::new("a"),
+        },
+        JourneyAnchorKind::BoardingPoint {
+            id: BoardingPointId::new("b"),
+        },
+        JourneyAnchorKind::BoardingPoint {
+            id: BoardingPointId::new("c"),
+        },
+        JourneyAnchorKind::Destination,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, kind)| JourneyAnchor {
+        kind,
+        reached_at: if index < 3 { departure_at } else { arrival_at },
+    })
+    .collect();
+    let walk = |from_anchor, to_anchor, kind, reached_at| JourneyMovement {
+        from_anchor,
+        to_anchor,
+        departure_at: reached_at,
+        arrival_at: reached_at,
+        kind: JourneyMovementKind::Walking {
+            kind,
+            duration_seconds: 0,
+            distance_metres: 0,
+        },
+        street_path: None,
+    };
+    let variant = JourneyVariant::from_movements(
+        anchors,
+        vec![
+            walk(0, 1, WalkingMovementKind::Access, departure_at),
+            JourneyMovement {
+                from_anchor: 1,
+                to_anchor: 3,
+                departure_at,
+                arrival_at,
+                kind: JourneyMovementKind::BikeShare { shortcut },
+                street_path: None,
+            },
+            walk(3, 4, WalkingMovementKind::Egress, arrival_at),
+        ],
+        departure_at,
+    )
+    .unwrap();
 
-    let variant = JourneyVariant::with_shortcut(&baseline, shortcut).unwrap();
-
+    assert_eq!(variant.skeleton().movements().len(), 3);
+    assert!(matches!(
+        variant.skeleton().movements()[1].kind,
+        JourneyMovementKind::BikeShare { .. }
+    ));
+    assert_eq!(variant.path()[1].from_anchor, 1);
+    assert_eq!(variant.path()[1].to_anchor, 3);
     assert_eq!(
         variant.identity().canonical_signature(),
         "path:v2:baseline:walking:Access:origin:boarding_point:a:0:0|bike:boarding_point:a:boarding_point:c:pickup:dropoff:0:0:30:100:0:0:0:30|baseline:walking:Egress:boarding_point:c:destination:0:0"
     );
+    let timing = variant.evaluate_timing().unwrap();
+    assert_eq!(timing.arrival_at, arrival_at);
+    assert_eq!(timing.bike_share_uses, 1);
+}
 
-    assert_eq!(variant.path().len(), 3);
-    assert!(variant.path().iter().any(|step| {
-        step.from_anchor == 1
-            && step.to_anchor == 3
-            && matches!(step.movement, JourneyPathMovement::BikeShare { .. })
-    }));
+#[test]
+fn realized_bike_path_needs_no_walking_placeholder() {
+    let departure_at = datetime!(2026-09-21 10:00 UTC);
+    let shortcut = BikeShortcut::new(
+        0,
+        1,
+        BikeStationId::new("pickup"),
+        BikeStationId::new("dropoff"),
+        BikeWalkingAccess::new(10, 15),
+        BikeRide {
+            duration_seconds: 30,
+            distance_metres: 100,
+        },
+        BikeWalkingAccess::new(20, 25),
+    )
+    .unwrap();
+    let arrival_at = departure_at + Duration::seconds(60);
+    let variant = JourneyVariant::from_movements(
+        vec![
+            JourneyAnchor {
+                kind: JourneyAnchorKind::Origin,
+                reached_at: departure_at,
+            },
+            JourneyAnchor {
+                kind: JourneyAnchorKind::Destination,
+                reached_at: arrival_at,
+            },
+        ],
+        vec![JourneyMovement {
+            from_anchor: 0,
+            to_anchor: 1,
+            departure_at,
+            arrival_at,
+            kind: JourneyMovementKind::BikeShare { shortcut },
+            street_path: None,
+        }],
+        departure_at,
+    )
+    .unwrap();
+    assert!(matches!(
+        variant.skeleton().movements()[0].kind,
+        JourneyMovementKind::BikeShare { .. }
+    ));
+    let timing = variant.evaluate_timing().unwrap();
+    assert_eq!(timing.arrival_at, arrival_at);
+    assert_eq!(timing.walking_seconds, 30);
+    assert_eq!(timing.bike_share_uses, 1);
+    assert!(variant.transit_pattern_sequence().is_empty());
+}
+
+#[test]
+fn realized_path_rejects_anchor_references_outside_the_corridor() {
+    let departure_at = datetime!(2026-09-21 10:00 UTC);
+    let result = JourneyVariant::from_movements(
+        vec![
+            JourneyAnchor {
+                kind: JourneyAnchorKind::Origin,
+                reached_at: departure_at,
+            },
+            JourneyAnchor {
+                kind: JourneyAnchorKind::Destination,
+                reached_at: departure_at,
+            },
+        ],
+        vec![JourneyMovement {
+            from_anchor: 0,
+            to_anchor: 2,
+            departure_at,
+            arrival_at: departure_at,
+            kind: JourneyMovementKind::Walking {
+                kind: WalkingMovementKind::Direct,
+                duration_seconds: 0,
+                distance_metres: 0,
+            },
+            street_path: None,
+        }],
+        departure_at,
+    );
     assert_eq!(
-        variant.evaluate_timing().unwrap().arrival_at,
-        departure_at + Duration::seconds(30)
+        result.unwrap_err(),
+        JourneySkeletonError::InvalidRealizedPath
     );
 }

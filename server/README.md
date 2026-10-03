@@ -47,28 +47,37 @@ Configuration:
 ```text
 build_runtime → ViaRuntime
 → HTTP app / via-route → RoutingService.plan()
-→ direct alternatives + TransitPlanner access / egress
-→ TransitPlanner
-→ Phase 1: static Top-K structural corridors
-→ request-local TimingSnapshot + optional BikeAvailabilitySnapshot
-→ Phase 2: fixed corridor evaluation (Transit / Walk / YouBike)
-→ JourneyReconstructor → merge → rank → JourneyOption[]
+→ transit access / egress when transit modes are selected
+→ TransitPlanner.begin_plan() → MovementSession.evaluate()
+→ Phase 1: static Top-K transit corridors
+→ EvaluationCorridors with Origin / BoardingPoint / Destination anchors
+→ request-local snapshots for retained transit positions and selected BikeShare
+→ Phase 2: fixed-corridor baselines + Walking / BikeShare surface alternatives
+→ trivial Origin → Destination corridor when no candidate survives
+→ JourneyReconstructor → rank → JourneyOption[]
 ```
 
 `ViaRuntime` is the shared assembly used by the HTTP server and `via-route`.
-`RoutingService` owns the application planning use case and combines
-explicit direct and transit stage outputs. `TransitPlanner` owns access and
-egress discovery along with the two transit planning phases. It keeps its
-topology and transfer indexes private and first retains one global Top-K set
-of structurally distinct corridors across selected modes.
-It loads one request-local timing snapshot for their positions and optionally
-loads one BikeShare availability snapshot. The Phase 2 evaluator walks each
-retained corridor in order and uses only immutable networks and those
-snapshots. It may choose an equivalent transit Pattern and departure, or
-realize a fixed surface transfer with walking or YouBike. It cannot add a
-transfer anchor or combine different corridors. Bus realtime requests are
-deduplicated by stop and grouped by TDX city scope; the evaluator performs no
-network I/O.
+`RoutingService` owns the application planning use case and discovers transit
+access / egress only when a transit mode is selected. `TransitPlanner` owns
+both phases and keeps its topology and transfer indexes private. Phase 1
+retains one global Top-K set of structurally distinct transit corridors across
+selected modes. Phase 2 converts them to `EvaluationCorridor` values with
+explicit Origin, BoardingPoint, and Destination anchors. Bounded access and
+egress choices stay represented on corridor edges. Empty `selected_modes`
+skips transit search and timing requests; walking remains implicitly enabled.
+`[bike_share]` also skips transit search and timing while loading one
+BikeShare availability snapshot.
+
+`FixedCorridorEvaluator` uses the retained baselines and a small set of
+`SurfaceMovementPlanner` implementations: Walking and BikeShare. Both screen
+with an optimistic lower bound before exact street routing and cache realized
+routes within the request. The evaluator can choose equivalent transit
+Patterns and departures, but cannot add anchors or combine corridors. If
+retained transit evaluation yields no candidate, the planner evaluates a
+trivial Origin-to-Destination corridor through the same evaluator. Bus
+realtime requests are deduplicated by stop and grouped by TDX city scope; the
+evaluator performs no TDX calls.
 
 `JourneyReconstructor` owns place conversion, transit and BikeShare lookups,
 street hydration, and journey candidate assembly. It receives the shared
@@ -77,16 +86,16 @@ exposes raw immutable network access as `network()` for search, timing, and data
 inspection; Health uses its focused revision and validation operations.
 
 Static `TransitNetwork.transfer_edges` contain directional transit walking
-transfers. Requests select fine-grained transport systems through
+transfers. Requests select optional non-walking systems through
 `selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
-Walking remains an implicit connector, while output legs retain the coarse
-`walking`, `transit`, and `bicycle` `JourneyMode` values. Direct walking remains
-walking-only in this version.
+An empty list means walking alone. Walking remains an implicit capability,
+while output legs retain the coarse `walking`, `transit`, and `bicycle`
+`JourneyMode` values.
 
 Both the HTTP server and `via-route` load the same `ViaStatic` artifact and use
-the same runtime assembly. BikeShare can realize a retained surface
-transfer when station metadata and fresh availability support it; it does not
-create direct BikeShare-only routes.
+the same runtime assembly. BikeShare can realize a movement between corridor
+anchors, including the trivial fallback corridor, when station metadata and
+fresh availability support it.
 
 The server has no database, persistence layer, identity registry, or alternate
 planner. TDX adapters construct the same Via-owned typed IDs for static and

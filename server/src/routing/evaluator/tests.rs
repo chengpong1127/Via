@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use time::{Duration, Time, macros::datetime};
 
@@ -14,7 +14,7 @@ use crate::{
     },
     routing::{
         AccessPoint, EgressPoint,
-        static_search::{StaticCorridor, generate},
+        static_search::{StaticCorridor, StaticCorridorStep, generate},
         topology::TransitTopologyIndex,
         transfers::TransferShortcutIndex,
     },
@@ -113,88 +113,95 @@ fn trip(id: &str, pattern_id: &str, stops: &[&str], minute_offsets: &[i64]) -> E
     }
 }
 
+fn realized_ride(from_anchor: usize, trip: EffectiveTrip) -> JourneyMovement {
+    JourneyMovement {
+        from_anchor,
+        to_anchor: from_anchor + 1,
+        departure_at: trip.stop_times[0].departure_at,
+        arrival_at: trip.stop_times[1].arrival_at,
+        kind: JourneyMovementKind::Transit {
+            trip: Arc::new(trip),
+            board_index: 0,
+            alight_index: 1,
+        },
+        street_path: None,
+    }
+}
+
 #[test]
 fn physical_reboarding_counts_distinct_effective_trips_but_through_service_does_not() {
-    let trip_a = trip("trip-a", "red-short", &["R10", "R09"], &[2, 4]);
-    let trip_b = trip("trip-b", "red-full", &["R09", "R03"], &[7, 16]);
-    let access_at = datetime!(2026-09-21 10:00 UTC);
-    let access = AccessPoint::new(BoardingPointId::new("R10"), access_at, access_at, 0, 0);
-    let egress = EgressPoint::new(BoardingPointId::new("destination"), 0, 0);
-    let boarded_twice = EvaluationPath::from_access(access.clone())
-        .with_ride(&trip_a, 0, 1)
-        .with_ride(&trip_b, 0, 1);
+    let arrival = datetime!(2026-09-21 10:16 UTC);
+    let boarded_twice = vec![
+        realized_ride(0, trip("trip-a", "red-short", &["R10", "R09"], &[2, 4])),
+        realized_ride(1, trip("trip-b", "red-full", &["R09", "R03"], &[7, 16])),
+    ];
+    assert_eq!(
+        PathMetrics::from_movements(&boarded_twice, arrival).transfer_count,
+        1
+    );
 
-    let reboarding = make_candidate(&boarded_twice, &egress, datetime!(2026-09-21 10:16 UTC));
-    assert_eq!(reboarding.transfer_count, 1);
-
-    let same_physical_trip = trip("through-trip", "red-short", &["R10", "R09"], &[2, 4]);
-    let continued_trip = trip("through-trip", "red-full", &["R09", "R03"], &[4, 16]);
-    let stayed_aboard = EvaluationPath::from_access(access)
-        .with_ride(&same_physical_trip, 0, 1)
-        .with_ride(&continued_trip, 0, 1);
-
-    let through = make_candidate(&stayed_aboard, &egress, datetime!(2026-09-21 10:16 UTC));
-    assert_eq!(through.transfer_count, 0);
+    let stayed_aboard = vec![
+        realized_ride(
+            0,
+            trip("through-trip", "red-short", &["R10", "R09"], &[2, 4]),
+        ),
+        realized_ride(
+            1,
+            trip("through-trip", "red-full", &["R09", "R03"], &[4, 16]),
+        ),
+    ];
+    assert_eq!(
+        PathMetrics::from_movements(&stayed_aboard, arrival).transfer_count,
+        0
+    );
 }
 
 #[test]
 fn repeated_schedule_basis_does_not_prevent_direct_route_from_dominating_reboarding() {
-    let start = datetime!(2026-09-21 10:00 UTC);
-    let access = AccessPoint::new(BoardingPointId::new("R10"), start, start, 223, 0);
-    let egress = EgressPoint::new(BoardingPointId::new("egress"), 116, 0);
-    let terminal_walk = TransferShortcut::new(
-        BoardingPointId::new("R03"),
-        BoardingPointId::new("egress"),
-        86,
-        100,
-    );
     let arrival = datetime!(2026-09-21 10:19:22 UTC);
-
-    let mut direct_trip = trip("through", "red-full", &["R10", "R03"], &[2, 16]);
-    direct_trip.timing_basis = TimingBasis::Schedule;
-    direct_trip.timing_reliability = TimingReliability::Fallback;
-    let direct_path = EvaluationPath::from_access(access.clone())
-        .with_ride(&direct_trip, 0, 1)
-        .with_walking_transfer(&terminal_walk);
-    let direct_candidate = make_candidate(&direct_path, &egress, arrival);
-    let direct_variant = make_variant(direct_candidate.clone(), &[]).unwrap();
-    let direct = EvaluatedCandidate {
-        journey_order_key: direct_candidate.deterministic_order_key(),
-        variant_identity: direct_variant.identity(),
-        variant: direct_variant,
-        metrics: direct_candidate,
-        bike_share_uses: 0,
-        bicycle_seconds: 0,
+    let schedule_trip = |id, pattern, stops: &[&str], minutes: &[i64]| {
+        let mut realized = trip(id, pattern, stops, minutes);
+        realized.timing_basis = TimingBasis::Schedule;
+        realized.timing_reliability = TimingReliability::Fallback;
+        realized
     };
-
-    let mut first_trip = trip("first", "red-short", &["R10", "R09"], &[2, 4]);
-    first_trip.timing_basis = TimingBasis::Schedule;
-    first_trip.timing_reliability = TimingReliability::Fallback;
-    let mut second_trip = trip("second", "red-full", &["R09", "R03"], &[7, 16]);
-    second_trip.timing_basis = TimingBasis::Schedule;
-    second_trip.timing_reliability = TimingReliability::Fallback;
-    let split_path = EvaluationPath::from_access(access)
-        .with_ride(&first_trip, 0, 1)
-        .with_ride(&second_trip, 0, 1)
-        .with_walking_transfer(&terminal_walk);
-    let split_candidate = make_candidate(&split_path, &egress, arrival);
-    let split_variant = make_variant(split_candidate.clone(), &[]).unwrap();
-    let split = EvaluatedCandidate {
-        journey_order_key: split_candidate.deterministic_order_key(),
-        variant_identity: split_variant.identity(),
-        variant: split_variant,
-        metrics: split_candidate,
-        bike_share_uses: 0,
-        bicycle_seconds: 0,
+    let egress = |from_anchor| JourneyMovement {
+        from_anchor,
+        to_anchor: from_anchor + 1,
+        departure_at: datetime!(2026-09-21 10:16 UTC),
+        arrival_at: arrival,
+        kind: JourneyMovementKind::Walking {
+            kind: WalkingMovementKind::Egress,
+            duration_seconds: 202,
+            distance_metres: 100,
+        },
+        street_path: None,
     };
+    let direct_movements = vec![
+        realized_ride(
+            0,
+            schedule_trip("through", "red-full", &["R10", "R03"], &[2, 16]),
+        ),
+        egress(1),
+    ];
+    let split_movements = vec![
+        realized_ride(
+            0,
+            schedule_trip("first", "red-short", &["R10", "R09"], &[2, 4]),
+        ),
+        realized_ride(
+            1,
+            schedule_trip("second", "red-full", &["R09", "R03"], &[7, 16]),
+        ),
+        egress(2),
+    ];
+    let direct = PathMetrics::from_movements(&direct_movements, arrival);
+    let split = PathMetrics::from_movements(&split_movements, arrival);
 
-    assert_eq!(direct.metrics.arrival_time, split.metrics.arrival_time);
-    assert_eq!(
-        direct.metrics.walking_seconds,
-        split.metrics.walking_seconds
-    );
-    assert_eq!(direct.metrics.transfer_count, 0);
-    assert_eq!(split.metrics.transfer_count, 1);
+    assert_eq!(direct.arrival_time, split.arrival_time);
+    assert_eq!(direct.walking_seconds, split.walking_seconds);
+    assert_eq!(direct.transfer_count, 0);
+    assert_eq!(split.transfer_count, 1);
     assert!(direct.dominates(&split));
 }
 
@@ -411,7 +418,8 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         .iter()
         .find_map(|step| match &step.movement {
             super::super::variant::JourneyPathMovement::BikeShare { shortcut } => Some(shortcut),
-            super::super::variant::JourneyPathMovement::Baseline { .. } => None,
+            super::super::variant::JourneyPathMovement::Walking { .. }
+            | super::super::variant::JourneyPathMovement::Transit { .. } => None,
         })
         .unwrap();
     assert_eq!(bike_shortcut.walk_to_pickup.duration_seconds, 60);
@@ -1478,6 +1486,7 @@ fn phase2_respects_candidate_limit_after_pareto_pruning() {
     );
     let mut query = query(&[TransitMode::Bus], 0, 10);
     query.origin_access[0].walking_seconds = 200;
+    query.origin_access[0].available_at = query.departure_time + Duration::seconds(200);
     query.origin_access.push(AccessPoint::new(
         BoardingPointId::new("origin"),
         datetime!(2026-09-21 10:00 UTC),
@@ -1774,4 +1783,250 @@ fn expired_deadline_stops_phase2_before_evaluating_corridors() {
     let result = evaluate_with_stats(&network, &corridor, &snapshot, query);
 
     assert_eq!(result.unwrap_err(), RoutingError::DeadlineExceeded);
+}
+
+struct CountingWalkingRouter {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    error: Option<crate::street::StreetRoutingError>,
+}
+
+#[async_trait::async_trait]
+impl crate::street::StreetRouter for CountingWalkingRouter {
+    async fn matrix(
+        &self,
+        _: crate::street::MatrixQuery,
+    ) -> Result<crate::street::MatrixResult, crate::street::StreetRoutingError> {
+        unreachable!("movement realization does not use a walking matrix")
+    }
+    async fn route(
+        &self,
+        query: crate::street::RouteQuery,
+    ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(query.travel_mode, crate::street::StreetTravelMode::Walking);
+        assert!(query.constraints.time.is_some());
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        Ok(crate::street::StreetPath {
+            duration: crate::street::Seconds(300),
+            distance: crate::street::Metres(2000),
+            geometry: vec![query.origin, query.destination],
+            maneuvers: Vec::new(),
+            attribution: Vec::new(),
+        })
+    }
+}
+
+async fn evaluate_walking_replacement(
+    transit_minutes: i64,
+    error: Option<crate::street::StreetRoutingError>,
+    latest_seconds: Option<i64>,
+    duplicate: bool,
+    with_bike: bool,
+) -> (EvaluationResult, usize) {
+    use super::super::surface::{SurfaceEndpoint, WalkingMovementPlanner};
+    use crate::street::Coordinate;
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let mut query = query(&[TransitMode::Bus], 0, 10);
+    query.latest_arrival =
+        latest_seconds.map(|seconds| query.departure_time + Duration::seconds(seconds));
+    let retained = candidate_corridor(&network, &query);
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![trip(
+            "ride",
+            "bus",
+            &["origin", "destination"],
+            &[0, transit_minutes],
+        )],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let street = Arc::new(CountingWalkingRouter {
+        calls: calls.clone(),
+        error,
+    });
+    let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> =
+        vec![Box::new(WalkingMovementPlanner::new(street))];
+    if with_bike {
+        surface.push(Box::new(TestBikePlanner {
+            routes: HashMap::from([(
+                corridor_movement(0, 1, "origin", "destination"),
+                vec![bike_shortcut(0, 1, 240)],
+            )]),
+            cache: HashMap::new(),
+            hits: 0,
+        }));
+    }
+    let make_corridor = || {
+        let mut corridor =
+            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        corridor.anchors[1] = SurfaceEndpoint {
+            kind: JourneyAnchorKind::BoardingPoint {
+                id: BoardingPointId::new("origin"),
+            },
+            coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
+        };
+        corridor.anchors[2] = SurfaceEndpoint {
+            kind: JourneyAnchorKind::BoardingPoint {
+                id: BoardingPointId::new("destination"),
+            },
+            coordinate: Coordinate::try_new(25.02, 121.5).unwrap(),
+        };
+        corridor
+    };
+    let corridors = if duplicate {
+        vec![make_corridor(), make_corridor()]
+    } else {
+        vec![make_corridor()]
+    };
+    let result = FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut surface)
+        .evaluate(&corridors)
+        .await
+        .unwrap();
+    (result, calls.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn competitive_walking_replaces_transit_and_keeps_exact_geometry() {
+    let (result, calls) = evaluate_walking_replacement(20, None, None, false, false).await;
+    assert_eq!(calls, 1);
+    assert!(result.variants.iter().any(|v| {
+        v.transit_pattern_sequence().is_empty()
+            && v.skeleton()
+                .movements()
+                .iter()
+                .any(|m| m.street_path.is_some())
+    }));
+}
+
+#[tokio::test]
+async fn walking_bound_skips_exact_routing_when_transit_is_faster() {
+    let (result, calls) = evaluate_walking_replacement(1, None, None, false, false).await;
+    assert_eq!(calls, 0);
+    assert_eq!(result.variants.len(), 1);
+    assert_eq!(
+        result.variants[0].transit_pattern_sequence(),
+        vec![TransitPatternId::new("bus")]
+    );
+}
+
+#[tokio::test]
+async fn optional_walking_dependency_failure_preserves_transit() {
+    let (result, calls) = evaluate_walking_replacement(
+        20,
+        Some(crate::street::StreetRoutingError::Timeout),
+        None,
+        false,
+        false,
+    )
+    .await;
+    assert_eq!(calls, 1);
+    assert_eq!(result.variants.len(), 1);
+    assert!(result.failures.transient);
+    assert_eq!(
+        result.variants[0].transit_pattern_sequence(),
+        vec![TransitPatternId::new("bus")]
+    );
+}
+
+#[tokio::test]
+async fn repeated_corridor_pairs_reuse_exact_walking_routes() {
+    let (result, calls) = evaluate_walking_replacement(20, None, None, true, false).await;
+    assert_eq!(calls, 1);
+    assert!(!result.variants.is_empty());
+}
+
+#[tokio::test]
+async fn walking_replacement_respects_latest_arrival() {
+    let (result, calls) = evaluate_walking_replacement(20, None, Some(299), false, false).await;
+    assert!(result.variants.is_empty());
+    assert_eq!(calls, 0); // Even the optimistic bound cannot arrive in this window.
+}
+
+#[tokio::test]
+async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
+    let (result, calls) = evaluate_walking_replacement(20, None, None, false, true).await;
+    assert_eq!(calls, 1);
+    assert!(result.stats.bike_realizations_feasible > 0);
+    assert!(result.variants.iter().any(|v| {
+        v.skeleton()
+            .movements()
+            .iter()
+            .any(|m| m.street_path.is_some())
+    }));
+    assert!(
+        result
+            .variants
+            .iter()
+            .any(|v| v.path().iter().any(|s| matches!(
+                s.movement,
+                super::super::variant::JourneyPathMovement::BikeShare { .. }
+            )))
+    );
+}
+
+#[tokio::test]
+async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
+    use super::super::surface::WalkingMovementPlanner;
+    let network = network(Vec::new(), &["a", "b"], Vec::new());
+    let query = TransitQuery::new(
+        vec![AccessPoint::new(
+            BoardingPointId::new("a"),
+            datetime!(2026-09-21 10:00 UTC),
+            datetime!(2026-09-21 10:00 UTC),
+            0,
+            0,
+        )],
+        vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
+        datetime!(2026-09-21 10:00 UTC),
+    );
+    let retained = RetainedCorridorSet::from_retained_for_test(
+        &network,
+        vec![StaticCorridor {
+            access_stop_id: BoardingPointId::new("a"),
+            egress_stop_id: BoardingPointId::new("b"),
+            theoretical_duration_seconds: 600,
+            cost_source: crate::routing::StaticCostSource::OptimisticEstimate,
+            steps: vec![StaticCorridorStep::SurfaceTransfer {
+                from: BoardingPointId::new("a"),
+                to: BoardingPointId::new("b"),
+                walking_duration_seconds: 600,
+                walking_distance_metres: 1000,
+            }],
+        }],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut surface: Vec<Box<dyn SurfaceMovementPlanner>> = vec![
+        Box::new(WalkingMovementPlanner::new(Arc::new(
+            CountingWalkingRouter {
+                calls: calls.clone(),
+                error: None,
+            },
+        ))),
+        Box::new(TestBikePlanner {
+            routes: HashMap::from([(
+                corridor_movement(0, 1, "a", "b"),
+                vec![bike_shortcut(0, 1, 240)],
+            )]),
+            cache: HashMap::new(),
+            hits: 0,
+        }),
+    ];
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let snapshot = TimingSnapshot::default();
+    let result = FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut surface)
+        .evaluate(&[corridor])
+        .await
+        .unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(result.stats.bike_realizations_feasible, 1);
+    assert!(!result.variants.is_empty());
 }
