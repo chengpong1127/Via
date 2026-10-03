@@ -58,50 +58,14 @@ impl SpatialPointIndex {
         }
     }
 
-    pub(crate) fn nearest(
-        &self,
-        points: &[impl SpatialPoint],
-        coordinate: GeoCoordinate,
-        limit: usize,
-    ) -> Vec<(usize, f64)> {
-        if limit == 0 || self.tree.size() == 0 {
-            return Vec::new();
-        }
-        let origin = coordinate.unit_sphere_point();
-        // Chord length = 2 sin(central_angle / 2), monotonic on [0, pi].
-        // Collect the whole cutoff neighborhood so exact-distance/ID sorting,
-        // rather than R-tree iteration order, decides ties at the Nth point.
-        let cutoff = self
-            .tree
-            .nearest_neighbor_iter_with_distance_2(&origin)
-            .nth(limit.min(self.tree.size()) - 1)
-            .expect("nonempty tree")
-            .1;
-        let mut nearest = self.sorted_candidates(points, coordinate, cutoff.sqrt());
-        nearest.truncate(limit);
-        nearest
-    }
-
     pub(crate) fn within_radius(
         &self,
         points: &[impl SpatialPoint],
         coordinate: GeoCoordinate,
         radius_metres: f64,
-    ) -> Vec<(usize, f64)> {
+    ) -> Vec<usize> {
         let angle = (radius_metres / EARTH_RADIUS_METRES).min(std::f64::consts::PI);
         let chord = 2.0 * (angle / 2.0).sin();
-        self.sorted_candidates(points, coordinate, chord)
-            .into_iter()
-            .filter(|(_, distance)| *distance <= radius_metres)
-            .collect()
-    }
-
-    fn sorted_candidates(
-        &self,
-        points: &[impl SpatialPoint],
-        coordinate: GeoCoordinate,
-        chord: f64,
-    ) -> Vec<(usize, f64)> {
         let mut candidates = self
             .tree
             .locate_within_distance(
@@ -115,13 +79,14 @@ impl SpatialPointIndex {
                     coordinate.distance_metres(points[index].coordinate()),
                 )
             })
+            .filter(|(_, distance)| *distance <= radius_metres)
             .collect::<Vec<_>>();
         candidates.sort_by(|(left, left_distance), (right, right_distance)| {
             left_distance
                 .total_cmp(right_distance)
                 .then_with(|| points[*left].stable_id().cmp(points[*right].stable_id()))
         });
-        candidates
+        candidates.into_iter().map(|(index, _)| index).collect()
     }
 }
 
@@ -147,10 +112,7 @@ mod tests {
         )];
         let index = SpatialPointIndex::build(&stops);
         let distance = origin.distance_metres(destination);
-        assert_eq!(
-            index.within_radius(&stops, origin, distance),
-            vec![(0, distance)]
-        );
+        assert_eq!(index.within_radius(&stops, origin, distance), vec![0]);
         assert!(
             index
                 .within_radius(&stops, origin, distance - 0.000_001)
@@ -158,7 +120,7 @@ mod tests {
         );
         assert_eq!(
             index.within_radius(&stops, origin, distance + 0.000_001),
-            vec![(0, distance)]
+            vec![0]
         );
     }
 }

@@ -38,10 +38,6 @@ impl TransitRuntime {
         self.network.validate()
     }
 
-    pub fn nearest_stops(&self, coordinate: GeoCoordinate, limit: usize) -> Vec<&TransitStop> {
-        self.indexes.nearest_stops(&self.network, coordinate, limit)
-    }
-
     pub fn stops_within_radius(
         &self,
         coordinate: GeoCoordinate,
@@ -190,19 +186,6 @@ impl TransitRuntimeIndexes {
         indexes
     }
 
-    fn nearest_stops<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        coordinate: GeoCoordinate,
-        limit: usize,
-    ) -> Vec<&'a TransitStop> {
-        self.spatial
-            .nearest(&network.stops, coordinate, limit)
-            .into_iter()
-            .map(|(index, _)| &network.stops[index])
-            .collect()
-    }
-
     fn stops_within_radius<'a>(
         &self,
         network: &'a TransitNetwork,
@@ -212,7 +195,7 @@ impl TransitRuntimeIndexes {
         self.spatial
             .within_radius(&network.stops, coordinate, f64::from(radius_metres))
             .into_iter()
-            .map(|(index, _)| &network.stops[index])
+            .map(|index| &network.stops[index])
             .collect()
     }
 

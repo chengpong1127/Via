@@ -332,10 +332,21 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static_artifact(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     let coordinate = coordinate(args.lat, args.lon)?;
-    for stop in runtime.nearest_stops(coordinate, args.limit.max(1)) {
+    let mut stops = runtime
+        .network()
+        .stops
+        .iter()
+        .map(|stop| (stop, coordinate.distance_metres(stop.coordinate)))
+        .collect::<Vec<_>>();
+    stops.sort_by(|(left, left_distance), (right, right_distance)| {
+        left_distance
+            .total_cmp(right_distance)
+            .then(left.id.as_str().cmp(right.id.as_str()))
+    });
+    for (stop, distance) in stops.into_iter().take(args.limit.max(1)) {
         println!(
             "{:.0}m  {}  {}  {}",
-            coordinate.distance_metres(stop.coordinate),
+            distance,
             stop.id.as_str(),
             stop.name,
             pattern_labels(&runtime, &stop.id)

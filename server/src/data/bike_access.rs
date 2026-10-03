@@ -174,7 +174,7 @@ fn source_candidates(
                     f64::from(policy.max_geometric_radius_metres),
                 )
                 .into_iter()
-                .map(|(index, _)| {
+                .map(|index| {
                     let station = &bike_share.stations[index];
                     Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
                         .map(|coordinate| Candidate {

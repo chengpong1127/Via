@@ -108,6 +108,17 @@ pub(super) fn nearby_stops(
                 })
         })
         .collect::<Vec<_>>();
+    select_mode_balanced(candidates, allowed_transit_modes, limit)
+        .into_iter()
+        .map(|candidate| (candidate.stop_id, candidate.coordinate))
+        .collect()
+}
+
+fn select_mode_balanced(
+    candidates: Vec<NearbyStopCandidate>,
+    allowed_transit_modes: &[TransitMode],
+    limit: usize,
+) -> Vec<NearbyStopCandidate> {
     let limit = limit.max(1);
     let mut selected = Vec::with_capacity(limit.min(candidates.len()));
     loop {
@@ -142,9 +153,6 @@ pub(super) fn nearby_stops(
         }
     }
     selected
-        .into_iter()
-        .map(|candidate| (candidate.stop_id, candidate.coordinate))
-        .collect()
 }
 
 pub(crate) fn modes_at_stop(

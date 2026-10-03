@@ -48,18 +48,6 @@ fn brute_force_sorted(stops: &[TransitStop], origin: GeoCoordinate) -> Vec<(&Tra
     candidates
 }
 
-fn brute_force_nearest(
-    stops: &[TransitStop],
-    origin: GeoCoordinate,
-    limit: usize,
-) -> Vec<&TransitStop> {
-    brute_force_sorted(stops, origin)
-        .into_iter()
-        .take(limit)
-        .map(|(stop, _)| stop)
-        .collect()
-}
-
 fn brute_force_radius(
     stops: &[TransitStop],
     origin: GeoCoordinate,
@@ -81,31 +69,6 @@ fn ids(stops: Vec<&TransitStop>) -> Vec<String> {
 
 fn expected_ids(ids: &[&str]) -> Vec<String> {
     ids.iter().map(|id| (*id).to_owned()).collect()
-}
-
-#[test]
-fn spatial_candidate_selection_is_distance_ordered_not_artifact_ordered() {
-    let network = TransitNetwork::new(
-        time::Time::from_hms(4, 0, 0).expect("valid fixture time"),
-        vec![
-            stop("far", 25.20, 121.70),
-            stop("near", 25.001, 121.501),
-            stop("middle", 25.05, 121.55),
-        ],
-        Vec::new(),
-        Vec::new(),
-    );
-
-    let runtime = TransitRuntime::new(Arc::new(network));
-    let nearest = runtime.nearest_stops(
-        GeoCoordinate {
-            latitude: 25.0,
-            longitude: 121.5,
-        },
-        2,
-    );
-    assert_eq!(nearest[0].id.as_str(), "near");
-    assert_eq!(nearest[1].id.as_str(), "middle");
 }
 
 #[test]
@@ -138,13 +101,6 @@ fn spatial_queries_match_brute_force_geographic_results_for_taiwan_fixture() {
     ];
 
     for origin in origins {
-        for limit in [0, 1, 7, 75, 1_200] {
-            assert_eq!(
-                ids(runtime.nearest_stops(origin, limit)),
-                ids(brute_force_nearest(&stops, origin, limit)),
-                "nearest mismatch at {origin:?}, limit={limit}"
-            );
-        }
         for radius in [0, 100, 1_000, 5_000, 25_000, 100_000] {
             assert_eq!(
                 ids(runtime.stops_within_radius(origin, radius)),
@@ -159,8 +115,6 @@ fn spatial_queries_match_brute_force_geographic_results_for_taiwan_fixture() {
 fn spatial_queries_handle_empty_duplicate_and_nearby_points_deterministically() {
     let empty = runtime(Vec::new());
     let origin = coordinate(25.0, 121.5);
-    assert!(empty.nearest_stops(origin, 5).is_empty());
-    assert!(empty.nearest_stops(origin, 0).is_empty());
     assert!(empty.stops_within_radius(origin, 1_000).is_empty());
 
     let stops = vec![
@@ -171,18 +125,9 @@ fn spatial_queries_handle_empty_duplicate_and_nearby_points_deterministically() 
     ];
     let runtime = runtime(stops);
     assert_eq!(
-        ids(runtime.nearest_stops(origin, 1)),
-        expected_ids(&["same-a"])
-    );
-    assert_eq!(
         ids(runtime.stops_within_radius(origin, 0)),
         expected_ids(&["same-a", "same-z"])
     );
-    assert_eq!(
-        ids(runtime.nearest_stops(origin, 4)),
-        expected_ids(&["same-a", "same-z", "near-east", "near-north"])
-    );
-    assert_eq!(ids(runtime.nearest_stops(origin, 0)), Vec::<String>::new());
     assert_eq!(
         ids(runtime.stops_within_radius(origin, 2)),
         expected_ids(&["same-a", "same-z", "near-east", "near-north"])
@@ -219,20 +164,16 @@ fn spatial_queries_use_geographic_scale_across_longitude_dateline_and_poles() {
         stop("longitude-degree", 60.0, 1.0),
         stop("latitude-half-degree", 60.5, 0.0),
     ]);
-    let nearest = scale_runtime.nearest_stops(high_latitude_origin, 1);
-    assert_eq!(nearest[0].id.as_str(), "longitude-degree");
+    assert_eq!(
+        ids(scale_runtime.stops_within_radius(high_latitude_origin, 56_000)),
+        expected_ids(&["longitude-degree", "latitude-half-degree"])
+    );
 
     let dateline_origin = coordinate(0.0, 179.999);
     let dateline_runtime = runtime(vec![
         stop("across-dateline", 0.0, -179.999),
         stop("same-side", 0.0, 179.99),
     ]);
-    assert_eq!(
-        dateline_runtime.nearest_stops(dateline_origin, 1)[0]
-            .id
-            .as_str(),
-        "across-dateline"
-    );
     assert_eq!(
         ids(dateline_runtime.stops_within_radius(dateline_origin, 300)),
         expected_ids(&["across-dateline"])
@@ -243,10 +184,6 @@ fn spatial_queries_use_geographic_scale_across_longitude_dateline_and_poles() {
         stop("polar-near", 89.999, -140.0),
         stop("polar-far", 89.99, 40.0),
     ]);
-    assert_eq!(
-        polar_runtime.nearest_stops(polar_origin, 1)[0].id.as_str(),
-        "polar-near"
-    );
     assert_eq!(
         ids(polar_runtime.stops_within_radius(polar_origin, 300)),
         expected_ids(&["polar-near"])

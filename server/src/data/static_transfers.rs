@@ -117,7 +117,6 @@ fn candidate_targets(
             RADIUS_METRES,
         )
         .into_iter()
-        .map(|(index, _)| index)
         .filter(|&target| target != source && indices.binary_search(&target).is_ok())
         .collect::<Vec<_>>();
     // Preserve artifact-position order for matrix batching.
