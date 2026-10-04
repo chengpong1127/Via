@@ -43,6 +43,7 @@ impl RetainedCorridorSet {
                 let key = equivalent_leg_key(network, leg);
                 equivalent_legs
                     .get(&key)
+                    .filter(|legs| legs.len() > 1)
                     .map(|equivalent_legs| (key, equivalent_legs.clone()))
             })
             .collect::<HashMap<_, _>>();
@@ -287,4 +288,96 @@ pub(super) fn corridor_order(left: &StaticCorridor, right: &StaticCorridor) -> O
     left.theoretical_duration_seconds
         .cmp(&right.theoretical_duration_seconds)
         .then_with(|| format!("{:?}", left.signature()).cmp(&format!("{:?}", right.signature())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        ids::TransitPatternId,
+        transit::{TransitNetwork, TransitPattern},
+    };
+    use crate::routing::static_search::types::{StaticCorridorStep, StaticCostSource};
+
+    #[test]
+    fn finalized_equivalent_leg_storage_preserves_lookup_and_timing() {
+        for pattern_ids in [&["bus-a"][..], &["bus-b", "bus-a"][..]] {
+            let board_stop_id = BoardingPointId::new("origin");
+            let alight_stop_id = BoardingPointId::new("destination");
+            let network = TransitRuntime::new(std::sync::Arc::new(TransitNetwork::fixture(
+                time::Time::MIDNIGHT,
+                Vec::new(),
+                pattern_ids
+                    .iter()
+                    .map(|pattern_id| {
+                        TransitPattern::fixture(
+                            TransitPatternId::new(*pattern_id),
+                            TransitMode::Bus,
+                            *pattern_id,
+                            "destination",
+                            vec![board_stop_id.clone(), alight_stop_id.clone()],
+                        )
+                    })
+                    .collect(),
+                Vec::new(),
+            )));
+            let legs = pattern_ids
+                .iter()
+                .map(|pattern_id| StaticTransitLeg {
+                    pattern_id: TransitPatternId::new(*pattern_id),
+                    board_stop_id: board_stop_id.clone(),
+                    board_index: 0,
+                    alight_stop_id: alight_stop_id.clone(),
+                    alight_index: 1,
+                    cost_source: StaticCostSource::OptimisticEstimate,
+                })
+                .collect::<Vec<_>>();
+            let retained_leg = &legs[0];
+            let key = equivalent_leg_key(&network, retained_leg);
+            let equivalent_legs = HashMap::from([(key.clone(), legs.clone())]);
+            let corridor = StaticCorridor {
+                access_stop_id: board_stop_id,
+                egress_stop_id: alight_stop_id,
+                theoretical_duration_seconds: 100,
+                cost_source: StaticCostSource::OptimisticEstimate,
+                steps: vec![StaticCorridorStep::Transit(retained_leg.clone())],
+            };
+
+            let (finalized, pattern_count, bus_stop_count) = RetainedCorridorSet::from_retained(
+                &network,
+                &equivalent_legs,
+                vec![corridor.clone()],
+            );
+
+            assert_eq!(finalized.retained(), &[corridor]);
+            assert_eq!(equivalent_legs[&key], legs);
+            if legs.len() == 1 {
+                assert!(finalized.equivalent_legs.is_empty());
+                assert_eq!(
+                    finalized.equivalent_legs_for(&network, retained_leg),
+                    vec![retained_leg.clone()]
+                );
+            } else {
+                assert_eq!(finalized.equivalent_legs, equivalent_legs);
+            }
+            let expected_legs =
+                RetainedCorridorSet::equivalent_legs_from(&network, &equivalent_legs, retained_leg);
+            assert_eq!(
+                finalized.equivalent_legs_for(&network, retained_leg),
+                expected_legs
+            );
+            assert_eq!(
+                finalized.timing_positions().collect::<Vec<_>>(),
+                expected_legs
+                    .iter()
+                    .map(|leg| PatternPosition {
+                        pattern_id: leg.pattern_id.clone(),
+                        stop_index: leg.board_index,
+                    })
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(pattern_count, legs.len());
+            assert_eq!(bus_stop_count, 1);
+        }
+    }
 }
