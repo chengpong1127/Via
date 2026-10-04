@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use time::OffsetDateTime;
 
 use crate::{
@@ -33,6 +36,7 @@ pub(crate) const MAX_PICKUP_STATIONS_PER_ANCHOR: usize = 3;
 pub(crate) const MAX_DROPOFF_STATIONS_PER_ANCHOR: usize = 3;
 pub(crate) const OPTIMISTIC_BIKE_SPEED_METRES_PER_SECOND: f64 = 8.0;
 const MAX_BIKE_STATIONS_PER_ENDPOINT: usize = 3;
+const BIKE_ENDPOINT_RADIUS_METRES: f64 = 1_500.0;
 const OPTIMISTIC_WALK_SPEED_METRES_PER_SECOND: f64 = 2.0;
 const MAX_BIKE_WALK_SECONDS: u32 = 15 * 60;
 const MAX_BIKE_DURATION_SECONDS: u32 = 60 * 60;
@@ -65,6 +69,43 @@ impl BikeShareMovementPlanner {
             availability_source,
             street_router,
         }
+    }
+
+    pub(crate) fn required_station_ids<'a>(
+        &self,
+        anchors: impl IntoIterator<Item = &'a CorridorAnchor>,
+    ) -> Vec<BikeStationId> {
+        let mut ids = HashSet::new();
+        let mut seen = HashSet::new();
+        for anchor in anchors {
+            if !seen.insert(anchor.cache_key()) {
+                continue;
+            }
+            if let Some(id) = anchor.boarding_point() {
+                ids.extend(
+                    self.network
+                        .access_from_boarding_point(id)
+                        .iter()
+                        .filter(|access| {
+                            access.walk_to_station.is_some() || access.walk_from_station.is_some()
+                        })
+                        .map(|access| access.station_id.clone()),
+                );
+            } else {
+                ids.extend(
+                    self.network
+                        .stations_within_radius(
+                            endpoint_coordinate(anchor),
+                            BIKE_ENDPOINT_RADIUS_METRES,
+                        )
+                        .into_iter()
+                        .map(|station| station.id.clone()),
+                );
+            }
+        }
+        let mut ids = ids.into_iter().collect::<Vec<_>>();
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        ids
     }
 
     pub(crate) fn movement_candidate(
@@ -510,6 +551,13 @@ fn station_choices<'a>(
     choices
 }
 
+fn endpoint_coordinate(endpoint: &CorridorAnchor) -> GeoCoordinate {
+    GeoCoordinate {
+        latitude: endpoint.coordinate.latitude(),
+        longitude: endpoint.coordinate.longitude(),
+    }
+}
+
 fn endpoint_station_choices(
     network: &BikeShareNetwork,
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
@@ -526,13 +574,10 @@ fn endpoint_station_choices(
             pickup,
         );
     }
-    let point = GeoCoordinate {
-        latitude: endpoint.coordinate.latitude(),
-        longitude: endpoint.coordinate.longitude(),
-    };
+    let point = endpoint_coordinate(endpoint);
     let mut choices = network
-        .stations
-        .iter()
+        .stations_within_radius(point, BIKE_ENDPOINT_RADIUS_METRES)
+        .into_iter()
         .filter(|station| {
             if pickup {
                 view.can_pick_up_at(&station.id)
@@ -540,7 +585,6 @@ fn endpoint_station_choices(
                 view.can_return_at(&station.id)
             }
         })
-        .filter(|station| point.distance_metres(station.coordinate) <= 1_500.0)
         .map(|station| {
             let distance = point.distance_metres(station.coordinate);
             StationChoice {
@@ -586,6 +630,149 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
+        use super::super::realized::JourneyAnchorKind;
+        let origin = Coordinate::try_new(25.0, 121.5).unwrap();
+        let destination = Coordinate::try_new(25.1, 121.5).unwrap();
+        let mut stations = (0..4)
+            .map(|index| {
+                BikeStation::new(
+                    BikeStationId::new(format!("near-origin-{index}")),
+                    "Origin station",
+                    GeoCoordinate {
+                        latitude: 25.0 + 0.0001 * f64::from(index + 1),
+                        longitude: 121.5,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        stations.push(BikeStation::new(
+            BikeStationId::new("near-destination"),
+            "Destination station",
+            GeoCoordinate {
+                latitude: 25.1,
+                longitude: 121.5,
+            },
+        ));
+        stations.push(BikeStation::new(
+            BikeStationId::new("outside-radius"),
+            "Far away",
+            GeoCoordinate {
+                latitude: 24.0,
+                longitude: 121.5,
+            },
+        ));
+        let mut anchors = vec![CorridorAnchor {
+            kind: JourneyAnchorKind::Origin,
+            coordinate: origin,
+        }];
+        let mut links = Vec::new();
+        for (index, name) in [
+            "access",
+            "intermediate",
+            "transfer-from",
+            "transfer-to",
+            "egress",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let stop_id = BoardingPointId::new(name);
+            let station_id = BikeStationId::new(format!("linked-{name}"));
+            stations.push(BikeStation::new(
+                station_id.clone(),
+                name,
+                GeoCoordinate {
+                    latitude: 24.0,
+                    longitude: 121.5,
+                },
+            ));
+            links.push(BikeStationAccess::new(
+                stop_id.clone(),
+                station_id,
+                (index % 2 == 0).then_some(BikeWalkingAccess::new(10, 20)),
+                (index % 2 == 1).then_some(BikeWalkingAccess::new(10, 20)),
+            ));
+            anchors.push(CorridorAnchor {
+                kind: JourneyAnchorKind::BoardingPoint { id: stop_id },
+                coordinate: origin,
+            });
+        }
+        anchors.push(CorridorAnchor {
+            kind: JourneyAnchorKind::Destination,
+            coordinate: destination,
+        });
+        for index in 0..4 {
+            links.push(BikeStationAccess::new(
+                BoardingPointId::new("access"),
+                BikeStationId::new(format!("near-origin-{index}")),
+                Some(BikeWalkingAccess::new(20 + index, 40 + index)),
+                None,
+            ));
+        }
+        let network = Arc::new(BikeShareNetwork::new(stations).with_access_links(links));
+        let planner = BikeShareMovementPlanner::new(
+            network,
+            Arc::new(UnavailableBikeAvailabilitySource),
+            Arc::new(FakeStreetRouter::builder().build()),
+        );
+        let required = planner.required_station_ids(anchors.iter().chain(anchors.iter()));
+        assert_eq!(required.len(), 10);
+        assert!(!required.contains(&BikeStationId::new("outside-radius")));
+        for name in [
+            "access",
+            "intermediate",
+            "transfer-from",
+            "transfer-to",
+            "egress",
+        ] {
+            assert!(required.contains(&BikeStationId::new(format!("linked-{name}"))));
+        }
+        let now = datetime!(2026-09-21 10:00 UTC);
+        let mut snapshot = BikeAvailabilitySnapshot::new(
+            now,
+            required
+                .into_iter()
+                .map(|id| {
+                    let bikes = u32::from(id.as_str() == "near-origin-3");
+                    (
+                        id.clone(),
+                        BikeStationAvailability::new(id, bikes, 1, true, now),
+                    )
+                })
+                .collect(),
+        );
+        let candidate = planner
+            .movement_candidate(&anchors[0], anchors.last().unwrap(), &snapshot, now)
+            .unwrap();
+        assert_eq!(candidate.pickups.len(), 1);
+        assert_eq!(candidate.pickups[0].station_id.as_str(), "near-origin-3");
+        let boarding_candidate = planner
+            .movement_candidate(&anchors[1], anchors.last().unwrap(), &snapshot, now)
+            .unwrap();
+        assert_eq!(boarding_candidate.pickups.len(), 1);
+        assert_eq!(
+            boarding_candidate.pickups[0].station_id.as_str(),
+            "near-origin-3"
+        );
+        for availability in snapshot.stations.values_mut() {
+            availability.available_bikes = 1;
+        }
+        let candidate = planner
+            .movement_candidate(&anchors[0], anchors.last().unwrap(), &snapshot, now)
+            .unwrap();
+        assert_eq!(candidate.pickups.len(), MAX_BIKE_STATIONS_PER_ENDPOINT);
+        assert_eq!(candidate.pickups[0].station_id.as_str(), "near-origin-0");
+        let boarding_candidate = planner
+            .movement_candidate(&anchors[1], anchors.last().unwrap(), &snapshot, now)
+            .unwrap();
+        assert_eq!(
+            boarding_candidate.pickups.len(),
+            MAX_PICKUP_STATIONS_PER_ANCHOR
+        );
+    }
 
     #[test]
     fn station_choices_are_bounded_to_three_nearest_per_anchor() {

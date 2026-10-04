@@ -40,13 +40,20 @@ struct TdxStationPosition {
     longitude: f64,
 }
 
-pub fn parse_tdx_station_catalog(
-    taipei_json: &str,
-    new_taipei_json: &str,
+pub fn parse_tdx_station_catalog<'a>(
+    catalogs: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<BikeShareNetwork, DataError> {
     let mut stations = Vec::new();
     let mut ids = HashSet::new();
-    for (city, body) in [("Taipei", taipei_json), ("NewTaipei", new_taipei_json)] {
+    for (city, body) in catalogs {
+        if !crate::tdx::BIKE_CITIES
+            .iter()
+            .any(|(scope, _)| *scope == city)
+        {
+            return Err(DataError::InvalidArtifactJson(format!(
+                "unsupported TDX Bike city {city}"
+            )));
+        }
         let records = serde_json::from_str::<Vec<TdxStation>>(body)
             .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
         for record in records
@@ -92,11 +99,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn merges_configured_cities_with_deterministic_city_scoped_ids() {
+        let body = r#"[{"StationUID":"same", "StationName":{"Zh_tw":"Station"}, "StationPosition":{"PositionLat":24.0,"PositionLon":121.0},"ServiceType":2}]"#;
+        let catalogs = [("Taipei", body), ("Taichung", body), ("Kaohsiung", body)];
+        let first = parse_tdx_station_catalog(catalogs).unwrap();
+        let second = parse_tdx_station_catalog(catalogs.into_iter().rev()).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.stations.len(), 3);
+        for (city, _) in catalogs {
+            assert!(first.station(&bike_station_id(city, "same")).is_some());
+        }
+        assert!(parse_tdx_station_catalog([("Unknown", body)]).is_err());
+    }
+
+    #[test]
     fn maps_local_tdx_city_station_catalogs_to_availability_ids() {
-        let network = parse_tdx_station_catalog(
-            include_str!("../../fixtures/tdx/raw/bike/taipei/station.json"),
-            include_str!("../../fixtures/tdx/raw/bike/new-taipei/station.json"),
-        )
+        let network = parse_tdx_station_catalog([
+            (
+                "Taipei",
+                include_str!("../../fixtures/tdx/raw/bike/taipei/station.json"),
+            ),
+            (
+                "NewTaipei",
+                include_str!("../../fixtures/tdx/raw/bike/new-taipei/station.json"),
+            ),
+        ])
         .unwrap();
 
         assert_eq!(network.stations.len(), 3);
@@ -118,7 +145,8 @@ mod tests {
         let taipei = r#"[{"StationUID":"TPE-1","StationName":{"Zh_tw":"台北一站"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.5},"ServiceType":2},{"StationUID":"TPE-2","StationName":{"Zh_tw":"台北二站"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.6},"ServiceType":2}]"#;
         let new_taipei = r#"[{"StationUID":"NTP-1","StationName":{"Zh_tw":"新北一站"},"StationPosition":{"PositionLat":25.2,"PositionLon":121.7},"ServiceType":2}]"#;
 
-        let network = parse_tdx_station_catalog(taipei, new_taipei).unwrap();
+        let network =
+            parse_tdx_station_catalog([("Taipei", taipei), ("NewTaipei", new_taipei)]).unwrap();
 
         assert_eq!(network.stations.len(), 3);
         assert!(
@@ -151,9 +179,9 @@ mod tests {
             "},{\"StationUID\":\"same\",\"StationName\":{\"Zh_tw\":\"另一站\"},\"StationPosition\":{\"PositionLat\":25.0,\"PositionLon\":121.5},\"ServiceType\":2}]",
         );
 
-        assert!(parse_tdx_station_catalog(&duplicate_taipei, "[]").is_err());
+        assert!(parse_tdx_station_catalog([("Taipei", duplicate_taipei.as_str())]).is_err());
 
         let invalid = taipei.replace("25.0", "95.0");
-        assert!(parse_tdx_station_catalog(&invalid, "[]").is_err());
+        assert!(parse_tdx_station_catalog([("Taipei", invalid.as_str())]).is_err());
     }
 }

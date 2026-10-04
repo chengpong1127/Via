@@ -1,123 +1,213 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
-use futures_util::future::try_join_all;
+use futures_util::{StreamExt, stream};
 use moka::future::Cache;
 use serde::Deserialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tokio::sync::Mutex;
 
 use crate::{
-    domain::bikeshare::{
-        BikeAvailabilitySnapshot, BikeShareNetwork, BikeStationAvailability,
-        DEFAULT_BIKE_AVAILABILITY_MAX_AGE, MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+    domain::{
+        bikeshare::{
+            BikeAvailabilitySnapshot, BikeStationAvailability, DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
+        },
+        ids::BikeStationId,
     },
-    tdx::{TdxClient, TdxClientError, bike_station_id},
+    tdx::{
+        BIKE_CITIES, TdxClient, TdxClientError, bike_station_id, odata_in_filter,
+        tdx_bike_station_parts,
+    },
 };
 
 use super::{BikeAvailabilityError, BikeAvailabilitySource, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL};
 
-const SUPPORTED_CITIES: [(&str, &str); 2] = [("Taipei", "Taipei"), ("NewTaipei", "NewTaipei")];
+const MAX_STATIONS_PER_REQUEST: usize = 50;
+const MAX_CONCURRENT_CITIES: usize = 4;
 
 #[derive(Clone)]
 pub struct TdxBikeAvailabilitySource {
-    network: Arc<BikeShareNetwork>,
     tdx_client: Arc<TdxClient>,
-    snapshot_cache: Cache<(), Arc<BikeAvailabilitySnapshot>>,
+    station_cache: Cache<BikeStationId, BikeStationAvailability>,
+    city_refreshes: Arc<HashMap<&'static str, Mutex<()>>>,
 }
 
 impl TdxBikeAvailabilitySource {
-    pub fn new(network: Arc<BikeShareNetwork>, tdx_client: Arc<TdxClient>) -> Self {
-        Self::with_cache_ttl(network, tdx_client, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL)
+    pub fn new(tdx_client: Arc<TdxClient>) -> Self {
+        Self::with_cache_ttl(tdx_client, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL)
     }
 
-    pub fn with_cache_ttl(
-        network: Arc<BikeShareNetwork>,
-        tdx_client: Arc<TdxClient>,
-        cache_ttl: Duration,
-    ) -> Self {
-        let cache_ttl = cache_ttl.max(Duration::from_millis(1));
+    pub fn with_cache_ttl(tdx_client: Arc<TdxClient>, cache_ttl: Duration) -> Self {
         Self {
-            network,
             tdx_client,
-            snapshot_cache: Cache::builder().time_to_live(cache_ttl).build(),
+            station_cache: Cache::builder()
+                .max_capacity(50_000)
+                .time_to_live(cache_ttl.max(Duration::from_millis(1)))
+                .build(),
+            city_refreshes: Arc::new(
+                BIKE_CITIES
+                    .iter()
+                    .map(|(city, _)| (*city, Mutex::new(())))
+                    .collect(),
+            ),
         }
     }
 
-    async fn fetch_snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
-        let received_at = OffsetDateTime::now_utc();
+    async fn fresh_cached(&self, id: &BikeStationId) -> Option<BikeStationAvailability> {
+        self.station_cache.get(id).await.filter(|availability| {
+            availability.is_fresh(OffsetDateTime::now_utc(), DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+        })
+    }
 
-        let city_payloads = try_join_all(
-            SUPPORTED_CITIES
-                .into_iter()
-                .map(|(city, path_city)| self.fetch_city(city, path_city)),
-        )
-        .await?;
-
+    async fn load_city(
+        &self,
+        city: &str,
+        ids: Vec<BikeStationId>,
+    ) -> (
+        HashMap<BikeStationId, BikeStationAvailability>,
+        Option<BikeAvailabilityError>,
+    ) {
+        let _refresh = self.city_refreshes[city].lock().await;
         let mut stations = HashMap::new();
-        let mut record_count = 0;
-        let mut valid_count = 0;
-        for (city, records) in city_payloads {
-            record_count += records.len();
-            for record in records {
-                let Some(availability) = normalize_record(city, record, received_at) else {
-                    continue;
-                };
-                if self.network.station(&availability.station_id).is_none() {
-                    continue;
-                }
-                if stations
-                    .insert(availability.station_id.clone(), availability)
-                    .is_some()
-                {
-                    return Err(BikeAvailabilityError::RejectedPayload);
-                }
-                valid_count += 1;
+        let mut missing = Vec::new();
+        for id in ids {
+            if let Some(availability) = self.fresh_cached(&id).await {
+                stations.insert(id, availability);
+            } else {
+                missing.push(id);
             }
         }
-        if record_count > 0 && valid_count == 0 {
-            return Err(BikeAvailabilityError::RejectedPayload);
+        let mut failure = None;
+        for batch in missing.chunks(MAX_STATIONS_PER_REQUEST) {
+            match self.fetch_batch(city, batch).await {
+                Ok(records) => {
+                    for (id, availability) in records {
+                        self.station_cache
+                            .insert(id.clone(), availability.clone())
+                            .await;
+                        stations.insert(id, availability);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        target: "via_server::providers::bikeshare",
+                        provider = "tdx", city, operation = "bike_availability",
+                        outcome = bike_availability_outcome(&error), error = %error,
+                        "bike availability batch failed; retaining successful station records"
+                    );
+                    failure.get_or_insert(error);
+                }
+            }
         }
-        Ok(Arc::new(BikeAvailabilitySnapshot::new(
-            received_at,
-            stations,
-        )))
+        (stations, failure)
     }
 
-    async fn fetch_city(
+    async fn fetch_batch(
         &self,
-        city: &'static str,
-        path_city: &'static str,
-    ) -> Result<(&'static str, Vec<TdxBikeAvailabilityRecord>), BikeAvailabilityError> {
-        let path = format!("v2/Bike/Availability/City/{path_city}");
+        city: &str,
+        ids: &[BikeStationId],
+    ) -> Result<HashMap<BikeStationId, BikeStationAvailability>, BikeAvailabilityError> {
+        let uids = ids
+            .iter()
+            .map(|id| {
+                tdx_bike_station_parts(id)
+                    .expect("validated TDX station ID")
+                    .1
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        let filter = odata_in_filter("StationUID", &uids);
+        let top = ids.len().to_string();
+        let path = format!("v2/Bike/Availability/City/{city}");
+        ::metrics::counter!("via_bike_availability_http_requests_total").increment(1);
+        ::metrics::counter!("via_bike_availability_stations_fetched_total")
+            .increment(ids.len() as u64);
         let records = self
             .tdx_client
-            .get_json::<Vec<TdxBikeAvailabilityRecord>>(&path, &[("$format", "JSON")])
+            .get_json::<Vec<TdxBikeAvailabilityRecord>>(
+                &path,
+                &[("$format", "JSON"), ("$filter", &filter), ("$top", &top)],
+            )
             .await
             .map_err(map_tdx_error)?;
-        Ok((city, records))
+        let received_at = OffsetDateTime::now_utc();
+        let required = ids.iter().collect::<HashSet<_>>();
+        let record_count = records.len();
+        let mut stations = HashMap::new();
+        for record in records {
+            let Some(availability) = normalize_record(city, record, received_at) else {
+                continue;
+            };
+            if !required.contains(&availability.station_id) {
+                continue;
+            }
+            if stations
+                .insert(availability.station_id.clone(), availability)
+                .is_some()
+            {
+                return Err(BikeAvailabilityError::RejectedPayload);
+            }
+        }
+        if record_count > 0 && stations.is_empty() {
+            return Err(BikeAvailabilityError::RejectedPayload);
+        }
+        Ok(stations)
     }
 }
 
 #[async_trait]
 impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
-    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
-        let source = self.clone();
-        let result = self
-            .snapshot_cache
-            .try_get_with((), async move { source.fetch_snapshot().await })
-            .await
-            .map_err(|error| (*error).clone());
-        if let Err(error) = &result {
-            tracing::warn!(
-                target: "via_server::providers::bikeshare",
-                provider = "tdx",
-                operation = "bike_availability",
-                outcome = bike_availability_outcome(error),
-                error = %error,
-                "bike availability lookup failed; continuing without BikeShare movements"
-            );
+    async fn snapshot(
+        &self,
+        station_ids: &[BikeStationId],
+    ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        let required = station_ids.iter().collect::<HashSet<_>>();
+        ::metrics::counter!("via_bike_availability_stations_requested_total")
+            .increment(required.len() as u64);
+        let mut stations = HashMap::new();
+        let mut cities = BTreeMap::<String, Vec<BikeStationId>>::new();
+        for id in required {
+            let Some((city, _)) = tdx_bike_station_parts(id) else {
+                tracing::warn!(target: "via_server::providers::bikeshare", station_id = %id.as_str(), "unsupported bike station identity; skipping availability");
+                continue;
+            };
+            if let Some(availability) = self.fresh_cached(id).await {
+                ::metrics::counter!("via_bike_availability_station_cache_hits_total").increment(1);
+                stations.insert(id.clone(), availability);
+            } else {
+                cities.entry(city.to_owned()).or_default().push(id.clone());
+            }
         }
-        result
+        for ids in cities.values_mut() {
+            ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        }
+        let mut results = stream::iter(
+            cities
+                .into_iter()
+                .map(|(city, ids)| async move { self.load_city(&city, ids).await }),
+        )
+        .buffer_unordered(MAX_CONCURRENT_CITIES);
+        let mut failure = None;
+        while let Some((loaded, error)) = results.next().await {
+            stations.extend(loaded);
+            if let Some(error) = error {
+                failure.get_or_insert(error);
+            }
+        }
+        let now = OffsetDateTime::now_utc();
+        stations.retain(|_, availability| {
+            availability.is_fresh(now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+        });
+        if stations.is_empty()
+            && let Some(error) = failure
+        {
+            return Err(error);
+        }
+        Ok(Arc::new(BikeAvailabilitySnapshot::new(now, stations)))
     }
 }
 
@@ -167,17 +257,16 @@ fn normalize_record(
         Some(value) => parse_timestamp(value)?,
         None => update_time,
     };
-    let age = received_at - observed_at;
-    if age < -MAX_BIKE_AVAILABILITY_CLOCK_SKEW || age > DEFAULT_BIKE_AVAILABILITY_MAX_AGE {
-        return None;
-    }
-    Some(BikeStationAvailability::new(
+    let availability = BikeStationAvailability::new(
         bike_station_id(city, station_uid),
         available_bikes,
         available_return_slots,
         in_service,
         observed_at,
-    ))
+    );
+    availability
+        .is_fresh(received_at, DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+        .then_some(availability)
 }
 
 fn nonnegative_count(value: i64) -> Option<u32> {

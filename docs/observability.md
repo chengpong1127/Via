@@ -33,6 +33,10 @@ All names below are production metrics. Counters end in `_total`; the two
 | `via_bus_timing_realtime_http_requests_total` | Bus timing provider: attempted upstream HTTP requests |
 | `via_bus_timing_upstream_failures_total` | Bus timing provider: failed upstream batches |
 | `via_bus_timing_rate_limited_requests_total` | Bus timing provider: upstream failures due to rate limiting |
+| `via_bike_availability_stations_requested_total` | Bike availability provider: unique station IDs requested, including unsupported identities |
+| `via_bike_availability_station_cache_hits_total` | Bike availability provider: fresh per-station cache hits before city refresh |
+| `via_bike_availability_stations_fetched_total` | Bike availability provider: station IDs in attempted upstream batches |
+| `via_bike_availability_http_requests_total` | Bike availability provider: attempted filtered batches, excluding internal HTTP retries |
 
 ## Completion and failure semantics
 

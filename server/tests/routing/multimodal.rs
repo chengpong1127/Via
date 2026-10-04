@@ -37,7 +37,10 @@ struct FixtureAvailabilitySource {
 
 #[async_trait]
 impl BikeAvailabilitySource for FixtureAvailabilitySource {
-    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+    async fn snapshot(
+        &self,
+        _station_ids: &[BikeStationId],
+    ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.snapshot.clone()
     }

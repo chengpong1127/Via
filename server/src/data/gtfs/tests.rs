@@ -547,6 +547,34 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
 }
 
 #[tokio::test]
+async fn accepts_gtfs_only_fetch_snapshots() {
+    let input = temporary_path("gtfs-only-input.zip");
+    write_gtfs_fixture(&input);
+    let snapshot = temporary_path("gtfs-only-fetch");
+    write_fetch_snapshot(&input, &snapshot);
+    std::fs::remove_file(snapshot.join("bike-stations-taipei.json")).unwrap();
+    std::fs::remove_file(snapshot.join("bike-stations-new-taipei.json")).unwrap();
+    let manifest_path = snapshot.join("manifest.json");
+    let mut manifest =
+        serde_json::from_slice::<FetchManifest>(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.sources.retain(|name, _| name == "gtfs");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let output = temporary_path("gtfs-only-output");
+    let street = FakeStreetRouter::builder().build();
+    let build = build_from_fetch_snapshot(&snapshot, &output, &street).await;
+    assert!(build.is_ok());
+
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
 async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
     let input = temporary_path("malformed-input.zip");
     write_gtfs_fixture(&input);

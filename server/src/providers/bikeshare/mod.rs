@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::domain::bikeshare::BikeAvailabilitySnapshot;
+use crate::domain::{bikeshare::BikeAvailabilitySnapshot, ids::BikeStationId};
 
 pub mod tdx;
 
@@ -31,7 +31,10 @@ impl BikeAvailabilityError {
 
 #[async_trait]
 pub trait BikeAvailabilitySource: Send + Sync {
-    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>;
+    async fn snapshot(
+        &self,
+        station_ids: &[BikeStationId],
+    ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -39,7 +42,16 @@ pub struct UnavailableBikeAvailabilitySource;
 
 #[async_trait]
 impl BikeAvailabilitySource for UnavailableBikeAvailabilitySource {
-    async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+    async fn snapshot(
+        &self,
+        station_ids: &[BikeStationId],
+    ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        if station_ids.is_empty() {
+            return Ok(Arc::new(BikeAvailabilitySnapshot::new(
+                time::OffsetDateTime::now_utc(),
+                Default::default(),
+            )));
+        }
         Err(BikeAvailabilityError::InvalidConfiguration)
     }
 }

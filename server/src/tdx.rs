@@ -31,6 +31,46 @@ pub fn bike_station_id(
     crate::domain::ids::BikeStationId::new(format!("tdx:{}:{}", city.into(), station_uid.into()))
 }
 
+pub const BIKE_CITIES: &[(&str, &str)] = &[
+    ("ChanghuaCounty", "changhua-county"),
+    ("Chiayi", "chiayi"),
+    ("ChiayiCounty", "chiayi-county"),
+    ("Hsinchu", "hsinchu"),
+    ("HsinchuCounty", "hsinchu-county"),
+    ("Kaohsiung", "kaohsiung"),
+    ("MiaoliCounty", "miaoli-county"),
+    ("NewTaipei", "new-taipei"),
+    ("PingtungCounty", "pingtung-county"),
+    ("Taichung", "taichung"),
+    ("Tainan", "tainan"),
+    ("Taipei", "taipei"),
+    ("TaitungCounty", "taitung-county"),
+    ("Taoyuan", "taoyuan"),
+    ("YunlinCounty", "yunlin-county"),
+];
+
+pub fn tdx_bike_station_parts(id: &crate::domain::ids::BikeStationId) -> Option<(&str, &str)> {
+    let (city, uid) = id.as_str().strip_prefix("tdx:")?.split_once(':')?;
+    if !BIKE_CITIES.iter().any(|(scope, _)| *scope == city)
+        || uid.is_empty()
+        || uid.trim() != uid
+        || uid.contains(':')
+        || uid.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some((city, uid))
+}
+
+pub(crate) fn odata_in_filter(field: &str, values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("'{}'", value.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{field} in ({values})")
+}
+
 pub fn transit_service_id(
     sub_route_uid: impl Into<String>,
 ) -> crate::domain::ids::TransitPatternId {
@@ -414,6 +454,32 @@ mod tests {
             .status(StatusCode::OK)
             .body(Body::from(body.as_ref().clone()))
             .unwrap()
+    }
+
+    #[test]
+    fn bike_identity_parser_rejects_invalid_scopes_and_parts() {
+        use super::{bike_station_id, odata_in_filter, tdx_bike_station_parts};
+        use crate::domain::ids::BikeStationId;
+        let valid = bike_station_id("Taichung", "TXG001");
+        assert_eq!(tdx_bike_station_parts(&valid), Some(("Taichung", "TXG001")));
+        for value in [
+            "plain",
+            "tdx:Taipei:",
+            "tdx::TPE001",
+            "tdx:Unknown:001",
+            "tdx:Taipei:a:b",
+            "tdx:Taipei: a",
+            "tdx:Taipei:a\n",
+        ] {
+            assert!(
+                tdx_bike_station_parts(&BikeStationId::new(value)).is_none(),
+                "{value:?}"
+            );
+        }
+        assert_eq!(
+            odata_in_filter("StationUID", &["a'b".to_owned()]),
+            "StationUID in ('a''b')"
+        );
     }
 
     #[test]

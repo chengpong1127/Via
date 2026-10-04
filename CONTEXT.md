@@ -86,7 +86,15 @@ Walking is always implicit and is not a `selected_modes` value. An empty mode
 list skips transit discovery and Phase 1, then evaluates a surface-only
 Origin-to-Destination corridor as walking. Selecting only BikeShare also skips
 transit search and timing requests while loading one BikeShare availability
-snapshot. If transit corridors evaluate to no candidate, the planner evaluates
+snapshot. Before realtime loading, `BikeShareMovementPlanner::required_station_ids`
+collects all stations linked to evaluation boarding anchors and all stations within
+1,500 metres of geographic endpoints, including surface fallback endpoints.
+Availability filtering precedes the existing three-station candidate limits.
+The TDX provider caches individual station records for 45 seconds, rechecks
+original observation freshness, and fetches only missing/stale IDs in filtered
+50-station batches grouped by city (up to four cities concurrently). Partial
+failures preserve successful records; empty requests make no availability calls.
+If transit corridors evaluate to no candidate, the planner evaluates
 the same surface-only corridor as a fallback. It does not append a direct route
 to successful transit results. The session retains its snapshots, movement
 caches, and expansion accounting through reconstruction, so failed reconstruction
@@ -120,11 +128,12 @@ existing Via IDs when their formats map directly; unmapped IDs are reported.
 The server has no database or identity-reconciliation layer.
 
 GTFS does not contain a YouBike station catalog. To build the static station
-metadata, `via-data build` can take local TDX Taipei and New Taipei
+metadata, `via-data build` can take local TDX city-scoped
 `Bike/Station/City` JSON snapshots. It maps their station IDs to the same
 city-scoped Via IDs used by availability, then precomputes bounded directional
 walking links with Valhalla. Live bike and dock counts, service state, and
-freshness come from TDX request-time availability. Without station snapshots,
+freshness come from TDX request-time availability. Static station scopes are
+configured once in `tdx::BIKE_CITIES` using the official Bike API scopes. Without station snapshots,
 the generated BikeShare artifact remains empty.
 
 Keep the dependency direction `domain ← routing ← app/api`. Providers

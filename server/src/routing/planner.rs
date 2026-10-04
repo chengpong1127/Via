@@ -5,7 +5,7 @@ use time::{Duration, OffsetDateTime};
 use crate::api::GeoCoordinate;
 use crate::domain::{
     bikeshare::BikeShareNetwork,
-    ids::BoardingPointId,
+    ids::{BikeStationId, BoardingPointId},
     transit::TransitMode,
     transit_runtime::TransitRuntime,
     transit_timing::{DepartureQuery, TimingSnapshotLoader},
@@ -221,7 +221,24 @@ impl MultimodalPlanner {
         } else {
             self.execute_phase1(&query)?
         };
-        let loading = self.load_request_snapshots(&query, &retained, &static_stats);
+        let corridors = retained
+            .retained()
+            .iter()
+            .map(|corridor| EvaluationCorridor::from_transit(&self.network, corridor, &query))
+            .collect::<Result<Vec<_>, _>>()?;
+        let fallback = EvaluationCorridor::surface_only(query.origin, query.destination);
+        let bike_station_ids = if query.allow_bike_share {
+            self.bike.required_station_ids(
+                corridors
+                    .iter()
+                    .flat_map(|corridor| corridor.anchors())
+                    .chain(fallback.anchors()),
+            )
+        } else {
+            Vec::new()
+        };
+        let loading =
+            self.load_request_snapshots(&query, &retained, &static_stats, &bike_station_ids);
         let snapshots = query.deadline.run(loading).await??;
         let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> =
             vec![Box::new(WalkingMovementPlanner::new(self.street.clone()))];
@@ -236,6 +253,7 @@ impl MultimodalPlanner {
             network: &self.network,
             query,
             retained,
+            corridors: corridors.into(),
             snapshots,
             surface_planners,
             stats: MultimodalPlannerStats {
@@ -313,6 +331,7 @@ impl MultimodalPlanner {
         query: &PlanningQuery,
         retained_corridors: &static_search::RetainedCorridorSet,
         static_stats: &static_search::StaticSearchStats,
+        bike_station_ids: &[BikeStationId],
     ) -> Result<RequestSnapshots, RoutingError> {
         let positions = retained_corridors.timing_positions().collect::<Vec<_>>();
         let snapshot_limit = usize::try_from(query.limits.max_journey_duration_seconds)
@@ -358,7 +377,12 @@ impl MultimodalPlanner {
         };
         let bike_future = async {
             if bike_enabled {
-                Some(self.bike.availability_source.snapshot().await)
+                Some(
+                    self.bike
+                        .availability_source
+                        .snapshot(bike_station_ids)
+                        .await,
+                )
             } else {
                 None
             }
@@ -412,6 +436,7 @@ pub(crate) struct PlanningSession<'a> {
     network: &'a TransitRuntime,
     query: PlanningQuery,
     retained: static_search::RetainedCorridorSet,
+    corridors: Arc<[EvaluationCorridor]>,
     snapshots: RequestSnapshots,
     surface_planners: Vec<Box<dyn SurfaceMovementPlanner>>,
     stats: MultimodalPlannerStats,
@@ -421,12 +446,7 @@ pub(crate) struct PlanningSession<'a> {
 
 impl PlanningSession<'_> {
     pub async fn evaluate_primary(&mut self) -> Result<Vec<RealizedJourney>, RoutingError> {
-        let corridors = self
-            .retained
-            .retained()
-            .iter()
-            .map(|corridor| EvaluationCorridor::from_transit(self.network, corridor, &self.query))
-            .collect::<Result<Vec<_>, _>>()?;
+        let corridors = self.corridors.clone();
         let journeys = self.evaluate_corridors(&corridors).await?;
         if journeys.is_empty() {
             return self.evaluate_fallback().await;
@@ -543,12 +563,17 @@ mod tests {
 
     struct CountingBikeAvailabilitySource {
         calls: Arc<AtomicUsize>,
+        requested: Arc<Mutex<Vec<BikeStationId>>>,
     }
 
     #[async_trait::async_trait]
     impl BikeAvailabilitySource for CountingBikeAvailabilitySource {
-        async fn snapshot(&self) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
+        async fn snapshot(
+            &self,
+            station_ids: &[BikeStationId],
+        ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            *self.requested.lock().unwrap() = station_ids.to_vec();
             Ok(Arc::new(BikeAvailabilitySnapshot::new(
                 datetime!(2026-09-21 10:00 UTC),
                 HashMap::new(),
@@ -908,16 +933,65 @@ mod tests {
     async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
         let timing = Arc::new(RecordingTimingLoader::default());
         let calls = Arc::new(AtomicUsize::new(0));
+        let requested = Arc::new(Mutex::new(Vec::new()));
+        let stop_names = [
+            "origin",
+            "bus-end-a",
+            "metro-start-a",
+            "bus-end-b",
+            "metro-start-b",
+            "destination",
+        ];
+        let mut stations = Vec::new();
+        let mut links = Vec::new();
+        for name in stop_names {
+            let station_id = BikeStationId::new(format!("linked-{name}"));
+            stations.push(crate::domain::bikeshare::BikeStation::new(
+                station_id.clone(),
+                name,
+                GeoCoordinate {
+                    latitude: 24.0,
+                    longitude: 121.0,
+                },
+            ));
+            links.push(crate::domain::bikeshare::BikeStationAccess::new(
+                BoardingPointId::new(name),
+                station_id,
+                Some(crate::domain::bikeshare::BikeWalkingAccess::new(10, 10)),
+                None,
+            ));
+        }
+        stations.push(crate::domain::bikeshare::BikeStation::new(
+            BikeStationId::new("origin-nearby"),
+            "Origin nearby",
+            GeoCoordinate {
+                latitude: 25.0,
+                longitude: 121.5,
+            },
+        ));
+        stations.push(crate::domain::bikeshare::BikeStation::new(
+            BikeStationId::new("destination-nearby"),
+            "Destination nearby",
+            GeoCoordinate {
+                latitude: 25.1,
+                longitude: 121.5,
+            },
+        ));
         let planner = MultimodalPlanner::new(
             multiple_mode_corridors_network(),
             timing.clone(),
             Arc::new(FakeStreetRouter::builder().build()),
-            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
+            Arc::new(
+                BikeShareNetwork::new(stations)
+                    .with_access_links(links)
+                    .with_revision("fixture"),
+            ),
             Arc::new(CountingBikeAvailabilitySource {
                 calls: calls.clone(),
+                requested: requested.clone(),
             }),
         );
-        let bike_query = query(2)
+        let mut bike_query = query(2)
             .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
             .with_limits(crate::routing::PlannerLimits {
                 max_transfers: 1,
@@ -929,9 +1003,17 @@ mod tests {
             })
             .with_bike_share(true);
 
+        bike_query.destination = Coordinate::try_new(25.1, 121.5).unwrap();
         let (_, stats) = planner.plan_with_stats(bike_query).await.unwrap();
 
         assert_eq!(stats.phase1.corridors_retained, 2);
+        let loaded = requested.lock().unwrap().clone();
+        assert_eq!(loaded.len(), 8);
+        for name in stop_names {
+            assert!(loaded.contains(&BikeStationId::new(format!("linked-{name}"))));
+        }
+        assert!(loaded.contains(&BikeStationId::new("origin-nearby")));
+        assert!(loaded.contains(&BikeStationId::new("destination-nearby")));
         assert_eq!(timing.calls.load(Ordering::SeqCst), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         planner.plan_with_stats(query(1)).await.unwrap();

@@ -107,9 +107,8 @@ pub async fn build_runtime(
     )?);
     let bindings = via_static.provider_bindings.clone();
     let bike_share_network = Arc::new(via_static.bike_share);
-    let bike_availability: Arc<dyn BikeAvailabilitySource> = Arc::new(
-        TdxBikeAvailabilitySource::new(bike_share_network.clone(), tdx.clone()),
-    );
+    let bike_availability: Arc<dyn BikeAvailabilitySource> =
+        Arc::new(TdxBikeAvailabilitySource::new(tdx.clone()));
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
         environment: config.environment,
         transit_network: via_static.transit,

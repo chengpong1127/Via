@@ -12,7 +12,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
-use crate::tdx::{TdxClient, TdxClientError};
+use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_PAGE_SIZE: &str = "1000";
@@ -150,12 +150,6 @@ async fn populate_snapshot(
     };
     validate_gtfs_zip(&gtfs_path)?;
 
-    let taipei_url = station_url(&sources.bike_api_base_url, "Taipei")?;
-    let new_taipei_url = station_url(&sources.bike_api_base_url, "NewTaipei")?;
-    let (taipei_body, taipei_count) = fetch_stations(client, &taipei_url, "Taipei").await?;
-    let (new_taipei_body, new_taipei_count) =
-        fetch_stations(client, &new_taipei_url, "NewTaipei").await?;
-
     let mut manifest = FetchManifest {
         manifest_version: 1,
         fetched_at: time::OffsetDateTime::now_utc()
@@ -164,20 +158,19 @@ async fn populate_snapshot(
         sources: BTreeMap::new(),
     };
     manifest.sources.insert("gtfs".to_owned(), gtfs_source);
-    write_station_source(
-        temporary,
-        "bike-stations-taipei",
-        &taipei_body,
-        &taipei_url,
-        &mut manifest.sources,
-    )?;
-    write_station_source(
-        temporary,
-        "bike-stations-new-taipei",
-        &new_taipei_body,
-        &new_taipei_url,
-        &mut manifest.sources,
-    )?;
+    let mut bike_station_counts = BTreeMap::new();
+    for (city, slug) in BIKE_CITIES {
+        let url = station_url(&sources.bike_api_base_url, city)?;
+        let (body, count) = fetch_stations(client, &url, city).await?;
+        write_station_source(
+            temporary,
+            &format!("bike-stations-{slug}"),
+            &body,
+            &url,
+            &mut manifest.sources,
+        )?;
+        bike_station_counts.insert((*city).to_owned(), count);
+    }
     let manifest_path = temporary.join("manifest.json");
     let manifest_body =
         serde_json::to_vec_pretty(&manifest).map_err(|error| FetchError::InvalidBikeResponse {
@@ -189,10 +182,7 @@ async fn populate_snapshot(
     Ok(FetchSnapshot {
         path: temporary.to_owned(),
         manifest,
-        bike_station_counts: BTreeMap::from([
-            ("Taipei".to_owned(), taipei_count),
-            ("NewTaipei".to_owned(), new_taipei_count),
-        ]),
+        bike_station_counts,
     })
 }
 
@@ -232,12 +222,6 @@ async fn fetch_stations(
             });
         }
         if page.is_empty() {
-            if skip == 0 {
-                return Err(FetchError::InvalidBikeResponse {
-                    city: city.to_owned(),
-                    detail: "response contained no station records".to_owned(),
-                });
-            }
             break;
         }
         for station in &page {
@@ -301,12 +285,20 @@ fn write_station_source(
 }
 
 pub fn source_file_name(source_name: &str) -> Option<String> {
-    match source_name {
-        "gtfs" => Some("gtfs.zip".to_owned()),
-        "bike-stations-taipei" => Some("bike-stations-taipei.json".to_owned()),
-        "bike-stations-new-taipei" => Some("bike-stations-new-taipei.json".to_owned()),
-        _ => None,
+    if source_name == "gtfs" {
+        return Some("gtfs.zip".to_owned());
     }
+    BIKE_CITIES
+        .iter()
+        .find(|(_, slug)| source_name == format!("bike-stations-{slug}"))
+        .map(|(_, slug)| format!("bike-stations-{slug}.json"))
+}
+
+pub fn bike_station_city(source_name: &str) -> Option<&'static str> {
+    BIKE_CITIES
+        .iter()
+        .find(|(_, slug)| source_name == format!("bike-stations-{slug}"))
+        .map(|(city, _)| *city)
 }
 
 fn station_url(base_url: &str, city: &str) -> Result<String, FetchError> {
@@ -463,8 +455,9 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
         }
-        if path.contains("Taipei") {
+        if path.starts_with("/basic/v2/Bike/Station/City/") {
             let body = match (path.contains("NewTaipei"), skip) {
+                (false, _) if !path.starts_with("/basic/v2/Bike/Station/City/Taipei?") => "[]",
                 (true, 0) => {
                     r#"[ {"StationUID":"NTP0001","StationID":"0001","StationName":{"Zh_tw":"New Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}} ]"#
                 }
@@ -574,6 +567,14 @@ mod tests {
         );
         assert_eq!(snapshot.bike_station_counts["Taipei"], 2);
         assert_eq!(snapshot.bike_station_counts["NewTaipei"], 2);
+        assert!(
+            snapshot
+                .bike_station_counts
+                .values()
+                .filter(|count| **count == 0)
+                .count()
+                > 0
+        );
         assert_eq!(
             fs::read(snapshot.path.join("bike-stations-taipei.json")).unwrap(),
             br#"[{"StationUID":"TPE0001","StationID":"0001","StationName":{"Zh_tw":"Taipei 1"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.0}},{"StationUID":"TPE0002","StationID":"0002","StationName":{"Zh_tw":"Taipei 2"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.1}}]"#
@@ -587,15 +588,13 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         filenames.sort();
-        assert_eq!(
-            filenames,
-            [
-                "bike-stations-new-taipei.json",
-                "bike-stations-taipei.json",
-                "gtfs.zip",
-                "manifest.json",
-            ]
-        );
+        let mut expected_filenames = BIKE_CITIES
+            .iter()
+            .map(|(_, slug)| format!("bike-stations-{slug}.json"))
+            .collect::<Vec<_>>();
+        expected_filenames.extend(["gtfs.zip".to_owned(), "manifest.json".to_owned()]);
+        expected_filenames.sort();
+        assert_eq!(filenames, expected_filenames);
         let requests = state.requests.lock().unwrap();
         for path in requests
             .iter()
@@ -628,13 +627,15 @@ mod tests {
             &fs::read(snapshot.path.join("manifest.json")).unwrap(),
         )
         .unwrap();
+        let mut expected_sources = BIKE_CITIES
+            .iter()
+            .map(|(_, slug)| format!("bike-stations-{slug}"))
+            .collect::<Vec<_>>();
+        expected_sources.push("gtfs".to_owned());
+        expected_sources.sort();
         assert_eq!(
-            manifest
-                .sources
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["bike-stations-new-taipei", "bike-stations-taipei", "gtfs"]
+            manifest.sources.keys().cloned().collect::<Vec<_>>(),
+            expected_sources
         );
         for (name, source) in manifest.sources {
             let filename = source_file_name(&name).unwrap();

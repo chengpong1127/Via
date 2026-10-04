@@ -103,6 +103,11 @@ impl BikeStationAvailability {
             observed_at,
         }
     }
+
+    pub fn is_fresh(&self, now: OffsetDateTime, max_age: Duration) -> bool {
+        let age = now - self.observed_at;
+        age >= -MAX_BIKE_AVAILABILITY_CLOCK_SKEW && age <= max_age
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,16 +130,6 @@ impl BikeAvailabilitySnapshot {
 
     pub fn station(&self, id: &BikeStationId) -> Option<&BikeStationAvailability> {
         self.stations.get(id)
-    }
-
-    fn is_fresh(
-        &self,
-        availability: &BikeStationAvailability,
-        now: OffsetDateTime,
-        max_age: Duration,
-    ) -> bool {
-        let age = now - availability.observed_at;
-        age >= -MAX_BIKE_AVAILABILITY_CLOCK_SKEW && age <= max_age
     }
 }
 
@@ -225,8 +220,7 @@ impl<'a> BikeAvailabilityView<'a> {
             self.snapshot
                 .station(station_id)
                 .is_some_and(|availability| {
-                    self.snapshot.is_fresh(availability, self.now, self.max_age)
-                        && availability.in_service
+                    availability.is_fresh(self.now, self.max_age) && availability.in_service
                 })
         })
     }
@@ -269,6 +263,19 @@ impl BikeShareNetwork {
     pub fn with_revision(mut self, revision: impl Into<String>) -> Self {
         self.static_network_revision = revision.into();
         self
+    }
+
+    pub(crate) fn stations_within_radius(
+        &self,
+        point: GeoCoordinate,
+        radius_metres: f64,
+    ) -> Vec<&BikeStation> {
+        self.indexes()
+            .station_positions
+            .within_radius(&self.stations, point, radius_metres)
+            .into_iter()
+            .map(|index| &self.stations[index])
+            .collect()
     }
 
     pub fn station(&self, id: &BikeStationId) -> Option<&BikeStation> {
@@ -461,6 +468,7 @@ fn better_access(
 
 #[derive(Clone, Debug, Default)]
 struct BikeShareIndexes {
+    station_positions: super::spatial::SpatialPointIndex,
     station_by_id: HashMap<BikeStationId, usize>,
     access_by_boarding_point: HashMap<BoardingPointId, Vec<usize>>,
     access_to_boarding_point: HashMap<BoardingPointId, Vec<usize>>,
@@ -468,7 +476,10 @@ struct BikeShareIndexes {
 
 impl BikeShareIndexes {
     fn build(network: &BikeShareNetwork) -> Self {
-        let mut indexes = Self::default();
+        let mut indexes = Self {
+            station_positions: super::spatial::SpatialPointIndex::build(&network.stations),
+            ..Self::default()
+        };
         for (index, station) in network.stations.iter().enumerate() {
             indexes.station_by_id.insert(station.id.clone(), index);
         }

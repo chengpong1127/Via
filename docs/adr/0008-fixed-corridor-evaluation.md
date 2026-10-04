@@ -90,7 +90,7 @@ only within the request; this decision adds no cross-request TTL or distributed
 cache.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
-Taipei and New Taipei Bike Station City JSON snapshots to create static
+configured Taiwan Bike Station City JSON snapshots to create static
 station metadata and bounded directional walking links. Without those inputs,
 the BikeShare artifact is empty. TDX remains the source of request-time station
 availability.

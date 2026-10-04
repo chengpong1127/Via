@@ -16,19 +16,18 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch \
 ```
 
 The local GTFS override is copied byte-for-byte and makes no GTFS HTTP request.
-The fetch still downloads current Taipei and New Taipei YouBike station
-metadata from TDX. Without `--gtfs-file`, the command downloads the TDX GTFS
+The fetch downloads current Bike station catalogs for the Taiwan city scopes
+in `server/src/tdx.rs::BIKE_CITIES`, matching the [TDX Bike v2 Swagger](https://tdx.transportdata.tw/api-service/swagger/basic/2cc9b888-a592-496f-99de-9ab35b7fb70d). Without `--gtfs-file`, the command downloads the TDX GTFS
 Static ZIP. Both sources use the shared TDX OAuth client.
 
 Each successful run creates `server/data/fetch/{YYYYMMDDTHHMMSSZ}/` with
-`gtfs.zip`, the raw first response pages
-`bike-stations-taipei.json` and `bike-stations-new-taipei.json`, and
-`manifest.json`. Additional raw pages use
-`bike-stations-taipei-page-NNNN.json` and
-`bike-stations-new-taipei-page-NNNN.json`.
-The manifest records each page's source identifier, source URL without
-credentials, byte size, and SHA-256 hash. The directory is published only
-after all required sources pass basic validation.
+`gtfs.zip`, one combined `bike-stations-{city-slug}.json` catalog per configured
+city, and `manifest.json`. Pagination is merged and validated before writing each
+catalog. Empty city catalogs are valid. The manifest records each source's
+identifier, URL without credentials, byte size, and SHA-256 hash. Build also
+accepts local snapshots containing a subset of configured city catalogs, or only
+GTFS; every file must match its manifest entry.
+The directory is published only after all required sources pass basic validation.
 
 ## Build and validate
 

@@ -120,14 +120,7 @@ pub(super) fn map_tdx_error(error: TdxClientError) -> DepartureError {
     }
 }
 
-pub(super) fn odata_in_filter(field: &str, values: &[String]) -> String {
-    let values = values
-        .iter()
-        .map(|value| format!("'{}'", value.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!("{field} in ({values})")
-}
+pub(super) use crate::tdx::odata_in_filter;
 
 pub fn normalize_n1(
     transit_pattern_id: TransitPatternId,
