@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -247,7 +250,7 @@ impl DepartureResolver {
 impl TimingSnapshotLoader for DepartureResolver {
     async fn load_snapshot(&self, queries: Vec<DepartureQuery>) -> TimingSnapshot {
         let mut snapshot = TimingSnapshot::default();
-        let mut grouped = HashMap::<TransitMode, Vec<DepartureQuery>>::new();
+        let mut grouped = BTreeMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
             let Some(pattern) = self.network.pattern(&query.pattern_id) else {
                 snapshot.record_failure(DepartureError::InvalidQuery);
@@ -258,12 +261,23 @@ impl TimingSnapshotLoader for DepartureResolver {
                 .or_default()
                 .push(query);
         }
-        for (mode, source_queries) in grouped {
-            let Some(source) = self.sources.get(&mode) else {
+        let batches = join_all(
+            grouped
+                .into_iter()
+                .map(|(mode, source_queries)| async move {
+                    let entries = match self.sources.get(&mode) {
+                        Some(source) => Some(source.snapshot_batch(source_queries.clone()).await),
+                        None => None,
+                    };
+                    (source_queries, entries)
+                }),
+        )
+        .await;
+        for (source_queries, entries) in batches {
+            let Some(entries) = entries else {
                 snapshot.record_failure(DepartureError::InvalidConfiguration);
                 continue;
             };
-            let entries = source.snapshot_batch(source_queries.clone()).await;
             for _ in entries.len()..source_queries.len() {
                 snapshot.record_failure(DepartureError::TemporarilyUnavailable);
             }

@@ -13,8 +13,8 @@ use via_server::domain::{
     },
     transit_runtime::TransitRuntime,
     transit_timing::{
-        DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
-        TimingReliability,
+        DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, SnapshotDepartures,
+        TimingBasis, TimingReliability, TimingSnapshot, TimingSnapshotLoader,
     },
 };
 use via_server::providers::timing::{
@@ -65,6 +65,193 @@ impl TransitDepartureSource for RecordingSource {
             evidence: Vec::new(),
         }])
     }
+}
+
+struct DelayedSnapshotSource {
+    mode: TransitMode,
+    delay: std::time::Duration,
+    entries: Vec<SnapshotDepartures>,
+    batches: Arc<Mutex<Vec<Vec<DepartureQuery>>>>,
+}
+
+#[async_trait]
+impl TransitDepartureSource for DelayedSnapshotSource {
+    fn mode(&self) -> TransitMode {
+        self.mode
+    }
+
+    fn static_timing_reliability(&self, _query: &DepartureQuery) -> TimingReliability {
+        TimingReliability::Fallback
+    }
+
+    async fn static_departures(
+        &self,
+        _query: DepartureQuery,
+    ) -> Result<Vec<EffectiveTrip>, DepartureError> {
+        Err(DepartureError::TemporarilyUnavailable)
+    }
+
+    async fn snapshot_batch(&self, queries: Vec<DepartureQuery>) -> Vec<SnapshotDepartures> {
+        self.batches.lock().unwrap().push(queries);
+        tokio::time::sleep(self.delay).await;
+        self.entries.clone()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn snapshot_mode_sources_overlap_and_preserve_results() {
+    let network = Arc::new(TransitRuntime::new(Arc::new(
+        TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            vec![
+                service("bus", TransitMode::Bus),
+                service("metro", TransitMode::Metro),
+            ],
+            Vec::new(),
+        )
+        .with_routes(routes()),
+    )));
+    let after = datetime!(2026-08-31 10:00 UTC);
+    let query = |id: &str, index| {
+        DepartureQuery::at_position(
+            TransitPatternId::new(id),
+            BoardingPointId::new(if index == 0 { "board" } else { "alight" }),
+            index,
+            after,
+            1,
+        )
+    };
+    let bus_queries = vec![query("bus", 0), query("bus", 1)];
+    let metro_queries = vec![query("metro", 0), query("metro", 1)];
+    let mut sources = Vec::<Arc<dyn TransitDepartureSource>>::new();
+    let mut batches = Vec::new();
+    let mut expected = TimingSnapshot::default();
+    for (mode, queries, seconds) in [
+        (TransitMode::Bus, &bus_queries, 2),
+        (TransitMode::Metro, &metro_queries, 1),
+    ] {
+        let recording = RecordingSource {
+            mode,
+            calls: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut entries = recording.snapshot_batch(queries.clone()).await;
+        entries[0].preferred = recording
+            .static_departures(queries[0].clone())
+            .await
+            .unwrap();
+        entries[1] = SnapshotDepartures {
+            failure: Some(if mode == TransitMode::Bus {
+                DepartureError::TemporarilyUnavailable
+            } else {
+                DepartureError::InvalidQuery
+            }),
+            ..Default::default()
+        };
+        for (query, entry) in queries.iter().zip(&entries) {
+            expected.insert_entry(
+                query.pattern_id.clone(),
+                query.board_index.unwrap(),
+                entry.clone(),
+            );
+        }
+        let source_batches = Arc::new(Mutex::new(Vec::new()));
+        batches.push(source_batches.clone());
+        sources.push(Arc::new(DelayedSnapshotSource {
+            mode,
+            delay: std::time::Duration::from_secs(seconds),
+            entries,
+            batches: source_batches,
+        }));
+    }
+    let resolver = DepartureResolver::new(network, sources);
+    let started = tokio::time::Instant::now();
+    let snapshot = resolver
+        .load_snapshot(vec![
+            metro_queries[0].clone(),
+            bus_queries[0].clone(),
+            metro_queries[1].clone(),
+            bus_queries[1].clone(),
+        ])
+        .await;
+
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(2));
+    assert_eq!(*batches[0].lock().unwrap(), vec![bus_queries.clone()]);
+    assert_eq!(*batches[1].lock().unwrap(), vec![metro_queries.clone()]);
+    for query in bus_queries.iter().chain(&metro_queries) {
+        for at in [after, after + time::Duration::seconds(1)] {
+            assert_eq!(
+                snapshot.departures(&query.pattern_id, query.board_index.unwrap(), at, 10),
+                expected.departures(&query.pattern_id, query.board_index.unwrap(), at, 10),
+            );
+        }
+    }
+    assert_eq!(snapshot.first_failure(), expected.first_failure());
+    assert_eq!(
+        snapshot.all_positions_failed(),
+        expected.all_positions_failed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn snapshot_preserves_invalid_queries_missing_sources_and_short_batches() {
+    let network = Arc::new(TransitRuntime::new(Arc::new(
+        TransitNetwork::new(
+            Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            vec![
+                service("bus", TransitMode::Bus),
+                service("metro", TransitMode::Metro),
+            ],
+            Vec::new(),
+        )
+        .with_routes(routes()),
+    )));
+    let batches = Arc::new(Mutex::new(Vec::new()));
+    let source = Arc::new(DelayedSnapshotSource {
+        mode: TransitMode::Bus,
+        delay: std::time::Duration::ZERO,
+        entries: vec![SnapshotDepartures::default()],
+        batches: batches.clone(),
+    });
+    let resolver = DepartureResolver::new(network, vec![source as Arc<dyn TransitDepartureSource>]);
+    let query = |id: &str| {
+        DepartureQuery::at_position(
+            TransitPatternId::new(id),
+            BoardingPointId::new("board"),
+            0,
+            datetime!(2026-08-31 10:00 UTC),
+            1,
+        )
+    };
+    let mut invalid_board = query("bus");
+    invalid_board.board_index = None;
+    let mut short_batch = query("bus");
+    short_batch.board_index = Some(1);
+
+    for (queries, failure) in [
+        (vec![query("unknown")], DepartureError::InvalidQuery),
+        (vec![query("metro")], DepartureError::InvalidConfiguration),
+        (vec![invalid_board.clone()], DepartureError::InvalidQuery),
+        (
+            vec![query("bus"), short_batch.clone()],
+            DepartureError::TemporarilyUnavailable,
+        ),
+    ] {
+        let snapshot = resolver.load_snapshot(queries).await;
+        assert_eq!(snapshot.first_failure(), Some(&failure));
+        assert_eq!(
+            snapshot.all_positions_failed(),
+            failure != DepartureError::TemporarilyUnavailable
+        );
+    }
+    assert_eq!(
+        *batches.lock().unwrap(),
+        vec![vec![invalid_board], vec![query("bus"), short_batch]]
+    );
+    let empty = resolver.load_snapshot(Vec::new()).await;
+    assert_eq!(empty.first_failure(), None);
+    assert!(!empty.all_positions_failed());
 }
 
 fn service(id: &str, _mode: TransitMode) -> TransitPattern {
