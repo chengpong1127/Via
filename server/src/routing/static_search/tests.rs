@@ -530,7 +530,7 @@ fn static_walking_transfer_can_connect_access_to_first_boarding() {
 }
 
 #[test]
-fn static_walking_transfer_can_connect_final_alight_to_egress() {
+fn static_walking_transfer_cannot_connect_final_alight_to_egress() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["o", "alight"])],
         vec![trip("bus-trip", "bus", &[0, 100])],
@@ -546,13 +546,78 @@ fn static_walking_transfer_can_connect_final_alight_to_egress() {
         },
     ));
 
-    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 10));
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 1, 10));
+
+    assert!(retained_corridors.is_empty());
+}
+
+#[test]
+fn direct_egress_is_retained_over_a_faster_surface_transfer_to_egress() {
+    let network = network(
+        vec![
+            pattern("metro", TransitMode::Metro, &["o", "alight"]),
+            pattern("bus", TransitMode::Bus, &["nearby", "elsewhere"]),
+        ],
+        vec![
+            trip("metro-trip", "metro", &[0, 100]),
+            trip("bus-trip", "bus", &[0, 100]),
+        ],
+    )
+    .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("nearby"), 30, 100)]);
+
+    for k in [1, 10] {
+        let mut query = query("o", "alight", &[TransitMode::Metro, TransitMode::Bus], 1, k);
+        query.destination_egress = vec![
+            EgressPoint::new(id("alight"), 32, 100),
+            EgressPoint::new(id("nearby"), 0, 0),
+        ];
+
+        let retained_corridors = run(&network, &query);
+
+        assert_eq!(retained_corridors.retained().len(), 1);
+        let corridor = &retained_corridors.retained()[0];
+        assert_eq!(corridor.steps.len(), 1);
+        assert!(matches!(
+            corridor.steps.last(),
+            Some(StaticCorridorStep::Transit(leg)) if leg.alight_stop_id == id("alight")
+        ));
+    }
+}
+
+#[test]
+fn static_walking_transfer_can_connect_transit_rides() {
+    let network = network(
+        vec![
+            pattern("metro", TransitMode::Metro, &["o", "alight"]),
+            pattern("bus", TransitMode::Bus, &["board", "d"]),
+        ],
+        vec![
+            trip("metro-trip", "metro", &[0, 100]),
+            trip("bus-trip", "bus", &[0, 100]),
+        ],
+    )
+    .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("board"), 30, 100)]);
+
+    let retained_corridors = run(
+        &network,
+        &query("o", "d", &[TransitMode::Metro, TransitMode::Bus], 1, 10),
+    );
 
     assert_eq!(retained_corridors.retained().len(), 1);
+    let corridor = &retained_corridors.retained()[0];
+    assert_eq!(
+        corridor.pattern_sequence(),
+        vec![TransitPatternId::new("metro"), TransitPatternId::new("bus")]
+    );
+    assert_eq!(corridor.steps.len(), 3);
     assert!(matches!(
-        retained_corridors.retained()[0].steps.last(),
-        Some(StaticCorridorStep::SurfaceTransfer { from, to, .. })
-            if from == &id("alight") && to == &id("d")
+        &corridor.steps[1],
+        StaticCorridorStep::SurfaceTransfer { from, to, .. }
+            if from == &id("alight") && to == &id("board")
+    ));
+    assert!(matches!(
+        corridor.steps.last(),
+        Some(StaticCorridorStep::Transit(leg)) if leg.alight_stop_id == id("d")
     ));
 }
 

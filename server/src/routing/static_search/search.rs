@@ -173,9 +173,7 @@ fn run_forward_search(
         stats.states_expanded += 1;
         let state = entry.state;
 
-        if !state.transfer_ready
-            && expand_surface_transfers(&state, search, frontier, retention, stats)
-        {
+        if !state.transfer_ready && expand_surface_transfers(&state, search, frontier, stats) {
             break;
         }
 
@@ -206,7 +204,6 @@ fn expand_surface_transfers(
     state: &StaticState,
     search: &PreparedSearch<'_>,
     frontier: &mut SearchFrontier,
-    retention: &mut CorridorRetention,
     stats: &mut StaticSearchStats,
 ) -> bool {
     for shortcut in search.transfers.transfers_from(&state.stop_id) {
@@ -237,15 +234,6 @@ fn expand_surface_transfers(
             walking_distance_metres: shortcut.distance_metres,
         });
         next.transfer_ready = true;
-        if next.transit_legs_used > 0 {
-            retention.record_complete(
-                &next,
-                &search.egress_by_stop,
-                search.query.limits.max_journey_duration_seconds,
-                stats,
-                search.network,
-            );
-        }
         if next.transit_legs_used < search.max_legs {
             frontier.enqueue(next);
         }
