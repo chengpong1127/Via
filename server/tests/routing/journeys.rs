@@ -134,7 +134,7 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
 }
 
 #[tokio::test]
-async fn same_line_reboarding_counts_a_transfer_between_effective_trips() {
+async fn same_line_reboarding_is_rejected_during_corridor_search() {
     let network = same_line_reboarding_network();
     let origin = near_stop(&network, "F-M1");
     let destination = near_stop(&network, "F-M3-BLUE");
@@ -145,11 +145,8 @@ async fn same_line_reboarding_counts_a_transfer_between_effective_trips() {
         network,
     )
     .await;
-    let option = option_for_patterns(&body, &["fixture-mrt-red", "fixture-mrt-blue"]);
-
-    assert_eq!(option["transfer_count"], 1);
-    assert_eq!(option["legs"][1]["details"]["service_label"], "R");
-    assert_eq!(option["legs"][2]["details"]["service_label"], "R");
+    assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
+    assert!(body.get("journey_options").is_none());
 }
 
 #[tokio::test]

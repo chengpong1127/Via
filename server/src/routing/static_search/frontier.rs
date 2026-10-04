@@ -3,7 +3,10 @@ use std::{
     collections::{BinaryHeap, HashMap},
 };
 
-use crate::domain::{ids::BoardingPointId, transit::TransitMode};
+use crate::domain::{
+    ids::{BoardingPointId, TransitRouteId},
+    transit::TransitMode,
+};
 
 use super::types::{
     ContinuationSignature, PartialSignature, StaticCorridorStep, StaticCostSource, structural_steps,
@@ -18,6 +21,7 @@ pub(super) struct StaticState {
     pub(super) access_stop_id: BoardingPointId,
     pub(super) transit_legs_used: usize,
     pub(super) last_transit_mode: Option<TransitMode>,
+    pub(super) last_transit_route_id: Option<TransitRouteId>,
     pub(super) mode_transition_sequence: Vec<TransitMode>,
     pub(super) steps: Vec<StaticCorridorStep>,
     pub(super) has_exact_cost: bool,
@@ -92,6 +96,7 @@ impl Ord for QueueEntry {
 struct DominanceKey {
     stop_id: BoardingPointId,
     transit_legs_used: usize,
+    last_transit_route_id: Option<TransitRouteId>,
     transfer_ready: bool,
 }
 
@@ -127,6 +132,7 @@ impl SearchFrontier {
         let key = DominanceKey {
             stop_id: state.stop_id.clone(),
             transit_legs_used: state.transit_legs_used,
+            last_transit_route_id: state.last_transit_route_id.clone(),
             transfer_ready: state.transfer_ready,
         };
         let signature = state.signature();
@@ -173,6 +179,7 @@ impl SearchFrontier {
         let key = DominanceKey {
             stop_id: state.stop_id.clone(),
             transit_legs_used: state.transit_legs_used,
+            last_transit_route_id: state.last_transit_route_id.clone(),
             transfer_ready: state.transfer_ready,
         };
         let signature = state.signature();

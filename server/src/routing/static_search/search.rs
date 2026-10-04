@@ -133,6 +133,7 @@ fn seed_frontier(search: &PreparedSearch<'_>, limit: usize) -> SearchFrontier {
             access_stop_id: access.stop_id.clone(),
             transit_legs_used: 0,
             last_transit_mode: None,
+            last_transit_route_id: None,
             mode_transition_sequence: Vec::new(),
             steps: Vec::new(),
             has_exact_cost: false,
@@ -259,6 +260,10 @@ fn expand_transit_rides(
             .group_index(&position.pattern_id)
             .expect("indexed pattern");
         let group = search.patterns.group(group_index);
+        let route_id = &search.network.required_pattern(&group.pattern_id).route_id;
+        if state.last_transit_route_id.as_ref() == Some(route_id) {
+            continue;
+        }
         let mode = group.mode;
         if !search.query.allowed_transit_modes.contains(&mode) {
             continue;
@@ -315,6 +320,7 @@ fn expand_transit_rides(
                 next.mode_transition_sequence.push(mode);
             }
             next.last_transit_mode = Some(mode);
+            next.last_transit_route_id = Some(route_id.clone());
             next.steps
                 .push(StaticCorridorStep::Transit(ride_option.leg.clone()));
             next.has_exact_cost |= source == StaticCostSource::ExactSchedule;

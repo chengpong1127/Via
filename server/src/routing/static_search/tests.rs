@@ -120,6 +120,133 @@ fn run(network: &TransitNetwork, query: &PlanningQuery) -> RetainedCorridorSet {
 }
 
 #[test]
+fn consecutive_patterns_on_the_same_route_are_rejected() {
+    let first = pattern("red-a", TransitMode::Metro, &["o", "hub"]);
+    let mut second = pattern("red-b", TransitMode::Metro, &["hub", "d"]);
+    second.route_id = first.route_id.clone();
+    let network = network(
+        vec![first, second],
+        vec![
+            trip("first-trip", "red-a", &[0, 100]),
+            trip("second-trip", "red-b", &[0, 100]),
+        ],
+    );
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 1, 10));
+
+    assert!(corridors.is_empty());
+}
+
+#[test]
+fn surface_transfer_does_not_allow_reboarding_the_same_route() {
+    let first = pattern("red-a", TransitMode::Metro, &["o", "alight"]);
+    let mut second = pattern("red-b", TransitMode::Metro, &["board", "d"]);
+    second.route_id = first.route_id.clone();
+    let network = network(
+        vec![first, second],
+        vec![
+            trip("first-trip", "red-a", &[0, 100]),
+            trip("second-trip", "red-b", &[0, 100]),
+        ],
+    )
+    .with_transfer_edges(vec![TransferEdge::new(id("alight"), id("board"), 30, 100)]);
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 1, 10));
+
+    assert!(corridors.is_empty());
+}
+
+#[test]
+fn consecutive_different_routes_of_the_same_mode_are_allowed() {
+    for mode in [TransitMode::Metro, TransitMode::Bus] {
+        let network = network(
+            vec![
+                pattern("first", mode, &["o", "hub"]),
+                pattern("second", mode, &["hub", "d"]),
+            ],
+            vec![
+                trip("first-trip", "first", &[0, 100]),
+                trip("second-trip", "second", &[0, 100]),
+            ],
+        );
+
+        let corridors = run(&network, &query("o", "d", &[mode], 1, 10));
+
+        assert_eq!(corridors.retained().len(), 1);
+        assert_eq!(
+            corridors.retained()[0].pattern_sequence(),
+            vec![
+                TransitPatternId::new("first"),
+                TransitPatternId::new("second")
+            ]
+        );
+    }
+}
+
+#[test]
+fn consecutive_different_transit_modes_are_allowed() {
+    for (first_mode, second_mode) in [
+        (TransitMode::Bus, TransitMode::Metro),
+        (TransitMode::Metro, TransitMode::Rail),
+    ] {
+        let network = network(
+            vec![
+                pattern("first", first_mode, &["o", "hub"]),
+                pattern("second", second_mode, &["hub", "d"]),
+            ],
+            vec![
+                trip("first-trip", "first", &[0, 100]),
+                trip("second-trip", "second", &[0, 100]),
+            ],
+        );
+
+        let corridors = run(
+            &network,
+            &query("o", "d", &[first_mode, second_mode], 1, 10),
+        );
+
+        assert_eq!(corridors.retained().len(), 1);
+        assert_eq!(
+            corridors.retained()[0].pattern_sequence(),
+            vec![
+                TransitPatternId::new("first"),
+                TransitPatternId::new("second")
+            ]
+        );
+    }
+}
+
+#[test]
+fn arrivals_on_different_routes_keep_their_legal_continuations() {
+    let first = pattern("red-a", TransitMode::Metro, &["o", "hub"]);
+    let mut last = pattern("red-b", TransitMode::Metro, &["hub", "d"]);
+    last.route_id = first.route_id.clone();
+    let network = network(
+        vec![
+            first,
+            pattern("blue", TransitMode::Metro, &["o", "hub"]),
+            last,
+        ],
+        vec![
+            trip("red-trip", "red-a", &[0, 100]),
+            trip("blue-trip", "blue", &[0, 200]),
+            trip("last-trip", "red-b", &[0, 100]),
+        ],
+    );
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 1, 1));
+
+    assert_eq!(corridors.retained().len(), 1);
+    assert_eq!(
+        corridors.retained()[0].pattern_sequence(),
+        vec![
+            TransitPatternId::new("blue"),
+            TransitPatternId::new("red-b")
+        ]
+    );
+}
+
+#[test]
 fn one_global_k_is_shared_across_bus_and_metro() {
     let network = network(
         vec![
