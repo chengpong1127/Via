@@ -349,43 +349,34 @@ impl MultimodalPlanner {
         let snapshot_started = Instant::now();
         let bike_enabled = query.allow_bike_share;
         let mut failures = evaluator::EvaluationFailures::default();
-        let (snapshot, bike_snapshot) = if bike_enabled {
-            let (snapshot, bike_snapshot) = tokio::join!(
-                async {
-                    if timing_queries.is_empty() {
-                        crate::domain::transit_timing::TimingSnapshot::default()
-                    } else {
-                        self.timing.load_snapshot(timing_queries).await
-                    }
-                },
-                self.bike.availability_source.snapshot()
-            );
-            let bike_snapshot = match bike_snapshot {
-                Ok(snapshot) => Some(snapshot),
-                Err(error) => {
-                    failures.transient |= error.is_transient();
-                    failures.internal |= !error.is_transient();
-                    tracing::debug!(
-                        target: "via_server::routing",
-                        error = %error,
-                        "BikeShare availability unavailable; retaining transit baseline"
-                    );
-                    None
-                }
-            };
-            (snapshot, bike_snapshot)
-        } else {
-            (
-                async {
-                    if timing_queries.is_empty() {
-                        crate::domain::transit_timing::TimingSnapshot::default()
-                    } else {
-                        self.timing.load_snapshot(timing_queries).await
-                    }
-                }
-                .await,
-                None,
-            )
+        let timing_future = async {
+            if timing_queries.is_empty() {
+                crate::domain::transit_timing::TimingSnapshot::default()
+            } else {
+                self.timing.load_snapshot(timing_queries).await
+            }
+        };
+        let bike_future = async {
+            if bike_enabled {
+                Some(self.bike.availability_source.snapshot().await)
+            } else {
+                None
+            }
+        };
+        let (snapshot, bike_result) = tokio::join!(timing_future, bike_future);
+        let bike_snapshot = match bike_result {
+            None => None,
+            Some(Ok(snapshot)) => Some(snapshot),
+            Some(Err(error)) => {
+                failures.transient |= error.is_transient();
+                failures.internal |= !error.is_transient();
+                tracing::debug!(
+                    target: "via_server::routing",
+                    error = %error,
+                    "BikeShare availability unavailable; retaining transit baseline"
+                );
+                None
+            }
         };
         if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
