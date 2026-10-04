@@ -5,6 +5,11 @@
       "name": "Debug Via server",
       "type": "lldb",
       "request": "launch",
+      "preRunCommands": [
+        "type summary delete --category Rust lldb_lookup.is_udt",
+        "type synthetic delete --category Rust '^(alloc::([a-z_]+::)+)Arc<.+>$'",
+        "type summary delete --category Rust '^(alloc::([a-z_]+::)+)Arc<.+>$'"
+      ],
       "cargo": {
         "args": [
           "build",
