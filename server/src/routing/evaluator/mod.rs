@@ -1,4 +1,6 @@
 mod bike;
+mod candidate;
+mod expansion;
 mod pareto;
 mod state;
 #[cfg(test)]
@@ -6,7 +8,7 @@ mod tests;
 mod transit;
 
 use super::{
-    corridor::{BaselineMovement, EvaluationCorridor},
+    corridor::{BaselineMovement, CorridorEdge, EvaluationCorridor},
     model::{PlanningQuery, RoutingError},
     realized::{
         BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
@@ -157,7 +159,26 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &EvaluationCorridor,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         self.check_deadline()?;
-        if corridor
+        if !self.corridor_within_transfer_limit(corridor) {
+            return Ok(Vec::new());
+        }
+        let mut states = vec![EvaluationState::initial(self.query)];
+        for (index, edge) in corridor.edges().iter().enumerate() {
+            let mut next = Vec::new();
+            for state in states {
+                self.expand_state(&state, corridor, edge, index, &mut next)
+                    .await?;
+            }
+            states = self.prune_edge_states(next, edge, index);
+            if states.is_empty() {
+                break;
+            }
+        }
+        self.finalize_states(corridor, states)
+    }
+
+    fn corridor_within_transfer_limit(&self, corridor: &EvaluationCorridor) -> bool {
+        corridor
             .edges()
             .iter()
             .filter(|edge| {
@@ -166,203 +187,20 @@ impl<'a> FixedCorridorEvaluator<'a> {
                     .any(|b| matches!(b, BaselineMovement::Transit(_)))
             })
             .count()
-            > self.query.limits.max_transfers.saturating_add(1)
-        {
-            return Ok(Vec::new());
-        }
-        let mut states = vec![EvaluationState::initial(self.query)];
-        for (index, edge) in corridor.edges().iter().enumerate() {
-            let mut next = Vec::new();
-            for state in states {
-                self.check_deadline()?;
-                let mut baseline = Vec::new();
-                for movement in &edge.baseline {
-                    match movement {
-                        BaselineMovement::Transit(leg) => {
-                            baseline.extend(self.expand_transit(&state, leg, index)?)
-                        }
-                        BaselineMovement::RetainedWalking {
-                            kind,
-                            duration_seconds,
-                            distance_metres,
-                            access_available_at,
-                        } => {
-                            self.charge()?;
-                            let arrival = access_available_at.unwrap_or(
-                                state.ready_at + Duration::seconds(i64::from(*duration_seconds)),
-                            );
-                            if within_query_bounds(self.query, arrival) {
-                                baseline.push(state.after_movement(JourneyMovement {
-                                    from_anchor: index,
-                                    to_anchor: index + 1,
-                                    departure_at: state.ready_at,
-                                    arrival_at: arrival,
-                                    kind: JourneyMovementKind::Walking {
-                                        kind: *kind,
-                                        duration_seconds: *duration_seconds,
-                                        distance_metres: *distance_metres,
-                                    },
-                                    street_path: None,
-                                }));
-                            }
-                        }
-                    }
-                }
-                let best_baseline_arrival = baseline.iter().map(|s| s.ready_at).min();
-                next.extend(baseline);
-                for planner_index in 0..self.surface_planners.len() {
-                    let kind = self.surface_planners[planner_index].kind();
-                    let (start_anchor, started_at) = if kind == SurfaceKind::BikeShare {
-                        state.bike_departure(index)
-                    } else {
-                        (index, state.ready_at)
-                    };
-                    let request = SurfaceRequest {
-                        retained_walking_baseline: edge
-                            .baseline
-                            .iter()
-                            .any(|b| matches!(b, BaselineMovement::RetainedWalking { .. })),
-                        from: &corridor.anchors()[start_anchor],
-                        to: &corridor.anchors()[index + 1],
-                        departure_at: started_at,
-                        from_anchor: start_anchor,
-                        to_anchor: index + 1,
-                    };
-                    let Some(bound) =
-                        self.surface_planners[planner_index].optimistic_duration(&request)
-                    else {
-                        continue;
-                    };
-                    if kind == SurfaceKind::BikeShare {
-                        self.stats.bike_lower_bound_checks += 1;
-                    }
-                    let optimistic_arrival = started_at + Duration::seconds(i64::from(bound));
-                    if best_baseline_arrival.is_some_and(|arrival| optimistic_arrival >= arrival)
-                        || !within_query_bounds(self.query, optimistic_arrival)
-                    {
-                        if kind == SurfaceKind::BikeShare {
-                            self.stats.bike_lower_bound_rejections += 1;
-                        }
-                        continue;
-                    }
-                    self.charge()?;
-                    let movements = self.surface_planners[planner_index].realize(&request).await;
-                    self.check_deadline()?;
-                    let movements = match movements {
-                        Ok(items) => items,
-                        Err(error) => {
-                            match error.failure_class() {
-                                ProviderFailureClass::Transient => self.failures.transient = true,
-                                ProviderFailureClass::Internal => self.failures.internal = true,
-                                ProviderFailureClass::Unreachable => {}
-                            }
-                            continue;
-                        }
-                    };
-                    for movement in movements {
-                        match movement {
-                            SurfaceMovement::Walking(path) => {
-                                let arrival =
-                                    state.ready_at + Duration::seconds(i64::from(path.duration.0));
-                                if !within_query_bounds(self.query, arrival) {
-                                    continue;
-                                }
+            <= self.query.limits.max_transfers.saturating_add(1)
+    }
 
-                                let kind = match (
-                                    &corridor.anchors()[index].kind,
-                                    &corridor.anchors()[index + 1].kind,
-                                ) {
-                                    (JourneyAnchorKind::Origin, JourneyAnchorKind::Destination) => {
-                                        WalkingMovementKind::Direct
-                                    }
-                                    (JourneyAnchorKind::Origin, _) => WalkingMovementKind::Access,
-                                    (_, JourneyAnchorKind::Destination) => {
-                                        WalkingMovementKind::Egress
-                                    }
-                                    _ => WalkingMovementKind::Transfer,
-                                };
-                                next.push(state.after_movement(JourneyMovement {
-                                    from_anchor: index,
-                                    to_anchor: index + 1,
-                                    departure_at: state.ready_at,
-                                    arrival_at: arrival,
-                                    kind: JourneyMovementKind::Walking {
-                                        kind,
-                                        duration_seconds: path.duration.0,
-                                        distance_metres: path.distance.0,
-                                    },
-                                    street_path: Some(path),
-                                }));
-                            }
-                            SurfaceMovement::BikeShare(bike_movement) => {
-                                let route_seconds = bike_movement.total_seconds;
-                                let arrival =
-                                    started_at + Duration::seconds(i64::from(route_seconds));
-                                if best_baseline_arrival.is_some_and(|baseline| arrival >= baseline)
-                                    || !within_query_bounds(self.query, arrival)
-                                {
-                                    continue;
-                                }
-                                if let Some(next_state) = state.after_bike_share(
-                                    bike_movement,
-                                    start_anchor,
-                                    index + 1,
-                                    started_at,
-                                    arrival,
-                                    self.query.departure_time,
-                                ) {
-                                    next.push(next_state);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            states = if index == 0 && !edge.baseline.is_empty() {
-                next
-            } else {
-                prune_states(next, self.query.limits.max_candidates)
-            };
-            if states.is_empty() {
-                break;
-            }
+    fn prune_edge_states(
+        &self,
+        states: Vec<EvaluationState>,
+        edge: &CorridorEdge,
+        index: usize,
+    ) -> Vec<EvaluationState> {
+        if index == 0 && !edge.baseline.is_empty() {
+            states
+        } else {
+            prune_states(states, self.query.limits.max_candidates)
         }
-        let mut candidates = Vec::new();
-        for state in states {
-            let metrics = state.metrics();
-            if metrics.transfer_count as usize > self.query.limits.max_transfers {
-                continue;
-            }
-            let mut anchors = corridor
-                .anchors()
-                .iter()
-                .map(|a| JourneyAnchor {
-                    kind: a.kind.clone(),
-                    reached_at: self.query.departure_time,
-                })
-                .collect::<Vec<_>>();
-            // Unvisited intermediate anchors of a continuous rental need monotonic times too.
-            let mut reached_at = self.query.departure_time;
-            for (index, anchor) in anchors.iter_mut().enumerate() {
-                if let Some(movement) = state.movements.iter().find(|m| m.to_anchor == index) {
-                    reached_at = movement.arrival_at;
-                }
-                anchor.reached_at = reached_at;
-            }
-            match RealizedJourney::from_movements(
-                anchors,
-                state.movements,
-                self.query.departure_time,
-            ) {
-                Ok(journey) => candidates.push(EvaluatedCandidate { metrics, journey }),
-                Err(error) => {
-                    return Err(RoutingError::Internal(format!(
-                        "evaluated journey has invalid movement continuity: {error}"
-                    )));
-                }
-            }
-        }
-        Ok(candidates)
     }
 }
 
