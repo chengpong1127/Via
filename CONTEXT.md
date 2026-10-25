@@ -109,19 +109,19 @@ no complete candidate means a limit error.
 Small budgets may leave insufficient work for transit; no mode has an unlimited
 allowance and no work exceeds the configured limit.
 
-For each edge, `FixedCorridorEvaluator` combines successors from independent
-`TransitExpander`, `WalkingExpander`, and `BikeShareExpander` implementations of
-`MovementExpander`. Transit resolves retained equivalent patterns and multiple
-snapshot departures. Walking reuses retained access, transfer, and egress metrics
-without another P2 street request. For unresolved edges it requests a directional
-1×1 Walking Matrix at the state's DepartAt time, normalized to Taipei.
-`PlanningSession` owns the `WalkingExpander`, including its street router and
-request-local metrics cache, and an optional concrete `BikeShareSession`.
-`BikeShareExpander` borrows that session directly; the session retains station
-discovery, availability filtering, Matrix batching, and result caching. Candidate
-discovery is cached by anchor pair and the same candidate supplies both the
-optimistic bound and exact realization. `CorridorAnchor` and its exact cache key
-live in `routing/corridor.rs`; there is no surface planner wrapper module.
+For each edge, `FixedCorridorEvaluator` explicitly expands Transit, Walking,
+then BikeShare in `evaluator/expansion.rs`. Transit resolves retained equivalent
+patterns and multiple snapshot departures. Walking reuses retained access,
+transfer, and egress metrics without another P2 street request. Unresolved
+Walking requests a directional 1×1 Matrix at the state's DepartAt time,
+normalized to Taipei. `PlanningSession` owns the `WalkingCache`, including its
+street router and request-local metrics cache, and an optional concrete
+`BikeShareSession`. The session retains station discovery, availability filtering,
+Matrix batching, and result caching. Candidate discovery caches eligible station
+choices by anchor pair and requires at least one distinct pickup/dropoff pair;
+it does not estimate movement duration. `CorridorAnchor` and its exact cache key
+live in `routing/corridor.rs`. Rental transitions and `ActiveBikeRental` live in
+`evaluator/state.rs`.
 Shared expansion accounting enforces deadlines, budgets, and failure classification.
 Walking caches successful, unreachable, and failed Matrix requests by ordered
 anchor keys and departure instant across the entire evaluation pass.
@@ -129,11 +129,10 @@ anchor keys and departure instant across the entire evaluation pass.
 failures; `walking_cache_hits` counts reuse. BikeShare's existing realization,
 cache-hit, and Matrix counters retain their meanings.
 
-Walking and BikeShare use cheap optimistic duration bounds to reject movements
-outside the query's time limits. They are not screened against another mode's
-arrival: a slower movement can reduce walking, transfers, cycling, or rentals,
-or preserve a different future capability. Shared Pareto pruning compares these
-metrics and compatible state capabilities, subject to the candidate limit.
+Walking and BikeShare realize actual Matrix metrics before checking query time
+limits. Movement expansion checks feasibility without competitiveness screening.
+After all modes contribute successors, shared Pareto pruning compares metrics and
+compatible state capabilities, subject to the candidate limit.
 A candidate containing Walking or BikeShare cannot dominate a distinct candidate
 before reconstruction. State dominance likewise requires identical movement
 prefixes when either prefix contains street movement; pure transit states retain

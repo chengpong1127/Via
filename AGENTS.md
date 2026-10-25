@@ -32,10 +32,11 @@ same evaluation pass; there is no separate surface fallback.
 alone; `[bike_share]` enables walking and BikeShare without transit search.
 The planner loads timing only for retained transit positions and loads one
 request-local BikeShare availability snapshot only when BikeShare is selected.
-`FixedCorridorEvaluator` combines independent Transit, Walking, and BikeShare
-`MovementExpander` successors and applies shared Pareto pruning. Walking and
-BikeShare use explicit `SurfacePlanners` slots, request-local caches, and
-optimistic query-time bounds; they are not screened against baseline arrival.
+`FixedCorridorEvaluator` expands Transit, Walking, then BikeShare explicitly in
+`evaluator/expansion.rs`, collecting feasible successors before shared Pareto
+pruning. `PlanningSession` owns a request-local `WalkingCache` and optional
+concrete `BikeShareSession`. Surface movements are checked against query time
+limits using actual Matrix metrics, without optimistic-duration screening.
 BikeShare may extend one continuous rental across later anchors. The evaluator
 cannot add anchors or combine corridors and makes no additional TDX calls.
 Static `TransferShortcutIndex` lookups are directional; Bus realtime is fetched

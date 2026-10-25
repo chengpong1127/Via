@@ -32,30 +32,34 @@ timing for retained transit positions and availability only when BikeShare is
 selected. An empty timing query set does not call the timing provider.
 
 `FixedCorridorEvaluator` processes each corridor's ordered edges as a unified
-movement expansion search. `TransitExpander`, `WalkingExpander`, and
-`BikeShareExpander` implement one `MovementExpander` interface. The expansion
-context carries the current edge and anchors, query and shared accounting. Walking owns its request-local Matrix cache and
-router; BikeShare borrows an optional concrete request-local session. The evaluator dispatches expansion, prunes
-states, and finalizes candidates; it does not select a baseline winner.
+movement expansion search. Explicit evaluator methods in `evaluator/expansion.rs`
+expand Transit, Walking, then BikeShare. Shared evaluator helpers enforce charging,
+deadlines, and provider failure classification; there is no separate expansion
+context or movement-dispatch trait. A concrete `WalkingCache` owns the request-local
+Matrix cache and router; BikeShare borrows an optional concrete request-local
+session. The evaluator collects feasible successors, applies shared per-edge Pareto
+pruning, and finalizes candidates.
 
 Transit expands equivalent Patterns and multiple feasible departures from the
 timing snapshot using each state's ready time and transfer constraints. Walking
 owns retained access, transfer, and egress metrics and realizes unresolved Walking
 with directional 1×1 Matrix requests. Retained metrics suppress duplicate P2 street
 requests. Matrix constraints preserve DepartAt time normalized to Taipei.
-`WalkingExpander` retains successes, unreachable cells, and failures by ordered
+`WalkingCache` retains successes, unreachable cells, and failures by ordered
 anchor keys and departure instant throughout the evaluation pass. BikeShare keeps
 availability filtering, station discovery, batching, and exact result caching in
 `BikeShareSession` and `BikeShareMovementPlanner`. Candidate discovery is cached by
-anchor pair; the candidate is reused for lower-bound checks and realization. Provider failures are classified centrally and leave
-other modes available. Deadlines abort evaluation; budget exhaustion retains
+anchor pair; eligible station choices require at least one distinct pickup/dropoff
+pair and are reused for realization without a duration estimate. Provider failures
+are classified centrally and leave other modes available. Deadlines abort evaluation; budget exhaustion retains
 only candidates from completed corridors.
 
-Optimistic duration bounds screen surface movements only against query time
-limits, not the arrival of another mode. This intentionally replaces the former
-baseline-first policy: later arrival alone cannot discard a route with less
-walking, fewer transfers, less cycling, fewer rentals, or different future
-capabilities. Exact successors enter the shared multi-objective frontier.
+Walking and BikeShare perform actual Matrix realization before checking hard
+query time limits. Movement implementations determine physical and temporal
+feasibility without heuristic competitiveness screening. Later arrival alone
+cannot discard a route with less walking, fewer transfers, less cycling, fewer
+rentals, or different future capabilities. Feasible successors enter the shared
+multi-objective frontier; per-edge and final Pareto pruning remain bounded.
 
 Walking surface movements are carried into the `RealizedJourney`, the sole
 realized path value. It owns ordered anchors and metric-only movements, validates
@@ -81,8 +85,8 @@ single evaluation pass.
 
 The evaluator keeps a bounded Pareto frontier within each retained corridor.
 BikeShare considers up to three pickup and three return stations per endpoint;
-its lower bound uses straight-line distance and an intentionally optimistic
-bicycle speed. Exact bicycle legs are capped at 60 minutes and 20 kilometres.
+availability and distinct-station pairing are checked before realization. Exact
+bicycle legs are capped at 60 minutes and 20 kilometres.
 Only the current next anchor is considered, except that an active continuous
 Bike run can be extended from its original start to that next anchor. The
 request's expansion and candidate limits bound evaluation. Equivalent transit
@@ -95,7 +99,7 @@ outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
 station with a dock. A feasible movement's station pairs are evaluated in
 one or more bicycle matrix requests chunked to the street router's source and
-target limits. The direct walking corridor uses the same Walking expander and
+target limits. The direct walking corridor uses the same Walking expansion and
 BikeShare session and constraints as any other Phase-2 edge.
 
 ## Consequences
@@ -103,17 +107,17 @@ BikeShare session and constraints as any other Phase-2 edge.
 Phase 2 performs no additional transit topology search or TDX calls. It uses
 one request-local timing snapshot for retained positions and, when selected,
 one BikeShare availability snapshot. It may make lazy Valhalla Matrix calls
-after surface lower-bound screening. P2 stores no street geometry. Walking's
+for eligible movements without optimistic-duration screening. P2 stores no street
+geometry. Walking's
 `walking_matrix_requests` counts physical Matrix calls, including failures;
 `walking_cache_hits` counts reused results. Reconstruction Route calls are
 separate work and use actual returned metrics. A 1×1 Matrix is not assumed faster
 than Route. Caches remain request-local; no cross-request cache is introduced.
 
 `CorridorAnchor` and `CorridorAnchorKey` live in `routing/corridor.rs`.
-`SurfacePlanners`, `SurfaceRequest`, `WalkingMovementPlanner`, the production
-`BikeSharePlanner` trait, and `surface.rs` are removed. `PlanningSession` explicitly
-owns `WalkingExpander` and an optional `BikeShareSession`. A test-only BikeShare
-injection seam preserves synthetic rental and expansion regressions; production
+`PlanningSession` explicitly owns `WalkingCache` and an optional `BikeShareSession`.
+Rental transitions and `ActiveBikeRental` live in `evaluator/state.rs`. A test-only
+BikeShare injection seam preserves synthetic rental and expansion regressions; production
 uses no generic BikeShare dispatch.
 
 The direct corridor runs first and naturally charges at most two expansions

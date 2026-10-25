@@ -1,12 +1,10 @@
-mod bike;
 mod candidate;
 mod expansion;
 mod pareto;
 mod state;
 #[cfg(test)]
 mod tests;
-mod transit;
-pub(crate) mod walking;
+pub(crate) use expansion::WalkingCache;
 
 #[cfg(test)]
 use super::bike::{BikeMovementRequest, BikeSessionStats, TestBikePlanner as TestBikeProvider};
@@ -34,14 +32,10 @@ use pareto::{EvaluatedCandidate, pareto_candidates, prune_states};
 use state::{EvaluationState, PathMetrics};
 use std::{sync::Arc, time::Instant};
 use time::{Duration, OffsetDateTime};
-#[cfg(test)]
-use walking::WalkingExpander;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Phase2EvaluationStats {
     pub corridor_states_evaluated: usize,
     pub transit_departure_lookups: usize,
-    pub bike_lower_bound_checks: usize,
-    pub bike_lower_bound_rejections: usize,
     pub bike_exact_candidates_requested: usize,
     pub bike_exact_cache_hits: usize,
     pub bike_matrix_requests: usize,
@@ -70,7 +64,7 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     corridor: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
     query: &'a PlanningQuery,
-    walking: &'a mut walking::WalkingExpander,
+    walking: &'a mut WalkingCache,
     bike_share: Option<&'a mut BikeShareSession>,
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
@@ -82,7 +76,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &'a RetainedCorridorSet,
         snapshot: &'a TimingSnapshot,
         query: &'a PlanningQuery,
-        walking: &'a mut walking::WalkingExpander,
+        walking: &'a mut WalkingCache,
         bike_share: Option<&'a mut BikeShareSession>,
     ) -> Self {
         Self {
@@ -145,8 +139,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
             target: "via_server::routing",
             states_evaluated = self.stats.corridor_states_evaluated,
             departure_lookups = self.stats.transit_departure_lookups,
-            bike_lower_bound_checks = self.stats.bike_lower_bound_checks,
-            bike_lower_bound_rejections = self.stats.bike_lower_bound_rejections,
             bike_exact_requests = self.stats.bike_exact_candidates_requested,
             bike_cache_hits = self.stats.bike_exact_cache_hits,
             bike_matrix_requests = self.stats.bike_matrix_requests,
@@ -253,10 +245,10 @@ impl TestBikeProvider for TestBikePlanner {
             matrix_requests: 0,
         }
     }
-    fn optimistic_duration(&self, request: &BikeMovementRequest<'_>) -> Option<u32> {
-        self.routes
-            .get(&self.movement(request)?)
-            .and_then(|items| items.iter().map(|s| s.total_seconds / 2).min())
+    fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool {
+        self.movement(request)
+            .and_then(|movement| self.routes.get(&movement))
+            .is_some_and(|items| !items.is_empty())
     }
     async fn realize(
         &mut self,
@@ -354,14 +346,14 @@ fn run_test_evaluation(
 
 #[cfg(test)]
 struct TestDependencies {
-    walking: WalkingExpander,
+    walking: WalkingCache,
     bike_share: Option<BikeShareSession>,
 }
 
 #[cfg(test)]
 fn test_dependencies() -> TestDependencies {
     TestDependencies {
-        walking: WalkingExpander::new(Arc::new(crate::street::FakeStreetRouter::builder().build())),
+        walking: WalkingCache::new(Arc::new(crate::street::FakeStreetRouter::builder().build())),
         bike_share: None,
     }
 }

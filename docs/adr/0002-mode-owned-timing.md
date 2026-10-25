@@ -22,9 +22,9 @@ batching. THSR remains static-only.
 ## Consequences
 
 The forward fixed-corridor evaluator is asynchronous, consumes the immutable
-snapshot, and makes no additional TDX calls. Transit and walking successors
-use snapshot values; competitive BikeShare movements may make lazy Valhalla
-calls after the optimistic lower-bound check. A rate limit stops remaining Bus
+snapshot, and makes no additional TDX calls. Transit successors use timing snapshot values; Walking reuses retained metrics
+or makes Matrix calls, and eligible BikeShare movements may make lazy Matrix
+calls. Actual metrics determine feasibility before shared Pareto pruning. A rate limit stops remaining Bus
 chunks for the affected scope, and unresolved values use static timing fallback.
 `TimingSnapshot` is request-local; this decision adds no shared cache or
 distributed cache.

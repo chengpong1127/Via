@@ -19,7 +19,7 @@ use crate::street::{
 use super::{
     bike::{BikeShareMovementPlanner, BikeShareSession},
     corridor::EvaluationCorridor,
-    evaluator::walking::WalkingExpander,
+    evaluator::WalkingCache,
     evaluator::{self, Phase2EvaluationStats},
     model::{AccessPoint, EgressPoint, JourneyPlanningLimits, PlanningQuery, RoutingError},
     realized::RealizedJourney,
@@ -242,7 +242,7 @@ impl MultimodalPlanner {
         let loading =
             self.load_request_snapshots(&query, &retained, &static_stats, &bike_station_ids);
         let snapshots = query.deadline.run(loading).await??;
-        let walking = WalkingExpander::new(self.street.clone());
+        let walking = WalkingCache::new(self.street.clone());
         let bike_share = snapshots.bike.clone().map(|snapshot| {
             BikeShareSession::new(self.bike.clone(), snapshot, OffsetDateTime::now_utc())
         });
@@ -433,7 +433,7 @@ pub(crate) struct PlanningSession<'a> {
     retained: static_search::RetainedCorridorSet,
     corridors: Vec<EvaluationCorridor>,
     snapshots: RequestSnapshots,
-    walking: WalkingExpander,
+    walking: WalkingCache,
     bike_share: Option<BikeShareSession>,
     stats: MultimodalPlannerStats,
     failures: evaluator::EvaluationFailures,

@@ -128,8 +128,8 @@ handling and the full ranking pool; no insertion-order truncation is used.
 
 Conservative hydration pruning can retain more distinct prefixes within the same
 frontier cap, changing subsequent work. The 12-edge synthetic BikeShare regression
-now performs 57 distinct exact realizations and 86 cache hits over 143 lower-bound
-checks, versus 72 realizations and 66 hits over 138 checks before. Its updated pass
+performs 57 distinct exact realizations and 86 cache hits, versus 72 realizations
+and 66 hits before conservative hydration pruning. Its updated pass
 uses 303 expansions and returns a bounded 16-candidate pool. Synthetic injection
 makes no physical BikeShare Matrix calls. The concrete endpoint-session regression
 separately verifies two Matrix calls (station access plus bicycle metrics), cached
@@ -150,3 +150,76 @@ The stricter street-path retention can increase reconstruction work and cause
 small budgets to finish fewer transit corridors. Incomplete corridors contribute
 nothing; completed direct and transit corridors survive later exhaustion. All
 frontier, expansion, deadline, station, and batching limits remain unchanged.
+
+## Explicit expansion and actual-time feasibility
+
+The expansion consolidation compares `d2eccbc` with the working-tree refactor.
+Transit, Walking, and BikeShare now expand explicitly in that order, and all
+feasible successors reach the existing shared Pareto frontier. Three former
+movement modules, the dispatch trait, and the expansion context are removed.
+Walking and BikeShare no longer screen candidates with optimistic duration bounds.
+Candidate discovery still requires availability and a distinct pickup/dropoff pair.
+
+Tight-query regressions expose the intentional extra work with deterministic
+fixtures. Before counts follow the original screening and charging control flow;
+after counts are asserted by the updated tests:
+
+| Fixture work | Before | After |
+| --- | ---: | ---: |
+| Walking latest-arrival rejection: P2 Walking Matrix requests | 0 | 1 |
+| Walking latest-arrival rejection: charged expansions | 2 | 3 |
+| BikeShare hard-time rejection: synthetic exact realizations | 0 | 1 |
+| BikeShare hard-time rejection: P2 Walking Matrix requests | 1 | 1 |
+| BikeShare hard-time rejection: charged expansions | 3 | 4 |
+
+`walking_replacement_respects_latest_arrival` rejects the actual 300-second walk
+against a 299-second arrival window after one Matrix request.
+`bike_actual_realization_enforces_query_time_limits` rejects the actual
+120-second synthetic BikeShare movement against a 30-second maximum duration or
+latest-arrival window. Its Walking alternative is also realized before rejection.
+The BikeShare injection makes no physical bicycle Matrix calls. No usable station
+pair still causes no BikeShare realization or charge. Budgets and limits are
+unchanged; requests with tight time limits can therefore exhaust them earlier.
+
+`walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_query_limit`
+uses deliberately synthetic Matrix timings to verify that only actual returned
+timing controls acceptance, for both maximum duration and latest arrival.
+Cache regressions preserve direction, coordinates, boarding identity, departure
+instant, Taipei normalization, failed-result reuse, and request isolation.
+
+The documented release routing/reconstruction benchmarks passed, as did the
+release direct-corridor benchmark. The following warm binary runs each use
+1,000 measured iterations, with no compilation running alongside the measurement.
+These host-dependent fixture timings do not establish a live-provider speedup.
+
+| Planner fixture | Before median (µs) | After median (µs) | P2 expansions, both | P2 Walking Matrix requests, both | Walking cache hits, both |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MRT | 19.291 | 21.666 | 7 | 2 | 0 |
+| Bus | 14.584 | 14.250 | 6 | 2 | 0 |
+| Bus → MRT | 34.125 | 33.834 | 10 | 3 | 0 |
+| MRT → Bus | 50.500 | 48.000 | 29 | 8 | 2 |
+| Multiple transfers | 96.626 | 93.209 | 37 | 8 | 2 |
+
+BikeShare requests, cache hits, and Matrix calls remain zero in these fixtures.
+Returned P2 candidate counts remain 3 / 2 / 3 / 1 / 9 respectively. The synthetic
+12-edge BikeShare regression still performs 57 exact realizations and 86 cache
+hits; the concrete session test still uses two Matrix requests and reuses both
+candidate discovery and exact results across anchor-index remapping.
+
+| Ranking fixture | Before median / p95 (µs) | After median / p95 (µs) |
+| --- | ---: | ---: |
+| Eligible transit | 33 / 36 | 32 / 35 |
+| Rejected transit | 33 / 37 | 32 / 33 |
+
+Ranking work remains nine P2 expansions, three P2 Walking Matrix requests,
+two discovery matrices, five reconstruction Route requests, three reconstructed
+candidates, and one ranked result. All cache and BikeShare work counts in that
+fixture remain zero. Earlier runs adjacent to resource-heavy builds varied much
+more (including 76 µs after-change ranking medians); the table reports warm runs
+rather than attributing those host effects to the refactor.
+
+The direct-corridor benchmark uses 100 iterations: transit-only P2 measured
+3 / 4 µs median / p95, five expansions, and one Walking Matrix request; prepending
+the direct corridor measured 5 / 5 µs, six expansions, and two Walking Matrix
+requests. Its exact-budget checks still preserve completed corridors and discard
+unfinished ones. No live Valhalla or TDX performance comparison was performed.

@@ -71,12 +71,12 @@ Bus-stop counts preserve the timing snapshot and Prometheus accounting.
 Phase 1 emits one compact search summary and traces the retained corridors.
 
 `Phase2EvaluationStats` retains the cumulative expansion count and departure
-lookups, BikeShare lower-bound checks/rejections, exact requests/cache hits/matrix
-requests, pre-reconstruction Pareto candidate count, and total evaluation latency.
+lookups, BikeShare exact requests/cache hits/Matrix requests, pre-reconstruction
+Pareto candidate count, and total evaluation latency.
 The expansion count enforces the request's shared safety bound across transit
 and direct corridors. The service reconstructs the bounded P2 pool and applies
 the result cap after ranking; `plan_with_stats()` caps its returned
-journeys and reports that returned count. `walking_exact_requests` and
+journeys and reports that returned count. `walking_matrix_requests` and
 `walking_cache_hits` count request-local walking work, including cached errors.
 `corridors_completed` counts fully evaluated corridors (possibly empty), and
 `expansion_limit_reached` marks exhausted passes. Only completed corridors

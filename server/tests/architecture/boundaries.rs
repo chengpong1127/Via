@@ -110,16 +110,27 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
             .exists()
     );
     assert!(!evaluator.contains("SurfaceKind"));
-    assert!(evaluator.contains("optimistic_lower_bound_seconds"));
     assert!(evaluator.contains(".matrix(MatrixQuery"));
-    assert!(evaluator.contains("trait MovementExpander"));
-    for (module, expander) in [
-        ("transit", "TransitExpander"),
-        ("walking", "WalkingExpander"),
-        ("bike", "BikeShareExpander"),
+    let expansion = source("src/routing/evaluator/expansion.rs");
+    for method in ["expand_transit", "expand_walking", "expand_bike_share"] {
+        assert!(expansion.contains(&format!("fn {method}(")));
+    }
+    for removed in ["transit", "walking", "bike"] {
+        assert!(
+            !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("src/routing/evaluator/{removed}.rs"))
+                .exists()
+        );
+    }
+    let state = source("src/routing/evaluator/state.rs");
+    assert!(state.contains("struct ActiveBikeRental"));
+    assert!(state.contains("fn after_bike_share("));
+    for removed in [
+        "MovementExpander",
+        "ExpansionContext",
+        "optimistic_lower_bound_seconds",
     ] {
-        let implementation = source(&format!("src/routing/evaluator/{module}.rs"));
-        assert!(implementation.contains(&format!("impl MovementExpander for {expander}")));
+        assert!(!evaluator.contains(removed));
     }
     for forbidden in [
         "TDX",

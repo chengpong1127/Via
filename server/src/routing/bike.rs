@@ -43,7 +43,7 @@ pub(crate) trait TestBikePlanner: Send {
     fn realization_stats(&self) -> BikeSessionStats {
         BikeSessionStats::default()
     }
-    fn optimistic_duration(&self, request: &BikeMovementRequest<'_>) -> Option<u32>;
+    fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool;
     async fn realize(
         &mut self,
         request: &BikeMovementRequest<'_>,
@@ -57,7 +57,6 @@ pub(crate) struct BikePlanningStats {
 
 pub(crate) const MAX_PICKUP_STATIONS_PER_ANCHOR: usize = 3;
 pub(crate) const MAX_DROPOFF_STATIONS_PER_ANCHOR: usize = 3;
-pub(crate) const OPTIMISTIC_BIKE_SPEED_METRES_PER_SECOND: f64 = 8.0;
 const MAX_BIKE_STATIONS_PER_ENDPOINT: usize = 3;
 const BIKE_ENDPOINT_RADIUS_METRES: f64 = 1_500.0;
 const OPTIMISTIC_WALK_SPEED_METRES_PER_SECOND: f64 = 2.0;
@@ -76,7 +75,6 @@ pub(crate) struct BikeShareMovementPlanner {
 pub(crate) struct BikeMovementCandidate {
     pickups: Vec<StationChoice>,
     dropoffs: Vec<StationChoice>,
-    pub optimistic_lower_bound_seconds: u32,
     pickup_endpoint: Option<Coordinate>,
     dropoff_endpoint: Option<Coordinate>,
 }
@@ -147,34 +145,17 @@ impl BikeShareMovementPlanner {
             return None;
         }
 
-        let optimistic_lower_bound_seconds = pickups
-            .iter()
-            .flat_map(|pickup| {
-                dropoffs.iter().filter_map(move |dropoff| {
-                    if pickup.station_id == dropoff.station_id {
-                        return None;
-                    }
-                    let pickup_station = self.network.required_station(&pickup.station_id);
-                    let dropoff_station = self.network.required_station(&dropoff.station_id);
-                    let bicycle_lower_bound = pickup_station
-                        .coordinate
-                        .distance_metres(dropoff_station.coordinate)
-                        / OPTIMISTIC_BIKE_SPEED_METRES_PER_SECOND;
-                    Some(
-                        f64::from(pickup.walking.duration_seconds)
-                            + bicycle_lower_bound
-                            + f64::from(dropoff.walking.duration_seconds),
-                    )
-                })
-            })
-            .reduce(f64::min)?
-            .floor()
-            .clamp(0.0, f64::from(u32::MAX)) as u32;
+        if !pickups.iter().any(|pickup| {
+            dropoffs
+                .iter()
+                .any(|dropoff| pickup.station_id != dropoff.station_id)
+        }) {
+            return None;
+        }
 
         Some(BikeMovementCandidate {
             pickups,
             dropoffs,
-            optimistic_lower_bound_seconds,
             pickup_endpoint: from.boarding_point().is_none().then_some(from.coordinate),
             dropoff_endpoint: to.boarding_point().is_none().then_some(to.coordinate),
         })
@@ -431,11 +412,10 @@ impl BikeShareSession {
         #[cfg(test)]
         if let Some(planner) = &self.test_planner {
             return planner
-                .optimistic_duration(request)
-                .map(|bound| BikeMovementCandidate {
+                .has_candidate(request)
+                .then(|| BikeMovementCandidate {
                     pickups: Vec::new(),
                     dropoffs: Vec::new(),
-                    optimistic_lower_bound_seconds: bound,
                     pickup_endpoint: None,
                     dropoff_endpoint: None,
                 });
@@ -701,6 +681,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn candidate_discovery_rejects_missing_or_same_station_pairs() {
+        let now = datetime!(2026-09-21 10:00 UTC);
+        let station_id = BikeStationId::new("only-station");
+        let network = Arc::new(BikeShareNetwork::new(vec![BikeStation::new(
+            station_id.clone(),
+            "Only station",
+            GeoCoordinate {
+                latitude: 25.0,
+                longitude: 121.5,
+            },
+        )]));
+        let snapshot = BikeAvailabilitySnapshot::new(
+            now,
+            HashMap::from([(
+                station_id.clone(),
+                BikeStationAvailability::new(station_id, 1, 1, true, now),
+            )]),
+        );
+        let planner = BikeShareMovementPlanner::new(
+            network,
+            Arc::new(UnavailableBikeAvailabilitySource),
+            Arc::new(FakeStreetRouter::builder().build()),
+        );
+        let from = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::Origin,
+            coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
+        };
+        let near = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::Destination,
+            coordinate: Coordinate::try_new(25.001, 121.5).unwrap(),
+        };
+        let far = CorridorAnchor {
+            coordinate: Coordinate::try_new(26.0, 121.5).unwrap(),
+            ..near.clone()
+        };
+        assert!(
+            planner
+                .movement_candidate(&from, &near, &snapshot, now)
+                .is_none()
+        );
+        assert!(
+            planner
+                .movement_candidate(&from, &far, &snapshot, now)
+                .is_none()
+        );
+        assert!(
+            planner
+                .movement_candidate(&far, &near, &snapshot, now)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
         use super::super::realized::JourneyAnchorKind;
         let origin = Coordinate::try_new(25.0, 121.5).unwrap();
@@ -956,17 +989,11 @@ mod tests {
         let candidate = planner
             .movement_candidate(&from_endpoint, &to_endpoint, &snapshot, received_at)
             .unwrap();
-        let station_distance = GeoCoordinate {
-            latitude: 25.0,
-            longitude: 121.5,
-        }
-        .distance_metres(GeoCoordinate {
-            latitude: 25.001,
-            longitude: 121.501,
-        });
-        assert_eq!(
-            candidate.optimistic_lower_bound_seconds,
-            (20.0 + station_distance / OPTIMISTIC_BIKE_SPEED_METRES_PER_SECOND).floor() as u32
+        assert_eq!(candidate.pickups.len(), 1);
+        assert_eq!(candidate.dropoffs.len(), 1);
+        assert_ne!(
+            candidate.pickups[0].station_id,
+            candidate.dropoffs[0].station_id
         );
         let (_, exact_stats) = planner.realize_candidate(&candidate, 0, 1).await.unwrap();
         assert_eq!(exact_stats.matrix_requests, 1);

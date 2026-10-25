@@ -4,7 +4,7 @@ use super::{
     realized::{JourneyAnchorKind, WalkingMovementKind},
     static_search::{StaticCorridor, StaticCorridorStep, StaticTransitLeg},
 };
-use crate::domain::{ids::BoardingPointId, location::GeoCoordinate};
+use crate::domain::ids::BoardingPointId;
 use crate::{domain::transit_runtime::TransitRuntime, street::Coordinate};
 
 pub(crate) struct EvaluationCorridor {
@@ -179,15 +179,5 @@ impl CorridorAnchor {
             longitude: self.coordinate.longitude().to_bits(),
             boarding_point: self.boarding_point().cloned(),
         }
-    }
-    pub fn distance_to(&self, other: &Self) -> f64 {
-        GeoCoordinate {
-            latitude: self.coordinate.latitude(),
-            longitude: self.coordinate.longitude(),
-        }
-        .distance_metres(GeoCoordinate {
-            latitude: other.coordinate.latitude(),
-            longitude: other.coordinate.longitude(),
-        })
     }
 }
