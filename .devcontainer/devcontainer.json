@@ -3,6 +3,9 @@
 	"dockerComposeFile": "docker-compose.yml",
 	"service": "app",
 	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-	"postCreateCommand": "bash .devcontainer/setup-codegraph.sh"
+	"postCreateCommand": "bash .devcontainer/setup-codegraph.sh",
+	"features": {
+		"ghcr.io/devcontainers/features/node:2": {}
+	}
 
 }
