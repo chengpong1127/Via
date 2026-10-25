@@ -18,11 +18,7 @@ impl MovementExpander for TransitExpander<'_> {
         for movement in &context.edge.baseline {
             if let BaselineMovement::Transit(leg) = movement {
                 let successors = self.expand_transit(context, state, leg, context.index)?;
-                if next.is_empty() {
-                    next = successors;
-                } else {
-                    next.extend(successors);
-                }
+                next.extend(successors);
             }
         }
         Ok(next)

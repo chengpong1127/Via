@@ -159,11 +159,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
             let mut next = Vec::new();
             for state in states {
                 let successors = self.expand_state(&state, corridor, edge, index).await?;
-                if next.is_empty() {
-                    next = successors;
-                } else {
-                    next.extend(successors);
-                }
+                next.extend(successors);
             }
             states = self.prune_edge_states(next, edge, index);
             if states.is_empty() {

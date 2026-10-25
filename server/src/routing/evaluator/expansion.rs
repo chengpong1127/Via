@@ -89,11 +89,7 @@ impl FixedCorridorEvaluator<'_> {
         for expander in expanders {
             context.check_deadline()?;
             let successors = expander.extend_state(&mut context, state).await?;
-            if next.is_empty() {
-                next = successors;
-            } else {
-                next.extend(successors);
-            }
+            next.extend(successors);
         }
         Ok(next)
     }
