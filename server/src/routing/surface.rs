@@ -58,7 +58,6 @@ pub(crate) enum SurfaceKind {
 }
 
 pub(crate) struct SurfaceRequest<'a> {
-    pub retained_walking_baseline: bool,
     pub from: &'a CorridorAnchor,
     pub to: &'a CorridorAnchor,
     pub departure_at: OffsetDateTime,
@@ -115,9 +114,6 @@ impl SurfaceMovementPlanner for WalkingMovementPlanner {
         SurfaceKind::Walking
     }
     fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
-        if request.retained_walking_baseline {
-            return None;
-        }
         // An optimistic pedestrian speed keeps this bound below ordinary routed walking.
         Some(
             (request.from.distance_to(request.to) / 2.0)

@@ -1,15 +1,40 @@
+use super::expansion::{ExpansionContext, MovementExpander};
 use super::*;
 
-impl FixedCorridorEvaluator<'_> {
-    pub(super) fn expand_transit(
+pub(super) struct TransitExpander<'a> {
+    pub network: &'a TransitRuntime,
+    pub corridor: &'a RetainedCorridorSet,
+    pub snapshot: &'a TimingSnapshot,
+}
+
+#[async_trait::async_trait]
+impl MovementExpander for TransitExpander<'_> {
+    async fn extend_state(
         &mut self,
+        context: &mut ExpansionContext<'_>,
+        state: &EvaluationState,
+        next: &mut Vec<EvaluationState>,
+    ) -> Result<(), RoutingError> {
+        for movement in &context.edge.baseline {
+            if let BaselineMovement::Transit(leg) = movement {
+                self.expand_transit(context, state, leg, context.index, next)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl TransitExpander<'_> {
+    fn expand_transit(
+        &self,
+        context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
         leg: &StaticTransitLeg,
         anchor: usize,
-    ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let mut successors = Vec::new();
+        next: &mut Vec<EvaluationState>,
+    ) -> Result<(), RoutingError> {
         for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
-            self.charge()?;
+            context.charge()?;
             valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg)?;
             let ready_at = if state.last_was_transit {
                 state.ready_at
@@ -17,27 +42,27 @@ impl FixedCorridorEvaluator<'_> {
             } else {
                 state.ready_at
             };
-            if !within_query_bounds(self.query, ready_at) {
+            if !within_query_bounds(context.query, ready_at) {
                 continue;
             }
-            self.stats.transit_departure_lookups += 1;
+            context.stats.transit_departure_lookups += 1;
             let departures = self.snapshot.departures(
                 &equivalent_leg.pattern_id,
                 equivalent_leg.board_index,
                 ready_at,
-                self.query.limits.max_departures_per_query,
+                context.query.limits.max_departures_per_query,
             );
             for trip in departures {
-                self.check_deadline()?;
+                context.check_deadline()?;
                 let Some(arrival) =
                     retained_alight_time(self.network, trip, &equivalent_leg, ready_at)
                 else {
                     continue;
                 };
-                if !within_query_bounds(self.query, arrival) {
+                if !within_query_bounds(context.query, arrival) {
                     continue;
                 }
-                successors.push(state.after_movement(JourneyMovement {
+                next.push(state.after_movement(JourneyMovement {
                     from_anchor: anchor,
                     to_anchor: anchor + 1,
                     departure_at: trip.stop_times[equivalent_leg.board_index].departure_at,
@@ -51,9 +76,10 @@ impl FixedCorridorEvaluator<'_> {
                 }));
             }
         }
-        Ok(successors)
+        Ok(())
     }
 }
+
 fn valid_pattern_leg(
     network: &TransitRuntime,
     corridor: &RetainedCorridorSet,

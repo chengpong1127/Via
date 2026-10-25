@@ -104,7 +104,16 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("SurfaceMovementPlanner"));
     assert!(evaluator.contains("optimistic_duration"));
-    assert!(evaluator.contains(".realize(&request)"));
+    assert!(evaluator.contains(".realize(request)"));
+    assert!(evaluator.contains("trait MovementExpander"));
+    for (module, expander) in [
+        ("transit", "TransitExpander"),
+        ("walking", "WalkingExpander"),
+        ("bike", "BikeShareExpander"),
+    ] {
+        let implementation = source(&format!("src/routing/evaluator/{module}.rs"));
+        assert!(implementation.contains(&format!("impl MovementExpander for {expander}")));
+    }
     for forbidden in [
         "TDX",
         "TdxClient",
@@ -117,6 +126,7 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
         "usable_dropoffs",
         "select_station",
         "static_search::generate",
+        "best_baseline_arrival",
     ] {
         assert!(
             !evaluator.contains(forbidden),

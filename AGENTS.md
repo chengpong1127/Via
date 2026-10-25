@@ -13,7 +13,7 @@ RoutingService
   → MultimodalPlanner.prepare → PlanningSession.evaluate_primary / evaluate_fallback
   → static transit corridors → EvaluationCorridor anchors
   → request-local timing / availability snapshots
-  → FixedCorridorEvaluator (baseline + Walking / BikeShare surface movement)
+  → FixedCorridorEvaluator (Transit / Walking / BikeShare movement expansion)
   → RealizedJourney → reconstruct → rank
 ```
 
@@ -33,9 +33,10 @@ Fallback state stays private to the session.
 alone; `[bike_share]` enables walking and BikeShare without transit search.
 The planner loads timing only for retained transit positions and loads one
 request-local BikeShare availability snapshot only when BikeShare is selected.
-`FixedCorridorEvaluator` evaluates each baseline and uses
-`SurfaceMovementPlanner` implementations for Walking and BikeShare. Both use
-cheap optimistic bounds before exact street routing and request-local caches.
+`FixedCorridorEvaluator` combines independent Transit, Walking, and BikeShare
+`MovementExpander` successors and applies shared Pareto pruning. Walking and
+BikeShare reuse `SurfaceMovementPlanner` providers, request-local caches, and
+optimistic query-time bounds; they are not screened against baseline arrival.
 BikeShare may extend one continuous rental across later anchors. The evaluator
 cannot add anchors or combine corridors and makes no additional TDX calls.
 Static `TransferShortcutIndex` lookups are directional; Bus realtime is fetched

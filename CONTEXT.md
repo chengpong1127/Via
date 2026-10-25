@@ -100,12 +100,24 @@ to successful transit results. The session retains its snapshots, movement
 caches, and expansion accounting through reconstruction, so failed reconstruction
 can call its one-shot fallback without additional snapshot loads. The fallback flag is internal session state.
 
-For each edge, `FixedCorridorEvaluator` evaluates its baseline and asks the
-enabled `SurfaceMovementPlanner`s about alternatives. Walking and BikeShare
-first use cheap optimistic duration bounds; competitive routes are realized
-lazily through the street provider and cached within the request. Walking
-alternatives are retained as already-routed path movements, avoiding a second
-route lookup during reconstruction. BikeShare considers up to three pickup
+For each edge, `FixedCorridorEvaluator` combines successors from independent
+`TransitExpander`, `WalkingExpander`, and `BikeShareExpander` implementations of
+`MovementExpander`. Transit resolves retained equivalent patterns and multiple
+snapshot departures. Walking reuses retained access, transfer, and egress metrics
+without exact routing; otherwise it realizes an anchor-to-anchor street route.
+BikeShare delegates station discovery, availability filtering, and routing to the
+existing request-local planner. Shared expansion accounting enforces deadlines,
+budgets, and provider failure classification.
+
+Walking and BikeShare use cheap optimistic duration bounds to reject movements
+outside the query's time limits. They are not screened against another mode's
+arrival: a slower movement can reduce walking, transfers, cycling, or rentals,
+or preserve a different future capability. Shared Pareto pruning compares these
+metrics and compatible state capabilities, subject to the candidate limit.
+This can increase exact street work compared with baseline-first screening;
+request-local caches, expansion budgets, and station/route limits still bound it.
+Walking alternatives are retained as already-routed path movements, avoiding a
+second route lookup during reconstruction. BikeShare considers up to three pickup
 and three return stations per endpoint. A continuous rental can extend from
 its original anchor to a later corridor anchor, so intermediate anchors need
 no station. Separate rentals obey the 15-minute reuse rule. BikeShare requires

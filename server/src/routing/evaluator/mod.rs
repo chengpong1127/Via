@@ -6,6 +6,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 mod transit;
+mod walking;
 
 use super::{
     corridor::{BaselineMovement, CorridorEdge, EvaluationCorridor},
@@ -145,15 +146,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
             Ok(())
         }
     }
-    fn charge(&mut self) -> Result<(), RoutingError> {
-        self.check_deadline()?;
-        if self.stats.corridor_states_evaluated >= self.query.limits.max_phase2_expansions {
-            return Err(RoutingError::Phase2EvaluationLimit);
-        }
-        self.stats.corridor_states_evaluated += 1;
-        Ok(())
-    }
-
     async fn evaluate_corridor(
         &mut self,
         corridor: &EvaluationCorridor,

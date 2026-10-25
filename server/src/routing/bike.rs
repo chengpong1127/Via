@@ -994,7 +994,6 @@ mod tests {
         };
         let mut session = BikeShareSession::new(planner.clone(), Arc::new(snapshot.clone()), now);
         let request = SurfaceRequest {
-            retained_walking_baseline: false,
             from: &from,
             to: &to,
             departure_at: now,

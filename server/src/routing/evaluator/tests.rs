@@ -690,7 +690,7 @@ fn bike_can_replace_a_surface_walking_edge() {
 }
 
 #[test]
-fn slower_optimistic_bike_bound_skips_exact_routing() {
+fn slower_bike_bound_preserves_a_less_walking_tradeoff() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
@@ -736,16 +736,21 @@ fn slower_optimistic_bike_bound_skips_exact_routing() {
     .unwrap();
 
     assert_eq!(stats.bike_lower_bound_checks, 1);
-    assert_eq!(stats.bike_lower_bound_rejections, 1);
-    assert_eq!(stats.bike_exact_candidates_requested, 0);
+    assert_eq!(stats.bike_lower_bound_rejections, 0);
+    assert_eq!(stats.bike_exact_candidates_requested, 1);
+    assert_eq!(realized_journeys.len(), 2);
+    let timings = realized_journeys
+        .iter()
+        .map(|journey| journey.evaluate_timing().unwrap())
+        .collect::<Vec<_>>();
     assert!(
-        realized_journeys
+        timings
             .iter()
-            .all(|journey| journey.movements().iter().all(|step| !matches!(
-                step.kind,
-                super::super::realized::JourneyMovementKind::BikeShare { .. }
-            )))
+            .any(|timing| timing.walking_seconds == 300 && timing.bike_share_uses == 0)
     );
+    assert!(timings.iter().any(|timing| timing.walking_seconds == 0
+        && timing.bike_share_uses == 1
+        && timing.arrival_at == datetime!(2026-09-21 10:20 UTC)));
 }
 
 #[test]
@@ -795,7 +800,7 @@ fn transit_waiting_time_is_included_when_screening_bike() {
 }
 
 #[test]
-fn exact_bike_that_loses_to_walking_is_not_retained() {
+fn slower_exact_bike_survives_with_less_walking() {
     let network = network(Vec::new(), &["a", "b"], Vec::new());
     let query = PlanningQuery::new(
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
@@ -841,14 +846,19 @@ fn exact_bike_that_loses_to_walking_is_not_retained() {
     .unwrap();
 
     assert_eq!(stats.bike_exact_candidates_requested, 1);
+    assert_eq!(realized_journeys.len(), 2);
+    let timings = realized_journeys
+        .iter()
+        .map(|journey| journey.evaluate_timing().unwrap())
+        .collect::<Vec<_>>();
     assert!(
-        realized_journeys
+        timings
             .iter()
-            .all(|journey| journey.movements().iter().all(|step| !matches!(
-                step.kind,
-                super::super::realized::JourneyMovementKind::BikeShare { .. }
-            )))
+            .any(|timing| timing.walking_seconds == 720 && timing.bike_share_uses == 0)
     );
+    assert!(timings.iter().any(|timing| timing.walking_seconds == 0
+        && timing.bike_share_uses == 1
+        && timing.arrival_at == datetime!(2026-09-21 10:14 UTC)));
 }
 
 #[test]
@@ -975,9 +985,10 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
     )
     .unwrap();
 
-    assert_eq!(stats.bike_lower_bound_checks, 12);
-    assert_eq!(stats.bike_lower_bound_rejections, 12);
-    assert_eq!(stats.bike_exact_candidates_requested, 0);
+    assert_eq!(stats.bike_lower_bound_checks, 138);
+    assert_eq!(stats.bike_lower_bound_rejections, 0);
+    assert_eq!(stats.bike_exact_candidates_requested, 72);
+    assert_eq!(stats.bike_exact_cache_hits, 66);
 }
 
 #[test]
@@ -1960,9 +1971,9 @@ async fn competitive_walking_replaces_transit_and_keeps_exact_geometry() {
 }
 
 #[tokio::test]
-async fn walking_bound_skips_exact_routing_when_transit_is_faster() {
+async fn slower_walking_is_realized_then_pruned_by_shared_metrics() {
     let (result, calls) = evaluate_walking_replacement(1, None, None, false, false).await;
-    assert_eq!(calls, 0);
+    assert_eq!(calls, 1);
     assert_eq!(result.journeys.len(), 1);
     assert_eq!(
         result.journeys[0].transit_pattern_sequence(),
@@ -2094,4 +2105,240 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
             .iter()
             .any(|movement| matches!(movement.kind, JourneyMovementKind::BikeShare { .. }))
     }));
+}
+
+#[tokio::test]
+async fn transit_expander_emits_multiple_departures_before_pruning() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 10]),
+            trip("later", "bus", &["origin", "destination"], &[2, 12]),
+        ],
+    );
+    let mut planners = Vec::new();
+    let mut evaluator =
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners);
+    let mut next = Vec::new();
+    evaluator
+        .expand_state(
+            &EvaluationState::initial(&query),
+            &corridor,
+            &corridor.edges()[1],
+            1,
+            &mut next,
+        )
+        .await
+        .unwrap();
+    assert_eq!(next.len(), 2);
+    let trip_ids = next
+        .iter()
+        .map(|state| match &state.movements[0].kind {
+            JourneyMovementKind::Transit { trip, .. } => trip.id.clone(),
+            _ => panic!("expected transit"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        trip_ids,
+        vec![EffectiveTripId::new("early"), EffectiveTripId::new("later")]
+    );
+    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
+}
+
+#[tokio::test]
+async fn bike_optimistic_bound_still_skips_routes_outside_query_time_limits() {
+    for latest_arrival in [false, true] {
+        let network = network(
+            vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+            &["origin", "destination"],
+            Vec::new(),
+        );
+        let mut query = query(&[TransitMode::Bus], 0, 1);
+        let retained = candidate_corridor(&network, &query);
+        if latest_arrival {
+            query.latest_arrival = Some(query.departure_time + Duration::seconds(30));
+        } else {
+            query.limits.max_journey_duration_seconds = 30;
+        }
+        let corridor =
+            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        let snapshot = TimingSnapshot::default();
+        let mut planners: Vec<Box<dyn SurfaceMovementPlanner>> = vec![Box::new(TestBikePlanner {
+            routes: HashMap::from([(
+                corridor_movement(0, 1, "origin", "destination"),
+                vec![bike_movement(0, 1, 120)],
+            )]),
+            cache: HashMap::new(),
+            hits: 0,
+        })];
+        let result =
+            FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners)
+                .evaluate(&[corridor])
+                .await
+                .unwrap();
+        assert!(result.journeys.is_empty());
+        assert_eq!(result.stats.bike_lower_bound_checks, 1);
+        assert_eq!(result.stats.bike_lower_bound_rejections, 1);
+        assert_eq!(result.stats.bike_exact_candidates_requested, 0);
+    }
+}
+
+#[tokio::test]
+async fn faster_walking_makes_downstream_transit_catchable() {
+    use super::super::surface::WalkingMovementPlanner;
+    let network = network(
+        vec![
+            pattern("first", TransitMode::Bus, &["origin", "middle"]),
+            pattern("second", TransitMode::Bus, &["middle", "destination"]),
+        ],
+        &["origin", "middle", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 1, 1);
+    let retained = RetainedCorridorSet::from_retained_for_test(
+        &network,
+        vec![StaticCorridor {
+            access_stop_id: BoardingPointId::new("origin"),
+            egress_stop_id: BoardingPointId::new("destination"),
+            theoretical_duration_seconds: 600,
+            cost_source: StaticCostSource::OptimisticEstimate,
+            steps: vec![
+                static_leg("first", "origin", "middle"),
+                static_leg("second", "middle", "destination"),
+            ],
+        }],
+    );
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("first"),
+        0,
+        vec![trip("too-slow", "first", &["origin", "middle"], &[0, 10])],
+    );
+    snapshot.insert(
+        TransitPatternId::new("second"),
+        0,
+        vec![trip(
+            "catchable",
+            "second",
+            &["middle", "destination"],
+            &[6, 12],
+        )],
+    );
+    let mut planners: Vec<Box<dyn SurfaceMovementPlanner>> = vec![Box::new(
+        WalkingMovementPlanner::new(Arc::new(CountingWalkingRouter {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            error: None,
+        })),
+    )];
+    let result = FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners)
+        .evaluate(&[corridor])
+        .await
+        .unwrap();
+    let caught = result
+        .journeys
+        .iter()
+        .find(|journey| journey.transit_pattern_sequence() == vec![TransitPatternId::new("second")])
+        .unwrap();
+    let timing = caught.evaluate_timing().unwrap();
+    assert_eq!(timing.arrival_at, datetime!(2026-09-21 10:12 UTC));
+    assert_eq!(timing.walking_seconds, 300);
+    assert!(
+        result
+            .journeys
+            .iter()
+            .any(|journey| journey.transit_pattern_sequence().is_empty()
+                && journey.evaluate_timing().unwrap().walking_seconds == 600)
+    );
+}
+
+#[test]
+fn state_pruning_preserves_rental_and_transit_capabilities_across_modes() {
+    let query = query(&[], 0, 1);
+    let initial = EvaluationState::initial(&query);
+    let walk = initial.after_movement(JourneyMovement {
+        from_anchor: 0,
+        to_anchor: 1,
+        departure_at: query.departure_time,
+        arrival_at: query.departure_time,
+        kind: JourneyMovementKind::Walking {
+            kind: WalkingMovementKind::Transfer,
+            duration_seconds: 0,
+            distance_metres: 0,
+        },
+        street_path: None,
+    });
+    let transit = initial.after_movement(realized_ride(
+        0,
+        trip("ride", "bus", &["origin", "destination"], &[0, 0]),
+    ));
+    let bike = initial
+        .after_bike_share(
+            bike_movement(0, 1, 60),
+            0,
+            1,
+            query.departure_time,
+            query.departure_time + Duration::seconds(60),
+            query.departure_time,
+        )
+        .unwrap();
+    let frontier = prune_states(vec![walk.clone(), walk, transit, bike], 16);
+    assert_eq!(frontier.len(), 3);
+    assert!(frontier.iter().any(|state| state.last_was_transit));
+    assert!(
+        frontier
+            .iter()
+            .any(|state| state.active_bike_rental.is_some())
+    );
+    assert!(
+        frontier
+            .iter()
+            .any(|state| !state.last_was_transit && state.active_bike_rental.is_none())
+    );
+}
+
+#[tokio::test]
+async fn surface_realization_shares_the_transit_expansion_budget() {
+    use super::super::surface::WalkingMovementPlanner;
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let mut query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    query.limits.max_phase2_expansions = 2;
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![trip("ride", "bus", &["origin", "destination"], &[0, 10])],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut planners: Vec<Box<dyn SurfaceMovementPlanner>> = vec![Box::new(
+        WalkingMovementPlanner::new(Arc::new(CountingWalkingRouter {
+            calls: calls.clone(),
+            error: None,
+        })),
+    )];
+    let mut evaluator =
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners);
+    let result = evaluator.evaluate(&[corridor]).await;
+    assert!(matches!(result, Err(RoutingError::Phase2EvaluationLimit)));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(evaluator.stats.corridor_states_evaluated, 2);
 }

@@ -31,35 +31,41 @@ also skips them and requests one availability snapshot. The planner loads
 timing for retained transit positions and availability only when BikeShare is
 selected. An empty timing query set does not call the timing provider.
 
-`FixedCorridorEvaluator` processes each corridor's ordered edges. It evaluates
-baseline successors, then checks surface alternatives using
-`SurfaceMovementPlanner` implementations for Walking and BikeShare. Each
-planner uses an optimistic duration lower bound before requesting an exact
-street route; realized endpoint routes are cached within the request. Transit
-edges may use equivalent Patterns and feasible departures from the timing
-snapshot, selected using the state's current ready time. Walking surface
-movements are carried into the `RealizedJourney`, the sole realized path value.
-It owns ordered anchors and movements, validates path continuity and timing,
-and supplies canonical movement identity for deduplication; reconstruction
-does not repeat their street route. The evaluator never searches transit
-topology, adds anchors, or combines portions of different corridors.
+`FixedCorridorEvaluator` processes each corridor's ordered edges as a unified
+movement expansion search. `TransitExpander`, `WalkingExpander`, and
+`BikeShareExpander` implement one `MovementExpander` interface. The expansion
+context carries the current edge and anchors, query, request-local surface
+planners, and shared accounting. The evaluator dispatches expansion, prunes
+states, and finalizes candidates; it does not select a baseline winner.
 
-BikeShare checks nearby usable stations and exact routes only when its lower
-bound can compete with the baseline. An active rental can extend from its
-original start anchor to the next structural anchor, so intermediate anchors
-need neither docks nor another pickup. Exact Bike routes are cached within the
-request. Separate rentals wait 15 minutes after the bike is returned; the
-return time is the pickup walk plus bicycle ride, before the final walk to the
-anchor. Downstream departures use the same timing snapshot and each
-successor's current ready time.
+Transit expands equivalent Patterns and multiple feasible departures from the
+timing snapshot using each state's ready time and transfer constraints. Walking
+owns retained access, transfer, and egress metrics as well as exact street walking;
+retained metrics suppress duplicate exact walking requests. Surface providers
+retain their existing caches, availability filtering, station discovery, and
+routing responsibilities. Provider failures are classified centrally and leave
+other modes available; budget exhaustion and deadlines abort evaluation.
 
-The shared `SurfaceMovementPlanner` contract serves both Walking and BikeShare.
-Walking skips retained walking baselines through its own applicability check.
-Both modes share lower-bound screening, exact realization and provider failure
-handling. `SurfaceKind` remains for BikeShare rental continuation from an earlier
-anchor and mode-specific metrics. Each planner reports cumulative exact routing
-work, including cached failures, rather than exposing counters for evaluator
-deltas. `PlanningSession` carries statistics across primary and fallback evaluation.
+Optimistic duration bounds screen surface movements only against query time
+limits, not the arrival of another mode. This intentionally replaces the former
+baseline-first policy: later arrival alone cannot discard a route with less
+walking, fewer transfers, less cycling, fewer rentals, or different future
+capabilities. Exact successors enter the shared multi-objective frontier.
+
+Walking surface movements are carried into the `RealizedJourney`, the sole
+realized path value. It owns ordered anchors and movements, validates path
+continuity and timing, and supplies canonical movement identity for deduplication;
+reconstruction does not repeat their street route. The evaluator never searches
+transit topology, adds anchors, or combines portions of different corridors.
+
+An active BikeShare rental can extend from its original start anchor to the next
+structural anchor, so intermediate anchors need neither docks nor another pickup.
+The extension replaces the earlier movement using the existing rental transition.
+Separate rentals wait 15 minutes after the bike is returned; the return time is
+the pickup walk plus bicycle ride, before the final walk to the anchor. Downstream
+departures use the same timing snapshot and each successor's current ready time.
+`PlanningSession` carries caches and statistics across primary and fallback
+evaluation.
 
 The evaluator keeps a bounded Pareto frontier within each retained corridor.
 BikeShare considers up to three pickup and three return stations per endpoint;
@@ -75,7 +81,7 @@ Bus realtime is fetched by unique stop, grouped by TDX city scope, and filtered
 locally. The static `TransferShortcutIndex` keeps directional incoming and
 outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
-station with a dock. A competitive movement's station pairs are evaluated in
+station with a dock. A feasible movement's station pairs are evaluated in
 one or more bicycle matrix requests chunked to the street router's source and
 target limits. A surface-only fallback corridor uses the same Walking and
 BikeShare planners and constraints as any other Phase-2 edge.
@@ -87,7 +93,13 @@ one request-local timing snapshot for retained positions and, when selected,
 one BikeShare availability snapshot. It may make lazy Valhalla route or matrix
 calls after surface lower-bound screening. Exact surface routes are cached
 only within the request; this decision adds no cross-request TTL or distributed
-cache.
+cache. Removing arrival-only screening increases exact routing work for feasible
+trade-offs, including extensions of slower rentals. The 12-edge regression
+fixture now performs 72 distinct exact BikeShare realizations and serves 66
+additional requests from cache, compared with zero exact requests under the old
+baseline screen. Expansion and candidate limits remain mandatory; no untested
+heuristic cutoff replaces the removed screen. The bounded frontier can still
+truncate Pareto alternatives when its candidate limit is reached.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
 configured Taiwan Bike Station City JSON snapshots to create static
