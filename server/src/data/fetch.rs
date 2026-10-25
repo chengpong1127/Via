@@ -162,13 +162,9 @@ async fn populate_snapshot(
     for (city, slug) in BIKE_CITIES {
         let url = station_url(&sources.bike_api_base_url, city)?;
         let (body, count) = fetch_stations(client, &url, city).await?;
-        write_station_source(
-            temporary,
-            &format!("bike-stations-{slug}"),
-            &body,
-            &url,
-            &mut manifest.sources,
-        )?;
+        let source_name = format!("bike-stations-{slug}");
+        let source = write_station_source(temporary, &source_name, &body, &url)?;
+        manifest.sources.insert(source_name, source);
         bike_station_counts.insert((*city).to_owned(), count);
     }
     let manifest_path = temporary.join("manifest.json");
@@ -268,8 +264,7 @@ fn write_station_source(
     source_name: &str,
     body: &[u8],
     url: &str,
-    manifest_sources: &mut BTreeMap<String, FetchSource>,
-) -> Result<(), FetchError> {
+) -> Result<FetchSource, FetchError> {
     let filename =
         source_file_name(source_name).ok_or_else(|| FetchError::InvalidBikeResponse {
             city: source_name.to_owned(),
@@ -277,11 +272,7 @@ fn write_station_source(
         })?;
     let path = root.join(filename);
     fs::write(&path, body).map_err(|error| FetchError::Io(path.clone(), error))?;
-    manifest_sources.insert(
-        source_name.to_owned(),
-        source_metadata("tdx-bike-station-city", url.to_owned(), &path)?,
-    );
-    Ok(())
+    source_metadata("tdx-bike-station-city", url.to_owned(), &path)
 }
 
 pub fn source_file_name(source_name: &str) -> Option<String> {
@@ -398,6 +389,28 @@ mod tests {
     use crate::tdx::TdxCredentials;
 
     use super::*;
+
+    #[test]
+    fn station_source_rejects_an_invalid_name_before_writing() {
+        let root = temporary_root("invalid-source");
+        let error =
+            write_station_source(&root, "invalid", b"[]", "https://example.com").unwrap_err();
+        assert!(
+            matches!(error, FetchError::InvalidBikeResponse { city, detail }
+            if city == "invalid" && detail == "invalid station source name")
+        );
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn station_source_preserves_file_write_errors() {
+        let root = temporary_root("station-write-error");
+        let error =
+            write_station_source(&root, "bike-stations-taipei", b"[]", "https://example.com")
+                .unwrap_err();
+        assert!(matches!(error, FetchError::Io(path, error)
+            if path == root.join("bike-stations-taipei.json") && error.kind() == std::io::ErrorKind::NotFound));
+    }
 
     #[derive(Clone)]
     struct MockState {

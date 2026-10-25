@@ -477,38 +477,32 @@ fn mode_coverage_lines(
             coverage.derived_bus_timing_patterns,
             coverage.estimated_or_mixed_timing_patterns,
         ));
-        push_warning_line(
-            &mut lines,
+        lines.extend(formatted_warning_line(
             &format!("{mode} routes have no retained pattern"),
             coverage.routes_without_patterns,
             &coverage.route_without_pattern_examples,
-        );
-        push_warning_line(
-            &mut lines,
+        ));
+        lines.extend(formatted_warning_line(
             &format!("{mode} patterns have no GTFS scheduled trips or frequencies"),
             coverage.patterns_without_gtfs_service,
             &coverage.patterns_without_gtfs_service_examples,
-        );
-        push_warning_line(
-            &mut lines,
+        ));
+        lines.extend(formatted_warning_line(
             &format!("{mode} patterns have no usable static or realtime service"),
             coverage.patterns_without_usable_service,
             &coverage.patterns_without_usable_service_examples,
-        );
-        push_warning_line(
-            &mut lines,
+        ));
+        lines.extend(formatted_warning_line(
             &format!("{mode} patterns use estimated or mixed Phase 1 timing"),
             coverage.estimated_or_mixed_timing_patterns,
             &coverage.estimated_or_mixed_timing_examples,
-        );
+        ));
     }
     lines
 }
 
-fn push_warning_line(lines: &mut Vec<String>, label: &str, count: usize, examples: &[String]) {
-    if let Some(line) = warning_line(label, count, examples) {
-        lines.push(format!("WARNING: {line}"));
-    }
+fn formatted_warning_line(label: &str, count: usize, examples: &[String]) -> Option<String> {
+    warning_line(label, count, examples).map(|line| format!("WARNING: {line}"))
 }
 
 fn print_warning(label: &str, count: usize, examples: &[String]) {

@@ -9,8 +9,8 @@ impl MovementExpander for WalkingExpander {
         &mut self,
         context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let mut next = Vec::new();
         let index = context.index;
         let mut retained = false;
         for movement in &context.edge.baseline {
@@ -42,7 +42,7 @@ impl MovementExpander for WalkingExpander {
             }
         }
         if retained {
-            return Ok(());
+            return Ok(next);
         }
         let request = SurfaceRequest {
             from: &context.corridor.anchors()[index],
@@ -95,6 +95,6 @@ impl MovementExpander for WalkingExpander {
                 }));
             }
         }
-        Ok(())
+        Ok(next)
     }
 }

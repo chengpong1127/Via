@@ -83,7 +83,7 @@ pub async fn enrich_network_with_static_transfers(
         &mut stats,
     )
     .await?;
-    retain_outgoing_transfers(best, &mut network.transfer_edges, &mut stats);
+    network.transfer_edges = retain_outgoing_transfers(best, &mut stats);
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
     stats.elapsed_milliseconds = started.elapsed().as_millis();
@@ -204,15 +204,14 @@ async fn query_walking_transfers(
 
 fn retain_outgoing_transfers(
     best: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
-    transfer_edges: &mut Vec<TransferEdge>,
     stats: &mut TransferStatistics,
-) {
+) -> Vec<TransferEdge> {
     let mut by_source =
         HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
     for ((from, to), metrics) in best {
         by_source.entry(from).or_default().push((to, metrics));
     }
-    transfer_edges.clear();
+    let mut transfer_edges = Vec::new();
     for (from, mut targets) in by_source {
         targets.sort_by(|a, b| {
             a.1.duration_seconds
@@ -235,6 +234,7 @@ fn retain_outgoing_transfers(
             .cmp(b.from.as_str())
             .then_with(|| a.to.as_str().cmp(b.to.as_str()))
     });
+    transfer_edges
 }
 
 fn record_mode_statistics(network: &TransitNetwork, stats: &mut TransferStatistics) {
@@ -313,6 +313,47 @@ mod tests {
 
     fn coord(latitude: f64) -> Coordinate {
         Coordinate::try_new(latitude, 121.5).unwrap()
+    }
+
+    #[test]
+    fn retained_transfers_sort_edges_and_break_fanout_ties_by_stop_id() {
+        let mut best = HashMap::new();
+        for source in ["z", "a"] {
+            for index in (0..14).rev() {
+                best.insert(
+                    (
+                        BoardingPointId::new(source),
+                        BoardingPointId::new(format!("target{index:02}")),
+                    ),
+                    WalkingTransferMetrics {
+                        duration_seconds: 60,
+                        distance_metres: 75,
+                    },
+                );
+            }
+        }
+        let mut stats = TransferStatistics {
+            removed_by_fanout: 3,
+            ..Default::default()
+        };
+        let edges = retain_outgoing_transfers(best, &mut stats);
+        let pairs = edges
+            .iter()
+            .map(|edge| (edge.from.as_str().to_owned(), edge.to.as_str().to_owned()))
+            .collect::<Vec<_>>();
+        let expected = ["a", "z"]
+            .into_iter()
+            .flat_map(|source| {
+                (0..12).map(move |index| (source.to_owned(), format!("target{index:02}")))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(pairs, expected);
+        assert_eq!(stats.removed_by_fanout, 7);
+        assert!(
+            edges
+                .iter()
+                .all(|edge| edge.duration_seconds == 60 && edge.distance_metres == 75)
+        );
     }
 
     #[test]

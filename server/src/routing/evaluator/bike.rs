@@ -89,8 +89,8 @@ impl MovementExpander for BikeShareExpander {
         &mut self,
         context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let mut next = Vec::new();
         let (start_anchor, started_at) = state.bike_departure(context.index);
         let request = SurfaceRequest {
             from: &context.corridor.anchors()[start_anchor],
@@ -135,6 +135,6 @@ impl MovementExpander for BikeShareExpander {
                 }
             }
         }
-        Ok(())
+        Ok(next)
     }
 }

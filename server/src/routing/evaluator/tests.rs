@@ -2130,14 +2130,12 @@ async fn transit_expander_emits_multiple_departures_before_pruning() {
     let mut planners = Vec::new();
     let mut evaluator =
         FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners);
-    let mut next = Vec::new();
-    evaluator
+    let next = evaluator
         .expand_state(
             &EvaluationState::initial(&query),
             &corridor,
             &corridor.edges()[1],
             1,
-            &mut next,
         )
         .await
         .unwrap();
@@ -2153,6 +2151,66 @@ async fn transit_expander_emits_multiple_departures_before_pruning() {
         trip_ids,
         vec![EffectiveTripId::new("early"), EffectiveTripId::new("later")]
     );
+    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
+}
+
+#[tokio::test]
+async fn expansion_preserves_transit_walking_and_bike_successor_order() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 10]),
+            trip("later", "bus", &["origin", "destination"], &[2, 12]),
+        ],
+    );
+    let mut planners: Vec<Box<dyn SurfaceMovementPlanner>> = vec![
+        Box::new(super::super::surface::WalkingMovementPlanner::new(
+            Arc::new(CountingWalkingRouter {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                error: None,
+            }),
+        )),
+        Box::new(TestBikePlanner {
+            routes: HashMap::from([(
+                corridor_movement(0, 1, "origin", "destination"),
+                vec![bike_movement(0, 1, 240)],
+            )]),
+            cache: HashMap::new(),
+            hits: 0,
+        }),
+    ];
+    let mut evaluator =
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut planners);
+    let next = evaluator
+        .expand_state(
+            &EvaluationState::initial(&query),
+            &corridor,
+            &corridor.edges()[1],
+            1,
+        )
+        .await
+        .unwrap();
+    let kinds = next
+        .iter()
+        .map(|state| match &state.movements[0].kind {
+            JourneyMovementKind::Transit { trip, .. } => trip.id.as_str(),
+            JourneyMovementKind::Walking { .. } => "walking",
+            JourneyMovementKind::BikeShare { .. } => "bike_share",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, vec!["early", "later", "walking", "bike_share"]);
+    assert_eq!(evaluator.stats.corridor_states_evaluated, 3);
     assert_eq!(evaluator.stats.transit_departure_lookups, 1);
 }
 

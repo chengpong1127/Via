@@ -13,14 +13,19 @@ impl MovementExpander for TransitExpander<'_> {
         &mut self,
         context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let mut next = Vec::new();
         for movement in &context.edge.baseline {
             if let BaselineMovement::Transit(leg) = movement {
-                self.expand_transit(context, state, leg, context.index, next)?;
+                let successors = self.expand_transit(context, state, leg, context.index)?;
+                if next.is_empty() {
+                    next = successors;
+                } else {
+                    next.extend(successors);
+                }
             }
         }
-        Ok(())
+        Ok(next)
     }
 }
 
@@ -31,8 +36,8 @@ impl TransitExpander<'_> {
         state: &EvaluationState,
         leg: &StaticTransitLeg,
         anchor: usize,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let mut next = Vec::new();
         for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
             context.charge()?;
             valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg)?;
@@ -76,7 +81,7 @@ impl TransitExpander<'_> {
                 }));
             }
         }
-        Ok(())
+        Ok(next)
     }
 }
 

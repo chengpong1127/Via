@@ -17,8 +17,7 @@ pub(super) trait MovementExpander: Send {
         &mut self,
         context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError>;
+    ) -> Result<Vec<EvaluationState>, RoutingError>;
 }
 
 impl ExpansionContext<'_> {
@@ -68,8 +67,7 @@ impl FixedCorridorEvaluator<'_> {
         corridor: &EvaluationCorridor,
         edge: &CorridorEdge,
         index: usize,
-        next: &mut Vec<EvaluationState>,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
         let mut transit = TransitExpander {
             network: self.network,
             corridor: self.corridor,
@@ -87,10 +85,16 @@ impl FixedCorridorEvaluator<'_> {
             surface_planners: self.surface_planners,
         };
         let expanders: [&mut dyn MovementExpander; 3] = [&mut transit, &mut walking, &mut bike];
+        let mut next = Vec::new();
         for expander in expanders {
             context.check_deadline()?;
-            expander.extend_state(&mut context, state, next).await?;
+            let successors = expander.extend_state(&mut context, state).await?;
+            if next.is_empty() {
+                next = successors;
+            } else {
+                next.extend(successors);
+            }
         }
-        Ok(())
+        Ok(next)
     }
 }
