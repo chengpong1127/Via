@@ -46,6 +46,9 @@ exactly one `PlannedMovement`: transit, retained walking metrics, or unresolved
 walking. Identical access/egress duplicates resolve to
 one movement; conflicting same-stop entries or inconsistent access times are
 rejected as invalid queries.
+`MultimodalPlanner::prepare()` validates access/egress once before Phase 1 and
+corridor conversion. Phase 1 owns the structural transit-leg bound; Phase 2
+retains its separate check on realized transfer counts.
 Phase 2 evaluates each corridor independently and cannot add anchors or
 combine steps from different corridors. `RealizedJourney` is the sole realized
 route value: it owns ordered anchors and movements, validates path continuity
@@ -53,6 +56,8 @@ and timing, and supplies canonical movement identity for deduplication.
 `JourneyReconstructor` owns place lookups, remaining street geometry hydration,
 BikeShare station lookup, and candidate assembly; it depends on the street
 router, transit runtime, and BikeShare network rather than on `RoutingService`.
+Reconstruction relies on immutable `RealizedJourney` movement continuity and
+BikeShare anchor consistency, while checking its current stop and hydrated timing.
 
 ## Static corridor discovery
 

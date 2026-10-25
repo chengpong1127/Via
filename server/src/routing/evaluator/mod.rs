@@ -172,9 +172,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &EvaluationCorridor,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         self.check_deadline()?;
-        if !self.corridor_within_transfer_limit(corridor) {
-            return Ok(Vec::new());
-        }
         let mut states = vec![EvaluationState::initial(self.query)];
         for (index, edge) in corridor.edges().iter().enumerate() {
             let mut next = Vec::new();
@@ -188,15 +185,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
             }
         }
         self.finalize_states(corridor, states)
-    }
-
-    fn corridor_within_transfer_limit(&self, corridor: &EvaluationCorridor) -> bool {
-        corridor
-            .edges()
-            .iter()
-            .filter(|edge| matches!(edge.planned_movement, PlannedMovement::Transit(_)))
-            .count()
-            <= self.query.limits.max_transfers.saturating_add(1)
     }
 }
 

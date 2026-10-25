@@ -124,21 +124,10 @@ impl ViaStatic {
             .iter()
             .map(|stop| stop.id.as_str())
             .collect::<HashSet<_>>();
-        let bike_stations = self
-            .bike_share
-            .stations
-            .iter()
-            .map(|station| station.id.as_str())
-            .collect::<HashSet<_>>();
         for link in &self.bike_share.access_links {
             if !transit_stops.contains(link.boarding_point_id.as_str()) {
                 return Err(ViaStaticValidationError::UnknownTransitBoardingPoint(
                     link.boarding_point_id.as_str().to_owned(),
-                ));
-            }
-            if !bike_stations.contains(link.station_id.as_str()) {
-                return Err(ViaStaticValidationError::UnknownBikeStation(
-                    link.station_id.as_str().to_owned(),
                 ));
             }
         }
@@ -340,5 +329,30 @@ mod tests {
             invalid_access.validate(),
             Err(ViaStaticValidationError::UnknownTransitBoardingPoint(_))
         ));
+    }
+
+    #[test]
+    fn via_static_rejects_unknown_bike_stations_at_the_network_boundary() {
+        let mut invalid = artifact();
+        invalid.bike_share = invalid
+            .bike_share
+            .with_access_links(vec![BikeStationAccess::new(
+                BoardingPointId::new("stop"),
+                BikeStationId::new("missing-station"),
+                Some(BikeWalkingAccess::new(60, 100)),
+                None,
+            )]);
+        invalid.counts.bike_access_links = 1;
+        let expected = ViaStaticValidationError::InvalidBikeShareNetwork(
+            crate::domain::bikeshare::BikeShareNetworkValidationError::UnknownStation(
+                BikeStationId::new("missing-station"),
+            )
+            .to_string(),
+        );
+        assert_eq!(invalid.validate().unwrap_err(), expected);
+        assert_eq!(
+            ViaStatic::from_json(&serde_json::to_string(&invalid).unwrap()).unwrap_err(),
+            expected
+        );
     }
 }

@@ -166,3 +166,88 @@ fn realized_path_rejects_anchor_references_outside_the_corridor() {
         RealizedJourneyError::InvalidRealizedPath
     );
 }
+
+#[test]
+fn realized_path_requires_continuous_forward_movements_to_the_final_anchor() {
+    let departure_at = datetime!(2026-09-21 10:00 UTC);
+    for path in [
+        vec![(1, 2)],
+        vec![(0, 1), (0, 2)],
+        vec![(0, 0), (0, 2)],
+        vec![(0, 2), (2, 1)],
+        vec![(0, 1)],
+    ] {
+        let anchors = [
+            JourneyAnchorKind::Origin,
+            JourneyAnchorKind::BoardingPoint {
+                id: BoardingPointId::new("intermediate"),
+            },
+            JourneyAnchorKind::Destination,
+        ]
+        .into_iter()
+        .map(|kind| JourneyAnchor {
+            kind,
+            reached_at: departure_at,
+        })
+        .collect();
+        let movements = path
+            .into_iter()
+            .map(|(from_anchor, to_anchor)| JourneyMovement {
+                from_anchor,
+                to_anchor,
+                departure_at,
+                arrival_at: departure_at,
+                kind: JourneyMovementKind::Walking {
+                    kind: WalkingMovementKind::Transfer,
+                    duration_seconds: 0,
+                    distance_metres: 0,
+                },
+            })
+            .collect();
+        assert_eq!(
+            RealizedJourney::from_movements(anchors, movements, departure_at).unwrap_err(),
+            RealizedJourneyError::InvalidRealizedPath
+        );
+    }
+}
+
+#[test]
+fn realized_path_rejects_mismatched_bike_movement_anchors() {
+    let departure_at = datetime!(2026-09-21 10:00 UTC);
+    for (from_anchor, to_anchor) in [(1, 1), (0, 0)] {
+        let anchors = [JourneyAnchorKind::Origin, JourneyAnchorKind::Destination]
+            .into_iter()
+            .map(|kind| JourneyAnchor {
+                kind,
+                reached_at: departure_at,
+            })
+            .collect();
+        let movement = BikeShareMovement {
+            from_anchor,
+            to_anchor,
+            pickup_station_id: BikeStationId::new("pickup"),
+            dropoff_station_id: BikeStationId::new("dropoff"),
+            walk_to_pickup: BikeWalkingAccess::new(0, 0),
+            bicycle_duration_seconds: 0,
+            bicycle_distance_metres: 0,
+            walk_from_dropoff: BikeWalkingAccess::new(0, 0),
+            rental_wait_seconds: 0,
+            total_seconds: 0,
+        };
+        let result = RealizedJourney::from_movements(
+            anchors,
+            vec![JourneyMovement {
+                from_anchor: 0,
+                to_anchor: 1,
+                departure_at,
+                arrival_at: departure_at,
+                kind: JourneyMovementKind::BikeShare { movement },
+            }],
+            departure_at,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            RealizedJourneyError::InvalidRealizedPath
+        );
+    }
+}

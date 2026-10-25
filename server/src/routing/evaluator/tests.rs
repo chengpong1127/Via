@@ -2536,38 +2536,6 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
     ));
 }
 
-#[test]
-fn conflicting_duplicates_and_inconsistent_access_times_are_rejected() {
-    let network = network(
-        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
-        &["origin", "destination"],
-        Vec::new(),
-    );
-    let query = query(&[TransitMode::Bus], 0, 1);
-    let retained = candidate_corridor(&network, &query);
-    for case in 0..4 {
-        let mut invalid = query.clone();
-        match case {
-            0 => {
-                let mut duplicate = invalid.origin_access[0].clone();
-                duplicate.distance_metres += 1;
-                invalid.origin_access.push(duplicate);
-            }
-            1 => {
-                let mut duplicate = invalid.destination_egress[0].clone();
-                duplicate.walking_seconds += 1;
-                invalid.destination_egress.push(duplicate);
-            }
-            2 => invalid.origin_access[0].available_at += Duration::seconds(1),
-            _ => invalid.origin_access[0].departure_at -= Duration::seconds(1),
-        }
-        assert!(matches!(
-            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &invalid),
-            Err(RoutingError::InvalidQuery)
-        ));
-    }
-}
-
 #[tokio::test]
 async fn direct_corridor_cost_and_shared_budget_are_bounded() {
     let network = network(

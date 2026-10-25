@@ -20,11 +20,6 @@ impl ReconstructionState<'_, '_> {
         movement: &JourneyMovement,
         bike_movement: &crate::routing::BikeShareMovement,
     ) -> Result<bool, PlanningError> {
-        if bike_movement.from_anchor != movement.from_anchor
-            || bike_movement.to_anchor != movement.to_anchor
-        {
-            return Ok(false);
-        }
         if matches!(
             self.journey.anchors()[movement.from_anchor].kind,
             JourneyAnchorKind::Destination

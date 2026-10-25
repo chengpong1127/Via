@@ -57,8 +57,6 @@ pub(super) struct ReconstructionState<'a, 'request> {
     pub(super) pending_transfer: Option<PendingTransfer>,
     pub(super) previous_transit: Option<PreviousTransit>,
     pub(super) current_stop: Option<BoardingPointId>,
-    pub(super) current_anchor: usize,
-    pub(super) final_anchor: usize,
 }
 
 impl<'a, 'request> ReconstructionState<'a, 'request> {
@@ -89,8 +87,6 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             pending_transfer: None,
             previous_transit: None,
             current_stop: None,
-            current_anchor: 0,
-            final_anchor: journey.anchors().len().saturating_sub(1),
         }
     }
 
@@ -98,18 +94,9 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
         let movements = self.journey.movements();
         for movement in movements {
             self.context.ensure_before_deadline()?;
-            if movement.from_anchor != self.current_anchor
-                || movement.to_anchor <= movement.from_anchor
-            {
-                return Ok(None);
-            }
             if !self.append_movement(movement).await? {
                 return Ok(None);
             }
-            self.current_anchor = movement.to_anchor;
-        }
-        if self.current_anchor != self.final_anchor {
-            return Ok(None);
         }
         Ok((!self.assembly.legs.is_empty()).then_some(self.assembly))
     }

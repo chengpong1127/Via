@@ -68,11 +68,6 @@ impl EvaluationCorridor {
             .ok_or_else(|| RoutingError::Internal("retained corridor has no anchors".into()))?
             .stops()
             .to_vec();
-        if stops.is_empty() {
-            return Err(RoutingError::Internal(
-                "retained corridor has no stop anchors".into(),
-            ));
-        }
         let stop_anchors = stops
             .iter()
             .map(|id| {
@@ -101,7 +96,6 @@ impl EvaluationCorridor {
             kind: JourneyAnchorKind::Destination,
             coordinate: destination,
         });
-        query.validate_access_egress()?;
         let access = query
             .origin_access
             .iter()

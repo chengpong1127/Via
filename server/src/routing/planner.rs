@@ -275,9 +275,6 @@ impl MultimodalPlanner {
         if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
-        if query.origin_access.is_empty() || query.destination_egress.is_empty() {
-            return Err(RoutingError::InvalidQuery);
-        }
         let (retained_corridors, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, query);
         if static_stats.deadline_exceeded || query.deadline.is_elapsed() {
@@ -722,6 +719,36 @@ mod tests {
             ..crate::routing::PlannerLimits::default()
         })
         .with_max_static_corridors(k)
+    }
+
+    #[tokio::test]
+    async fn conflicting_duplicates_and_inconsistent_access_times_are_rejected() {
+        let loader = Arc::new(RecordingTimingLoader::default());
+        let planner = test_planner(network(), loader.clone());
+        for modes in [vec![TransitMode::Bus], Vec::new()] {
+            for case in 0..4 {
+                let mut invalid = query(1).with_allowed_transit_modes(modes.iter().copied());
+                match case {
+                    0 => {
+                        let mut duplicate = invalid.origin_access[0].clone();
+                        duplicate.distance_metres += 1;
+                        invalid.origin_access.push(duplicate);
+                    }
+                    1 => {
+                        let mut duplicate = invalid.destination_egress[0].clone();
+                        duplicate.walking_seconds += 1;
+                        invalid.destination_egress.push(duplicate);
+                    }
+                    2 => invalid.origin_access[0].available_at += Duration::seconds(1),
+                    _ => invalid.origin_access[0].departure_at -= Duration::seconds(1),
+                }
+                assert!(matches!(
+                    planner.plan_with_stats(invalid).await,
+                    Err(RoutingError::InvalidQuery)
+                ));
+            }
+        }
+        assert!(loader.queries.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
