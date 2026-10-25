@@ -19,11 +19,11 @@ second search after Phase 1 had already retained candidate corridors.
    applies across modes. It returns transit structure only.
 2. **Phase-2 corridor construction and realization** converts each retained
    transit corridor to an `EvaluationCorridor` with explicit Origin,
-   BoardingPoint, and Destination anchors. Bounded access and egress choices
-   remain as baseline alternatives at their edges. With no transit mode
-   selected, Phase 1 is skipped and a trivial Origin-to-Destination corridor
-   has no baseline movement. If retained transit corridors produce no
-   candidate, this same trivial corridor is evaluated as fallback.
+   BoardingPoint, and Destination anchors. Each edge contains exactly one
+   `PlannedMovement`: transit, retained walking metrics, or unresolved walking.
+   A direct Origin-to-Destination corridor with one unresolved walking edge is
+   appended after transit corridors, outside Top-K. With no transit mode
+   selected, Phase 1 is skipped. All corridors use one evaluation pass.
 
 `selected_modes` contains optional non-walking modes. Walking is always
 available. An empty list skips transit search and timing calls; `[bike_share]`
@@ -64,8 +64,8 @@ The extension replaces the earlier movement using the existing rental transition
 Separate rentals wait 15 minutes after the bike is returned; the return time is
 the pickup walk plus bicycle ride, before the final walk to the anchor. Downstream
 departures use the same timing snapshot and each successor's current ready time.
-`PlanningSession` carries caches and statistics across primary and fallback
-evaluation.
+`PlanningSession` owns request-local caches, snapshots, and statistics for the
+single evaluation pass.
 
 The evaluator keeps a bounded Pareto frontier within each retained corridor.
 BikeShare considers up to three pickup and three return stations per endpoint;
@@ -83,7 +83,7 @@ outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
 station with a dock. A feasible movement's station pairs are evaluated in
 one or more bicycle matrix requests chunked to the street router's source and
-target limits. A surface-only fallback corridor uses the same Walking and
+target limits. The direct walking corridor uses the same Walking and
 BikeShare planners and constraints as any other Phase-2 edge.
 
 ## Consequences
@@ -100,6 +100,28 @@ additional requests from cache, compared with zero exact requests under the old
 baseline screen. Expansion and candidate limits remain mandatory; no untested
 heuristic cutoff replaces the removed screen. The bounded frontier can still
 truncate Pareto alternatives when its candidate limit is reached.
+
+Transit corridors keep their deterministic search order, followed by the direct
+corridor. All consume one unchanged hard expansion budget. Budget exhaustion
+rejects partial results; there is no reserved surface allowance or second pass.
+A journey still requiring street geometry hydration cannot prune an already-routed
+candidate before reconstruction. Per-edge candidate caps still apply. The final cap applies to successful
+reconstructions, so failed geometry hydration cannot consume a result slot.
+The pre-reconstruction pool is bounded by the corridor count times the per-edge
+candidate cap and the shared expansion budget. Public `plan_with_stats()` callers
+receive at most the candidate cap; ranking filters reconstructed service results.
+
+Identical access/egress duplicates resolve to one movement. Conflicting entries
+for a stop, departures inconsistent with query time, or access availability
+inconsistent with walking duration produce `InvalidQuery` before Phase 1.
+
+A release-mode 100-iteration Bus fixture measured P2 median/p95 of 4/5 microseconds
+without the appended corridor and 5/6 microseconds with it. Walking route calls
+increased from one to two and expansions from five to six; transit lookups were
+unchanged. These are in-memory provider measurements, not live Valhalla latency.
+The budget regression verifies that five expansions reject the combined request
+and six complete it. The existing 12-edge BikeShare fixture still realizes 72
+exact candidates with 66 cache hits.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
 configured Taiwan Bike Station City JSON snapshots to create static

@@ -19,12 +19,12 @@ All names below are production metrics. Counters end in `_total`; the two
 | `via_planning_failures_total` | HTTP handler: failed planning attempts |
 | `via_planner_transit_candidate_stops_total` | RoutingService: combined access/egress count after discovery; zero if either discovery fails |
 | `via_planner_candidate_discovery_duration_seconds` | RoutingService: completed access/egress discovery, including provider errors, after deadline checks |
-| `via_planner_multimodal_search_duration_seconds` | RoutingService: successful prepare/evaluate/reconstruct operation, including fallback and reconstruction |
+| `via_planner_multimodal_search_duration_seconds` | RoutingService: successful prepare/evaluate/reconstruct operation, including direct corridor evaluation and reconstruction |
 | `via_planner_transit_reachable_boardings_total` | MultimodalPlanner Phase 1: retained timing positions |
 | `via_planner_transit_reachable_patterns_total` | MultimodalPlanner Phase 1: retained patterns |
 | `via_planner_transit_realtime_stops_requested_total` | MultimodalPlanner Phase 1: unique retained Bus stops; preserves the historical static selection count, not an HTTP request count |
 | `via_planner_transit_departure_lookups_total` | PlanningSession evaluation boundary: lookup delta from each successfully completed evaluation pass |
-| `via_planner_transit_realtime_evidence_values_total` | RoutingService: evidence in journeys returned by evaluate_primary, after its deadline check and before reconstruction |
+| `via_planner_transit_realtime_evidence_values_total` | RoutingService: evidence in journeys returned by evaluate, after its deadline check and before reconstruction |
 | `via_bus_timing_logical_departure_needs_total` | Bus timing provider: active logical departure queries |
 | `via_bus_timing_realtime_stops_requested_total` | Bus timing provider: unique stops selected for realtime fetch |
 | `via_bus_timing_realtime_batches_total` | Bus timing provider: planned realtime batches |
@@ -53,12 +53,10 @@ even when another pass fails. Incomplete/failed evaluation passes do not emit a
 lookup delta. Discovery interrupted by its deadline checks still emits no sample.
 The multimodal duration still records only a successfully completed operation.
 
-Evidence scope is unchanged: `evaluate_primary()` can automatically use the
-surface fallback when no transit journey is realized. Its returned collection is
-counted. A separate fallback triggered by failed reconstruction is excluded.
-Evaluation lookup deltas prevent counting cumulative session stats again during
-fallback. Direct planner callers, including `plan_with_stats()`, now record the
-planner stages they execute. Skipped stages need not register zero-valued series;
+Evidence is counted from the single `evaluate()` result before reconstruction.
+Direct walking and BikeShare participate in the same pass as transit. Direct
+planner callers, including `plan_with_stats()`, record the planner stages they
+execute. Skipped stages need not register zero-valued series;
 Prometheus series are registered when their instrumentation runs.
 
 ## Structured accounting
@@ -72,8 +70,10 @@ Phase 1 emits one compact search summary and traces the retained corridors.
 
 `Phase2EvaluationStats` retains the cumulative expansion count and departure
 lookups, BikeShare lower-bound checks/rejections, exact requests/cache hits/matrix
-requests, final candidate count, and total evaluation latency. The expansion
-count enforces the session's safety bound across primary and fallback evaluation.
+requests, pre-reconstruction Pareto candidate count, and total evaluation latency.
+The expansion count enforces the request's shared safety bound across transit and direct corridors.
+The service caps successful reconstructions; `plan_with_stats()` caps its returned
+journeys and reports that returned count.
 Phase 2 emits one compact evaluation summary. `SurfaceRealizationStats` and
 `BikePlanningStats` retain exact routing, cache, and matrix work accounting;
 snapshot latency remains in tracing.

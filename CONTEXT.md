@@ -10,12 +10,11 @@ routing, and provider-neutral API models.
 PlanningRequest
   → RoutingService.plan()
        ├─ discover transit access / egress when transit is selected
-       ├─ MultimodalPlanner.prepare() → PlanningSession.evaluate_primary()
+       ├─ MultimodalPlanner.prepare() → PlanningSession.evaluate()
        │    ├─ Phase 1: bounded static Top-K transit corridors
        │    ├─ load request-local snapshots for retained transit positions
-       │    ├─ convert retained corridors to EvaluationCorridors
+       │    ├─ convert retained corridors and append a direct walking EvaluationCorridor
        │    └─ Phase 2: fixed-corridor movement evaluation
-       ├─ PlanningSession.evaluate_fallback() via EvaluationCorridor::surface_only() when needed
        ├─ JourneyReconstructor assembles candidates
        └─ validate failures → rank → PlanningOutcome
 ```
@@ -37,14 +36,16 @@ as planning errors rather than dropping corridors or emitting empty station IDs.
 
 `RoutingService` discovers access and egress for selected transit modes, then
 calls `MultimodalPlanner.prepare()` and evaluates the request-local
-`PlanningSession`. Primary evaluation uses `evaluate_primary()`; after all
-primary candidates fail reconstruction, the session can evaluate its one-shot
-`evaluate_fallback()` corridor built with `EvaluationCorridor::surface_only()`.
+`PlanningSession` in one `evaluate()` pass, including direct walking and BikeShare
+alongside transit results. Reconstruction records failures per journey and keeps
+other usable candidates.
 The planner owns static corridor discovery, request snapshots, and Phase 2. Its
 topology and transfer indexes stay private. A Phase-2 `EvaluationCorridor` has
-explicit Origin,
-BoardingPoint, and Destination anchors. Its edge baseline can hold bounded
-access or egress alternatives, transit, retained walking, or no movement.
+explicit Origin, BoardingPoint, and Destination anchors. Each edge contains
+exactly one `PlannedMovement`: transit, retained walking metrics, or unresolved
+walking. Identical access/egress duplicates resolve to
+one movement; conflicting same-stop entries or inconsistent access times are
+rejected as invalid queries.
 Phase 2 evaluates each corridor independently and cannot add anchors or
 combine steps from different corridors. `RealizedJourney` is the sole realized
 route value: it owns ordered anchors and movements, validates path continuity
@@ -83,22 +84,22 @@ diagnostics.
 ## Request-local evaluation
 
 Walking is always implicit and is not a `selected_modes` value. An empty mode
-list skips transit discovery and Phase 1, then evaluates a surface-only
-Origin-to-Destination corridor as walking. Selecting only BikeShare also skips
+list skips transit discovery and Phase 1, then evaluates a direct walking
+Origin-to-Destination corridor. Selecting only BikeShare also skips
 transit search and timing requests while loading one BikeShare availability
 snapshot. Before realtime loading, `BikeShareMovementPlanner::required_station_ids`
 collects all stations linked to evaluation boarding anchors and all stations within
-1,500 metres of geographic endpoints, including surface fallback endpoints.
+1,500 metres of geographic endpoints, including direct corridor endpoints.
 Availability filtering precedes the existing three-station candidate limits.
 The TDX provider caches individual station records for 45 seconds, rechecks
 original observation freshness, and fetches only missing/stale IDs in filtered
 50-station batches grouped by city (up to four cities concurrently). Partial
 failures preserve successful records; empty requests make no availability calls.
-If transit corridors evaluate to no candidate, the planner evaluates
-the same surface-only corridor as a fallback. It does not append a direct route
-to successful transit results. The session retains its snapshots, movement
-caches, and expansion accounting through reconstruction, so failed reconstruction
-can call its one-shot fallback without additional snapshot loads. The fallback flag is internal session state.
+The direct corridor is always appended after retained transit corridors and does
+not consume a static Top-K slot. One pass shares the existing request-local
+snapshots, movement caches, deadline, and hard expansion budget. Transit keeps
+priority in evaluation order; exhausted budgets reject partial results, including
+when the direct corridor would exceed the remaining budget. Limits are unchanged.
 
 For each edge, `FixedCorridorEvaluator` combines successors from independent
 `TransitExpander`, `WalkingExpander`, and `BikeShareExpander` implementations of
@@ -113,7 +114,11 @@ Walking and BikeShare use cheap optimistic duration bounds to reject movements
 outside the query's time limits. They are not screened against another mode's
 arrival: a slower movement can reduce walking, transfers, cycling, or rentals,
 or preserve a different future capability. Shared Pareto pruning compares these
-metrics and compatible state capabilities, subject to the candidate limit.
+metrics and compatible state capabilities, subject to the candidate limit. A journey requiring street geometry hydration
+cannot dominate an already-routed journey before reconstruction; ranking filters
+reconstructed candidates afterward. Per-edge frontiers keep the candidate cap;
+the service applies the final cap to successful reconstructions, preserving
+alternatives when geometry hydration fails.
 This can increase exact street work compared with baseline-first screening;
 request-local caches, expansion budgets, and station/route limits still bound it.
 Walking alternatives are retained as already-routed path movements, avoiding a

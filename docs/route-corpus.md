@@ -21,8 +21,8 @@ timing, and street fixtures and does not need TDX, Valhalla, or network access.
 | Bike access and return walks | `faster_bike_surface_transfer_catches_the_next_transit_departure` | Station access and return walking are counted |
 | Bike availability | `no_bike_at_pickup_keeps_the_walking_transfer`, `no_dock_at_dropoff_keeps_the_walking_transfer` | Bike use requires an available pickup bike and return dock |
 | Bike candidate bounds | `station_choices_are_bounded_to_three_nearest_per_anchor`, `one_bike_movement_can_skip_multiple_transit_anchors` | Only the next structural anchor is checked; there is no eager bounded forward-pair enumeration |
-| Walking fallback | `direct_walking_is_returned_when_no_transit_access_is_reachable` | When transit has no usable access, `evaluate_fallback()` builds a surface-only Origin-to-Destination corridor and returns its feasible walking movement |
-| BikeShare fallback | `direct_walking_without_a_transit_query_can_use_bike_share` | The surface-only fallback corridor can realize BikeShare with the request-local availability snapshot |
+| Direct walking | `direct_walking_is_returned_when_no_transit_access_is_reachable` | When transit has no usable access, the normal evaluation pass includes a direct Origin-to-Destination corridor and returns its feasible walking movement |
+| Direct BikeShare | `direct_walking_without_a_transit_query_can_use_bike_share` | The direct walking corridor can realize BikeShare with the request-local availability snapshot |
 
 For the standard checks, run from the repository root:
 
@@ -35,3 +35,16 @@ git diff --check
 
 See [`dev-tooling.md`](dev-tooling.md) for deterministic CLI routes and live
 provider configuration.
+
+The direct corridor competes with successful transit in
+`viable_transit_corridors_compete_with_direct_walking` and
+`viable_transit_corridor_competes_with_direct_bike_share`.
+`reconstruction_failure_preserves_direct_walking_without_reloading_snapshots`
+keeps an already-routed slower walk when transit geometry fails.
+`direct_corridor_cost_and_shared_budget_are_bounded` compares transit-only and
+combined P2 work over 100 iterations and checks the exact shared budget boundary.
+Run its release measurements with:
+
+```bash
+cargo test --manifest-path server/Cargo.toml --release --lib direct_corridor_cost_and_shared_budget_are_bounded -- --nocapture
+```

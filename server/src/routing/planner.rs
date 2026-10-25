@@ -199,7 +199,9 @@ impl MultimodalPlanner {
         query: PlanningQuery,
     ) -> Result<(Vec<RealizedJourney>, MultimodalPlannerStats), RoutingError> {
         let mut session = self.prepare(query).await?;
-        let journeys = session.evaluate_primary().await?;
+        let mut journeys = session.evaluate().await?;
+        journeys.truncate(session.query.limits.max_candidates.max(1));
+        session.stats.phase2_evaluation.final_candidates = journeys.len();
         Ok((journeys, session.stats().clone()))
     }
 
@@ -210,6 +212,7 @@ impl MultimodalPlanner {
         if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
+        query.validate_access_egress()?;
         let (retained, static_stats) = if query.allowed_transit_modes.is_empty()
             || query.origin_access.is_empty()
             || query.destination_egress.is_empty()
@@ -221,19 +224,18 @@ impl MultimodalPlanner {
         } else {
             self.execute_phase1(&query)?
         };
-        let corridors = retained
+        let mut corridors = retained
             .retained()
             .iter()
             .map(|corridor| EvaluationCorridor::from_transit(&self.network, corridor, &query))
             .collect::<Result<Vec<_>, _>>()?;
-        let fallback = EvaluationCorridor::surface_only(query.origin, query.destination);
+        corridors.push(EvaluationCorridor::direct_walking(
+            query.origin,
+            query.destination,
+        ));
         let bike_station_ids = if query.allow_bike_share {
-            self.bike.required_station_ids(
-                corridors
-                    .iter()
-                    .flat_map(|corridor| corridor.anchors())
-                    .chain(fallback.anchors()),
-            )
+            self.bike
+                .required_station_ids(corridors.iter().flat_map(|corridor| corridor.anchors()))
         } else {
             Vec::new()
         };
@@ -253,7 +255,7 @@ impl MultimodalPlanner {
             network: &self.network,
             query,
             retained,
-            corridors: corridors.into(),
+            corridors,
             snapshots,
             surface_planners,
             stats: MultimodalPlannerStats {
@@ -261,7 +263,6 @@ impl MultimodalPlanner {
                 ..MultimodalPlannerStats::default()
             },
             failures: evaluator::EvaluationFailures::default(),
-            fallback_used: false,
         })
     }
 
@@ -430,40 +431,18 @@ impl MultimodalPlanner {
     }
 }
 
-/// Request-local snapshots, movement caches and expansion accounting survive reconstruction.
-/// A failed reconstruction can therefore use the same evaluator capabilities for fallback.
 pub(crate) struct PlanningSession<'a> {
     network: &'a TransitRuntime,
     query: PlanningQuery,
     retained: static_search::RetainedCorridorSet,
-    corridors: Arc<[EvaluationCorridor]>,
+    corridors: Vec<EvaluationCorridor>,
     snapshots: RequestSnapshots,
     surface_planners: Vec<Box<dyn SurfaceMovementPlanner>>,
     stats: MultimodalPlannerStats,
     failures: evaluator::EvaluationFailures,
-    fallback_used: bool,
 }
 
 impl PlanningSession<'_> {
-    pub async fn evaluate_primary(&mut self) -> Result<Vec<RealizedJourney>, RoutingError> {
-        let corridors = self.corridors.clone();
-        let journeys = self.evaluate_corridors(&corridors).await?;
-        if journeys.is_empty() {
-            return self.evaluate_fallback().await;
-        }
-        Ok(journeys)
-    }
-
-    pub async fn evaluate_fallback(&mut self) -> Result<Vec<RealizedJourney>, RoutingError> {
-        if self.fallback_used {
-            return Ok(Vec::new());
-        }
-        let (origin, destination) = (self.query.origin, self.query.destination);
-        self.fallback_used = true;
-        self.evaluate_corridors(&[EvaluationCorridor::surface_only(origin, destination)])
-            .await
-    }
-
     pub fn stats(&self) -> &MultimodalPlannerStats {
         &self.stats
     }
@@ -472,10 +451,7 @@ impl PlanningSession<'_> {
         &self.failures
     }
 
-    async fn evaluate_corridors(
-        &mut self,
-        corridors: &[EvaluationCorridor],
-    ) -> Result<Vec<RealizedJourney>, RoutingError> {
+    pub async fn evaluate(&mut self) -> Result<Vec<RealizedJourney>, RoutingError> {
         let mut evaluator = evaluator::FixedCorridorEvaluator::new(
             self.network,
             &self.retained,
@@ -483,17 +459,13 @@ impl PlanningSession<'_> {
             &self.query,
             &mut self.surface_planners,
         );
-        let lookups_before = self.stats.phase2_evaluation.transit_departure_lookups;
-        evaluator.stats = self.stats.phase2_evaluation;
-        evaluator.failures = self.failures;
         let evaluation_result = self
             .query
             .deadline
-            .run(evaluator.evaluate(corridors))
+            .run(evaluator.evaluate(&self.corridors))
             .await??;
-        // Evaluation stats survive fallback; emit only this completed pass's work.
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
-            .increment((evaluation_result.stats.transit_departure_lookups - lookups_before) as u64);
+            .increment(evaluation_result.stats.transit_departure_lookups as u64);
         self.stats.phase2_evaluation = evaluation_result.stats;
         self.failures = evaluation_result.failures;
         self.failures.transient |= self.snapshots.failures.transient;
@@ -863,7 +835,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operational_metrics_count_completed_stages_and_fallback_once() {
+    async fn operational_metrics_count_completed_stages_once() {
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let _guard = ::metrics::set_default_local_recorder(&recorder);
@@ -881,12 +853,9 @@ mod tests {
         planning_query.origin = origin;
         planning_query.destination = destination;
         let mut session = planner.prepare(planning_query).await.unwrap();
-        assert!(!session.evaluate_primary().await.unwrap().is_empty());
+        assert!(!session.evaluate().await.unwrap().is_empty());
         let lookups = session.stats().phase2_evaluation.transit_departure_lookups;
         assert!(lookups > 0);
-        // A later reconstruction failure may request fallback from the same session.
-        session.evaluate_fallback().await.unwrap();
-        session.evaluate_fallback().await.unwrap();
         let rendered = handle.render();
         assert!(rendered.contains(&format!(
             "via_planner_transit_departure_lookups_total {lookups}\n"
@@ -1063,7 +1032,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_is_idempotent_after_primary_used_surface_only_corridor() {
+    async fn direct_walking_is_evaluated_once_without_transit() {
         let timing = Arc::new(RecordingTimingLoader::default());
         let origin = Coordinate::try_new(25.0, 121.5).unwrap();
         let destination = Coordinate::try_new(25.001, 121.501).unwrap();
@@ -1101,12 +1070,12 @@ mod tests {
         .with_allowed_transit_modes([]);
         let mut session = planner.prepare(query).await.unwrap();
 
-        let primary = session.evaluate_primary().await.unwrap();
-        let stats_after_primary = session.stats().clone();
-        let repeated_fallback = session.evaluate_fallback().await.unwrap();
+        let primary = session.evaluate().await.unwrap();
 
         assert_eq!(primary.len(), 1);
-        assert!(repeated_fallback.is_empty());
-        assert_eq!(session.stats(), &stats_after_primary);
+        assert_eq!(
+            session.stats().phase2_evaluation.corridor_states_evaluated,
+            1
+        );
     }
 }

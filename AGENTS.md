@@ -10,7 +10,7 @@ The server's canonical planning flow is:
 
 ```text
 RoutingService
-  → MultimodalPlanner.prepare → PlanningSession.evaluate_primary / evaluate_fallback
+  → MultimodalPlanner.prepare → PlanningSession.evaluate
   → static transit corridors → EvaluationCorridor anchors
   → request-local timing / availability snapshots
   → FixedCorridorEvaluator (Transit / Walking / BikeShare movement expansion)
@@ -22,12 +22,11 @@ Top-K search over selected transit modes using static schedule costs, derived
 Bus segment costs, or optimistic geometry estimates. It retains transit
 corridors only. Phase 2 represents each retained corridor as an
 `EvaluationCorridor` whose anchors include Origin, boarding points, and
-Destination; bounded access and egress alternatives remain attached to their
-edges. With no transit mode selected, Phase 1 is skipped and the planner builds
-a surface-only Origin-to-Destination corridor. The session evaluates primary
-corridors with `evaluate_primary()` and can evaluate its one-shot fallback with
-`evaluate_fallback()` if evaluation or reconstruction yields no candidate.
-Fallback state stays private to the session.
+Destination. Each edge has exactly one `PlannedMovement`: transit, retained
+walking metrics, or walking requiring routing. The planner appends a direct
+Origin-to-Destination walking corridor after the transit corridors, outside
+Top-K. With no transit mode selected, Phase 1 is skipped. All corridors use the
+same evaluation pass; there is no separate surface fallback.
 
 `selected_modes` lists only optional non-walking modes. `[]` enables walking
 alone; `[bike_share]` enables walking and BikeShare without transit search.

@@ -229,31 +229,26 @@ impl RoutingService {
             let search_started = Instant::now();
             let planning_result = async {
                 let mut session = self.planner.prepare(query).await?;
-                let primary_journeys = session.evaluate_primary().await?;
+                let journeys = session.evaluate().await?;
                 context
                     .ensure_before_deadline()
                     .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
-                let realtime_evidence_values: usize = primary_journeys
+                let realtime_evidence_values: usize = journeys
                     .iter()
                     .map(RealizedJourney::realtime_evidence_count)
                     .sum();
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
-                for journey in primary_journeys {
+                for journey in journeys {
                     match self.reconstructor.reconstruct(&journey, context).await {
-                        Ok(Some(candidate)) => attempt.candidates.push(candidate),
+                        Ok(Some(candidate)) => {
+                            attempt.candidates.push(candidate);
+                            if attempt.candidates.len() >= self.limits.planner.max_candidates {
+                                break;
+                            }
+                        }
                         Ok(None) => {}
                         Err(error) => attempt.failures.record_planning(&error),
-                    }
-                }
-                if attempt.candidates.is_empty() {
-                    let fallback_journeys = session.evaluate_fallback().await?;
-                    for journey in fallback_journeys {
-                        match self.reconstructor.reconstruct(&journey, context).await {
-                            Ok(Some(candidate)) => attempt.candidates.push(candidate),
-                            Ok(None) => {}
-                            Err(error) => attempt.failures.record_planning(&error),
-                        }
                     }
                 }
                 attempt.failures.transient |= session.failures().transient;

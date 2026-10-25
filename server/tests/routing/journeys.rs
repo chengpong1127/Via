@@ -683,7 +683,7 @@ async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
 }
 
 #[tokio::test]
-async fn retained_corridors_without_departures_use_the_direct_walking_fallback_once() {
+async fn retained_corridors_without_departures_resolve_direct_walking_once() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -732,7 +732,7 @@ async fn retained_corridors_without_departures_use_the_direct_walking_fallback_o
 }
 
 #[tokio::test]
-async fn viable_transit_corridors_skip_the_direct_walking_route() {
+async fn viable_transit_corridors_compete_with_direct_walking() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -754,7 +754,7 @@ async fn viable_transit_corridors_skip_the_direct_walking_route() {
                 StreetTravelMode::Walking,
                 origin,
                 destination,
-                path(origin, destination, 1),
+                path(origin, destination, 300),
             )
             .build(),
         origin,
@@ -765,18 +765,22 @@ async fn viable_transit_corridors_skip_the_direct_walking_route() {
     let body =
         route_body_with_street(street.clone(), request(origin, destination, &["metro"])).await;
 
-    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
+    let options = body["journey_options"].as_array().unwrap();
     assert!(
-        body["journey_options"]
-            .as_array()
-            .unwrap()
+        options
             .iter()
-            .all(|option| leg_modes(option).contains(&"transit"))
+            .any(|option| leg_modes(option) == vec!["walking"])
+    );
+    assert!(
+        options
+            .iter()
+            .any(|option| leg_modes(option).contains(&"transit"))
     );
 }
 
 #[tokio::test]
-async fn no_transit_corridors_skip_timing_and_route_fallback_once() {
+async fn no_transit_corridors_skip_timing_and_resolve_direct_walking_once() {
     let origin = coordinate(25.30, 121.60);
     let destination = coordinate(25.301, 121.601);
     let street = Arc::new(CountingStreet {
@@ -811,7 +815,7 @@ async fn no_transit_corridors_skip_timing_and_route_fallback_once() {
 }
 
 #[tokio::test]
-async fn arrive_by_walking_fallback_respects_the_latest_arrival() {
+async fn arrive_by_direct_walking_respects_the_latest_arrival() {
     let origin = coordinate(25.30, 121.60);
     let destination = coordinate(25.301, 121.601);
     let latest = "2026-08-31T10:10:00+08:00";
@@ -952,7 +956,7 @@ async fn walking_corridor_realization_survives_a_transit_timing_failure() {
     .await;
 
     assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
     let options = body["journey_options"].as_array().unwrap();
     assert_eq!(options.len(), 1);
     assert!(leg_modes(&options[0]).iter().all(|mode| *mode == "walking"));

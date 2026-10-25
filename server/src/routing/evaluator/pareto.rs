@@ -20,7 +20,6 @@ pub(super) struct EvaluatedCandidate {
 
 pub(super) fn pareto_candidates(
     mut candidates: Vec<EvaluatedCandidate>,
-    limit: usize,
 ) -> Vec<EvaluatedCandidate> {
     candidates.sort_by_cached_key(|candidate| {
         (
@@ -34,15 +33,25 @@ pub(super) fn pareto_candidates(
     for candidate in candidates {
         if pareto.iter().any(|known| {
             known.journey.identity() == candidate.journey.identity()
-                || known.metrics.dominates(&candidate.metrics)
+                || can_dominate(known, &candidate)
         }) {
             continue;
         }
-        pareto.retain(|known| !candidate.metrics.dominates(&known.metrics));
+        pareto.retain(|known| !can_dominate(&candidate, known));
         pareto.push(candidate);
     }
-    pareto.truncate(limit.max(1));
     pareto
+}
+
+fn can_dominate(left: &EvaluatedCandidate, right: &EvaluatedCandidate) -> bool {
+    let needs_street_routing = |candidate: &EvaluatedCandidate| {
+        candidate.journey.movements().iter().any(|movement| {
+            matches!(movement.kind, JourneyMovementKind::Walking { .. })
+                && movement.street_path.is_none()
+        })
+    };
+    (!needs_street_routing(left) || needs_street_routing(right))
+        && left.metrics.dominates(&right.metrics)
 }
 
 pub(super) fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {

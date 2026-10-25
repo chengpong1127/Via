@@ -9,7 +9,7 @@ mod transit;
 mod walking;
 
 use super::{
-    corridor::{BaselineMovement, CorridorEdge, EvaluationCorridor},
+    corridor::{CorridorEdge, EvaluationCorridor, PlannedMovement},
     model::{PlanningQuery, RoutingError},
     realized::{
         BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
@@ -60,8 +60,6 @@ pub(super) struct EvaluationResult {
     pub failures: EvaluationFailures,
 }
 
-/// One request-local evaluator is retained across transit evaluation and fallback,
-/// preserving movement caches and the total expansion budget.
 pub(super) struct FixedCorridorEvaluator<'a> {
     network: &'a TransitRuntime,
     corridor: &'a RetainedCorridorSet,
@@ -101,7 +99,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
             candidates.extend(self.evaluate_corridor(corridor).await?);
         }
 
-        let candidates = pareto_candidates(candidates, self.query.limits.max_candidates);
+        let candidates = pareto_candidates(candidates);
         self.stats.final_candidates = candidates.len();
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -161,7 +159,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 let successors = self.expand_state(&state, corridor, edge, index).await?;
                 next.extend(successors);
             }
-            states = self.prune_edge_states(next, edge, index);
+            states = prune_states(next, self.query.limits.max_candidates);
             if states.is_empty() {
                 break;
             }
@@ -173,26 +171,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor
             .edges()
             .iter()
-            .filter(|edge| {
-                edge.baseline
-                    .iter()
-                    .any(|b| matches!(b, BaselineMovement::Transit(_)))
-            })
+            .filter(|edge| matches!(edge.planned_movement, PlannedMovement::Transit(_)))
             .count()
             <= self.query.limits.max_transfers.saturating_add(1)
-    }
-
-    fn prune_edge_states(
-        &self,
-        states: Vec<EvaluationState>,
-        edge: &CorridorEdge,
-        index: usize,
-    ) -> Vec<EvaluationState> {
-        if index == 0 && !edge.baseline.is_empty() {
-            states
-        } else {
-            prune_states(states, self.query.limits.max_candidates)
-        }
     }
 }
 

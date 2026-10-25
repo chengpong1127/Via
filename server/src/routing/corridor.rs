@@ -1,4 +1,3 @@
-//! Phase 2 anchors and baselines, independent of static transit discovery.
 use super::model::RoutingError;
 use super::{
     model::PlanningQuery,
@@ -14,16 +13,16 @@ pub(crate) struct EvaluationCorridor {
 }
 
 pub(crate) struct CorridorEdge {
-    pub baseline: Vec<BaselineMovement>,
+    pub planned_movement: PlannedMovement,
 }
 
-pub(crate) enum BaselineMovement {
+pub(crate) enum PlannedMovement {
     Transit(StaticTransitLeg),
+    WalkingToResolve,
     RetainedWalking {
         kind: WalkingMovementKind,
         duration_seconds: u32,
         distance_metres: u32,
-        // Access discovery may retain an absolute ready time; transfer and egress derive it.
         access_available_at: Option<time::OffsetDateTime>,
     },
 }
@@ -41,9 +40,9 @@ impl EvaluationCorridor {
         &self.edges
     }
 
-    pub fn surface_only(origin: Coordinate, destination: Coordinate) -> Self {
-        Self::new(
-            vec![
+    pub fn direct_walking(origin: Coordinate, destination: Coordinate) -> Self {
+        Self {
+            anchors: vec![
                 CorridorAnchor {
                     kind: JourneyAnchorKind::Origin,
                     coordinate: origin,
@@ -53,11 +52,10 @@ impl EvaluationCorridor {
                     coordinate: destination,
                 },
             ],
-            vec![CorridorEdge {
-                baseline: Vec::new(),
+            edges: vec![CorridorEdge {
+                planned_movement: PlannedMovement::WalkingToResolve,
             }],
-        )
-        .expect("surface-only corridor has one edge per anchor pair")
+        }
     }
 
     pub fn from_transit(
@@ -103,56 +101,52 @@ impl EvaluationCorridor {
             kind: JourneyAnchorKind::Destination,
             coordinate: destination,
         });
+        query.validate_access_egress()?;
+        let access = query
+            .origin_access
+            .iter()
+            .find(|a| a.stop_id == retained.access_stop_id)
+            .ok_or_else(|| {
+                RoutingError::Internal("retained corridor has no matching access point".into())
+            })?;
         let mut edges = vec![CorridorEdge {
-            baseline: query
-                .origin_access
-                .iter()
-                .filter(|a| a.stop_id == retained.access_stop_id)
-                .map(|a| BaselineMovement::RetainedWalking {
-                    kind: WalkingMovementKind::Access,
-                    duration_seconds: a.walking_seconds,
-                    distance_metres: a.distance_metres,
-                    access_available_at: Some(a.available_at),
-                })
-                .collect(),
+            planned_movement: PlannedMovement::RetainedWalking {
+                kind: WalkingMovementKind::Access,
+                duration_seconds: access.walking_seconds,
+                distance_metres: access.distance_metres,
+                access_available_at: Some(access.available_at),
+            },
         }];
-        if edges[0].baseline.is_empty() {
-            return Err(RoutingError::Internal(
-                "retained corridor has no matching access point".into(),
-            ));
-        }
         edges.extend(retained.steps.iter().map(|step| CorridorEdge {
-            baseline: vec![match step {
-                StaticCorridorStep::Transit(leg) => BaselineMovement::Transit(leg.clone()),
+            planned_movement: match step {
+                StaticCorridorStep::Transit(leg) => PlannedMovement::Transit(leg.clone()),
                 StaticCorridorStep::SurfaceTransfer {
                     walking_duration_seconds,
                     walking_distance_metres,
                     ..
-                } => BaselineMovement::RetainedWalking {
+                } => PlannedMovement::RetainedWalking {
                     kind: WalkingMovementKind::Transfer,
                     duration_seconds: *walking_duration_seconds,
                     distance_metres: *walking_distance_metres,
                     access_available_at: None,
                 },
-            }],
+            },
         }));
         let egress = query
             .destination_egress
             .iter()
-            .filter(|e| e.stop_id == retained.egress_stop_id)
-            .map(|e| BaselineMovement::RetainedWalking {
+            .find(|e| e.stop_id == retained.egress_stop_id)
+            .ok_or_else(|| {
+                RoutingError::Internal("retained corridor has no matching egress point".into())
+            })?;
+        edges.push(CorridorEdge {
+            planned_movement: PlannedMovement::RetainedWalking {
                 kind: WalkingMovementKind::Egress,
-                duration_seconds: e.walking_seconds,
-                distance_metres: e.distance_metres,
+                duration_seconds: egress.walking_seconds,
+                distance_metres: egress.distance_metres,
                 access_available_at: None,
-            })
-            .collect::<Vec<_>>();
-        if egress.is_empty() {
-            return Err(RoutingError::Internal(
-                "retained corridor has no matching egress point".into(),
-            ));
-        }
-        edges.push(CorridorEdge { baseline: egress });
+            },
+        });
         Self::new(anchors, edges).ok_or_else(|| {
             RoutingError::Internal("retained corridor has inconsistent anchors and edges".into())
         })

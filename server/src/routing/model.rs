@@ -284,6 +284,31 @@ impl PlanningQuery {
         }
     }
 
+    pub(crate) fn validate_access_egress(&self) -> Result<(), RoutingError> {
+        let mut access = std::collections::HashMap::new();
+        for point in &self.origin_access {
+            if point.departure_at != self.departure_time
+                || point.available_at - point.departure_at
+                    != Duration::seconds(i64::from(point.walking_seconds))
+                || access
+                    .insert(&point.stop_id, point)
+                    .is_some_and(|known| known != point)
+            {
+                return Err(RoutingError::InvalidQuery);
+            }
+        }
+        let mut egress = std::collections::HashMap::new();
+        for point in &self.destination_egress {
+            if egress
+                .insert(&point.stop_id, point)
+                .is_some_and(|known| known != point)
+            {
+                return Err(RoutingError::InvalidQuery);
+            }
+        }
+        Ok(())
+    }
+
     pub fn with_allowed_transit_modes(
         mut self,
         modes: impl IntoIterator<Item = TransitMode>,
@@ -312,7 +337,7 @@ impl PlanningQuery {
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RoutingError {
-    #[error("routing query has no usable access or egress")]
+    #[error("routing query has invalid access or egress")]
     InvalidQuery,
     #[error("static corridor search exceeded its safety expansion bound")]
     StaticSearchLimit,

@@ -192,7 +192,7 @@ async fn bike_availability_is_not_loaded_when_bike_share_is_not_selected() {
 }
 
 #[tokio::test]
-async fn slower_bike_segment_is_rejected() {
+async fn slower_bike_preserves_transit_and_can_reduce_direct_walking() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -232,12 +232,16 @@ async fn slower_bike_segment_is_rejected() {
         }),
     )
     .await;
+    let options = body["journey_options"].as_array().unwrap();
     assert!(
-        body["journey_options"]
-            .as_array()
-            .unwrap()
+        options
             .iter()
-            .all(|option| bike_share_uses(option) == 0)
+            .any(|option| bike_share_uses(option) == 0 && leg_modes(option).contains(&"transit"))
+    );
+    assert!(
+        options
+            .iter()
+            .any(|option| bike_share_uses(option) == 1 && !leg_modes(option).contains(&"transit"))
     );
 }
 
@@ -364,7 +368,7 @@ async fn bike_availability_failure_keeps_the_transit_baseline() {
 }
 
 #[tokio::test]
-async fn viable_transit_corridor_does_not_add_direct_surface_alternatives() {
+async fn viable_transit_corridor_competes_with_direct_bike_share() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
@@ -460,7 +464,11 @@ async fn viable_transit_corridor_does_not_add_direct_surface_alternatives() {
             .iter()
             .any(|option| leg_modes(option).contains(&"transit"))
     );
-    assert!(options.iter().all(|option| bike_share_uses(option) == 0));
+    assert!(
+        options
+            .iter()
+            .any(|option| bike_share_uses(option) == 1 && !leg_modes(option).contains(&"transit"))
+    );
     assert!(
         options
             .iter()
@@ -564,7 +572,7 @@ async fn bike_only_uses_the_trivial_corridor_for_both_surface_modes() {
 }
 
 #[tokio::test]
-async fn transit_without_reachable_corridors_uses_the_same_bike_fallback() {
+async fn transit_without_reachable_corridors_uses_the_direct_bike_corridor() {
     trivial_corridor_bike_options(&["metro", "bike_share"]).await;
 }
 
@@ -652,73 +660,82 @@ async fn bike_only_keeps_walking_when_availability_fails() {
 }
 
 #[tokio::test]
-async fn reconstruction_failure_falls_back_without_reloading_request_snapshots() {
-    let transit = network();
-    let origin = near_stop(&transit, "F-M1");
-    let destination = near_stop(&transit, "F-M2-RED");
-    let access_stop = stop_coordinate(&transit, "F-M1");
-    let egress_stop = stop_coordinate(&transit, "F-M2-RED");
-    let runtime = TransitRuntime::new(Arc::new(transit.clone()));
-    let mut snapshot = TimingSnapshot::default();
-    for scheduled in transit
-        .trips
-        .iter()
-        .filter(|trip| trip.pattern_id.as_str() == "fixture-mrt-red")
-    {
-        let trip =
-            EffectiveTrip::from_scheduled(&runtime, date!(2026 - 08 - 31), &scheduled.id).unwrap();
-        snapshot.insert(trip.pattern_id.clone(), 0, vec![trip]);
-    }
-    let timing = Arc::new(CountingTiming {
-        calls: AtomicUsize::new(0),
-        snapshot,
-    });
-    let availability_calls = Arc::new(AtomicUsize::new(0));
-    let street = Arc::new(CountingStreet {
-        inner: FakeStreetRouter::builder()
-            .path(
-                StreetTravelMode::Walking,
-                origin,
-                access_stop,
-                path(origin, access_stop, 60),
-            )
-            .path(
-                StreetTravelMode::Walking,
-                egress_stop,
-                destination,
-                path(egress_stop, destination, 60),
-            )
-            .path(
-                StreetTravelMode::Walking,
-                origin,
-                destination,
-                path(origin, destination, 300),
-            )
-            .build(),
-        origin,
-        destination,
-        direct_calls: AtomicUsize::new(0),
-        route_failure_at: Some((origin, access_stop)),
-    });
-    let body = route_body_with_sources(
-        street.clone(),
-        timing.clone(),
-        request(origin, destination, &["metro", "bike_share"]),
-        Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
-        Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[])),
-            calls: availability_calls.clone(),
-        }),
-    )
-    .await;
+async fn reconstruction_failure_preserves_direct_walking_without_reloading_snapshots() {
+    for max_candidates in [1, 16] {
+        let transit = network();
+        let origin = near_stop(&transit, "F-M1");
+        let destination = near_stop(&transit, "F-M2-RED");
+        let access_stop = stop_coordinate(&transit, "F-M1");
+        let egress_stop = stop_coordinate(&transit, "F-M2-RED");
+        let runtime = TransitRuntime::new(Arc::new(transit.clone()));
+        let mut snapshot = TimingSnapshot::default();
+        for scheduled in transit
+            .trips
+            .iter()
+            .filter(|trip| trip.pattern_id.as_str() == "fixture-mrt-red")
+        {
+            let trip =
+                EffectiveTrip::from_scheduled(&runtime, date!(2026 - 08 - 31), &scheduled.id)
+                    .unwrap();
+            snapshot.insert(trip.pattern_id.clone(), 0, vec![trip]);
+        }
+        let timing = Arc::new(CountingTiming {
+            calls: AtomicUsize::new(0),
+            snapshot,
+        });
+        let availability_calls = Arc::new(AtomicUsize::new(0));
+        let street = Arc::new(CountingStreet {
+            inner: FakeStreetRouter::builder()
+                .path(
+                    StreetTravelMode::Walking,
+                    origin,
+                    access_stop,
+                    path(origin, access_stop, 60),
+                )
+                .path(
+                    StreetTravelMode::Walking,
+                    egress_stop,
+                    destination,
+                    path(egress_stop, destination, 60),
+                )
+                .path(
+                    StreetTravelMode::Walking,
+                    origin,
+                    destination,
+                    path(origin, destination, 3000),
+                )
+                .build(),
+            origin,
+            destination,
+            direct_calls: AtomicUsize::new(0),
+            route_failure_at: Some((origin, access_stop)),
+        });
+        let mut limits = via_server::routing::JourneyPlanningLimits::default();
+        limits.planner.max_candidates = max_candidates;
+        let service = via_server::routing::RoutingService::new(
+            street.clone(),
+            Arc::new(TransitRuntime::new(Arc::new(transit))),
+            timing.clone(),
+            Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
+            Arc::new(FixtureAvailabilitySource {
+                snapshot: Ok(bike_snapshot(&[])),
+                calls: availability_calls.clone(),
+            }),
+            limits,
+            false,
+        );
+        let request =
+            serde_json::from_value(request(origin, destination, &["metro", "bike_share"])).unwrap();
+        let body = serde_json::to_value(service.plan(request).await.unwrap()).unwrap();
 
-    assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(availability_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
-    let options = body["journey_options"].as_array().unwrap();
-    assert_eq!(options.len(), 1);
-    assert_eq!(leg_modes(&options[0]), vec!["walking"]);
-    assert_eq!(options[0]["duration_seconds"], 300);
+        assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(availability_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
+        let options = body["journey_options"].as_array().unwrap();
+        assert_eq!(options.len(), 1);
+        assert_eq!(leg_modes(&options[0]), vec!["walking"]);
+        assert_eq!(options[0]["duration_seconds"], 3000);
+    }
 }
 
 #[tokio::test]

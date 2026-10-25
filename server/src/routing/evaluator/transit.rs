@@ -14,14 +14,12 @@ impl MovementExpander for TransitExpander<'_> {
         context: &mut ExpansionContext<'_>,
         state: &EvaluationState,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let mut next = Vec::new();
-        for movement in &context.edge.baseline {
-            if let BaselineMovement::Transit(leg) = movement {
-                let successors = self.expand_transit(context, state, leg, context.index)?;
-                next.extend(successors);
+        match &context.edge.planned_movement {
+            PlannedMovement::Transit(leg) => {
+                self.expand_transit(context, state, leg, context.index)
             }
+            _ => Ok(Vec::new()),
         }
-        Ok(next)
     }
 }
 

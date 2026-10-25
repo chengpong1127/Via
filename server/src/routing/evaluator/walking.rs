@@ -12,36 +12,30 @@ impl MovementExpander for WalkingExpander {
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let mut next = Vec::new();
         let index = context.index;
-        let mut retained = false;
-        for movement in &context.edge.baseline {
-            if let BaselineMovement::RetainedWalking {
-                kind,
-                duration_seconds,
-                distance_metres,
-                access_available_at,
-            } = movement
-            {
-                retained = true;
-                context.charge()?;
-                let arrival = access_available_at
-                    .unwrap_or(state.ready_at + Duration::seconds(i64::from(*duration_seconds)));
-                if within_query_bounds(context.query, arrival) {
-                    next.push(state.after_movement(JourneyMovement {
-                        from_anchor: index,
-                        to_anchor: index + 1,
-                        departure_at: state.ready_at,
-                        arrival_at: arrival,
-                        kind: JourneyMovementKind::Walking {
-                            kind: *kind,
-                            duration_seconds: *duration_seconds,
-                            distance_metres: *distance_metres,
-                        },
-                        street_path: None,
-                    }));
-                }
+        if let PlannedMovement::RetainedWalking {
+            kind,
+            duration_seconds,
+            distance_metres,
+            access_available_at,
+        } = &context.edge.planned_movement
+        {
+            context.charge()?;
+            let arrival = access_available_at
+                .unwrap_or(state.ready_at + Duration::seconds(i64::from(*duration_seconds)));
+            if within_query_bounds(context.query, arrival) {
+                next.push(state.after_movement(JourneyMovement {
+                    from_anchor: index,
+                    to_anchor: index + 1,
+                    departure_at: state.ready_at,
+                    arrival_at: arrival,
+                    kind: JourneyMovementKind::Walking {
+                        kind: *kind,
+                        duration_seconds: *duration_seconds,
+                        distance_metres: *distance_metres,
+                    },
+                    street_path: None,
+                }));
             }
-        }
-        if retained {
             return Ok(next);
         }
         let request = SurfaceRequest {
