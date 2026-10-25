@@ -8,6 +8,8 @@ mod tests;
 mod transit;
 mod walking;
 
+#[cfg(test)]
+use super::surface::{BikeSharePlanner, SurfaceRealizationStats, WalkingMovementPlanner};
 use super::{
     corridor::{CorridorEdge, EvaluationCorridor, PlannedMovement},
     model::{PlanningQuery, RoutingError},
@@ -16,10 +18,7 @@ use super::{
         RealizedJourney, WalkingMovementKind,
     },
     static_search::{RetainedCorridorSet, StaticTransitLeg},
-    surface::{
-        SurfaceKind, SurfaceMovement, SurfaceMovementPlanner, SurfaceRealizationStats,
-        SurfaceRequest,
-    },
+    surface::{SurfacePlanners, SurfaceRequest},
 };
 #[cfg(test)]
 use crate::domain::ids::BoardingPointId;
@@ -44,6 +43,10 @@ pub struct Phase2EvaluationStats {
     pub bike_exact_candidates_requested: usize,
     pub bike_exact_cache_hits: usize,
     pub bike_matrix_requests: usize,
+    pub walking_exact_requests: usize,
+    pub walking_cache_hits: usize,
+    pub expansion_limit_reached: bool,
+    pub corridors_completed: usize,
     pub final_candidates: usize,
     pub phase2_latency_us: u64,
 }
@@ -65,7 +68,7 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     corridor: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
     query: &'a PlanningQuery,
-    surface_planners: &'a mut [Box<dyn SurfaceMovementPlanner>],
+    surface_planners: &'a mut SurfacePlanners,
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
 }
@@ -76,7 +79,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &'a RetainedCorridorSet,
         snapshot: &'a TimingSnapshot,
         query: &'a PlanningQuery,
-        surface_planners: &'a mut [Box<dyn SurfaceMovementPlanner>],
+        surface_planners: &'a mut SurfacePlanners,
     ) -> Self {
         Self {
             network,
@@ -96,24 +99,42 @@ impl<'a> FixedCorridorEvaluator<'a> {
         let started = Instant::now();
         let mut candidates = Vec::new();
         for corridor in corridors {
-            candidates.extend(self.evaluate_corridor(corridor).await?);
+            match self.evaluate_corridor(corridor).await {
+                Ok(completed) => {
+                    self.stats.corridors_completed += 1;
+                    candidates.extend(completed);
+                }
+                Err(RoutingError::Phase2EvaluationLimit) => {
+                    self.stats.expansion_limit_reached = true;
+                    ::metrics::counter!("via_planner_phase2_budget_exhaustions_total").increment(1);
+                    tracing::warn!(
+                        target: "via_server::routing",
+                        states_evaluated = self.stats.corridor_states_evaluated,
+                        corridors_completed = self.stats.corridors_completed,
+                        completed_candidates = candidates.len(),
+                        "Phase 2 budget exhausted; retaining only completed corridors"
+                    );
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
         }
 
+        self.check_deadline()?;
         let candidates = pareto_candidates(candidates);
+        self.check_deadline()?;
         self.stats.final_candidates = candidates.len();
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         let bike_work = self
             .surface_planners
-            .iter()
-            .filter(|planner| planner.kind() == SurfaceKind::BikeShare)
+            .bike_share
+            .as_ref()
             .map(|planner| planner.realization_stats())
-            .fold(SurfaceRealizationStats::default(), |mut total, stats| {
-                total.exact_requests += stats.exact_requests;
-                total.cache_hits += stats.cache_hits;
-                total.matrix_requests += stats.matrix_requests;
-                total
-            });
+            .unwrap_or_default();
+        let walking_work = self.surface_planners.walking.realization_stats();
+        self.stats.walking_exact_requests = walking_work.exact_requests;
+        self.stats.walking_cache_hits = walking_work.cache_hits;
         self.stats.bike_exact_candidates_requested = bike_work.exact_requests;
         self.stats.bike_exact_cache_hits = bike_work.cache_hits;
         self.stats.bike_matrix_requests = bike_work.matrix_requests;
@@ -127,9 +148,16 @@ impl<'a> FixedCorridorEvaluator<'a> {
             bike_cache_hits = self.stats.bike_exact_cache_hits,
             bike_matrix_requests = self.stats.bike_matrix_requests,
             final_candidates = self.stats.final_candidates,
+            expansion_limit_reached = self.stats.expansion_limit_reached,
+            corridors_completed = self.stats.corridors_completed,
+            walking_exact_requests = self.stats.walking_exact_requests,
+            walking_cache_hits = self.stats.walking_cache_hits,
             latency_us = self.stats.phase2_latency_us,
             "Phase 2 corridor evaluation"
         );
+        if self.stats.expansion_limit_reached && candidates.is_empty() {
+            return Err(RoutingError::Phase2EvaluationLimit);
+        }
         Ok(EvaluationResult {
             journeys: candidates.into_iter().map(|c| c.journey).collect(),
             stats: self.stats,
@@ -214,10 +242,7 @@ impl TestBikePlanner {
 }
 #[cfg(test)]
 #[async_trait::async_trait]
-impl SurfaceMovementPlanner for TestBikePlanner {
-    fn kind(&self) -> SurfaceKind {
-        SurfaceKind::BikeShare
-    }
+impl BikeSharePlanner for TestBikePlanner {
     fn realization_stats(&self) -> SurfaceRealizationStats {
         SurfaceRealizationStats {
             exact_requests: self.cache.len(),
@@ -233,7 +258,7 @@ impl SurfaceMovementPlanner for TestBikePlanner {
     async fn realize(
         &mut self,
         request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<SurfaceMovement>, crate::street::StreetRoutingError> {
+    ) -> Result<Vec<BikeShareMovement>, crate::street::StreetRoutingError> {
         let Some(movement) = self.movement(request) else {
             return Ok(Vec::new());
         };
@@ -250,10 +275,7 @@ impl SurfaceMovementPlanner for TestBikePlanner {
             bike_movement.from_anchor = request.from_anchor;
             bike_movement.to_anchor = request.to_anchor;
         }
-        Ok(options
-            .into_iter()
-            .map(SurfaceMovement::BikeShare)
-            .collect())
+        Ok(options)
     }
 }
 
@@ -305,15 +327,14 @@ fn run_test_evaluation(
                 .iter()
                 .map(|retained| EvaluationCorridor::from_transit(network, retained, &query))
                 .collect::<Result<Vec<_>, _>>()?;
-            let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> = routes
-                .map(|routes| {
-                    vec![Box::new(TestBikePlanner {
-                        routes: routes.clone(),
-                        cache: std::collections::HashMap::new(),
-                        hits: 0,
-                    }) as Box<dyn SurfaceMovementPlanner>]
-                })
-                .unwrap_or_default();
+            let mut surface_planners = test_surface_planners();
+            surface_planners.bike_share = routes.map(|routes| {
+                Box::new(TestBikePlanner {
+                    routes: routes.clone(),
+                    cache: std::collections::HashMap::new(),
+                    hits: 0,
+                }) as Box<dyn BikeSharePlanner>
+            });
             let result = FixedCorridorEvaluator::new(
                 network,
                 corridor,
@@ -325,4 +346,14 @@ fn run_test_evaluation(
             .await?;
             Ok((result.journeys, result.stats))
         })
+}
+
+#[cfg(test)]
+fn test_surface_planners() -> SurfacePlanners {
+    SurfacePlanners {
+        walking: WalkingMovementPlanner::new(Arc::new(
+            crate::street::FakeStreetRouter::builder().build(),
+        )),
+        bike_share: None,
+    }
 }

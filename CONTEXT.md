@@ -13,7 +13,7 @@ PlanningRequest
        ├─ MultimodalPlanner.prepare() → PlanningSession.evaluate()
        │    ├─ Phase 1: bounded static Top-K transit corridors
        │    ├─ load request-local snapshots for retained transit positions
-       │    ├─ convert retained corridors and append a direct walking EvaluationCorridor
+       │    ├─ convert retained corridors and prepend a direct walking EvaluationCorridor
        │    └─ Phase 2: fixed-corridor movement evaluation
        ├─ JourneyReconstructor assembles candidates
        └─ validate failures → rank → PlanningOutcome
@@ -95,11 +95,19 @@ The TDX provider caches individual station records for 45 seconds, rechecks
 original observation freshness, and fetches only missing/stale IDs in filtered
 50-station batches grouped by city (up to four cities concurrently). Partial
 failures preserve successful records; empty requests make no availability calls.
-The direct corridor is always appended after retained transit corridors and does
-not consume a static Top-K slot. One pass shares the existing request-local
-snapshots, movement caches, deadline, and hard expansion budget. Transit keeps
-priority in evaluation order; exhausted budgets reject partial results, including
-when the direct corridor would exceed the remaining budget. Limits are unchanged.
+The direct corridor is evaluated first, outside static Top-K. Its single edge
+can charge at most two expansions: one Walking realization and one optional
+BikeShare realization. Transit then follows its deterministic static order,
+using the same unchanged hard budget. On budget exhaustion the interrupted
+corridor contributes no journeys; completed corridor candidates remain eligible.
+If no candidate from a completed corridor exists, evaluation returns
+`Phase2EvaluationLimit`. Deadlines always terminate the request. Partial evaluation
+is reported in stats, a warning, and `via_planner_phase2_budget_exhaustions_total`.
+A BikeShare-enabled direct corridor may need both expansions to complete;
+with only one available, its temporary Walking successor is discarded and
+no complete candidate means a limit error.
+Small budgets may leave insufficient work for transit; no mode has an unlimited
+allowance and no work exceeds the configured limit.
 
 For each edge, `FixedCorridorEvaluator` combines successors from independent
 `TransitExpander`, `WalkingExpander`, and `BikeShareExpander` implementations of
@@ -107,18 +115,27 @@ For each edge, `FixedCorridorEvaluator` combines successors from independent
 snapshot departures. Walking reuses retained access, transfer, and egress metrics
 without exact routing; otherwise it realizes an anchor-to-anchor street route.
 BikeShare delegates station discovery, availability filtering, and routing to the
-existing request-local planner. Shared expansion accounting enforces deadlines,
-budgets, and provider failure classification.
+optional BikeShare planner. `SurfacePlanners` owns a concrete Walking planner
+and one optional boxed `BikeSharePlanner`; the narrow BikeShare trait preserves
+synthetic test injection. There is no surface registry, kind dispatch, or movement
+union. Named realization operations share error classification and accounting.
+Shared expansion accounting enforces deadlines and budgets.
 
 Walking and BikeShare use cheap optimistic duration bounds to reject movements
 outside the query's time limits. They are not screened against another mode's
 arrival: a slower movement can reduce walking, transfers, cycling, or rentals,
 or preserve a different future capability. Shared Pareto pruning compares these
-metrics and compatible state capabilities, subject to the candidate limit. A journey requiring street geometry hydration
-cannot dominate an already-routed journey before reconstruction; ranking filters
+metrics and compatible state capabilities, subject to the candidate limit.
+A journey requiring street geometry hydration cannot dominate an already-routed journey before reconstruction; ranking filters
 reconstructed candidates afterward. Per-edge frontiers keep the candidate cap;
-the service applies the final cap to successful reconstructions, preserving
-alternatives when geometry hydration fails.
+the service reconstructs the entire bounded Pareto pool before deduplication
+and ranking. Ranking applies the final limit, the smaller of its normal result
+limit and configured `max_candidates`. Failed reconstruction or ranking rejection
+cannot consume an earlier insertion-order slot. The pool is bounded by retained
+corridors times the per-edge frontier cap (defaults: 101 × 16), expansion limits,
+and the request deadline. `plan_with_stats()` deliberately remains a capped P2
+diagnostic API: it returns arrival-ordered journeys without reconstruction or
+ranking and reports the capped returned count.
 This can increase exact street work compared with baseline-first screening;
 request-local caches, expansion budgets, and station/route limits still bound it.
 Walking alternatives are retained as already-routed path movements, avoiding a

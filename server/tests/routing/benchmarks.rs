@@ -102,6 +102,7 @@ async fn deterministic_routing_benchmark() {
         let mut static_samples = Vec::with_capacity(ITERATIONS);
         let mut planner_samples = Vec::with_capacity(ITERATIONS);
         let mut expected = None;
+        let mut last_phase2 = None;
         for iteration in 0..WARMUP + ITERATIONS {
             let started = Instant::now();
             let (corridors, static_stats) =
@@ -113,6 +114,7 @@ async fn deterministic_routing_benchmark() {
                 .await
                 .unwrap();
             let planner_ns = started.elapsed().as_nanos();
+            last_phase2 = Some(planner_stats.phase2_evaluation);
             let counters = (
                 corridors.retained().len(),
                 static_stats.states_expanded,
@@ -139,6 +141,16 @@ async fn deterministic_routing_benchmark() {
         assert!(
             realized_journeys > 0,
             "benchmark must realize journeys: {label}"
+        );
+        let last_phase2 = last_phase2.unwrap();
+        println!(
+            "{label}: p2_expansions={} walking_requests={} walking_cache_hits={} bike_requests={} bike_cache_hits={} bike_matrices={}",
+            last_phase2.corridor_states_evaluated,
+            last_phase2.walking_exact_requests,
+            last_phase2.walking_cache_hits,
+            last_phase2.bike_exact_candidates_requested,
+            last_phase2.bike_exact_cache_hits,
+            last_phase2.bike_matrix_requests
         );
         println!(
             "{label}: iterations={ITERATIONS} static_median_us={:.3} planner_median_us={:.3} corridors={corridors} expansions={expansions} realized_journeys={realized_journeys} departure_lookups={lookups}",

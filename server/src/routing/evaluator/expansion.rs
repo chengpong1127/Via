@@ -8,7 +8,7 @@ pub(super) struct ExpansionContext<'a> {
     pub query: &'a PlanningQuery,
     pub stats: &'a mut Phase2EvaluationStats,
     pub failures: &'a mut EvaluationFailures,
-    pub surface_planners: &'a mut [Box<dyn SurfaceMovementPlanner>],
+    pub surface_planners: &'a mut SurfacePlanners,
 }
 
 #[async_trait::async_trait]
@@ -38,23 +38,41 @@ impl ExpansionContext<'_> {
         Ok(())
     }
 
-    pub async fn realize(
+    pub async fn realize_walking(
         &mut self,
-        planner_index: usize,
         request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<SurfaceMovement>, RoutingError> {
+    ) -> Result<Option<Arc<crate::street::StreetPath>>, RoutingError> {
         self.charge()?;
-        let result = self.surface_planners[planner_index].realize(request).await;
+        let result = self.surface_planners.walking.realize(request).await;
+        self.finish_realization(result)
+    }
+
+    pub async fn realize_bike_share(
+        &mut self,
+        request: &SurfaceRequest<'_>,
+    ) -> Result<Vec<BikeShareMovement>, RoutingError> {
+        self.charge()?;
+        let result = match self.surface_planners.bike_share.as_mut() {
+            Some(planner) => planner.realize(request).await,
+            None => return Ok(Vec::new()),
+        };
+        Ok(self.finish_realization(result)?.unwrap_or_default())
+    }
+
+    fn finish_realization<T>(
+        &mut self,
+        result: Result<T, crate::street::StreetRoutingError>,
+    ) -> Result<Option<T>, RoutingError> {
         self.check_deadline()?;
         match result {
-            Ok(items) => Ok(items),
+            Ok(items) => Ok(Some(items)),
             Err(error) => {
                 match error.failure_class() {
                     ProviderFailureClass::Transient => self.failures.transient = true,
                     ProviderFailureClass::Internal => self.failures.internal = true,
                     ProviderFailureClass::Unreachable => {}
                 }
-                Ok(Vec::new())
+                Ok(None)
             }
         }
     }

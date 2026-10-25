@@ -99,40 +99,34 @@ impl MovementExpander for BikeShareExpander {
             from_anchor: start_anchor,
             to_anchor: context.index + 1,
         };
-        for planner_index in 0..context.surface_planners.len() {
-            let planner = &context.surface_planners[planner_index];
-            if planner.kind() != SurfaceKind::BikeShare {
+        let Some(planner) = context.surface_planners.bike_share.as_ref() else {
+            return Ok(next);
+        };
+        let Some(bound) = planner.optimistic_duration(&request) else {
+            return Ok(next);
+        };
+        context.stats.bike_lower_bound_checks += 1;
+        if !within_query_bounds(
+            context.query,
+            started_at + Duration::seconds(i64::from(bound)),
+        ) {
+            context.stats.bike_lower_bound_rejections += 1;
+            return Ok(next);
+        }
+        for movement in context.realize_bike_share(&request).await? {
+            let arrival = started_at + Duration::seconds(i64::from(movement.total_seconds));
+            if !within_query_bounds(context.query, arrival) {
                 continue;
             }
-            let Some(bound) = planner.optimistic_duration(&request) else {
-                continue;
-            };
-            context.stats.bike_lower_bound_checks += 1;
-            if !within_query_bounds(
-                context.query,
-                started_at + Duration::seconds(i64::from(bound)),
+            if let Some(successor) = state.after_bike_share(
+                movement,
+                start_anchor,
+                context.index + 1,
+                started_at,
+                arrival,
+                context.query.departure_time,
             ) {
-                context.stats.bike_lower_bound_rejections += 1;
-                continue;
-            }
-            for movement in context.realize(planner_index, &request).await? {
-                let SurfaceMovement::BikeShare(movement) = movement else {
-                    continue;
-                };
-                let arrival = started_at + Duration::seconds(i64::from(movement.total_seconds));
-                if !within_query_bounds(context.query, arrival) {
-                    continue;
-                }
-                if let Some(successor) = state.after_bike_share(
-                    movement,
-                    start_anchor,
-                    context.index + 1,
-                    started_at,
-                    arrival,
-                    context.query.departure_time,
-                ) {
-                    next.push(successor);
-                }
+                next.push(successor);
             }
         }
         Ok(next)

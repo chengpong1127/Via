@@ -22,8 +22,8 @@ use crate::{
 use super::{
     realized::{BikeRide, BikeShareMovement},
     surface::{
-        CorridorAnchor, CorridorAnchorKey, SurfaceKind, SurfaceMovement, SurfaceMovementPlanner,
-        SurfaceRealizationStats, SurfaceRequest,
+        BikeSharePlanner, CorridorAnchor, CorridorAnchorKey, SurfaceRealizationStats,
+        SurfaceRequest,
     },
 };
 
@@ -382,7 +382,7 @@ impl BikeShareSession {
 }
 
 #[async_trait]
-impl SurfaceMovementPlanner for BikeShareSession {
+impl BikeSharePlanner for BikeShareSession {
     fn realization_stats(&self) -> SurfaceRealizationStats {
         SurfaceRealizationStats {
             exact_requests: self.cache.len(),
@@ -390,10 +390,6 @@ impl SurfaceMovementPlanner for BikeShareSession {
             matrix_requests: self.stats.matrix_requests,
         }
     }
-    fn kind(&self) -> SurfaceKind {
-        SurfaceKind::BikeShare
-    }
-
     fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
         self.planner
             .movement_candidate(request.from, request.to, &self.snapshot, self.now)
@@ -403,7 +399,7 @@ impl SurfaceMovementPlanner for BikeShareSession {
     async fn realize(
         &mut self,
         request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<SurfaceMovement>, StreetRoutingError> {
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         let key = (request.from.cache_key(), request.to.cache_key());
         if self.cache.contains_key(&key) {
             self.cache_hits += 1;
@@ -430,7 +426,7 @@ impl SurfaceMovementPlanner for BikeShareSession {
                 .map(|mut bike_movement| {
                     bike_movement.from_anchor = request.from_anchor;
                     bike_movement.to_anchor = request.to_anchor;
-                    SurfaceMovement::BikeShare(bike_movement)
+                    bike_movement
                 })
                 .collect()
         })
@@ -1002,9 +998,7 @@ mod tests {
         };
         assert!(session.optimistic_duration(&request).is_some());
         let movements = session.realize(&request).await.unwrap();
-        let SurfaceMovement::BikeShare(bike_movement) = &movements[0] else {
-            panic!("expected BikeShare");
-        };
+        let bike_movement = &movements[0];
         assert_eq!(bike_movement.total_seconds, 130);
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
         assert_eq!(session.stats.matrix_requests, 2);
@@ -1016,9 +1010,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let SurfaceMovement::BikeShare(bike_movement) = &remapped[0] else {
-            panic!("expected BikeShare");
-        };
+        let bike_movement = &remapped[0];
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
         assert_eq!(session.cache_hits, 1);
         assert_eq!(session.stats.matrix_requests, 2);

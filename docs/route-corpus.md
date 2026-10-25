@@ -48,3 +48,48 @@ Run its release measurements with:
 ```bash
 cargo test --manifest-path server/Cargo.toml --release --lib direct_corridor_cost_and_shared_budget_are_bounded -- --nocapture
 ```
+
+`ranking_considers_three_corridors_before_applying_a_one_result_limit` checks
+that two earlier fallback-timed MRT routes cannot exclude a later preferred
+walk, and that ranking rejection of both MRT routes still leaves the walk.
+`exhausted_transit_corridor_preserves_completed_direct_walking_and_bike_share`
+checks surface fairness, the hard budget, and omission of incomplete transit.
+`deadline_remains_a_hard_failure_after_a_completed_corridor` uses paused time
+to verify that partial-result handling never suppresses a deadline.
+
+Run both release-mode routing and reconstruction benchmarks with:
+
+```bash
+cargo test --manifest-path server/Cargo.toml --release --test routing benchmark -- --ignored --nocapture --test-threads=1
+```
+
+A sequential run of the pre-refactor and updated release binaries, with compiler
+work paused during measurement, produced these in-memory results over 1,000
+iterations. Timings are host-dependent and do not measure live Valhalla latency.
+
+| Fixture / work | Before | After |
+| --- | --- | --- |
+| Ranking fixture, reconstructed journeys per request | 1 | 3 |
+| Ranking fixture, route calls | 5 | 7 |
+| Ranking fixture, matrix calls | 2 | 2 |
+| Ranking fixture, hydration route calls | 2 | 4 |
+| Ranking fixture, eligible-transit median / p95 | 31 / 35 µs | 32 / 35 µs |
+| Ranking fixture, rejected-transit median / p95 | 25 / 28 µs | 32 / 36 µs |
+| MRT planner median | 17.917 µs | 14.376 µs |
+| Bus planner median | 13.667 µs | 12.959 µs |
+| Bus → MRT planner median | 33.751 µs | 28.750 µs |
+| MRT → Bus planner median | 39.750 µs | 38.667 µs |
+| Multiple-transfer planner median | 36.584 µs | 35.292 µs |
+| P2 expansions, same five planner fixtures | 5 / 5 / 8 / 11 / 11 | 5 / 5 / 8 / 11 / 11 |
+| Repeated Walking realization, physical requests for the same departure | 1 | 1 |
+| 12-edge BikeShare fixture, exact realizations / cache hits | 72 / 66 | 72 / 66 |
+
+The two additional reconstruction routes in the ranking fixture hydrate the second
+MRT candidate's access and egress geometry. All three candidates reach ranking;
+the reliable direct walk wins the one-result limit, or remains eligible when both
+MRT candidates are rejected. The previous implementation selected the first MRT
+candidate or returned an empty result after its rejection. The fixture has no
+BikeShare, so its BikeShare matrix calls and cache hits remain zero. The Walking
+cache regression also checks a distinct departure time: three realizations make
+two physical requests and record one cache hit. These counters demonstrate the
+work changes independently of timing noise.

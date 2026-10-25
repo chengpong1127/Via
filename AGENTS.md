@@ -23,9 +23,9 @@ Bus segment costs, or optimistic geometry estimates. It retains transit
 corridors only. Phase 2 represents each retained corridor as an
 `EvaluationCorridor` whose anchors include Origin, boarding points, and
 Destination. Each edge has exactly one `PlannedMovement`: transit, retained
-walking metrics, or walking requiring routing. The planner appends a direct
-Origin-to-Destination walking corridor after the transit corridors, outside
-Top-K. With no transit mode selected, Phase 1 is skipped. All corridors use the
+walking metrics, or walking requiring routing. The planner includes a direct
+Origin-to-Destination walking corridor outside Top-K and evaluates it first,
+using at most two charged expansions before the ordered transit corridors. With no transit mode selected, Phase 1 is skipped. All corridors use the
 same evaluation pass; there is no separate surface fallback.
 
 `selected_modes` lists only optional non-walking modes. `[]` enables walking
@@ -34,7 +34,7 @@ The planner loads timing only for retained transit positions and loads one
 request-local BikeShare availability snapshot only when BikeShare is selected.
 `FixedCorridorEvaluator` combines independent Transit, Walking, and BikeShare
 `MovementExpander` successors and applies shared Pareto pruning. Walking and
-BikeShare reuse `SurfaceMovementPlanner` providers, request-local caches, and
+BikeShare use explicit `SurfacePlanners` slots, request-local caches, and
 optimistic query-time bounds; they are not screened against baseline arrival.
 BikeShare may extend one continuous rental across later anchors. The evaluator
 cannot add anchors or combine corridors and makes no additional TDX calls.

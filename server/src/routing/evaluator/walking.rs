@@ -45,49 +45,41 @@ impl MovementExpander for WalkingExpander {
             from_anchor: index,
             to_anchor: index + 1,
         };
-        for planner_index in 0..context.surface_planners.len() {
-            let planner = &context.surface_planners[planner_index];
-            if planner.kind() != SurfaceKind::Walking {
-                continue;
+        let bound = context
+            .surface_planners
+            .walking
+            .optimistic_duration(&request);
+        if !within_query_bounds(
+            context.query,
+            state.ready_at + Duration::seconds(i64::from(bound)),
+        ) {
+            return Ok(next);
+        }
+        if let Some(path) = context.realize_walking(&request).await? {
+            let arrival = state.ready_at + Duration::seconds(i64::from(path.duration.0));
+            if !within_query_bounds(context.query, arrival) {
+                return Ok(next);
             }
-            let Some(bound) = planner.optimistic_duration(&request) else {
-                continue;
-            };
-            if !within_query_bounds(
-                context.query,
-                state.ready_at + Duration::seconds(i64::from(bound)),
-            ) {
-                continue;
-            }
-            for movement in context.realize(planner_index, &request).await? {
-                let SurfaceMovement::Walking(path) = movement else {
-                    continue;
-                };
-                let arrival = state.ready_at + Duration::seconds(i64::from(path.duration.0));
-                if !within_query_bounds(context.query, arrival) {
-                    continue;
+            let kind = match (&request.from.kind, &request.to.kind) {
+                (JourneyAnchorKind::Origin, JourneyAnchorKind::Destination) => {
+                    WalkingMovementKind::Direct
                 }
-                let kind = match (&request.from.kind, &request.to.kind) {
-                    (JourneyAnchorKind::Origin, JourneyAnchorKind::Destination) => {
-                        WalkingMovementKind::Direct
-                    }
-                    (JourneyAnchorKind::Origin, _) => WalkingMovementKind::Access,
-                    (_, JourneyAnchorKind::Destination) => WalkingMovementKind::Egress,
-                    _ => WalkingMovementKind::Transfer,
-                };
-                next.push(state.after_movement(JourneyMovement {
-                    from_anchor: index,
-                    to_anchor: index + 1,
-                    departure_at: state.ready_at,
-                    arrival_at: arrival,
-                    kind: JourneyMovementKind::Walking {
-                        kind,
-                        duration_seconds: path.duration.0,
-                        distance_metres: path.distance.0,
-                    },
-                    street_path: Some(path),
-                }));
-            }
+                (JourneyAnchorKind::Origin, _) => WalkingMovementKind::Access,
+                (_, JourneyAnchorKind::Destination) => WalkingMovementKind::Egress,
+                _ => WalkingMovementKind::Transfer,
+            };
+            next.push(state.after_movement(JourneyMovement {
+                from_anchor: index,
+                to_anchor: index + 1,
+                departure_at: state.ready_at,
+                arrival_at: arrival,
+                kind: JourneyMovementKind::Walking {
+                    kind,
+                    duration_seconds: path.duration.0,
+                    distance_metres: path.distance.0,
+                },
+                street_path: Some(path),
+            }));
         }
         Ok(next)
     }

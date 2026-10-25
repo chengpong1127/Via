@@ -22,7 +22,7 @@ second search after Phase 1 had already retained candidate corridors.
    BoardingPoint, and Destination anchors. Each edge contains exactly one
    `PlannedMovement`: transit, retained walking metrics, or unresolved walking.
    A direct Origin-to-Destination corridor with one unresolved walking edge is
-   appended after transit corridors, outside Top-K. With no transit mode
+   included outside Top-K and evaluated before transit corridors. With no transit mode
    selected, Phase 1 is skipped. All corridors use one evaluation pass.
 
 `selected_modes` contains optional non-walking modes. Walking is always
@@ -44,7 +44,8 @@ owns retained access, transfer, and egress metrics as well as exact street walki
 retained metrics suppress duplicate exact walking requests. Surface providers
 retain their existing caches, availability filtering, station discovery, and
 routing responsibilities. Provider failures are classified centrally and leave
-other modes available; budget exhaustion and deadlines abort evaluation.
+other modes available. Deadlines abort evaluation; budget exhaustion retains
+only candidates from completed corridors.
 
 Optimistic duration bounds screen surface movements only against query time
 limits, not the arrival of another mode. This intentionally replaces the former
@@ -101,27 +102,49 @@ baseline screen. Expansion and candidate limits remain mandatory; no untested
 heuristic cutoff replaces the removed screen. The bounded frontier can still
 truncate Pareto alternatives when its candidate limit is reached.
 
-Transit corridors keep their deterministic search order, followed by the direct
-corridor. All consume one unchanged hard expansion budget. Budget exhaustion
-rejects partial results; there is no reserved surface allowance or second pass.
+Walking is a concrete dependency, and BikeShare occupies one optional typed slot
+in `SurfacePlanners`. The narrow `BikeSharePlanner` interface supports deterministic
+synthetic movement tests. `SurfaceMovementPlanner`, `SurfaceKind`, the mixed
+movement enum, collection scans, and integer planner indices are removed.
+
+The direct corridor runs first and naturally charges at most two expansions
+(one Walking realization and one optional BikeShare realization). This protects
+an early opportunity for both surface modes without a scheduler or increased
+limits. Transit corridors retain their static relative order. All calls use the
+same hard counter at `charge()`. An exhausted corridor contributes nothing,
+including any temporary states on its unfinished edges; previously completed
+corridor candidates remain eligible. If none exist, `Phase2EvaluationLimit` is
+returned. Deadline expiry remains a hard error even after a completed corridor.
+Warnings, an exhaustion counter, and stats report partial evaluation.
+
+A BikeShare-enabled direct corridor may need both expansions to complete;
+with only one available, its temporary Walking successor is discarded and
+no complete candidate means a limit error.
+This policy can leave too little budget for transit under very small limits.
+It preserves completed work rather than guaranteeing that every mode can finish
+under an insufficient budget. The one-edge direct corridor needs no separate
+allowance implementation: two known planner slots bound its charged work.
+
 A journey still requiring street geometry hydration cannot prune an already-routed
-candidate before reconstruction. Per-edge candidate caps still apply. The final cap applies to successful
-reconstructions, so failed geometry hydration cannot consume a result slot.
-The pre-reconstruction pool is bounded by the corridor count times the per-edge
-candidate cap and the shared expansion budget. Public `plan_with_stats()` callers
-receive at most the candidate cap; ranking filters reconstructed service results.
+candidate before reconstruction. Per-edge candidate caps still apply. The service
+reconstructs the bounded Pareto pool, deduplicates stable keys, and ranks all usable
+candidates before final selection. The final result cap is the smaller of the
+ranking policy limit and configured `max_candidates`. The reconstruction pool is
+bounded by corridor count times the frontier cap (101 × 16 with defaults), the
+shared expansion budget, and deadline. This may hydrate more candidates than the
+old first-N reconstruction rule; it avoids losing later preferred or eligible
+journeys. `plan_with_stats()` remains an arrival-ordered, capped P2 diagnostic API
+without reconstruction or ranking; its candidate count is the returned count.
 
 Identical access/egress duplicates resolve to one movement. Conflicting entries
 for a stop, departures inconsistent with query time, or access availability
 inconsistent with walking duration produce `InvalidQuery` before Phase 1.
 
-A release-mode 100-iteration Bus fixture measured P2 median/p95 of 4/5 microseconds
-without the appended corridor and 5/6 microseconds with it. Walking route calls
-increased from one to two and expansions from five to six; transit lookups were
-unchanged. These are in-memory provider measurements, not live Valhalla latency.
-The budget regression verifies that five expansions reject the combined request
-and six complete it. The existing 12-edge BikeShare fixture still realizes 72
-exact candidates with 66 cache hits.
+The direct-corridor regression checks one additional Walking request and one
+expansion without changing transit lookups. At the transit-only budget boundary,
+completed transit candidates remain available and evaluation is marked partial.
+The 12-edge BikeShare fixture retains 72 exact realizations and 66 cache hits.
+Representative measurements and commands live in `docs/route-corpus.md`.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
 configured Taiwan Bike Station City JSON snapshots to create static

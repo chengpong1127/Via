@@ -51,10 +51,9 @@ impl CorridorAnchor {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SurfaceKind {
-    Walking,
-    BikeShare,
+pub(crate) struct SurfacePlanners {
+    pub walking: WalkingMovementPlanner,
+    pub bike_share: Option<Box<dyn BikeSharePlanner>>,
 }
 
 pub(crate) struct SurfaceRequest<'a> {
@@ -63,11 +62,6 @@ pub(crate) struct SurfaceRequest<'a> {
     pub departure_at: OffsetDateTime,
     pub from_anchor: usize,
     pub to_anchor: usize,
-}
-
-pub(crate) enum SurfaceMovement {
-    Walking(Arc<StreetPath>),
-    BikeShare(BikeShareMovement),
 }
 
 /// Cumulative request-local exact routing work, including failed requests.
@@ -79,8 +73,7 @@ pub(crate) struct SurfaceRealizationStats {
 }
 
 #[async_trait]
-pub(crate) trait SurfaceMovementPlanner: Send {
-    fn kind(&self) -> SurfaceKind;
+pub(crate) trait BikeSharePlanner: Send {
     fn realization_stats(&self) -> SurfaceRealizationStats {
         SurfaceRealizationStats::default()
     }
@@ -88,11 +81,12 @@ pub(crate) trait SurfaceMovementPlanner: Send {
     async fn realize(
         &mut self,
         request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<SurfaceMovement>, StreetRoutingError>;
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
 }
 
 pub(crate) struct WalkingMovementPlanner {
     street: Arc<dyn StreetRouter>,
+    stats: SurfaceRealizationStats,
     cache: HashMap<
         (CorridorAnchorKey, CorridorAnchorKey, OffsetDateTime),
         Result<Arc<StreetPath>, StreetRoutingError>,
@@ -104,34 +98,32 @@ impl WalkingMovementPlanner {
         Self {
             street,
             cache: HashMap::new(),
+            stats: SurfaceRealizationStats::default(),
         }
     }
-}
 
-#[async_trait]
-impl SurfaceMovementPlanner for WalkingMovementPlanner {
-    fn kind(&self) -> SurfaceKind {
-        SurfaceKind::Walking
+    pub fn realization_stats(&self) -> SurfaceRealizationStats {
+        self.stats
     }
-    fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
-        // An optimistic pedestrian speed keeps this bound below ordinary routed walking.
-        Some(
-            (request.from.distance_to(request.to) / 2.0)
-                .floor()
-                .clamp(0.0, f64::from(u32::MAX)) as u32,
-        )
+
+    pub fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> u32 {
+        (request.from.distance_to(request.to) / 2.0)
+            .floor()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
     }
-    async fn realize(
+    pub async fn realize(
         &mut self,
         request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<SurfaceMovement>, StreetRoutingError> {
-        // Time is part of the key because street routing receives a departure constraint.
+    ) -> Result<Arc<StreetPath>, StreetRoutingError> {
         let key = (
             request.from.cache_key(),
             request.to.cache_key(),
             request.departure_at,
         );
-        if !self.cache.contains_key(&key) {
+        if self.cache.contains_key(&key) {
+            self.stats.cache_hits += 1;
+        } else {
+            self.stats.exact_requests += 1;
             let local = normalize_to_taipei(request.departure_at);
             let result = self
                 .street
@@ -151,8 +143,6 @@ impl SurfaceMovementPlanner for WalkingMovementPlanner {
                 .map(Arc::new);
             self.cache.insert(key.clone(), result);
         }
-        self.cache[&key]
-            .clone()
-            .map(|path| vec![SurfaceMovement::Walking(path)])
+        self.cache[&key].clone()
     }
 }

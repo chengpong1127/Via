@@ -23,7 +23,7 @@ use super::{
     model::{AccessPoint, EgressPoint, JourneyPlanningLimits, PlanningQuery, RoutingError},
     realized::RealizedJourney,
     static_search,
-    surface::{SurfaceMovementPlanner, WalkingMovementPlanner},
+    surface::{SurfacePlanners, WalkingMovementPlanner},
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -229,10 +229,10 @@ impl MultimodalPlanner {
             .iter()
             .map(|corridor| EvaluationCorridor::from_transit(&self.network, corridor, &query))
             .collect::<Result<Vec<_>, _>>()?;
-        corridors.push(EvaluationCorridor::direct_walking(
-            query.origin,
-            query.destination,
-        ));
+        corridors.insert(
+            0,
+            EvaluationCorridor::direct_walking(query.origin, query.destination),
+        );
         let bike_station_ids = if query.allow_bike_share {
             self.bike
                 .required_station_ids(corridors.iter().flat_map(|corridor| corridor.anchors()))
@@ -242,15 +242,16 @@ impl MultimodalPlanner {
         let loading =
             self.load_request_snapshots(&query, &retained, &static_stats, &bike_station_ids);
         let snapshots = query.deadline.run(loading).await??;
-        let mut surface_planners: Vec<Box<dyn SurfaceMovementPlanner>> =
-            vec![Box::new(WalkingMovementPlanner::new(self.street.clone()))];
-        if let Some(snapshot) = snapshots.bike.clone() {
-            surface_planners.push(Box::new(BikeShareSession::new(
-                self.bike.clone(),
-                snapshot,
-                OffsetDateTime::now_utc(),
-            )));
-        }
+        let surface_planners = SurfacePlanners {
+            walking: WalkingMovementPlanner::new(self.street.clone()),
+            bike_share: snapshots.bike.clone().map(|snapshot| {
+                Box::new(BikeShareSession::new(
+                    self.bike.clone(),
+                    snapshot,
+                    OffsetDateTime::now_utc(),
+                )) as Box<dyn super::surface::BikeSharePlanner>
+            }),
+        };
         Ok(PlanningSession {
             network: &self.network,
             query,
@@ -437,7 +438,7 @@ pub(crate) struct PlanningSession<'a> {
     retained: static_search::RetainedCorridorSet,
     corridors: Vec<EvaluationCorridor>,
     snapshots: RequestSnapshots,
-    surface_planners: Vec<Box<dyn SurfaceMovementPlanner>>,
+    surface_planners: SurfacePlanners,
     stats: MultimodalPlannerStats,
     failures: evaluator::EvaluationFailures,
 }
@@ -872,6 +873,7 @@ mod tests {
             RoutingError::Phase2EvaluationLimit
         );
         let rendered = handle.render();
+        assert!(rendered.contains("via_planner_phase2_budget_exhaustions_total 1\n"));
         assert!(rendered.contains("via_planner_transit_reachable_boardings_total 4\n"));
         assert!(rendered.contains(&format!(
             "via_planner_transit_departure_lookups_total {lookups}\n"

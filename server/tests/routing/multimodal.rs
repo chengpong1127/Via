@@ -742,3 +742,217 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
 async fn optional_internal_bike_availability_error_keeps_walking() {
     bike_only_walking_result(Err(BikeAvailabilityError::InvalidConfiguration)).await;
 }
+
+struct RankingStreet {
+    inner: FakeStreetRouter,
+    route_calls: AtomicUsize,
+    matrix_calls: AtomicUsize,
+    hydration_calls: AtomicUsize,
+    origin: via_server::street::Coordinate,
+    destination: via_server::street::Coordinate,
+}
+
+#[async_trait]
+impl via_server::street::StreetRouter for RankingStreet {
+    async fn matrix(
+        &self,
+        query: via_server::street::MatrixQuery,
+    ) -> Result<via_server::street::MatrixResult, via_server::street::StreetRoutingError> {
+        self.matrix_calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.matrix(query).await
+    }
+    async fn route(
+        &self,
+        query: via_server::street::RouteQuery,
+    ) -> Result<via_server::street::StreetPath, via_server::street::StreetRoutingError> {
+        self.route_calls.fetch_add(1, Ordering::Relaxed);
+        if (query.origin == self.origin || query.destination == self.destination)
+            && !(query.origin == self.origin && query.destination == self.destination)
+        {
+            self.hydration_calls.fetch_add(1, Ordering::Relaxed);
+        }
+        self.inner.route(query).await
+    }
+}
+
+async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) {
+    use time::{Duration, macros::datetime};
+    use via_server::domain::{
+        ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
+        realtime::{ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue},
+        transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
+    };
+    use via_server::routing::{JourneyPlanningLimits, RoutingService};
+    let mut transit = network();
+    let red = transit
+        .patterns
+        .iter()
+        .find(|p| p.id.as_str() == "fixture-mrt-red")
+        .unwrap()
+        .clone();
+    let mut alternative = red.clone();
+    alternative.id = TransitPatternId::new("alternative");
+    alternative.stops = vec![
+        BoardingPointId::new("F-M2-BLUE"),
+        BoardingPointId::new("F-M3-BLUE"),
+    ];
+    let a = stop_coordinate(&transit, "F-M1");
+    let b = stop_coordinate(&transit, "F-M2-RED");
+    for (id, coordinate) in [("F-M2-BLUE", a), ("F-M3-BLUE", b)] {
+        let stop = transit
+            .stops
+            .iter_mut()
+            .find(|stop| stop.id.as_str() == id)
+            .unwrap();
+        stop.coordinate.latitude = coordinate.latitude() + 0.0002;
+        stop.coordinate.longitude = coordinate.longitude() + 0.0002;
+    }
+    transit.patterns = vec![red.clone(), alternative.clone()];
+    transit.trips.retain(|trip| trip.pattern_id == red.id);
+    transit.transfer_edges.clear();
+    let origin = near_stop(&transit, "F-M1");
+    let destination = near_stop(&transit, "F-M2-RED");
+    let mut street = FakeStreetRouter::builder().path(
+        StreetTravelMode::Walking,
+        origin,
+        destination,
+        path(origin, destination, 960),
+    );
+    let mut snapshot = TimingSnapshot::default();
+    let departure = datetime!(2026-08-31 10:00 +08:00);
+    for (index, pattern) in [red, alternative].into_iter().enumerate() {
+        let access = stop_coordinate(&transit, pattern.stops[0].as_str());
+        let egress = stop_coordinate(&transit, pattern.stops[1].as_str());
+        let walk = if index == 0 { 60 } else { 30 };
+        street = street
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                access,
+                path(origin, access, walk),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                egress,
+                destination,
+                path(egress, destination, walk),
+            );
+        let arrival = departure + Duration::seconds(if index == 0 { 720 } else { 760 });
+        let evidence = if rejected_by_ranking {
+            vec![NormalizedRealtimeValue {
+                freshness: FreshnessState::Degraded,
+                value: ArrivalEstimate {
+                    transit_pattern_id: pattern.id.clone(),
+                    boarding_point_id: pattern.stops[0].clone(),
+                    predicted_arrival_at: Some(departure + Duration::minutes(2)),
+                    state: ArrivalState::Predicted,
+                    transmitted_at: departure,
+                },
+            }]
+        } else {
+            Vec::new()
+        };
+        snapshot.insert(
+            pattern.id.clone(),
+            0,
+            vec![EffectiveTrip {
+                id: EffectiveTripId::new(format!("rank-{index}")),
+                pattern_id: pattern.id,
+                scheduled_trip_id: None,
+                stop_times: vec![
+                    EffectiveStopTime {
+                        stop_id: pattern.stops[0].clone(),
+                        arrival_at: departure + Duration::minutes(2),
+                        departure_at: departure + Duration::minutes(2),
+                    },
+                    EffectiveStopTime {
+                        stop_id: pattern.stops[1].clone(),
+                        arrival_at: arrival,
+                        departure_at: arrival,
+                    },
+                ],
+                timing_basis: TimingBasis::FrequencyEstimate,
+                timing_reliability: TimingReliability::Fallback,
+                observed_at: None,
+                uncertainty_seconds: None,
+                evidence,
+            }],
+        );
+    }
+    let street = Arc::new(RankingStreet {
+        inner: street.build(),
+        route_calls: AtomicUsize::new(0),
+        matrix_calls: AtomicUsize::new(0),
+        hydration_calls: AtomicUsize::new(0),
+        origin,
+        destination,
+    });
+    let timing = Arc::new(CountingTiming {
+        calls: AtomicUsize::new(0),
+        snapshot,
+    });
+    let mut limits = JourneyPlanningLimits::default();
+    limits.planner.max_candidates = 1;
+    let service = RoutingService::new(
+        street.clone(),
+        Arc::new(TransitRuntime::new(Arc::new(transit))),
+        timing.clone(),
+        Arc::new(BikeShareNetwork::new(Vec::new())),
+        Arc::new(UnavailableBikeAvailabilitySource),
+        limits,
+        false,
+    );
+    let mut stable_key = None;
+    let mut latency_us = Vec::new();
+    for _ in 0..iterations {
+        let started = std::time::Instant::now();
+        let body = serde_json::to_value(
+            service
+                .plan(serde_json::from_value(request(origin, destination, &["metro"])).unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        latency_us.push(started.elapsed().as_micros());
+        let options = body["journey_options"].as_array().unwrap();
+        assert_eq!(options.len(), 1);
+        assert_eq!(leg_modes(&options[0]), vec!["walking"]);
+        assert_eq!(options[0]["duration_seconds"], 960);
+        let key = options[0]["matching_key"].clone();
+        if let Some(previous) = stable_key {
+            assert_eq!(previous, key);
+        }
+        stable_key = Some(key);
+    }
+    assert_eq!(
+        street.hydration_calls.load(Ordering::Relaxed),
+        4 * iterations
+    );
+    assert_eq!(street.matrix_calls.load(Ordering::Relaxed), 2 * iterations);
+    assert_eq!(timing.calls.load(Ordering::Relaxed), iterations);
+    assert_eq!(street.route_calls.load(Ordering::Relaxed), 7 * iterations);
+    latency_us.sort_unstable();
+    eprintln!(
+        "ranking fixture: reject={rejected_by_ranking} iterations={iterations} median_us={} p95_us={} routes_per_request={} matrices_per_request={} hydration_routes_per_request={} reconstructed_per_request=3",
+        latency_us[iterations / 2],
+        latency_us[iterations * 95 / 100],
+        street.route_calls.load(Ordering::Relaxed) / iterations,
+        street.matrix_calls.load(Ordering::Relaxed) / iterations,
+        street.hydration_calls.load(Ordering::Relaxed) / iterations
+    );
+}
+
+#[tokio::test]
+async fn ranking_considers_three_corridors_before_applying_a_one_result_limit() {
+    for rejected_by_ranking in [false, true] {
+        ranking_corridor_fixture(rejected_by_ranking, 2).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "in-process reconstruction workload comparison"]
+async fn ranking_reconstruction_benchmark() {
+    for rejected_by_ranking in [false, true] {
+        ranking_corridor_fixture(rejected_by_ranking, 1000).await;
+    }
+}

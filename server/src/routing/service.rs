@@ -64,7 +64,12 @@ impl RoutingService {
             street_routing,
             planner,
             reconstructor,
-            ranking: RankingPolicy::default(),
+            ranking: RankingPolicy {
+                result_limit: RankingPolicy::default()
+                    .result_limit
+                    .min(limits.planner.max_candidates),
+                ..RankingPolicy::default()
+            },
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
             request_timeout: request_timeouts_enabled.then_some(limits.request_timeout),
             limits,
@@ -239,20 +244,23 @@ impl RoutingService {
                     .sum();
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
+                let reconstruction_attempts = journeys.len();
                 for journey in journeys {
                     match self.reconstructor.reconstruct(&journey, context).await {
-                        Ok(Some(candidate)) => {
-                            attempt.candidates.push(candidate);
-                            if attempt.candidates.len() >= self.limits.planner.max_candidates {
-                                break;
-                            }
-                        }
+                        Ok(Some(candidate)) => attempt.candidates.push(candidate),
                         Ok(None) => {}
                         Err(error) => attempt.failures.record_planning(&error),
                     }
                 }
+                tracing::debug!(
+                    target: "via_server::routing",
+                    reconstruction_attempts,
+                    reconstructed_candidates = attempt.candidates.len(),
+                    "bounded Phase 2 candidates reconstructed"
+                );
                 attempt.failures.transient |= session.failures().transient;
-                attempt.failures.internal |= session.failures().internal;
+                attempt.failures.internal |= session.failures().internal
+                    || session.stats().phase2_evaluation.expansion_limit_reached;
                 Ok::<_, super::model::RoutingError>(())
             }
             .await;
@@ -320,7 +328,9 @@ impl RoutingService {
             return Err(PlanningError::TemporarilyUnavailable);
         }
         context.ensure_before_deadline()?;
-        self.rank_candidates(generated_at, candidates)
+        let outcome = self.rank_candidates(generated_at, candidates)?;
+        context.ensure_before_deadline()?;
+        Ok(outcome)
     }
 
     fn rank_candidates(
@@ -333,11 +343,18 @@ impl RoutingService {
             .into_iter()
             .filter(|candidate| seen_keys.insert(candidate.ranking.stable_key.clone()))
             .collect::<Vec<_>>();
+        let candidates_before_ranking = candidates.len();
         let ranked_journeys = self.ranking.rank(
             candidates
                 .iter()
                 .map(|candidate| candidate.ranking.clone())
                 .collect(),
+        );
+        tracing::debug!(
+            target: "via_server::routing",
+            candidates_before_ranking,
+            candidates_after_ranking = ranked_journeys.len(),
+            "journey candidates ranked"
         );
         let mut candidates_by_key = candidates
             .into_iter()

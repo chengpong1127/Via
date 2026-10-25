@@ -23,7 +23,8 @@ All names below are production metrics. Counters end in `_total`; the two
 | `via_planner_transit_reachable_boardings_total` | MultimodalPlanner Phase 1: retained timing positions |
 | `via_planner_transit_reachable_patterns_total` | MultimodalPlanner Phase 1: retained patterns |
 | `via_planner_transit_realtime_stops_requested_total` | MultimodalPlanner Phase 1: unique retained Bus stops; preserves the historical static selection count, not an HTTP request count |
-| `via_planner_transit_departure_lookups_total` | PlanningSession evaluation boundary: lookup delta from each successfully completed evaluation pass |
+| `via_planner_phase2_budget_exhaustions_total` | Evaluator: one exhaustion per pass, including passes with no completed candidate |
+| `via_planner_transit_departure_lookups_total` | PlanningSession evaluation boundary: lookups from each returned evaluation pass, including partial passes |
 | `via_planner_transit_realtime_evidence_values_total` | RoutingService: evidence in journeys returned by evaluate, after its deadline check and before reconstruction |
 | `via_bus_timing_logical_departure_needs_total` | Bus timing provider: active logical departure queries |
 | `via_bus_timing_realtime_stops_requested_total` | Bus timing provider: unique stops selected for realtime fetch |
@@ -48,9 +49,10 @@ futures do not increment the completed-request counter.
 Stage telemetry now survives a later stage's failure or request cancellation.
 Previously `PlannerStageMetrics` delayed emission until finalization, so a later
 deadline could erase already completed work. Phase 1 counts now appear even when
-snapshot loading or evaluation later fails. A completed evaluation pass is counted
-even when another pass fails. Incomplete/failed evaluation passes do not emit a
-lookup delta. Discovery interrupted by its deadline checks still emits no sample.
+snapshot loading or evaluation later fails. Full and partial evaluation returns
+emit their lookup counts. Failed passes with no complete candidate emit the
+budget-exhaustion counter and warning, but do not emit completed lookup totals.
+Discovery interrupted by its deadline checks still emits no sample.
 The multimodal duration still records only a successfully completed operation.
 
 Evidence is counted from the single `evaluate()` result before reconstruction.
@@ -71,9 +73,17 @@ Phase 1 emits one compact search summary and traces the retained corridors.
 `Phase2EvaluationStats` retains the cumulative expansion count and departure
 lookups, BikeShare lower-bound checks/rejections, exact requests/cache hits/matrix
 requests, pre-reconstruction Pareto candidate count, and total evaluation latency.
-The expansion count enforces the request's shared safety bound across transit and direct corridors.
-The service caps successful reconstructions; `plan_with_stats()` caps its returned
-journeys and reports that returned count.
+The expansion count enforces the request's shared safety bound across transit
+and direct corridors. The service reconstructs the bounded P2 pool and applies
+the result cap after ranking; `plan_with_stats()` caps its returned
+journeys and reports that returned count. `walking_exact_requests` and
+`walking_cache_hits` count request-local walking work, including cached errors.
+`corridors_completed` counts fully evaluated corridors (possibly empty), and
+`expansion_limit_reached` marks exhausted passes. Only completed corridors
+contribute returned journeys. A pass with exhaustion and no complete candidate
+returns an error while still emitting the exhaustion counter and warning.
+Reconstruction logs report attempted and usable candidates; ranking logs report
+counts before and after final selection.
 Phase 2 emits one compact evaluation summary. `SurfaceRealizationStats` and
 `BikePlanningStats` retain exact routing, cache, and matrix work accounting;
 snapshot latency remains in tracing.

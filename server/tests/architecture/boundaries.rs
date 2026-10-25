@@ -102,7 +102,8 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
 fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     let evaluator = source_tree("src/routing/evaluator");
     assert!(evaluator.contains("&TimingSnapshot"));
-    assert!(evaluator.contains("SurfaceMovementPlanner"));
+    assert!(evaluator.contains("SurfacePlanners"));
+    assert!(!evaluator.contains("SurfaceKind"));
     assert!(evaluator.contains("optimistic_duration"));
     assert!(evaluator.contains(".realize(request)"));
     assert!(evaluator.contains("trait MovementExpander"));
