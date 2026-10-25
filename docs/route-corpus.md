@@ -16,7 +16,7 @@ timing, and street fixtures and does not need TDX, Valhalla, or network access.
 | YouBike can replace transit | `bike_replacing_a_transit_leg_requeries_the_next_departure` | Bike arrival at an anchor selects the newly reachable downstream departure |
 | Cross-anchor YouBike | `one_bike_movement_can_skip_multiple_transit_anchors` | A continuous Bike rental can lazily extend from its original anchor to a later corridor anchor and remains one rental |
 | Surface alternative | `bike_can_replace_a_surface_walking_edge` | BikeShare can replace a retained walking edge through the surface movement boundary |
-| Pareto usefulness | `bike_with_no_pareto_benefit_is_pruned`, `transit_remains_when_it_reaches_the_anchor_before_bike` | Slower bike-only journeys are pruned while faster transit survives |
+| Hydration safety | `unhydrated_walking_does_not_discard_a_distinct_bike_path`, `transit_remains_when_it_reaches_the_anchor_before_bike` | Distinct unconfirmed street paths remain eligible until reconstruction; final ranking applies dominance |
 | Pareto tradeoff | `pareto_keeps_a_later_route_with_less_walking` | Earlier high-walking and later low-walking candidates both remain |
 | Bike access and return walks | `faster_bike_surface_transfer_catches_the_next_transit_departure` | Station access and return walking are counted |
 | Bike availability | `no_bike_at_pickup_keeps_the_walking_transfer`, `no_dock_at_dropoff_keeps_the_walking_transfer` | Bike use requires an available pickup bike and return dock |
@@ -40,7 +40,7 @@ The direct corridor competes with successful transit in
 `viable_transit_corridors_compete_with_direct_walking` and
 `viable_transit_corridor_competes_with_direct_bike_share`.
 `reconstruction_failure_preserves_direct_walking_without_reloading_snapshots`
-keeps an already-routed slower walk when transit geometry fails.
+keeps a Matrix-realized slower walk when transit geometry fails.
 `direct_corridor_cost_and_shared_budget_are_bounded` compares transit-only and
 combined P2 work over 100 iterations and checks the exact shared budget boundary.
 Run its release measurements with:
@@ -63,33 +63,90 @@ Run both release-mode routing and reconstruction benchmarks with:
 cargo test --manifest-path server/Cargo.toml --release --test routing benchmark -- --ignored --nocapture --test-threads=1
 ```
 
-A sequential run of the pre-refactor and updated release binaries, with compiler
-work paused during measurement, produced these in-memory results over 1,000
-iterations. Timings are host-dependent and do not measure live Valhalla latency.
+The surface simplification compares `c5642b3` with the updated implementation
+using release-mode, in-memory fixtures. The ranking benchmark emits one diagnostic
+request with P2/reconstruction tracing, then measures 1,000 requests without that
+subscriber. These are fixture measurements, not real Valhalla measurements.
+A 1×1 Matrix is not assumed faster than Route.
 
-| Fixture / work | Before | After |
-| --- | --- | --- |
-| Ranking fixture, reconstructed journeys per request | 1 | 3 |
-| Ranking fixture, route calls | 5 | 7 |
-| Ranking fixture, matrix calls | 2 | 2 |
-| Ranking fixture, hydration route calls | 2 | 4 |
-| Ranking fixture, eligible-transit median / p95 | 31 / 35 µs | 32 / 35 µs |
-| Ranking fixture, rejected-transit median / p95 | 25 / 28 µs | 32 / 36 µs |
-| MRT planner median | 17.917 µs | 14.376 µs |
-| Bus planner median | 13.667 µs | 12.959 µs |
-| Bus → MRT planner median | 33.751 µs | 28.750 µs |
-| MRT → Bus planner median | 39.750 µs | 38.667 µs |
-| Multiple-transfer planner median | 36.584 µs | 35.292 µs |
-| P2 expansions, same five planner fixtures | 5 / 5 / 8 / 11 / 11 | 5 / 5 / 8 / 11 / 11 |
-| Repeated Walking realization, physical requests for the same departure | 1 | 1 |
-| 12-edge BikeShare fixture, exact realizations / cache hits | 72 / 66 | 72 / 66 |
+| Ranking fixture work per request | Before | After |
+| --- | ---: | ---: |
+| P2 Walking Matrix requests | 0 | 3 |
+| P2 Walking Route requests | 3 | 0 |
+| Reconstruction Route requests | 4 | 5 |
+| Total Matrix requests, including discovery | 2 | 5 |
+| Total Route requests | 7 | 5 |
+| BikeShare Matrix requests | 0 | 0 |
+| Walking cache hits | 0 | 0 |
+| BikeShare cache hits | 0 | 0 |
+| P2 expansions | 9 | 9 |
+| Successfully reconstructed candidates | 3 | 3 |
 
-The two additional reconstruction routes in the ranking fixture hydrate the second
-MRT candidate's access and egress geometry. All three candidates reach ranking;
-the reliable direct walk wins the one-result limit, or remains eligible when both
-MRT candidates are rejected. The previous implementation selected the first MRT
-candidate or returned an empty result after its rejection. The fixture has no
-BikeShare, so its BikeShare matrix calls and cache hits remain zero. The Walking
-cache regression also checks a distinct departure time: three realizations make
-two physical requests and record one cache hit. These counters demonstrate the
-work changes independently of timing noise.
+A sequential run after compilation, using the original untraced binary and the
+updated binary, produced the following latency measurements. Each measured case
+uses 1,000 iterations; the updated diagnostic iteration is excluded. These
+host-dependent values show a regression in these fixtures, not a provider latency
+comparison.
+
+| Fixture | Before median / p95 | After median / p95 |
+| --- | ---: | ---: |
+| Ranking, eligible transit, end-to-end | 41 / 72 µs | 66 / 81 µs |
+| Ranking, rejected transit, end-to-end | 43 / 109 µs | 68 / 114 µs |
+
+| Planner-only fixture | Before median | After median | Before / after P2 expansions | Before / after P2 candidates |
+| --- | ---: | ---: | ---: | ---: |
+| MRT | 15.750 µs | 23.708 µs | 5 / 7 | 1 / 3 |
+| Bus | 14.208 µs | 19.625 µs | 5 / 6 | 1 / 2 |
+| Bus → MRT | 33.042 µs | 56.043 µs | 8 / 10 | 1 / 3 |
+| MRT → Bus | 46.084 µs | 87.918 µs | 11 / 29 | 1 / 1 |
+| Multiple transfers | 44.209 µs | 171.378 µs | 11 / 37 | 1 / 9 |
+
+The planner-only cases do not reconstruct or rank. Their old P2 Walking Route
+counts are 2 / 2 / 3 / 4 / 4; updated P2 Walking Matrix counts are
+2 / 2 / 3 / 8 / 8. Updated Walking cache hits are 0 / 0 / 0 / 2 / 2,
+compared with zero before. BikeShare requests and cache hits are zero throughout.
+The larger pools and extra expansions are the cost of keeping distinct paths and
+later departures until their actual street timing is known. Candidate counts
+remain bounded; the MRT → Bus diagnostic case still returns one candidate because
+other retained states fail subsequent constraints. No live Valhalla comparison
+was performed.
+
+The ranking fixture reconstructs the complete bounded pool before its one-result
+ranking limit. Both versions reconstruct three successful candidates. The new
+implementation replaces three P2 Walking Route calls (one direct success and two
+unreachable transit-edge alternatives) with three Walking Matrix calls. The direct
+walk gains a reconstruction Route request, while the two transit candidates retain
+their four access/egress Route requests. Thus total Route calls decrease from seven
+to five, total Matrix calls increase from two to five, and reconstruction Route
+calls increase from four to five. The two access/egress discovery matrices are
+separate from P2 work. BikeShare is disabled in this fixture.
+
+The direct-corridor regression compares transit-only and combined P2 evaluation;
+its one additional direct Walking request changes from Route to Matrix. The direct
+corridor still adds one expansion. Measurements cover both direct-first budget
+handling and the full ranking pool; no insertion-order truncation is used.
+
+Conservative hydration pruning can retain more distinct prefixes within the same
+frontier cap, changing subsequent work. The 12-edge synthetic BikeShare regression
+now performs 57 distinct exact realizations and 86 cache hits over 143 lower-bound
+checks, versus 72 realizations and 66 hits over 138 checks before. Its updated pass
+uses 303 expansions and returns a bounded 16-candidate pool. Synthetic injection
+makes no physical BikeShare Matrix calls. The concrete endpoint-session regression
+separately verifies two Matrix calls (station access plus bicycle metrics), cached
+anchor remapping without additional calls, one candidate discovery, and isolation
+from another request's unavailable snapshot.
+
+Walking cache tests verify successes, unreachable cells, and provider failures;
+ordered coordinate/boarding keys and departure instants remain distinct. Repeated
+identical requests use the cache across corridors. Matrix calls and reconstruction
+Route calls must be counted separately in any live comparison.
+
+New timing regressions cover an access Route that misses the early transit but
+catches a later departure, transfer followed by egress through both anchors,
+unreachable geometry without synthetic success, actual direct-walk metrics and
+maximum duration, and recomputation of rental waits after exit-walk changes.
+
+The stricter street-path retention can increase reconstruction work and cause
+small budgets to finish fewer transit corridors. Incomplete corridors contribute
+nothing; completed direct and transit corridors survive later exhaustion. All
+frontier, expansion, deadline, station, and batching limits remain unchanged.

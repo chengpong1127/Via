@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -20,12 +19,36 @@ use crate::{
 };
 
 use super::{
+    corridor::{CorridorAnchor, CorridorAnchorKey},
     realized::{BikeRide, BikeShareMovement},
-    surface::{
-        BikeSharePlanner, CorridorAnchor, CorridorAnchorKey, SurfaceRealizationStats,
-        SurfaceRequest,
-    },
 };
+
+pub(crate) struct BikeMovementRequest<'a> {
+    pub from: &'a CorridorAnchor,
+    pub to: &'a CorridorAnchor,
+    pub from_anchor: usize,
+    pub to_anchor: usize,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BikeSessionStats {
+    pub exact_requests: usize,
+    pub cache_hits: usize,
+    pub matrix_requests: usize,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+pub(crate) trait TestBikePlanner: Send {
+    fn realization_stats(&self) -> BikeSessionStats {
+        BikeSessionStats::default()
+    }
+    fn optimistic_duration(&self, request: &BikeMovementRequest<'_>) -> Option<u32>;
+    async fn realize(
+        &mut self,
+        request: &BikeMovementRequest<'_>,
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BikePlanningStats {
@@ -362,6 +385,11 @@ pub(crate) struct BikeShareSession {
     >,
     pub stats: BikePlanningStats,
     pub cache_hits: usize,
+    candidates: HashMap<(CorridorAnchorKey, CorridorAnchorKey), Option<BikeMovementCandidate>>,
+    #[cfg(test)]
+    candidate_discoveries: usize,
+    #[cfg(test)]
+    test_planner: Option<Box<dyn TestBikePlanner>>,
 }
 
 impl BikeShareSession {
@@ -377,47 +405,92 @@ impl BikeShareSession {
             cache: HashMap::new(),
             stats: BikePlanningStats::default(),
             cache_hits: 0,
+            candidates: HashMap::new(),
+            #[cfg(test)]
+            candidate_discoveries: 0,
+            #[cfg(test)]
+            test_planner: None,
         }
     }
-}
 
-#[async_trait]
-impl BikeSharePlanner for BikeShareSession {
-    fn realization_stats(&self) -> SurfaceRealizationStats {
-        SurfaceRealizationStats {
+    pub fn realization_stats(&self) -> BikeSessionStats {
+        #[cfg(test)]
+        if let Some(planner) = &self.test_planner {
+            return planner.realization_stats();
+        }
+        BikeSessionStats {
             exact_requests: self.cache.len(),
             cache_hits: self.cache_hits,
             matrix_requests: self.stats.matrix_requests,
         }
     }
-    fn optimistic_duration(&self, request: &SurfaceRequest<'_>) -> Option<u32> {
-        self.planner
-            .movement_candidate(request.from, request.to, &self.snapshot, self.now)
-            .map(|candidate| candidate.optimistic_lower_bound_seconds)
+    pub fn candidate(
+        &mut self,
+        request: &BikeMovementRequest<'_>,
+    ) -> Option<BikeMovementCandidate> {
+        #[cfg(test)]
+        if let Some(planner) = &self.test_planner {
+            return planner
+                .optimistic_duration(request)
+                .map(|bound| BikeMovementCandidate {
+                    pickups: Vec::new(),
+                    dropoffs: Vec::new(),
+                    optimistic_lower_bound_seconds: bound,
+                    pickup_endpoint: None,
+                    dropoff_endpoint: None,
+                });
+        }
+        let key = (request.from.cache_key(), request.to.cache_key());
+        self.candidates
+            .entry(key)
+            .or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.candidate_discoveries += 1;
+                }
+                self.planner
+                    .movement_candidate(request.from, request.to, &self.snapshot, self.now)
+            })
+            .clone()
     }
 
-    async fn realize(
+    #[cfg(test)]
+    pub fn for_test(planner: Box<dyn TestBikePlanner>) -> Self {
+        let mut session = Self::new(
+            BikeShareMovementPlanner::new(
+                Arc::new(BikeShareNetwork::new(Vec::new())),
+                Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+                Arc::new(crate::street::FakeStreetRouter::builder().build()),
+            ),
+            Arc::new(BikeAvailabilitySnapshot::new(
+                OffsetDateTime::now_utc(),
+                HashMap::new(),
+            )),
+            OffsetDateTime::now_utc(),
+        );
+        session.test_planner = Some(planner);
+        session
+    }
+
+    pub async fn realize(
         &mut self,
-        request: &SurfaceRequest<'_>,
+        request: &BikeMovementRequest<'_>,
+        candidate: &BikeMovementCandidate,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
+        #[cfg(test)]
+        if let Some(planner) = &mut self.test_planner {
+            return planner.realize(request).await;
+        }
         let key = (request.from.cache_key(), request.to.cache_key());
         if self.cache.contains_key(&key) {
             self.cache_hits += 1;
         } else {
-            let result = if let Some(candidate) =
-                self.planner
-                    .movement_candidate(request.from, request.to, &self.snapshot, self.now)
-            {
-                let mut stats = BikePlanningStats::default();
-                let result = self
-                    .planner
-                    .realize_with_stats(&candidate, 0, 1, &mut stats)
-                    .await;
-                self.stats.matrix_requests += stats.matrix_requests;
-                result
-            } else {
-                Ok(Vec::new())
-            };
+            let mut stats = BikePlanningStats::default();
+            let result = self
+                .planner
+                .realize_with_stats(candidate, 0, 1, &mut stats)
+                .await;
+            self.stats.matrix_requests += stats.matrix_requests;
             self.cache.insert(key.clone(), result);
         }
         self.cache[&key].clone().map(|bike_movements| {
@@ -989,31 +1062,42 @@ mod tests {
             coordinate: dropoff,
         };
         let mut session = BikeShareSession::new(planner.clone(), Arc::new(snapshot.clone()), now);
-        let request = SurfaceRequest {
+        let request = BikeMovementRequest {
             from: &from,
             to: &to,
-            departure_at: now,
             from_anchor: 3,
             to_anchor: 4,
         };
-        assert!(session.optimistic_duration(&request).is_some());
-        let movements = session.realize(&request).await.unwrap();
+        let candidate = session.candidate(&request).unwrap();
+        assert!(session.candidate(&request).is_some());
+        assert_eq!(session.candidate_discoveries, 1);
+        let movements = session.realize(&request, &candidate).await.unwrap();
         let bike_movement = &movements[0];
         assert_eq!(bike_movement.total_seconds, 130);
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
         assert_eq!(session.stats.matrix_requests, 2);
         let remapped = session
-            .realize(&SurfaceRequest {
-                from_anchor: 0,
-                to_anchor: 1,
-                ..request
-            })
+            .realize(
+                &BikeMovementRequest {
+                    from_anchor: 0,
+                    to_anchor: 1,
+                    ..request
+                },
+                &candidate,
+            )
             .await
             .unwrap();
         let bike_movement = &remapped[0];
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
         assert_eq!(session.cache_hits, 1);
         assert_eq!(session.stats.matrix_requests, 2);
+        assert_eq!(session.candidate_discoveries, 1);
+        let mut unavailable = BikeShareSession::new(
+            planner,
+            Arc::new(BikeAvailabilitySnapshot::new(now, HashMap::new())),
+            now,
+        );
+        assert!(unavailable.candidate(&request).is_none());
     }
 
     #[test]

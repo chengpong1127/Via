@@ -40,7 +40,18 @@ pub fn transit_street(
 ) -> FakeStreetRouter {
     let access = stop_coordinate(network, access_stop);
     let egress = stop_coordinate(network, egress_stop);
-    FakeStreetRouter::builder()
+    let mut builder = FakeStreetRouter::builder();
+    for transfer in &network.transfer_edges {
+        let from = stop_coordinate(network, transfer.from.as_str());
+        let to = stop_coordinate(network, transfer.to.as_str());
+        builder = builder.path(
+            StreetTravelMode::Walking,
+            from,
+            to,
+            path(from, to, transfer.duration_seconds),
+        );
+    }
+    builder
         .path(
             StreetTravelMode::Walking,
             origin,

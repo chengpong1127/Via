@@ -255,6 +255,7 @@ async fn surface_transfer_options(bikes: u32, docks: u32) -> serde_json::Value {
     let m1 = stop_coordinate(&transit, "F-M1");
     let m3 = stop_coordinate(&transit, "F-M3-BLUE");
     let street = FakeStreetRouter::builder()
+        .path(StreetTravelMode::Walking, red, blue, path(red, blue, 30))
         .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
         .path(
             StreetTravelMode::Walking,
@@ -928,9 +929,9 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
         street.hydration_calls.load(Ordering::Relaxed),
         4 * iterations
     );
-    assert_eq!(street.matrix_calls.load(Ordering::Relaxed), 2 * iterations);
+    assert_eq!(street.matrix_calls.load(Ordering::Relaxed), 5 * iterations);
     assert_eq!(timing.calls.load(Ordering::Relaxed), iterations);
-    assert_eq!(street.route_calls.load(Ordering::Relaxed), 7 * iterations);
+    assert_eq!(street.route_calls.load(Ordering::Relaxed), 5 * iterations);
     latency_us.sort_unstable();
     eprintln!(
         "ranking fixture: reject={rejected_by_ranking} iterations={iterations} median_us={} p95_us={} routes_per_request={} matrices_per_request={} hydration_routes_per_request={} reconstructed_per_request=3",
@@ -952,6 +953,18 @@ async fn ranking_considers_three_corridors_before_applying_a_one_result_limit() 
 #[tokio::test]
 #[ignore = "in-process reconstruction workload comparison"]
 async fn ranking_reconstruction_benchmark() {
+    {
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .without_time()
+                .with_ansi(false)
+                .with_target(false)
+                .with_test_writer()
+                .finish(),
+        );
+        ranking_corridor_fixture(false, 1).await;
+    }
     for rejected_by_ranking in [false, true] {
         ranking_corridor_fixture(rejected_by_ranking, 1000).await;
     }

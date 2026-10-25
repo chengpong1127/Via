@@ -7,7 +7,6 @@ pub mod planner;
 mod realized;
 mod reconstruct;
 pub mod static_search;
-mod surface;
 pub mod topology;
 pub mod transfers;
 

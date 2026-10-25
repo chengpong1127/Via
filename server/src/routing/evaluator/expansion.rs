@@ -1,5 +1,5 @@
 use super::*;
-use super::{bike::BikeShareExpander, transit::TransitExpander, walking::WalkingExpander};
+use super::{bike::BikeShareExpander, transit::TransitExpander};
 
 pub(super) struct ExpansionContext<'a> {
     pub corridor: &'a EvaluationCorridor,
@@ -8,7 +8,6 @@ pub(super) struct ExpansionContext<'a> {
     pub query: &'a PlanningQuery,
     pub stats: &'a mut Phase2EvaluationStats,
     pub failures: &'a mut EvaluationFailures,
-    pub surface_planners: &'a mut SurfacePlanners,
 }
 
 #[async_trait::async_trait]
@@ -38,28 +37,7 @@ impl ExpansionContext<'_> {
         Ok(())
     }
 
-    pub async fn realize_walking(
-        &mut self,
-        request: &SurfaceRequest<'_>,
-    ) -> Result<Option<Arc<crate::street::StreetPath>>, RoutingError> {
-        self.charge()?;
-        let result = self.surface_planners.walking.realize(request).await;
-        self.finish_realization(result)
-    }
-
-    pub async fn realize_bike_share(
-        &mut self,
-        request: &SurfaceRequest<'_>,
-    ) -> Result<Vec<BikeShareMovement>, RoutingError> {
-        self.charge()?;
-        let result = match self.surface_planners.bike_share.as_mut() {
-            Some(planner) => planner.realize(request).await,
-            None => return Ok(Vec::new()),
-        };
-        Ok(self.finish_realization(result)?.unwrap_or_default())
-    }
-
-    fn finish_realization<T>(
+    pub fn finish_realization<T>(
         &mut self,
         result: Result<T, crate::street::StreetRoutingError>,
     ) -> Result<Option<T>, RoutingError> {
@@ -91,8 +69,9 @@ impl FixedCorridorEvaluator<'_> {
             corridor: self.corridor,
             snapshot: self.snapshot,
         };
-        let mut walking = WalkingExpander;
-        let mut bike = BikeShareExpander;
+        let mut bike = BikeShareExpander {
+            session: self.bike_share.as_deref_mut(),
+        };
         let mut context = ExpansionContext {
             corridor,
             edge,
@@ -100,9 +79,8 @@ impl FixedCorridorEvaluator<'_> {
             query: self.query,
             stats: &mut self.stats,
             failures: &mut self.failures,
-            surface_planners: self.surface_planners,
         };
-        let expanders: [&mut dyn MovementExpander; 3] = [&mut transit, &mut walking, &mut bike];
+        let expanders: [&mut dyn MovementExpander; 3] = [&mut transit, self.walking, &mut bike];
         let mut next = Vec::new();
         for expander in expanders {
             context.check_deadline()?;

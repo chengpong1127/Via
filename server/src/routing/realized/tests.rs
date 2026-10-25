@@ -51,7 +51,6 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
             duration_seconds: 0,
             distance_metres: 0,
         },
-        street_path: None,
     };
     let journey = RealizedJourney::from_movements(
         anchors,
@@ -63,7 +62,6 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
                 departure_at,
                 arrival_at,
                 kind: JourneyMovementKind::BikeShare { movement },
-                street_path: None,
             },
             walk(3, 4, WalkingMovementKind::Egress, arrival_at),
         ],
@@ -121,7 +119,6 @@ fn realized_bike_path_needs_no_walking_placeholder() {
             departure_at,
             arrival_at,
             kind: JourneyMovementKind::BikeShare { movement },
-            street_path: None,
         }],
         departure_at,
     )
@@ -161,7 +158,6 @@ fn realized_path_rejects_anchor_references_outside_the_corridor() {
                 duration_seconds: 0,
                 distance_metres: 0,
             },
-            street_path: None,
         }],
         departure_at,
     );

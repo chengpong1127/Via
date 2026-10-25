@@ -12,7 +12,6 @@ use std::sync::Arc;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 
-/// Fully evaluated movements are the sole source of journey timing and geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RealizedJourney {
     anchors: Vec<JourneyAnchor>,
@@ -44,8 +43,6 @@ impl RealizedJourney {
                 movement.from_anchor >= anchors.len()
                     || movement.to_anchor >= anchors.len()
                     || movement.arrival_at < movement.departure_at
-                    || (movement.street_path.is_some()
-                        && !matches!(movement.kind, JourneyMovementKind::Walking { .. }))
             })
         {
             return Err(RealizedJourneyError::InvalidRealizedPath);

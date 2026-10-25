@@ -1,9 +1,6 @@
 use time::OffsetDateTime;
 
-use crate::{
-    domain::{ids::BoardingPointId, transit_timing::EffectiveTrip},
-    street::StreetPath,
-};
+use crate::domain::{ids::BoardingPointId, transit_timing::EffectiveTrip};
 
 use super::*;
 
@@ -52,7 +49,6 @@ pub struct JourneyMovement {
     pub departure_at: OffsetDateTime,
     pub arrival_at: OffsetDateTime,
     pub kind: JourneyMovementKind,
-    pub street_path: Option<Arc<StreetPath>>,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]

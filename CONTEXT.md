@@ -113,21 +113,34 @@ For each edge, `FixedCorridorEvaluator` combines successors from independent
 `TransitExpander`, `WalkingExpander`, and `BikeShareExpander` implementations of
 `MovementExpander`. Transit resolves retained equivalent patterns and multiple
 snapshot departures. Walking reuses retained access, transfer, and egress metrics
-without exact routing; otherwise it realizes an anchor-to-anchor street route.
-BikeShare delegates station discovery, availability filtering, and routing to the
-optional BikeShare planner. `SurfacePlanners` owns a concrete Walking planner
-and one optional boxed `BikeSharePlanner`; the narrow BikeShare trait preserves
-synthetic test injection. There is no surface registry, kind dispatch, or movement
-union. Named realization operations share error classification and accounting.
-Shared expansion accounting enforces deadlines and budgets.
+without another P2 street request. For unresolved edges it requests a directional
+1×1 Walking Matrix at the state's DepartAt time, normalized to Taipei.
+`PlanningSession` owns the `WalkingExpander`, including its street router and
+request-local metrics cache, and an optional concrete `BikeShareSession`.
+`BikeShareExpander` borrows that session directly; the session retains station
+discovery, availability filtering, Matrix batching, and result caching. Candidate
+discovery is cached by anchor pair and the same candidate supplies both the
+optimistic bound and exact realization. `CorridorAnchor` and its exact cache key
+live in `routing/corridor.rs`; there is no surface planner wrapper module.
+Shared expansion accounting enforces deadlines, budgets, and failure classification.
+Walking caches successful, unreachable, and failed Matrix requests by ordered
+anchor keys and departure instant across the entire evaluation pass.
+`walking_matrix_requests` counts physical P2 Walking Matrix calls, including
+failures; `walking_cache_hits` counts reuse. BikeShare's existing realization,
+cache-hit, and Matrix counters retain their meanings.
 
 Walking and BikeShare use cheap optimistic duration bounds to reject movements
 outside the query's time limits. They are not screened against another mode's
 arrival: a slower movement can reduce walking, transfers, cycling, or rentals,
 or preserve a different future capability. Shared Pareto pruning compares these
 metrics and compatible state capabilities, subject to the candidate limit.
-A journey requiring street geometry hydration cannot dominate an already-routed journey before reconstruction; ranking filters
-reconstructed candidates afterward. Per-edge frontiers keep the candidate cap;
+A candidate containing Walking or BikeShare cannot dominate a distinct candidate
+before reconstruction. State dominance likewise requires identical movement
+prefixes when either prefix contains street movement; pure transit states retain
+metric and capability pruning. This preserves alternatives with independent
+hydration failures or different downstream departures. Stable identity still
+removes duplicates, and final ranking applies the existing Pareto objectives.
+Per-edge frontiers keep the candidate cap;
 the service reconstructs the entire bounded Pareto pool before deduplication
 and ranking. Ranking applies the final limit, the smaller of its normal result
 limit and configured `max_candidates`. Failed reconstruction or ranking rejection
@@ -138,8 +151,16 @@ diagnostic API: it returns arrival-ordered journeys without reconstruction or
 ranking and reports the capped returned count.
 This can increase exact street work compared with baseline-first screening;
 request-local caches, expansion budgets, and station/route limits still bound it.
-Walking alternatives are retained as already-routed path movements, avoiding a
-second route lookup during reconstruction. BikeShare considers up to three pickup
+All P2 movements contain timing and metrics without geometry. Reconstruction
+routes every Walking movement (Access, Transfer, Egress, and Direct) and hydrates
+BikeShare's pickup walk, bicycle ride, and return walk. Adjacent transfer and
+egress movements remain separate and follow their anchors. No synthetic geometry
+fallback turns an unreachable street route into a usable journey. Route durations
+and distances determine final legs and ranking metrics; downstream Transit
+boarding is revalidated without a tolerance. Reconstructed arrivals must respect
+latest-arrival and maximum-duration limits. BikeShare reuse waits are recomputed
+from actual return times plus 15 minutes and current reconstructed arrival.
+BikeShare considers up to three pickup
 and three return stations per endpoint. A continuous rental can extend from
 its original anchor to a later corridor anchor, so intermediate anchors need
 no station. Separate rentals obey the 15-minute reuse rule. BikeShare requires

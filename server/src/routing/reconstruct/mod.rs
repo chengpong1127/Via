@@ -68,6 +68,9 @@ impl JourneyReconstructor {
         let duration_seconds =
             transit::seconds_between(journey.departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
+        if duration_seconds > context.max_journey_duration_seconds {
+            return Ok(None);
+        }
         let transfer_count = assembled.transfer_evidence.len() as u32;
         let matching_key = journey_matching_key(journey);
         let option = JourneyOption {

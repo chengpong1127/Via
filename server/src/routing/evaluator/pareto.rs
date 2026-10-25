@@ -44,14 +44,11 @@ pub(super) fn pareto_candidates(
 }
 
 fn can_dominate(left: &EvaluatedCandidate, right: &EvaluatedCandidate) -> bool {
-    let needs_street_routing = |candidate: &EvaluatedCandidate| {
-        candidate.journey.movements().iter().any(|movement| {
-            matches!(movement.kind, JourneyMovementKind::Walking { .. })
-                && movement.street_path.is_none()
-        })
-    };
-    (!needs_street_routing(left) || needs_street_routing(right))
-        && left.metrics.dominates(&right.metrics)
+    !left.journey.movements().iter().any(needs_hydration) && left.metrics.dominates(&right.metrics)
+}
+
+fn needs_hydration(movement: &JourneyMovement) -> bool {
+    !matches!(movement.kind, JourneyMovementKind::Transit { .. })
 }
 
 pub(super) fn prune_states(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
@@ -89,7 +86,9 @@ fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
         && left.transfer_count <= right.transfer_count
 }
 fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
-    left.last_was_transit == right.last_was_transit
+    (!(left.movements.iter().any(needs_hydration) || right.movements.iter().any(needs_hydration))
+        || left.movements == right.movements)
+        && left.last_was_transit == right.last_was_transit
         && left.bike_reuse_available_at == right.bike_reuse_available_at
         && match (&left.active_bike_rental, &right.active_bike_rental) {
             (None, None) => true,

@@ -3,8 +3,8 @@ use super::{
     model::PlanningQuery,
     realized::{JourneyAnchorKind, WalkingMovementKind},
     static_search::{StaticCorridor, StaticCorridorStep, StaticTransitLeg},
-    surface::CorridorAnchor,
 };
+use crate::domain::{ids::BoardingPointId, location::GeoCoordinate};
 use crate::{domain::transit_runtime::TransitRuntime, street::Coordinate};
 
 pub(crate) struct EvaluationCorridor {
@@ -149,6 +149,45 @@ impl EvaluationCorridor {
         });
         Self::new(anchors, edges).ok_or_else(|| {
             RoutingError::Internal("retained corridor has inconsistent anchors and edges".into())
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CorridorAnchor {
+    pub kind: JourneyAnchorKind,
+    pub coordinate: Coordinate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct CorridorAnchorKey {
+    latitude: u64,
+    longitude: u64,
+    boarding_point: Option<BoardingPointId>,
+}
+
+impl CorridorAnchor {
+    pub fn boarding_point(&self) -> Option<&BoardingPointId> {
+        match &self.kind {
+            JourneyAnchorKind::BoardingPoint { id } => Some(id),
+            _ => None,
+        }
+    }
+    pub fn cache_key(&self) -> CorridorAnchorKey {
+        CorridorAnchorKey {
+            latitude: self.coordinate.latitude().to_bits(),
+            longitude: self.coordinate.longitude().to_bits(),
+            boarding_point: self.boarding_point().cloned(),
+        }
+    }
+    pub fn distance_to(&self, other: &Self) -> f64 {
+        GeoCoordinate {
+            latitude: self.coordinate.latitude(),
+            longitude: self.coordinate.longitude(),
+        }
+        .distance_metres(GeoCoordinate {
+            latitude: other.coordinate.latitude(),
+            longitude: other.coordinate.longitude(),
         })
     }
 }

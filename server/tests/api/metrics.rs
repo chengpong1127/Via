@@ -174,7 +174,7 @@ async fn planning_request_counter_counts_empty_and_failures_once_and_ignores_inv
     assert!(metric_line(&invalid_metrics, "via_planning_requests_total").is_none());
 
     let failed = FakeStreetRouter::builder()
-        .route_failure(via_server::street::StreetRoutingError::Timeout)
+        .matrix_failure(via_server::street::StreetRoutingError::Timeout)
         .build();
     let (failure_status, failure_metrics) = planning_response(failed, planning_request()).await;
     assert_eq!(failure_status, StatusCode::SERVICE_UNAVAILABLE);

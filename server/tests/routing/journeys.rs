@@ -150,13 +150,19 @@ async fn same_line_reboarding_is_rejected_during_corridor_search() {
 }
 
 #[tokio::test]
-async fn terminal_surface_transfer_and_egress_are_one_routed_walk() {
+async fn terminal_egress_routes_from_the_retained_alighting_anchor() {
     let network = terminal_transfer_network();
     let origin = near_stop(&network, "F-M1");
     let from_transfer = stop_coordinate(&network, "F-M2-RED");
     let egress = stop_coordinate(&network, "F-M2-BLUE");
     let destination = near_stop(&network, "F-M2-BLUE");
     let street = FakeStreetRouter::builder()
+        .path(
+            StreetTravelMode::Walking,
+            from_transfer,
+            egress,
+            path(from_transfer, egress, 45),
+        )
         .path(
             StreetTravelMode::Walking,
             origin,
@@ -852,6 +858,7 @@ async fn arrive_by_walking_replacement_is_checked_after_the_previous_transit_arr
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M3-BLUE");
     let access = stop_coordinate(&transit, "F-M1");
+    let red = stop_coordinate(&transit, "F-M2-RED");
     let blue = stop_coordinate(&transit, "F-M2-BLUE");
     let egress = stop_coordinate(&transit, "F-M3-BLUE");
     for (latest, feasible) in [
@@ -862,6 +869,7 @@ async fn arrive_by_walking_replacement_is_checked_after_the_previous_transit_arr
         body["departure_setting"] = json!({"type": "arrive_by", "time": latest});
         let result = route_body(
             FakeStreetRouter::builder()
+                .path(StreetTravelMode::Walking, red, blue, path(red, blue, 30))
                 .path(
                     StreetTravelMode::Walking,
                     origin,
@@ -956,7 +964,7 @@ async fn walking_corridor_realization_survives_a_transit_timing_failure() {
     .await;
 
     assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 0);
     let options = body["journey_options"].as_array().unwrap();
     assert_eq!(options.len(), 1);
     assert!(leg_modes(&options[0]).iter().all(|mode| *mode == "walking"));
@@ -1008,7 +1016,7 @@ async fn direct_first_budget_policy_returns_complete_walk_before_transit_can_fin
             .unwrap();
         assert_eq!(walking["duration_seconds"], 300);
         assert_eq!(walking["legs"].as_array().unwrap().len(), 1);
-        if budget == 1 {
+        if budget <= 5 {
             assert_eq!(options.len(), 1);
         } else {
             assert!(
@@ -1018,4 +1026,196 @@ async fn direct_first_budget_policy_returns_complete_walk_before_transit_can_fin
             );
         }
     }
+}
+
+#[tokio::test]
+async fn matrix_route_mismatch_preserves_a_later_feasible_transit_departure() {
+    use time::macros::datetime;
+    use via_server::domain::{
+        ids::EffectiveTripId,
+        transit_timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
+    };
+    use via_server::street::{Metres, Seconds};
+    let transit = network();
+    let origin = near_stop(&transit, "F-M1");
+    let destination = near_stop(&transit, "F-M2-RED");
+    let board = stop_coordinate(&transit, "F-M1");
+    let alight = stop_coordinate(&transit, "F-M2-RED");
+    let street = FakeStreetRouter::builder()
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            origin,
+            board,
+            Seconds(60),
+            Metres(100),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            board,
+            path(origin, board, 180),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            alight,
+            destination,
+            path(alight, destination, 90),
+        )
+        .build();
+    let departure = datetime!(2026-08-31 10:00 +08:00);
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("fixture-mrt-red"),
+        0,
+        [("early", 2, 7), ("later", 4, 9)]
+            .into_iter()
+            .map(|(id, board_minute, alight_minute)| EffectiveTrip {
+                id: EffectiveTripId::new(id),
+                pattern_id: TransitPatternId::new("fixture-mrt-red"),
+                scheduled_trip_id: None,
+                stop_times: vec![
+                    EffectiveStopTime {
+                        stop_id: BoardingPointId::new("F-M1"),
+                        arrival_at: departure + Duration::minutes(board_minute),
+                        departure_at: departure + Duration::minutes(board_minute),
+                    },
+                    EffectiveStopTime {
+                        stop_id: BoardingPointId::new("F-M2-RED"),
+                        arrival_at: departure + Duration::minutes(alight_minute),
+                        departure_at: departure + Duration::minutes(alight_minute),
+                    },
+                ],
+                timing_basis: TimingBasis::RealtimePrediction,
+                timing_reliability: TimingReliability::Reliable,
+                observed_at: None,
+                uncertainty_seconds: None,
+                evidence: Vec::new(),
+            })
+            .collect(),
+    );
+    let body = route_body_with_sources(
+        Arc::new(street),
+        Arc::new(CountingTiming {
+            calls: AtomicUsize::new(0),
+            snapshot,
+        }),
+        request(origin, destination, &["metro"]),
+        Arc::new(BikeShareNetwork::new(Vec::new())),
+        Arc::new(UnavailableBikeAvailabilitySource),
+    )
+    .await;
+    let options = body["journey_options"].as_array().unwrap();
+    assert_eq!(options.len(), 1);
+    let option = &options[0];
+    assert_eq!(
+        option["legs"][1]["departure_time"],
+        "2026-08-31T10:04:00+08:00"
+    );
+    assert_eq!(option["legs"][0]["duration_seconds"], 180);
+    assert_eq!(option["legs"][2]["duration_seconds"], 90);
+    assert_eq!(option["walking_seconds"], 270);
+    assert_eq!(option["duration_seconds"], 630);
+    assert_eq!(option["arrival_time"], option["legs"][2]["arrival_time"]);
+    assert_eq!(option["arrival_time"], "2026-08-31T10:10:30+08:00");
+}
+
+#[tokio::test]
+async fn reachable_walking_matrix_cannot_fabricate_unreachable_direct_geometry() {
+    use via_server::street::{Metres, Seconds};
+    let origin = coordinate(25.0, 121.5);
+    let destination = coordinate(25.001, 121.501);
+    let street = FakeStreetRouter::builder()
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            Seconds(60),
+            Metres(100),
+        )
+        .build();
+    let timing = Arc::new(CountingTiming::default());
+    let body = route_body_with_sources(
+        Arc::new(street),
+        timing.clone(),
+        request(origin, destination, &[]),
+        Arc::new(BikeShareNetwork::new(Vec::new())),
+        Arc::new(UnavailableBikeAvailabilitySource),
+    )
+    .await;
+    assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
+    assert!(body.get("journey_options").is_none());
+    assert_eq!(timing.calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn direct_walking_uses_reconstructed_duration_for_all_output_metrics() {
+    use via_server::street::{Metres, Seconds};
+    let origin = coordinate(25.0, 121.5);
+    let destination = coordinate(25.001, 121.501);
+    let street = FakeStreetRouter::builder()
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            Seconds(60),
+            Metres(100),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            path(origin, destination, 95),
+        )
+        .build();
+    let body = route_body_with_sources(
+        Arc::new(street),
+        Arc::new(CountingTiming::default()),
+        request(origin, destination, &[]),
+        Arc::new(BikeShareNetwork::new(Vec::new())),
+        Arc::new(UnavailableBikeAvailabilitySource),
+    )
+    .await;
+    let options = body["journey_options"].as_array().unwrap();
+    assert_eq!(options.len(), 1);
+    assert_eq!(options[0]["duration_seconds"], 95);
+    assert_eq!(options[0]["walking_seconds"], 95);
+    assert_eq!(options[0]["legs"][0]["duration_seconds"], 95);
+    assert_eq!(
+        options[0]["arrival_time"],
+        options[0]["legs"][0]["arrival_time"]
+    );
+}
+
+#[tokio::test]
+async fn reconstructed_walking_duration_must_still_fit_the_query_limit() {
+    use via_server::street::{Metres, Seconds};
+    let origin = coordinate(25.0, 121.5);
+    let destination = coordinate(25.0005, 121.5005);
+    let street = FakeStreetRouter::builder()
+        .matrix_leg(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            Seconds(60),
+            Metres(100),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            path(origin, destination, 95),
+        )
+        .build();
+    let mut limits = JourneyPlanningLimits::default();
+    limits.planner.max_journey_duration_seconds = 70;
+    let body = route_body_with_limits(
+        street,
+        FixtureRealtime::empty(),
+        request(origin, destination, &[]),
+        limits,
+    )
+    .await
+    .unwrap();
+    assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
+    assert!(body.get("journey_options").is_none());
 }

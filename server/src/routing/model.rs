@@ -172,6 +172,7 @@ impl JourneyPlanningLimits {
 pub(crate) struct JourneyPlanningContext<'a> {
     pub(crate) request: &'a PlanningRequest,
     pub(crate) search_start: OffsetDateTime,
+    pub(crate) max_journey_duration_seconds: u32,
     pub(crate) latest_arrival: Option<OffsetDateTime>,
     pub(crate) deadline: PlanningDeadline,
 }
@@ -197,6 +198,7 @@ impl<'a> JourneyPlanningContext<'a> {
         Ok(Self {
             request,
             search_start,
+            max_journey_duration_seconds,
             latest_arrival,
             deadline,
         })

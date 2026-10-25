@@ -34,16 +34,20 @@ selected. An empty timing query set does not call the timing provider.
 `FixedCorridorEvaluator` processes each corridor's ordered edges as a unified
 movement expansion search. `TransitExpander`, `WalkingExpander`, and
 `BikeShareExpander` implement one `MovementExpander` interface. The expansion
-context carries the current edge and anchors, query, request-local surface
-planners, and shared accounting. The evaluator dispatches expansion, prunes
+context carries the current edge and anchors, query and shared accounting. Walking owns its request-local Matrix cache and
+router; BikeShare borrows an optional concrete request-local session. The evaluator dispatches expansion, prunes
 states, and finalizes candidates; it does not select a baseline winner.
 
 Transit expands equivalent Patterns and multiple feasible departures from the
 timing snapshot using each state's ready time and transfer constraints. Walking
-owns retained access, transfer, and egress metrics as well as exact street walking;
-retained metrics suppress duplicate exact walking requests. Surface providers
-retain their existing caches, availability filtering, station discovery, and
-routing responsibilities. Provider failures are classified centrally and leave
+owns retained access, transfer, and egress metrics and realizes unresolved Walking
+with directional 1×1 Matrix requests. Retained metrics suppress duplicate P2 street
+requests. Matrix constraints preserve DepartAt time normalized to Taipei.
+`WalkingExpander` retains successes, unreachable cells, and failures by ordered
+anchor keys and departure instant throughout the evaluation pass. BikeShare keeps
+availability filtering, station discovery, batching, and exact result caching in
+`BikeShareSession` and `BikeShareMovementPlanner`. Candidate discovery is cached by
+anchor pair; the candidate is reused for lower-bound checks and realization. Provider failures are classified centrally and leave
 other modes available. Deadlines abort evaluation; budget exhaustion retains
 only candidates from completed corridors.
 
@@ -54,9 +58,16 @@ walking, fewer transfers, less cycling, fewer rentals, or different future
 capabilities. Exact successors enter the shared multi-objective frontier.
 
 Walking surface movements are carried into the `RealizedJourney`, the sole
-realized path value. It owns ordered anchors and movements, validates path
-continuity and timing, and supplies canonical movement identity for deduplication;
-reconstruction does not repeat their street route. The evaluator never searches
+realized path value. It owns ordered anchors and metric-only movements, validates
+path continuity and timing, and supplies canonical movement identity for
+deduplication. Reconstruction generates Walking and BikeShare geometry with
+Route calls. Direct Walking is hydrated like Access, Transfer, and Egress.
+Transfer and Egress follow their separate anchors; the former terminal shortcut
+and synthetic unreachable fallback are removed. Route timing determines final
+legs and ranking metrics, and downstream Transit departures are revalidated.
+Late arrivals, missed departures, and maximum-duration violations reject that
+candidate without suppressing other candidates. BikeShare reuse waits derive from
+actual return time plus 15 minutes and current reconstructed arrival. The evaluator never searches
 transit topology, adds anchors, or combines portions of different corridors.
 
 An active BikeShare rental can extend from its original start anchor to the next
@@ -84,28 +95,26 @@ outgoing maps. BikeShare availability is request-local: pickup requires a
 fresh serviceable station with a bike, and return requires a fresh serviceable
 station with a dock. A feasible movement's station pairs are evaluated in
 one or more bicycle matrix requests chunked to the street router's source and
-target limits. The direct walking corridor uses the same Walking and
-BikeShare planners and constraints as any other Phase-2 edge.
+target limits. The direct walking corridor uses the same Walking expander and
+BikeShare session and constraints as any other Phase-2 edge.
 
 ## Consequences
 
 Phase 2 performs no additional transit topology search or TDX calls. It uses
 one request-local timing snapshot for retained positions and, when selected,
-one BikeShare availability snapshot. It may make lazy Valhalla route or matrix
-calls after surface lower-bound screening. Exact surface routes are cached
-only within the request; this decision adds no cross-request TTL or distributed
-cache. Removing arrival-only screening increases exact routing work for feasible
-trade-offs, including extensions of slower rentals. The 12-edge regression
-fixture now performs 72 distinct exact BikeShare realizations and serves 66
-additional requests from cache, compared with zero exact requests under the old
-baseline screen. Expansion and candidate limits remain mandatory; no untested
-heuristic cutoff replaces the removed screen. The bounded frontier can still
-truncate Pareto alternatives when its candidate limit is reached.
+one BikeShare availability snapshot. It may make lazy Valhalla Matrix calls
+after surface lower-bound screening. P2 stores no street geometry. Walking's
+`walking_matrix_requests` counts physical Matrix calls, including failures;
+`walking_cache_hits` counts reused results. Reconstruction Route calls are
+separate work and use actual returned metrics. A 1×1 Matrix is not assumed faster
+than Route. Caches remain request-local; no cross-request cache is introduced.
 
-Walking is a concrete dependency, and BikeShare occupies one optional typed slot
-in `SurfacePlanners`. The narrow `BikeSharePlanner` interface supports deterministic
-synthetic movement tests. `SurfaceMovementPlanner`, `SurfaceKind`, the mixed
-movement enum, collection scans, and integer planner indices are removed.
+`CorridorAnchor` and `CorridorAnchorKey` live in `routing/corridor.rs`.
+`SurfacePlanners`, `SurfaceRequest`, `WalkingMovementPlanner`, the production
+`BikeSharePlanner` trait, and `surface.rs` are removed. `PlanningSession` explicitly
+owns `WalkingExpander` and an optional `BikeShareSession`. A test-only BikeShare
+injection seam preserves synthetic rental and expansion regressions; production
+uses no generic BikeShare dispatch.
 
 The direct corridor runs first and naturally charges at most two expansions
 (one Walking realization and one optional BikeShare realization). This protects
@@ -123,10 +132,15 @@ no complete candidate means a limit error.
 This policy can leave too little budget for transit under very small limits.
 It preserves completed work rather than guaranteeing that every mode can finish
 under an insufficient budget. The one-edge direct corridor needs no separate
-allowance implementation: two known planner slots bound its charged work.
+allowance implementation: Walking and optional BikeShare bound its charged work.
 
-A journey still requiring street geometry hydration cannot prune an already-routed
-candidate before reconstruction. Per-edge candidate caps still apply. The service
+A candidate containing any street movement cannot dominate a distinct candidate
+before geometry and timing are confirmed. State dominance requires identical
+movement prefixes when either contains street movement, in addition to the usual
+metric and capability comparisons. Pure transit states retain ordinary dominance.
+This conservative policy also preserves later transit departures when Route takes
+longer than Matrix. Stable identity deduplication and final Pareto ranking remain.
+Per-edge candidate caps still apply. The service
 reconstructs the bounded Pareto pool, deduplicates stable keys, and ranks all usable
 candidates before final selection. The final result cap is the smaller of the
 ranking policy limit and configured `max_candidates`. The reconstruction pool is
@@ -143,8 +157,9 @@ inconsistent with walking duration produce `InvalidQuery` before Phase 1.
 The direct-corridor regression checks one additional Walking request and one
 expansion without changing transit lookups. At the transit-only budget boundary,
 completed transit candidates remain available and evaluation is marked partial.
-The 12-edge BikeShare fixture retains 72 exact realizations and 66 cache hits.
-Representative measurements and commands live in `docs/route-corpus.md`.
+Conservative hydration pruning can change the bounded P2 pool and work counts;
+it does not increase the frontier or expansion limits. Measurements and their
+fixture-only scope are recorded in `docs/route-corpus.md`.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
 configured Taiwan Bike Station City JSON snapshots to create static

@@ -19,11 +19,11 @@ use crate::street::{
 use super::{
     bike::{BikeShareMovementPlanner, BikeShareSession},
     corridor::EvaluationCorridor,
+    evaluator::walking::WalkingExpander,
     evaluator::{self, Phase2EvaluationStats},
     model::{AccessPoint, EgressPoint, JourneyPlanningLimits, PlanningQuery, RoutingError},
     realized::RealizedJourney,
     static_search,
-    surface::{SurfacePlanners, WalkingMovementPlanner},
     topology::TransitTopologyIndex,
     transfers::TransferShortcutIndex,
 };
@@ -242,23 +242,18 @@ impl MultimodalPlanner {
         let loading =
             self.load_request_snapshots(&query, &retained, &static_stats, &bike_station_ids);
         let snapshots = query.deadline.run(loading).await??;
-        let surface_planners = SurfacePlanners {
-            walking: WalkingMovementPlanner::new(self.street.clone()),
-            bike_share: snapshots.bike.clone().map(|snapshot| {
-                Box::new(BikeShareSession::new(
-                    self.bike.clone(),
-                    snapshot,
-                    OffsetDateTime::now_utc(),
-                )) as Box<dyn super::surface::BikeSharePlanner>
-            }),
-        };
+        let walking = WalkingExpander::new(self.street.clone());
+        let bike_share = snapshots.bike.clone().map(|snapshot| {
+            BikeShareSession::new(self.bike.clone(), snapshot, OffsetDateTime::now_utc())
+        });
         Ok(PlanningSession {
             network: &self.network,
             query,
             retained,
             corridors,
             snapshots,
-            surface_planners,
+            walking,
+            bike_share,
             stats: MultimodalPlannerStats {
                 phase1: static_stats,
                 ..MultimodalPlannerStats::default()
@@ -438,7 +433,8 @@ pub(crate) struct PlanningSession<'a> {
     retained: static_search::RetainedCorridorSet,
     corridors: Vec<EvaluationCorridor>,
     snapshots: RequestSnapshots,
-    surface_planners: SurfacePlanners,
+    walking: WalkingExpander,
+    bike_share: Option<BikeShareSession>,
     stats: MultimodalPlannerStats,
     failures: evaluator::EvaluationFailures,
 }
@@ -458,7 +454,8 @@ impl PlanningSession<'_> {
             &self.retained,
             &self.snapshots.timing,
             &self.query,
-            &mut self.surface_planners,
+            &mut self.walking,
+            self.bike_share.as_mut(),
         );
         let evaluation_result = self
             .query
@@ -828,7 +825,11 @@ mod tests {
         let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
         assert_eq!(stats.phase1.corridors_retained, 1);
-        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[1].transit_pattern_sequence(),
+            vec![TransitPatternId::new("static-fast")]
+        );
         assert_eq!(
             candidates[0].transit_pattern_sequence(),
             vec![TransitPatternId::new("realtime-fast")]

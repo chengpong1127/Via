@@ -102,10 +102,16 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
 fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     let evaluator = source_tree("src/routing/evaluator");
     assert!(evaluator.contains("&TimingSnapshot"));
-    assert!(evaluator.contains("SurfacePlanners"));
+    assert!(evaluator.contains("BikeShareSession"));
+    assert!(evaluator.contains("StreetRouter"));
+    assert!(
+        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/routing/surface.rs")
+            .exists()
+    );
     assert!(!evaluator.contains("SurfaceKind"));
-    assert!(evaluator.contains("optimistic_duration"));
-    assert!(evaluator.contains(".realize(request)"));
+    assert!(evaluator.contains("optimistic_lower_bound_seconds"));
+    assert!(evaluator.contains(".matrix(MatrixQuery"));
     assert!(evaluator.contains("trait MovementExpander"));
     for (module, expander) in [
         ("transit", "TransitExpander"),

@@ -71,7 +71,6 @@ impl TransitExpander<'_> {
                         board_index: equivalent_leg.board_index,
                         alight_index: equivalent_leg.alight_index,
                     },
-                    street_path: None,
                 }));
             }
         }

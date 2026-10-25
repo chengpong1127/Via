@@ -144,9 +144,9 @@ async fn deterministic_routing_benchmark() {
         );
         let last_phase2 = last_phase2.unwrap();
         println!(
-            "{label}: p2_expansions={} walking_requests={} walking_cache_hits={} bike_requests={} bike_cache_hits={} bike_matrices={}",
+            "{label}: p2_expansions={} walking_matrix_requests={} walking_cache_hits={} bike_requests={} bike_cache_hits={} bike_matrices={}",
             last_phase2.corridor_states_evaluated,
-            last_phase2.walking_exact_requests,
+            last_phase2.walking_matrix_requests,
             last_phase2.walking_cache_hits,
             last_phase2.bike_exact_candidates_requested,
             last_phase2.bike_exact_cache_hits,

@@ -62,7 +62,6 @@ impl EvaluationState {
             kind: JourneyMovementKind::BikeShare {
                 movement: movement.clone(),
             },
-            street_path: None,
         });
         Some(Self {
             ready_at: arrival,
@@ -81,10 +80,12 @@ impl EvaluationState {
 
 use super::expansion::{ExpansionContext, MovementExpander};
 
-pub(super) struct BikeShareExpander;
+pub(super) struct BikeShareExpander<'a> {
+    pub session: Option<&'a mut super::super::bike::BikeShareSession>,
+}
 
 #[async_trait::async_trait]
-impl MovementExpander for BikeShareExpander {
+impl MovementExpander for BikeShareExpander<'_> {
     async fn extend_state(
         &mut self,
         context: &mut ExpansionContext<'_>,
@@ -92,19 +93,19 @@ impl MovementExpander for BikeShareExpander {
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let mut next = Vec::new();
         let (start_anchor, started_at) = state.bike_departure(context.index);
-        let request = SurfaceRequest {
+        let request = super::super::bike::BikeMovementRequest {
             from: &context.corridor.anchors()[start_anchor],
             to: &context.corridor.anchors()[context.index + 1],
-            departure_at: started_at,
             from_anchor: start_anchor,
             to_anchor: context.index + 1,
         };
-        let Some(planner) = context.surface_planners.bike_share.as_ref() else {
+        let Some(planner) = self.session.as_deref_mut() else {
             return Ok(next);
         };
-        let Some(bound) = planner.optimistic_duration(&request) else {
+        let Some(candidate) = planner.candidate(&request) else {
             return Ok(next);
         };
+        let bound = candidate.optimistic_lower_bound_seconds;
         context.stats.bike_lower_bound_checks += 1;
         if !within_query_bounds(
             context.query,
@@ -113,7 +114,9 @@ impl MovementExpander for BikeShareExpander {
             context.stats.bike_lower_bound_rejections += 1;
             return Ok(next);
         }
-        for movement in context.realize_bike_share(&request).await? {
+        context.charge()?;
+        let result = planner.realize(&request, &candidate).await;
+        for movement in context.finish_realization(result)?.unwrap_or_default() {
             let arrival = started_at + Duration::seconds(i64::from(movement.total_seconds));
             if !within_query_bounds(context.query, arrival) {
                 continue;
