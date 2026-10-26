@@ -89,8 +89,12 @@ pub(super) fn on_http_response<B>(response: &Response<B>, latency: Duration, spa
     );
 }
 
-pub(super) async fn http_timeout(request: Request<Body>, next: Next) -> Response {
-    match tokio::time::timeout(std::time::Duration::from_secs(10), next.run(request)).await {
+pub(super) async fn http_timeout(
+    request: Request<Body>,
+    next: Next,
+    timeout: Duration,
+) -> Response {
+    match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
         Err(_) => error_response(StatusCode::REQUEST_TIMEOUT, "request_timeout", None),
     }

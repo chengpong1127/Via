@@ -8,9 +8,6 @@ pub mod tdx;
 
 pub use tdx::TdxBikeAvailabilitySource;
 
-pub const DEFAULT_BIKE_AVAILABILITY_CACHE_TTL: std::time::Duration =
-    std::time::Duration::from_secs(45);
-
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum BikeAvailabilityError {
     #[error("bike-share availability provider returned a rejected payload")]

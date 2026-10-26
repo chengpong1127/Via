@@ -105,8 +105,17 @@ impl BikeStationAvailability {
     }
 
     pub fn is_fresh(&self, now: OffsetDateTime, max_age: Duration) -> bool {
+        self.is_fresh_with_skew(now, max_age, MAX_BIKE_AVAILABILITY_CLOCK_SKEW)
+    }
+
+    pub fn is_fresh_with_skew(
+        &self,
+        now: OffsetDateTime,
+        max_age: Duration,
+        max_clock_skew: Duration,
+    ) -> bool {
         let age = now - self.observed_at;
-        age >= -MAX_BIKE_AVAILABILITY_CLOCK_SKEW && age <= max_age
+        age >= -max_clock_skew && age <= max_age
     }
 }
 
@@ -141,6 +150,7 @@ pub struct BikeAvailabilityView<'a> {
     snapshot: &'a BikeAvailabilitySnapshot,
     now: OffsetDateTime,
     max_age: Duration,
+    max_clock_skew: Duration,
 }
 
 impl<'a> BikeAvailabilityView<'a> {
@@ -164,6 +174,7 @@ impl<'a> BikeAvailabilityView<'a> {
             snapshot,
             now,
             max_age,
+            max_clock_skew: MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
         }
     }
 
@@ -220,7 +231,8 @@ impl<'a> BikeAvailabilityView<'a> {
             self.snapshot
                 .station(station_id)
                 .is_some_and(|availability| {
-                    availability.is_fresh(self.now, self.max_age) && availability.in_service
+                    availability.is_fresh_with_skew(self.now, self.max_age, self.max_clock_skew)
+                        && availability.in_service
                 })
         })
     }
@@ -331,6 +343,18 @@ impl BikeShareNetwork {
         max_age: Duration,
     ) -> BikeAvailabilityView<'a> {
         BikeAvailabilityView::at(self, snapshot, now, max_age)
+    }
+
+    pub fn availability_view_with_policy<'a>(
+        &'a self,
+        snapshot: &'a BikeAvailabilitySnapshot,
+        now: OffsetDateTime,
+        max_age: Duration,
+        max_clock_skew: Duration,
+    ) -> BikeAvailabilityView<'a> {
+        let mut view = BikeAvailabilityView::at(self, snapshot, now, max_age);
+        view.max_clock_skew = max_clock_skew;
+        view
     }
 
     pub fn validate(&self) -> Result<(), BikeShareNetworkValidationError> {

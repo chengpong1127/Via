@@ -58,13 +58,19 @@ impl MultimodalPlanner {
         street: Arc<dyn StreetRouter>,
         bike_network: Arc<BikeShareNetwork>,
         bike_availability: Arc<dyn BikeAvailabilitySource>,
+        bike: super::BikeMovementPolicy,
     ) -> Self {
         Self {
             topology: Arc::new(TransitTopologyIndex::new(network.network())),
             transfers: Arc::new(TransferShortcutIndex::from_network(network.network())),
             network,
             timing,
-            bike: BikeShareMovementPlanner::new(bike_network, bike_availability, street.clone()),
+            bike: BikeShareMovementPlanner::new(
+                bike_network,
+                bike_availability,
+                street.clone(),
+                bike,
+            ),
             street,
         }
     }
@@ -691,6 +697,7 @@ mod tests {
             Arc::new(FakeStreetRouter::builder().build()),
             Arc::new(BikeShareNetwork::new(Vec::new())),
             Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+            crate::config::ViaConfig::default().bike_policy(),
         )
     }
 
@@ -708,6 +715,7 @@ mod tests {
             )],
             vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
             datetime!(2026-09-21 10:00 UTC),
+            crate::config::ViaConfig::default().planner_limits(),
         )
         .with_allowed_transit_modes([TransitMode::Bus])
         .with_limits(crate::routing::PlannerLimits {
@@ -989,6 +997,7 @@ mod tests {
                 calls: calls.clone(),
                 requested: requested.clone(),
             }),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let mut bike_query = query(2)
             .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
@@ -1045,6 +1054,7 @@ mod tests {
             street,
             Arc::new(BikeShareNetwork::new(Vec::new())),
             Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let query = PlanningQuery::new(
             origin,
@@ -1053,6 +1063,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             datetime!(2026-09-21 10:00 UTC),
+            crate::config::ViaConfig::default().planner_limits(),
         )
         .with_allowed_transit_modes([]);
         let (journeys, stats) = planner.plan_with_stats(query).await.unwrap();
@@ -1088,6 +1099,7 @@ mod tests {
             street,
             Arc::new(BikeShareNetwork::new(Vec::new())),
             Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let query = PlanningQuery::new(
             origin,
@@ -1096,6 +1108,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             datetime!(2026-09-21 10:00 UTC),
+            crate::config::ViaConfig::default().planner_limits(),
         )
         .with_allowed_transit_modes([]);
         let mut session = planner.prepare(query).await.unwrap();

@@ -18,7 +18,6 @@ use crate::{
 };
 
 pub(super) const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
-const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 
 #[derive(Debug, Deserialize)]
 struct TdxBusEstimatedArrival {
@@ -42,6 +41,7 @@ pub(super) fn parse_bus_realtime_payload(
     payload: &serde_json::Value,
     requested_services: &HashMap<String, Vec<TransitPatternId>>,
     freshness_policy: &FreshnessPolicy,
+    max_clock_skew_seconds: u32,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
     let records = payload
         .as_array()
@@ -56,7 +56,7 @@ pub(super) fn parse_bus_realtime_payload(
         let Ok(published_at) = OffsetDateTime::parse(&record.update_time, &Rfc3339) else {
             continue;
         };
-        if published_at > received_at + MAX_PROVIDER_CLOCK_SKEW {
+        if published_at > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
             return Err(DepartureError::InvalidResponse);
         }
         let freshness = freshness_policy.evaluate(
@@ -178,6 +178,7 @@ mod tests {
             &payload,
             &requested_services,
             &FreshnessPolicy::tdx_default(),
+            300,
         )
         .unwrap();
 

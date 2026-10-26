@@ -42,6 +42,19 @@ struct FixtureStats {
 }
 
 async fn fixture_client(payload: Value, status: StatusCode) -> (Arc<TdxClient>, FixtureStats) {
+    fixture_client_with_settings(
+        payload,
+        status,
+        via_server::config::ViaConfig::default().tdx,
+    )
+    .await
+}
+
+async fn fixture_client_with_settings(
+    payload: Value,
+    status: StatusCode,
+    settings: via_server::config::TdxSettings,
+) -> (Arc<TdxClient>, FixtureStats) {
     let stats = FixtureStats {
         calls: Arc::new(AtomicUsize::new(0)),
         requests: Arc::new(Mutex::new(Vec::new())),
@@ -71,7 +84,10 @@ async fn fixture_client(payload: Value, status: StatusCode) -> (Arc<TdxClient>, 
             (status, Json(payload)).into_response()
         }
     }));
-    (spawn_tdx_fixture(app).await, stats)
+    (
+        crate::support::tdx::spawn_tdx_fixture_with_settings(app, settings).await,
+        stats,
+    )
 }
 
 async fn scoped_fixture_client(
@@ -809,7 +825,7 @@ async fn later_rate_limit_preserves_successful_earlier_chunks() {
                     .is_ok_and(|trips| trips[0].timing_reliability == TimingReliability::Reliable)
             })
             .count(),
-        100
+        200
     );
     assert_eq!(
         results
@@ -820,6 +836,42 @@ async fn later_rate_limit_preserves_successful_earlier_chunks() {
                     .is_ok_and(|trips| trips[0].timing_reliability == TimingReliability::Fallback)
             })
             .count(),
-        101
+        1
     );
+}
+
+#[tokio::test]
+async fn bus_batches_two_hundred_stops_and_obeys_changed_toml() {
+    for (count, size, expected) in [(200, 200, 1), (201, 200, 2), (201, 75, 3)] {
+        let config = via_server::config::ViaConfig::from_toml(
+            &include_str!("../../config/via.toml")
+                .replace("bus_stops = 200", &format!("bus_stops = {size}")),
+        )
+        .unwrap();
+        let (network, queries) = network_for_unique_stops(count);
+        let update = recent_update();
+        let payload = Value::Array(
+            (0..count)
+                .map(|index| {
+                    arrival(
+                        &format!("service-{index}"),
+                        &format!("stop-{index}"),
+                        60,
+                        &update,
+                    )
+                })
+                .collect(),
+        );
+        let (tdx, stats) = fixture_client_with_settings(payload, StatusCode::OK, config.tdx).await;
+        let results = bus_resolver(runtime(network), tdx)
+            .next_departures_batch(queries)
+            .await;
+        assert_eq!(stats.calls.load(Ordering::Relaxed), expected);
+        assert_eq!(results.len(), count);
+        assert!(results.iter().all(|result| {
+            result.as_ref().is_ok_and(|trips| {
+                trips.len() == 1 && trips[0].timing_basis == TimingBasis::RealtimePrediction
+            })
+        }));
+    }
 }

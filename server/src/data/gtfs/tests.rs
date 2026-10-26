@@ -362,9 +362,18 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             Metres(50),
         )
         .build();
-    let built = build_from_fetch_snapshot(&snapshot, &output, &street)
-        .await
-        .unwrap();
+    let built = build_from_fetch_snapshot(
+        &snapshot,
+        &output,
+        &street,
+        crate::config::ViaConfig::default().bikeshare.preprocessing,
+        crate::config::ViaConfig::default().preprocessing.transfers,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .same_stop_transfer_seconds,
+    )
+    .await
+    .unwrap();
     let network = &built.via_static.transit;
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
     assert_eq!(built.diagnostics.gtfs.stops_loaded, 6);
@@ -518,9 +527,18 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
     write_fetch_snapshot(&input, &untracked);
     std::fs::write(untracked.join("bike-stations-taipei-page-0002.json"), "[]").unwrap();
     assert!(
-        build_from_fetch_snapshot(&untracked, &temporary_path("untracked-output"), &street)
-            .await
-            .is_err()
+        build_from_fetch_snapshot(
+            &untracked,
+            &temporary_path("untracked-output"),
+            &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
+        )
+        .await
+        .is_err()
     );
     std::fs::remove_dir_all(untracked).unwrap();
 
@@ -528,9 +546,18 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
     write_fetch_snapshot(&input, &incomplete);
     std::fs::remove_file(incomplete.join("bike-stations-taipei.json")).unwrap();
     assert!(
-        build_from_fetch_snapshot(&incomplete, &temporary_path("incomplete-output"), &street)
-            .await
-            .is_err()
+        build_from_fetch_snapshot(
+            &incomplete,
+            &temporary_path("incomplete-output"),
+            &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
+        )
+        .await
+        .is_err()
     );
     std::fs::remove_dir_all(incomplete).unwrap();
 
@@ -538,9 +565,18 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
     write_fetch_snapshot(&input, &mismatched);
     std::fs::write(mismatched.join("bike-stations-taipei.json"), "[ ]").unwrap();
     assert!(
-        build_from_fetch_snapshot(&mismatched, &temporary_path("mismatched-output"), &street)
-            .await
-            .is_err()
+        build_from_fetch_snapshot(
+            &mismatched,
+            &temporary_path("mismatched-output"),
+            &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
+        )
+        .await
+        .is_err()
     );
     std::fs::remove_dir_all(mismatched).unwrap();
     std::fs::remove_file(input).unwrap();
@@ -566,7 +602,17 @@ async fn accepts_gtfs_only_fetch_snapshots() {
 
     let output = temporary_path("gtfs-only-output");
     let street = FakeStreetRouter::builder().build();
-    let build = build_from_fetch_snapshot(&snapshot, &output, &street).await;
+    let build = build_from_fetch_snapshot(
+        &snapshot,
+        &output,
+        &street,
+        crate::config::ViaConfig::default().bikeshare.preprocessing,
+        crate::config::ViaConfig::default().preprocessing.transfers,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .same_stop_transfer_seconds,
+    )
+    .await;
     assert!(build.is_ok());
 
     std::fs::remove_file(input).unwrap();
@@ -588,6 +634,11 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_manifest,
             &temporary_path("malformed-manifest-output"),
             &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
         )
         .await
         .is_err()
@@ -603,6 +654,11 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_bike,
             &temporary_path("malformed-bike-output"),
             &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
         )
         .await
         .is_err()
@@ -618,10 +674,49 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_gtfs,
             &temporary_path("malformed-gtfs-output"),
             &street,
+            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .same_stop_transfer_seconds
         )
         .await
         .is_err()
     );
     std::fs::remove_dir_all(malformed_gtfs).unwrap();
     std::fs::remove_file(input).unwrap();
+}
+
+#[tokio::test]
+async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
+    let input = temporary_path("configured-gtfs.zip");
+    let snapshot = temporary_path("configured-fetch");
+    let output = temporary_path("configured-output");
+    write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
+    let config =
+        crate::config::ViaConfig::from_toml(&include_str!("../../../config/via.toml").replace(
+            "same_stop_transfer_seconds = 120",
+            "same_stop_transfer_seconds = 75",
+        ))
+        .unwrap();
+    let built = crate::data::build_from_fetch_snapshot(
+        &snapshot,
+        &output,
+        &FakeStreetRouter::builder().build(),
+        config.bikeshare.preprocessing,
+        config.preprocessing.transfers,
+        config.preprocessing.same_stop_transfer_seconds,
+    )
+    .await
+    .unwrap();
+    let artifact = crate::data::load_static_artifact(&output.join(".via-static.json")).unwrap();
+    assert_eq!(built.via_static.transit.default_transfer_seconds, 75);
+    assert_eq!(
+        TransitRuntime::new(std::sync::Arc::new(artifact.transit)).same_stop_transfer_seconds(),
+        75
+    );
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
 }

@@ -214,3 +214,5 @@ cargo test --manifest-path server/Cargo.toml --all-targets --all-features
 
 See [`docs/dev-tooling.md`](docs/dev-tooling.md) for data and route-debug
 commands.
+
+Runtime and preprocessing configuration is centralized in `server/config/via.toml`; see `server/docs/configuration.md` for loading, override precedence, and artifact rebuild requirements.

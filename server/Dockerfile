@@ -8,6 +8,7 @@ WORKDIR /build/server
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY config ./config
 
 RUN cargo build --release --locked --bin via-server
 
@@ -21,6 +22,9 @@ RUN apt-get update \
 WORKDIR /app/server
 
 COPY --from=builder /build/server/target/release/via-server /usr/local/bin/via-server
+
+COPY config/via.toml /etc/via/via.toml
+ENV VIA_CONFIG=/etc/via/via.toml
 
 USER via
 ENTRYPOINT ["/usr/local/bin/via-server"]

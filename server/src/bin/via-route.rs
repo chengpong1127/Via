@@ -4,16 +4,17 @@ use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace},
-    config::{Environment, RuntimeConfig, load_dotenv},
+    config::{Environment, RuntimeConfig, ViaConfig, load_dotenv},
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
-    routing::JourneyPlanningLimits,
     runtime::{RuntimeOptions, build_runtime},
 };
 
 #[derive(Parser, Debug)]
 #[command(name = "via-route", about = "Run a live Via routing query")]
 struct Cli {
+    #[arg(long)]
+    config: Option<PathBuf>,
     #[arg(long = "static")]
     static_path: PathBuf,
     #[arg(long)]
@@ -54,26 +55,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .without_time()
             .init();
     }
+    let mut settings = ViaConfig::load(cli.config.as_deref())?;
+    settings.apply_environment()?;
+    let options = options_from_cli(&cli, &mut settings)?;
+    let max_static_corridors = settings.routing.max_static_corridors;
     let via_static = load_static_artifact(&cli.static_path)?;
     let static_revision = via_static.revisions.transit_static.clone();
     let schedule_revision = via_static.revisions.schedule.clone();
-    let mut limits = JourneyPlanningLimits::default();
-    if let Some(max_departures) = cli.max_departures_per_query {
-        limits.planner.max_departures_per_query = max_departures;
-    }
-    if let Some(max_static_corridors) = cli.max_static_corridors {
-        limits.planner.max_static_corridors = max_static_corridors.max(1);
-    }
-    let valhalla_timeout = cli.valhalla_timeout_ms.map(Duration::from_millis);
-    if let Some(timeout) = valhalla_timeout {
-        limits.request_timeout = timeout.saturating_mul(5);
-    }
-    let max_static_corridors = limits.planner.max_static_corridors;
-    let options = RuntimeOptions {
-        limits,
-        valhalla_request_timeout: valhalla_timeout,
-    };
-    let runtime_config = RuntimeConfig::from_env(Environment::from_env_or_development()?)?;
+    let runtime_config =
+        RuntimeConfig::from_settings(Environment::from_env_or_development()?, settings)?;
     let runtime = build_runtime(via_static, options, runtime_config).await?;
     let request = request_from_cli(&cli)?;
     if cli.trace {
@@ -116,6 +106,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+fn options_from_cli(
+    cli: &Cli,
+    settings: &mut ViaConfig,
+) -> Result<RuntimeOptions, via_server::config::ConfigError> {
+    if let Some(value) = cli.max_departures_per_query {
+        settings.routing.max_departures_per_query = value;
+    }
+    if let Some(value) = cli.max_static_corridors {
+        settings.routing.max_static_corridors = value;
+    }
+    if let Some(value) = cli.valhalla_timeout_ms {
+        settings.valhalla.request_timeout_ms = value;
+    }
+    settings.validate()?;
+    let mut limits = settings.journey_limits();
+    let valhalla_timeout = cli.valhalla_timeout_ms.map(Duration::from_millis);
+    if let Some(timeout) = valhalla_timeout {
+        limits.request_timeout = timeout.saturating_mul(5);
+    }
+    Ok(RuntimeOptions {
+        limits: Some(limits),
+        valhalla_request_timeout: valhalla_timeout,
+    })
 }
 
 fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
@@ -287,6 +302,58 @@ fn print_trace(result: &PlanningOutcome) {
 mod tests {
     use super::parse_modes;
     use via_server::api::PlanningMode;
+
+    #[test]
+    fn explicit_cli_values_override_toml_and_preserve_timeout_scaling() {
+        use clap::Parser;
+        let cli = super::Cli::parse_from([
+            "via-route",
+            "--static",
+            "fixture.json",
+            "--from-lat",
+            "25",
+            "--from-lon",
+            "121.5",
+            "--to-lat",
+            "25.1",
+            "--to-lon",
+            "121.6",
+            "--max-static-corridors",
+            "7",
+            "--max-departures-per-query",
+            "9",
+            "--valhalla-timeout-ms",
+            "2200",
+        ]);
+        let mut config = via_server::config::ViaConfig::default();
+        let options = super::options_from_cli(&cli, &mut config).unwrap();
+        assert_eq!(
+            options
+                .limits
+                .as_ref()
+                .unwrap()
+                .planner
+                .max_static_corridors,
+            7
+        );
+        assert_eq!(
+            options
+                .limits
+                .as_ref()
+                .unwrap()
+                .planner
+                .max_departures_per_query,
+            9
+        );
+        assert_eq!(
+            options.valhalla_request_timeout,
+            Some(std::time::Duration::from_millis(2200))
+        );
+        assert_eq!(
+            options.limits.as_ref().unwrap().request_timeout,
+            std::time::Duration::from_secs(11)
+        );
+    }
 
     #[test]
     fn omitted_or_empty_modes_selects_walking_only() {

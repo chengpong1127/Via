@@ -4,12 +4,12 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use clap::{Args, Parser, Subcommand};
 use via_server::{
-    config::{TdxRuntimeConfig, ValhallaRuntimeConfig, load_dotenv},
+    config::{Environment, TdxRuntimeConfig, ViaConfig, load_dotenv},
     data::{
         GtfsModeCoverage, build_from_fetch_snapshot, fetch,
         fetch::{FetchSources, fetch_snapshot},
@@ -18,7 +18,7 @@ use via_server::{
     },
     domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
     health::DependencyHealth,
-    providers::valhalla::{ValhallaConfig, ValhallaProvider},
+    providers::valhalla::ValhallaProvider,
     street::StreetRouter,
     tdx::TdxClient,
 };
@@ -29,6 +29,8 @@ use via_server::{
     about = "Fetch, build, validate, and inspect Via static data"
 )]
 struct Cli {
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -39,6 +41,7 @@ enum Command {
     Build(BuildArgs),
     Validate(ValidateArgs),
     Inspect(InspectArgs),
+    ValidateConfig,
 }
 
 #[derive(Args, Debug)]
@@ -116,18 +119,23 @@ enum InspectCommand {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
-    match Cli::parse().command {
-        Command::Fetch(args) => fetch(args).await?,
-        Command::Build(args) => build(args).await?,
+    let cli = Cli::parse();
+    let mut settings = ViaConfig::load(cli.config.as_deref())?;
+    settings.apply_environment()?;
+    settings.validate_environment(Environment::from_env_or_development()?)?;
+    match cli.command {
+        Command::ValidateConfig => println!("configuration is valid"),
+        Command::Fetch(args) => fetch(args, &settings).await?,
+        Command::Build(args) => build(args, &settings).await?,
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
     Ok(())
 }
 
-async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
-    let tdx = TdxRuntimeConfig::from_env()?;
-    let client = TdxClient::with_api_base_url(tdx.credentials, tdx.api_base_url.as_str())?;
+async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
+    let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
+    let client = TdxClient::new(tdx.credentials, settings.tdx.clone())?;
     let sources = FetchSources::production(tdx.api_base_url.as_str());
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
     println!("fetch snapshot: {}", snapshot.path.display());
@@ -144,13 +152,21 @@ async fn fetch(args: FetchArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn build(args: BuildArgs) -> Result<(), Box<dyn Error>> {
+async fn build(args: BuildArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
-    let street = build_street_router(ValhallaRuntimeConfig::from_env()?).await?;
+    let street = build_street_router(settings).await?;
     let output = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("data/build")
         .join(fetch::timestamp_now());
-    let result = build_from_fetch_snapshot(&args.input, &output, street.as_ref()).await?;
+    let result = build_from_fetch_snapshot(
+        &args.input,
+        &output,
+        street.as_ref(),
+        settings.bikeshare.preprocessing,
+        settings.preprocessing.transfers,
+        settings.preprocessing.same_stop_transfer_seconds,
+    )
+    .await?;
     let latest_static = update_latest_static_link(&output)?;
     println!("build latency: {} ms", started.elapsed().as_millis());
     print_build_diagnostics(&result.diagnostics);
@@ -207,11 +223,9 @@ fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 async fn build_street_router(
-    provider_config: ValhallaRuntimeConfig,
+    settings: &ViaConfig,
 ) -> Result<Arc<dyn StreetRouter>, Box<dyn Error>> {
-    let mut valhalla_config = ValhallaConfig::local();
-    valhalla_config.request_timeout = Duration::from_secs(15);
-    valhalla_config.base_url = provider_config.base_url;
+    let valhalla_config = settings.valhalla.provider_config(true)?;
     let street = Arc::new(ValhallaProvider::new(valhalla_config)?);
     if !street.healthy().await {
         return Err("Valhalla is not healthy".into());

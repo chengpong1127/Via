@@ -136,7 +136,14 @@ async fn source_with_routes(
             }),
         );
     let client = spawn_tdx_fixture(app).await;
-    TdxBikeAvailabilitySource::new(client)
+    TdxBikeAvailabilitySource::new(
+        client,
+        via_server::config::ViaConfig::default()
+            .tdx
+            .batch
+            .bike_stations,
+        via_server::config::ViaConfig::default().tdx.bikeshare,
+    )
 }
 
 fn id(value: &str) -> BikeStationId {
@@ -170,6 +177,19 @@ async fn source_for_cities(
     payloads: HashMap<String, (StatusCode, serde_json::Value)>,
     cache_ttl: Duration,
 ) -> (TdxBikeAvailabilitySource, AvailabilityFixture) {
+    source_for_cities_with_settings(
+        payloads,
+        cache_ttl,
+        via_server::config::ViaConfig::default().tdx,
+    )
+    .await
+}
+
+async fn source_for_cities_with_settings(
+    payloads: HashMap<String, (StatusCode, serde_json::Value)>,
+    cache_ttl: Duration,
+    settings: via_server::config::TdxSettings,
+) -> (TdxBikeAvailabilitySource, AvailabilityFixture) {
     let fixture = AvailabilityFixture {
         requests: Arc::new(Mutex::new(Vec::new())),
         payloads: Arc::new(payloads),
@@ -186,7 +206,16 @@ async fn source_for_cities(
             }),
         )
         .with_state(fixture.clone());
-    let source = TdxBikeAvailabilitySource::with_cache_ttl(spawn_tdx_fixture(app).await, cache_ttl);
+    let batch_size = settings.batch.bike_stations;
+    let availability = via_server::tdx::BikeAvailabilitySettings {
+        cache_ttl_seconds: cache_ttl.as_secs(),
+        ..settings.bikeshare.clone()
+    };
+    let source = TdxBikeAvailabilitySource::new(
+        crate::support::tdx::spawn_tdx_fixture_with_settings(app, settings).await,
+        batch_size,
+        availability,
+    );
     (source, fixture)
 }
 
@@ -356,16 +385,23 @@ async fn station_availability_is_cached_and_expiry_refreshes_requested_city() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = TdxBikeAvailabilitySource::with_cache_ttl(
+    let source = TdxBikeAvailabilitySource::new(
         spawn_tdx_fixture(app).await,
-        Duration::from_millis(20),
+        via_server::config::ViaConfig::default()
+            .tdx
+            .batch
+            .bike_stations,
+        via_server::tdx::BikeAvailabilitySettings {
+            cache_ttl_seconds: (Duration::from_secs(1)).as_secs(),
+            ..via_server::config::ViaConfig::default().tdx.bikeshare
+        },
     );
     let requested = [id("tdx:Taipei:TPE-1")];
     source.snapshot(&requested).await.unwrap();
     source.snapshot(&requested).await.unwrap();
     assert_eq!(taipei_calls.load(Ordering::Relaxed), 1);
     assert_eq!(new_taipei_calls.load(Ordering::Relaxed), 0);
-    tokio::time::sleep(Duration::from_millis(40)).await;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     source.snapshot(&requested).await.unwrap();
     assert_eq!(taipei_calls.load(Ordering::Relaxed), 2);
     assert_eq!(new_taipei_calls.load(Ordering::Relaxed), 0);
@@ -412,7 +448,14 @@ async fn concurrent_consumers_share_one_network_refresh() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = Arc::new(TdxBikeAvailabilitySource::new(spawn_tdx_fixture(app).await));
+    let source = Arc::new(TdxBikeAvailabilitySource::new(
+        spawn_tdx_fixture(app).await,
+        via_server::config::ViaConfig::default()
+            .tdx
+            .batch
+            .bike_stations,
+        via_server::config::ViaConfig::default().tdx.bikeshare,
+    ));
     let requested = [id("tdx:Taipei:TPE-1")];
     let results = join_all((0..30).map(|_| {
         let source = source.clone();
@@ -480,7 +523,14 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let failing = TdxBikeAvailabilitySource::new(spawn_tdx_fixture(app).await);
+    let failing = TdxBikeAvailabilitySource::new(
+        spawn_tdx_fixture(app).await,
+        via_server::config::ViaConfig::default()
+            .tdx
+            .batch
+            .bike_stations,
+        via_server::config::ViaConfig::default().tdx.bikeshare,
+    );
 
     assert!(matches!(
         failing.snapshot(&[id("tdx:Taipei:TPE-1")]).await,
@@ -575,33 +625,35 @@ async fn groups_requested_stations_by_city_and_escapes_uid_filter_literals() {
 }
 
 #[tokio::test]
-async fn availability_requests_are_batched_at_fifty_stations() {
-    let uids = station_uids("UID-", 51);
-    let response = uids
-        .iter()
-        .map(|uid| availability(uid, 1, 1, 1, TimeDuration::seconds(10)))
-        .collect::<Vec<_>>();
-    let (source, fixture) = source_for_cities(
-        HashMap::from([("Taipei".to_owned(), (StatusCode::OK, json!(response)))]),
-        Duration::from_secs(30),
-    )
-    .await;
-    let requested = uids
-        .iter()
-        .map(|uid| id(&format!("tdx:Taipei:{uid}")))
-        .collect::<Vec<_>>();
+async fn availability_requests_are_batched_at_four_hundred_stations() {
+    for count in [400usize, 401] {
+        let uids = station_uids("UID-", count);
+        let response = uids
+            .iter()
+            .map(|uid| availability(uid, 1, 1, 1, TimeDuration::seconds(10)))
+            .collect::<Vec<_>>();
+        let (source, fixture) = source_for_cities(
+            HashMap::from([("Taipei".to_owned(), (StatusCode::OK, json!(response)))]),
+            Duration::from_secs(30),
+        )
+        .await;
+        let requested = uids
+            .iter()
+            .map(|uid| id(&format!("tdx:Taipei:{uid}")))
+            .collect::<Vec<_>>();
 
-    let snapshot = source.snapshot(&requested).await.unwrap();
-    assert_eq!(snapshot.stations.len(), 51);
-    let requests = fixture.requests.lock().await;
-    assert_eq!(requests.len(), 2);
-    let tops = requests
-        .iter()
-        .map(|(_, query)| query.get("$top").unwrap().parse::<usize>().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(tops.iter().sum::<usize>(), 51);
-    assert!(tops.contains(&50));
-    assert!(tops.contains(&1));
+        let snapshot = source.snapshot(&requested).await.unwrap();
+        assert_eq!(snapshot.stations.len(), count);
+        let requests = fixture.requests.lock().await;
+        assert_eq!(requests.len(), count.div_ceil(400));
+        let tops = requests
+            .iter()
+            .map(|(_, query)| query.get("$top").unwrap().parse::<usize>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(tops.iter().sum::<usize>(), count);
+        assert!(tops.contains(&400));
+        assert_eq!(tops.contains(&1), count == 401);
+    }
 }
 
 #[tokio::test]
@@ -645,9 +697,16 @@ async fn stale_cached_observation_is_refetched_before_cache_ttl() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = TdxBikeAvailabilitySource::with_cache_ttl(
+    let source = TdxBikeAvailabilitySource::new(
         spawn_tdx_fixture(app).await,
-        Duration::from_secs(30),
+        via_server::config::ViaConfig::default()
+            .tdx
+            .batch
+            .bike_stations,
+        via_server::tdx::BikeAvailabilitySettings {
+            cache_ttl_seconds: (Duration::from_secs(30)).as_secs(),
+            ..via_server::config::ViaConfig::default().tdx.bikeshare
+        },
     );
     let requested = [id("tdx:Taipei:TPE-1")];
     source.snapshot(&requested).await.unwrap();
@@ -706,4 +765,38 @@ async fn partial_city_failure_keeps_successful_and_cached_station_data() {
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn changed_toml_batch_size_applies_to_every_supported_bike_city() {
+    let config = via_server::config::ViaConfig::from_toml(
+        &include_str!("../../config/via.toml").replace("bike_stations = 400", "bike_stations = 3"),
+    )
+    .unwrap();
+    for (city, _) in via_server::tdx::BIKE_CITIES {
+        let uids = station_uids("station-", 7);
+        let payload = uids
+            .iter()
+            .map(|uid| availability(uid, 1, 1, 1, TimeDuration::seconds(10)))
+            .collect::<Vec<_>>();
+        let (source, fixture) = source_for_cities_with_settings(
+            HashMap::from([(city.to_string(), (StatusCode::OK, json!(payload)))]),
+            Duration::from_secs(30),
+            config.tdx.clone(),
+        )
+        .await;
+        let ids = uids
+            .iter()
+            .map(|uid| id(&format!("tdx:{city}:{uid}")))
+            .collect::<Vec<_>>();
+        let snapshot = source.snapshot(&ids).await.unwrap();
+        assert_eq!(snapshot.stations.len(), 7, "{city}");
+        let requests = fixture.requests.lock().await;
+        assert_eq!(requests.len(), 3, "{city}");
+        let tops = requests
+            .iter()
+            .map(|(_, query)| query["$top"].parse::<usize>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(tops, vec![3, 3, 1], "{city}");
+    }
 }

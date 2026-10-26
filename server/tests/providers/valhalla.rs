@@ -433,3 +433,30 @@ fn encode_component(value: i64, output: &mut String) {
     }
     output.push(char::from_u32((value + 63) as u32).unwrap());
 }
+
+#[tokio::test]
+async fn toml_matrix_dimensions_control_provider_request_validation() {
+    let (base_url, fixture) = spawn_fixture().await;
+    let config = via_server::config::ViaConfig::from_toml(
+        &include_str!("../../config/via.toml")
+            .replace("max_sources = 32", "max_sources = 17")
+            .replace("http://127.0.0.1:8002/", base_url.as_str()),
+    )
+    .unwrap();
+    let provider = ValhallaProvider::new(config.valhalla.provider_config(false).unwrap()).unwrap();
+    assert_eq!(provider.matrix_limits().max_sources, 17);
+    let result = provider
+        .matrix(MatrixQuery {
+            orientation: MatrixOrientation::ManyToOne,
+            travel_mode: StreetTravelMode::Walking,
+            sources: vec![coordinate(25.0, 121.5); 18],
+            targets: vec![coordinate(25.001, 121.5)],
+            constraints: RoutingConstraints::default(),
+        })
+        .await;
+    assert!(matches!(
+        result,
+        Err(StreetRoutingError::InvalidRequest { .. })
+    ));
+    assert!(fixture.requests.lock().unwrap().is_empty());
+}

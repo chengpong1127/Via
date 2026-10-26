@@ -101,20 +101,6 @@ pub struct PlannerLimits {
     pub max_journey_duration_seconds: u32,
 }
 
-impl Default for PlannerLimits {
-    fn default() -> Self {
-        Self {
-            max_transfers: 4,
-            max_static_corridors: 100,
-            max_phase1_expansions: 20_000,
-            max_candidates: 16,
-            max_phase2_expansions: 2_000,
-            max_departures_per_query: 3,
-            max_journey_duration_seconds: 4 * 60 * 60,
-        }
-    }
-}
-
 impl PlannerLimits {
     pub(crate) fn normalized(self) -> Self {
         Self {
@@ -131,6 +117,8 @@ impl PlannerLimits {
 
 #[derive(Clone, Debug)]
 pub struct JourneyPlanningLimits {
+    pub bike: super::BikeMovementPolicy,
+    pub ranking: crate::domain::ranking::RankingPolicy,
     pub planner: PlannerLimits,
     pub request_timeout: std::time::Duration,
     pub max_concurrent_requests: usize,
@@ -140,23 +128,11 @@ pub struct JourneyPlanningLimits {
     pub max_walking_seconds: u32,
 }
 
-impl Default for JourneyPlanningLimits {
-    fn default() -> Self {
-        Self {
-            planner: PlannerLimits::default(),
-            request_timeout: std::time::Duration::from_secs(5),
-            max_concurrent_requests: 32,
-            max_transit_access_stops: 24,
-            max_transit_egress_stops: 24,
-            max_walking_radius_metres: 2_000,
-            max_walking_seconds: 30 * 60,
-        }
-    }
-}
-
 impl JourneyPlanningLimits {
     pub(crate) fn normalized(self) -> Self {
         Self {
+            bike: self.bike,
+            ranking: self.ranking,
             planner: self.planner.normalized(),
             request_timeout: self.request_timeout,
             max_concurrent_requests: self.max_concurrent_requests.max(1),
@@ -266,6 +242,7 @@ impl PlanningQuery {
         origin_access: Vec<AccessPoint>,
         destination_egress: Vec<EgressPoint>,
         departure_time: OffsetDateTime,
+        limits: PlannerLimits,
     ) -> Self {
         Self {
             origin,
@@ -281,7 +258,7 @@ impl PlanningQuery {
             allow_bike_share: false,
             departure_time,
             latest_arrival: None,
-            limits: PlannerLimits::default(),
+            limits,
             deadline,
         }
     }

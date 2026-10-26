@@ -6,17 +6,10 @@ use std::{
 };
 
 use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
-
-pub const DEFAULT_TDX_API_BASE_URL: &str = "https://tdx.transportdata.tw/api/basic/";
-const DEFAULT_TDX_TOKEN_URL: &str =
-    "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
-const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const MAX_RATE_LIMIT_RETRIES: usize = 2;
 
 const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
 
@@ -160,6 +153,7 @@ pub struct TdxClient {
     api_base_url: Url,
     token_url: Url,
     token: Arc<Mutex<Option<CachedToken>>>,
+    pub(crate) settings: TdxSettings,
 }
 
 struct CachedToken {
@@ -188,37 +182,23 @@ fn default_token_lifetime() -> u64 {
 }
 
 impl TdxClient {
-    pub fn new(credentials: TdxCredentials) -> Result<Self, TdxClientError> {
-        Self::with_urls(credentials, DEFAULT_TDX_API_BASE_URL, DEFAULT_TDX_TOKEN_URL)
-    }
-
-    pub fn with_api_base_url(
-        credentials: TdxCredentials,
-        api_base_url: &str,
-    ) -> Result<Self, TdxClientError> {
-        Self::with_urls(credentials, api_base_url, DEFAULT_TDX_TOKEN_URL)
-    }
-
-    pub fn with_urls(
-        credentials: TdxCredentials,
-        api_base_url: &str,
-        token_url: &str,
-    ) -> Result<Self, TdxClientError> {
+    pub fn new(credentials: TdxCredentials, settings: TdxSettings) -> Result<Self, TdxClientError> {
         let api_base_url =
-            Url::parse(api_base_url).map_err(|_| TdxClientError::InvalidConfiguration)?;
-        let token_url = Url::parse(token_url).map_err(|_| TdxClientError::InvalidConfiguration)?;
+            Url::parse(&settings.api_base_url).map_err(|_| TdxClientError::InvalidConfiguration)?;
+        let token_url =
+            Url::parse(&settings.token_url).map_err(|_| TdxClientError::InvalidConfiguration)?;
         if api_base_url.host_str().is_none() || token_url.host_str().is_none() {
             return Err(TdxClientError::InvalidConfiguration);
         }
         let client = Client::builder()
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(20))
+            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
+            .timeout(Duration::from_millis(settings.request_timeout_ms))
             .user_agent("via-data/1.0")
             .build()
             .map_err(TdxClientError::ApiRequest)?;
         let download_client = Client::builder()
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(DOWNLOAD_TIMEOUT)
+            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
+            .timeout(Duration::from_secs(settings.download_timeout_seconds))
             .user_agent("via-data/1.0")
             .build()
             .map_err(TdxClientError::ApiRequest)?;
@@ -229,6 +209,7 @@ impl TdxClient {
             api_base_url,
             token_url,
             token: Arc::new(Mutex::new(None)),
+            settings,
         })
     }
 
@@ -265,8 +246,13 @@ impl TdxClient {
         if token.access_token.trim().is_empty() {
             return Err(TdxClientError::InvalidConfiguration);
         }
-        let lifetime = Duration::from_secs(token.expires_in.max(60));
-        let refresh_margin = Duration::from_secs(30).min(lifetime / 2);
+        let lifetime = Duration::from_secs(
+            token
+                .expires_in
+                .max(self.settings.minimum_token_lifetime_seconds),
+        );
+        let refresh_margin =
+            Duration::from_secs(self.settings.token_refresh_margin_seconds).min(lifetime / 2);
         let value = token.access_token;
         *cached = Some(CachedToken {
             value: value.clone(),
@@ -304,7 +290,7 @@ impl TdxClient {
                 .map_err(TdxClientError::ApiRequest)?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
-                    && retries < MAX_RATE_LIMIT_RETRIES
+                    && retries < self.settings.max_rate_limit_retries
                 {
                     retries += 1;
                     tokio::time::sleep(delay).await;
@@ -326,12 +312,12 @@ impl TdxClient {
         let response = self.authenticated_get(self.api_url(path, query)?).await?;
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+            .is_some_and(|length| length > self.settings.max_response_bytes as u64)
         {
             return Err(TdxClientError::ResponseTooLarge);
         }
         let body = response.bytes().await.map_err(TdxClientError::ApiRequest)?;
-        if body.len() > MAX_RESPONSE_BYTES {
+        if body.len() > self.settings.max_response_bytes {
             return Err(TdxClientError::ResponseTooLarge);
         }
         Ok(body)
@@ -394,6 +380,60 @@ fn rate_limited(headers: &reqwest::header::HeaderMap) -> TdxClientError {
         .unwrap_or(TdxClientError::RateLimited)
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TdxSettings {
+    pub api_base_url: String,
+    pub token_url: String,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub download_timeout_seconds: u64,
+    pub max_response_bytes: usize,
+    pub max_rate_limit_retries: usize,
+    pub minimum_token_lifetime_seconds: u64,
+    pub token_refresh_margin_seconds: u64,
+    pub bike_catalog_page_size: usize,
+    pub batch: TdxBatchSettings,
+    pub realtime: RealtimeSettings,
+    pub bikeshare: BikeAvailabilitySettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TdxBatchSettings {
+    pub bike_stations: usize,
+    pub bus_stops: usize,
+    pub metro_pairs: usize,
+    pub metro_response_limit: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeSettings {
+    pub fresh_seconds: u32,
+    pub degraded_seconds: u32,
+    pub max_clock_skew_seconds: u32,
+}
+
+impl RealtimeSettings {
+    pub fn freshness_policy(&self) -> crate::domain::realtime::FreshnessPolicy {
+        crate::domain::realtime::FreshnessPolicy {
+            fresh_through: time::Duration::seconds(i64::from(self.fresh_seconds)),
+            degraded_through: time::Duration::seconds(i64::from(self.degraded_seconds)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BikeAvailabilitySettings {
+    pub cache_ttl_seconds: u64,
+    pub cache_capacity: u64,
+    pub max_concurrent_cities: usize,
+    pub max_age_seconds: u32,
+    pub max_clock_skew_seconds: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -409,7 +449,7 @@ mod tests {
         routing::any,
     };
 
-    use super::{MAX_RESPONSE_BYTES, TdxClient, TdxCredentials};
+    use super::{TdxClient, TdxCredentials};
 
     async fn mock_response(
         State(body): State<Arc<Vec<u8>>>,
@@ -507,10 +547,13 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let base_url = format!("http://{address}");
-        let client = TdxClient::with_urls(
+        let client = TdxClient::new(
             TdxCredentials::from_client_credentials("client", "secret"),
-            &format!("{base_url}/api/"),
-            &format!("{base_url}/token"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/api/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
         )
         .unwrap();
 
@@ -522,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_download_exceeds_json_response_limit() {
-        let expected_size = MAX_RESPONSE_BYTES + 1;
+        let expected_size = crate::config::ViaConfig::default().tdx.max_response_bytes + 1;
         let body = Arc::new(vec![0x5a; expected_size]);
         let app = Router::new().fallback(any(mock_response)).with_state(body);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -531,10 +574,13 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let base_url = format!("http://{address}");
-        let client = TdxClient::with_urls(
+        let client = TdxClient::new(
             TdxCredentials::from_client_credentials("client", "secret"),
-            &format!("{base_url}/api/"),
-            &format!("{base_url}/token"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/api/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
         )
         .unwrap();
         let path = std::env::temp_dir().join(format!(

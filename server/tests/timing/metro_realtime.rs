@@ -3,7 +3,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use crate::support::tdx::spawn_tdx_fixture;
 use axum::{
     Json, Router,
     http::{Method, StatusCode, Uri},
@@ -38,6 +37,19 @@ struct FixtureStats {
 }
 
 async fn fixture_client(payload: Value, status: StatusCode) -> (Arc<TdxClient>, FixtureStats) {
+    fixture_client_with_settings(
+        payload,
+        status,
+        via_server::config::ViaConfig::default().tdx,
+    )
+    .await
+}
+
+async fn fixture_client_with_settings(
+    payload: Value,
+    status: StatusCode,
+    settings: via_server::config::TdxSettings,
+) -> (Arc<TdxClient>, FixtureStats) {
     let stats = FixtureStats {
         calls: Arc::new(AtomicUsize::new(0)),
     };
@@ -63,7 +75,10 @@ async fn fixture_client(payload: Value, status: StatusCode) -> (Arc<TdxClient>, 
             (status, Json(payload)).into_response()
         }
     }));
-    (spawn_tdx_fixture(app).await, stats)
+    (
+        crate::support::tdx::spawn_tdx_fixture_with_settings(app, settings).await,
+        stats,
+    )
 }
 
 fn recent_update() -> String {
@@ -334,4 +349,76 @@ async fn duplicate_metro_queries_use_one_batched_tdx_request() {
             .as_ref()
             .is_ok_and(|trips| trips[0].timing_basis == TimingBasis::RealtimePrediction)
     }));
+}
+
+#[tokio::test]
+async fn metro_batches_unique_pairs_and_obeys_changed_toml() {
+    for (count, size, expected) in [(200, 200, 1), (201, 200, 2), (201, 75, 3)] {
+        let config = via_server::config::ViaConfig::from_toml(
+            &include_str!("../../config/via.toml")
+                .replace("metro_pairs = 200", &format!("metro_pairs = {size}")),
+        )
+        .unwrap();
+        let after = OffsetDateTime::now_utc() - Duration::seconds(10);
+        let seed = network_for(after + Duration::minutes(5));
+        let mut network = seed.network().clone();
+        network.patterns.clear();
+        network.trips.clear();
+        let mut bindings = TdxProviderBindings::default();
+        let mut queries = Vec::new();
+        let mut records = Vec::new();
+        let update = recent_update();
+        for index in 0..count {
+            let mut pattern = seed.network().patterns[0].clone();
+            pattern.id = TransitPatternId::new(format!("metro-{index}"));
+            let station = format!("S{index:03}");
+            pattern.stops[0] = BoardingPointId::new(format!("TRTC-{station}"));
+            let mut stop = seed.network().stops[0].clone();
+            stop.id = pattern.stops[0].clone();
+            network.stops.push(stop);
+            bindings.metro_patterns.insert(
+                pattern.id.clone(),
+                MetroPatternBinding {
+                    line_id: "BL".into(),
+                    direction: 0,
+                },
+            );
+            queries.push(DepartureQuery::new(
+                pattern.id.clone(),
+                pattern.stops[0].clone(),
+                after,
+                2,
+            ));
+            records.push(live_board("BL", &station, "BL23", &update));
+            network.patterns.push(pattern);
+        }
+        let network = Arc::new(TransitRuntime::new(Arc::new(network)));
+        let (tdx, stats) =
+            fixture_client_with_settings(Value::Array(records), StatusCode::OK, config.tdx).await;
+        let metro = MetroDepartureSource::new(network, tdx).with_bindings(Arc::new(bindings));
+        let results = metro.realtime_departures_batch(queries).await.unwrap();
+        assert_eq!(stats.calls.load(Ordering::Relaxed), expected);
+        assert_eq!(results.len(), count);
+        assert!(results.iter().all(|result| {
+            result.as_ref().is_ok_and(|trips| {
+                trips.len() == 1 && trips[0].timing_basis == TimingBasis::RealtimePrediction
+            })
+        }));
+    }
+}
+
+#[tokio::test]
+async fn saturated_metro_response_is_rejected_and_uses_existing_fallback() {
+    let after = OffsetDateTime::now_utc() - Duration::seconds(10);
+    let record = live_board("BL", "BL12", "BL23", &recent_update());
+    let (resolver, stats) = resolver(
+        network_for(after + Duration::minutes(5)),
+        Value::Array(vec![record; 1000]),
+        StatusCode::OK,
+    )
+    .await;
+    let trips = resolver.next_departures(query(after)).await.unwrap();
+    assert_eq!(stats.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(trips[0].timing_basis, TimingBasis::Schedule);
+    assert_eq!(trips[0].timing_reliability, TimingReliability::Fallback);
 }

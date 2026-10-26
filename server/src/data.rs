@@ -60,6 +60,9 @@ pub async fn build_from_fetch_snapshot(
     input: &Path,
     output: &Path,
     street: &dyn StreetRouter,
+    bike_policy: bike_access::BikeAccessPolicy,
+    transfer_policy: static_transfers::TransferSettings,
+    same_stop_transfer_seconds: u32,
 ) -> Result<BuildOutput, DataError> {
     let fetch_inputs = read_fetch_inputs(input)?;
     let bike_share = bikeshare_catalog::parse_tdx_station_catalog(
@@ -86,18 +89,18 @@ pub async fn build_from_fetch_snapshot(
         .collect::<BTreeMap<_, _>>();
 
     let (mut network, provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
-    let static_transfers =
-        static_transfers::enrich_network_with_static_transfers(&mut network, street).await?;
+    network.default_transfer_seconds = same_stop_transfer_seconds;
+    let static_transfers = static_transfers::enrich_network_with_static_transfers(
+        &mut network,
+        street,
+        transfer_policy,
+    )
+    .await?;
     let (bike_share, bike_access) = if bike_share.stations.is_empty() {
         (bike_share, None)
     } else {
-        let (network, diagnostics) = bike_access::precompute_bike_access(
-            &network,
-            bike_share,
-            street,
-            bike_access::BikeAccessPolicy::default(),
-        )
-        .await?;
+        let (network, diagnostics) =
+            bike_access::precompute_bike_access(&network, bike_share, street, bike_policy).await?;
         (network, Some(diagnostics))
     };
     finish_gtfs_build(

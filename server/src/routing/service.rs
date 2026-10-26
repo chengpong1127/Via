@@ -56,6 +56,7 @@ impl RoutingService {
             street_routing.clone(),
             bike_share_network.clone(),
             bike_availability_source,
+            limits.bike.clone(),
         );
         let reconstructor =
             JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network);
@@ -65,10 +66,11 @@ impl RoutingService {
             planner,
             reconstructor,
             ranking: RankingPolicy {
-                result_limit: RankingPolicy::default()
+                result_limit: limits
+                    .ranking
                     .result_limit
                     .min(limits.planner.max_candidates),
-                ..RankingPolicy::default()
+                ..limits.ranking.clone()
             },
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
             request_timeout: request_timeouts_enabled.then_some(limits.request_timeout),
@@ -154,6 +156,7 @@ impl RoutingService {
                 Vec::new(),
                 Vec::new(),
                 context.search_start,
+                self.limits.planner,
             )
             .with_allowed_transit_modes([])
         } else {
@@ -222,6 +225,7 @@ impl RoutingService {
                 access,
                 egress,
                 context.search_start,
+                self.limits.planner,
             )
             .with_allowed_transit_modes(allowed_transit_modes)
         };
@@ -446,6 +450,7 @@ mod limits_tests {
             Vec::new(),
             Vec::new(),
             OffsetDateTime::now_utc(),
+            crate::config::ViaConfig::default().planner_limits(),
         );
         assert_eq!(JourneyPlanningLimits::default().planner, query.limits);
         assert_eq!(query.limits, PlannerLimits::default());
@@ -464,6 +469,7 @@ mod limits_tests {
             Vec::new(),
             Vec::new(),
             OffsetDateTime::now_utc(),
+            crate::config::ViaConfig::default().planner_limits(),
         )
         .with_limits(limits);
         assert_eq!(query.limits.max_phase2_expansions, 0);

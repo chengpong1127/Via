@@ -7,7 +7,6 @@ use time::OffsetDateTime;
 use crate::{
     domain::bikeshare::{
         BikeAvailabilitySnapshot, BikeShareNetwork, BikeStationAccess, BikeWalkingAccess,
-        DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
     },
     domain::ids::BikeStationId,
     domain::location::GeoCoordinate,
@@ -22,6 +21,20 @@ use super::{
     corridor::{CorridorAnchor, CorridorAnchorKey},
     realized::{BikeRide, BikeShareMovement},
 };
+
+#[derive(Clone, Debug)]
+pub struct BikeMovementPolicy {
+    pub max_pickup_stations_per_anchor: usize,
+    pub max_dropoff_stations_per_anchor: usize,
+    pub max_stations_per_endpoint: usize,
+    pub endpoint_radius_metres: u32,
+    pub max_endpoint_walk_seconds: u32,
+    pub max_bike_duration_seconds: u32,
+    pub max_bike_distance_metres: u32,
+    pub optimistic_walk_speed_metres_per_second: f64,
+    pub availability_max_age_seconds: u32,
+    pub availability_max_clock_skew_seconds: u32,
+}
 
 pub(crate) struct BikeMovementRequest<'a> {
     pub from: &'a CorridorAnchor,
@@ -55,17 +68,9 @@ pub(crate) struct BikePlanningStats {
     pub matrix_requests: usize,
 }
 
-pub(crate) const MAX_PICKUP_STATIONS_PER_ANCHOR: usize = 3;
-pub(crate) const MAX_DROPOFF_STATIONS_PER_ANCHOR: usize = 3;
-const MAX_BIKE_STATIONS_PER_ENDPOINT: usize = 3;
-const BIKE_ENDPOINT_RADIUS_METRES: f64 = 1_500.0;
-const OPTIMISTIC_WALK_SPEED_METRES_PER_SECOND: f64 = 2.0;
-const MAX_BIKE_WALK_SECONDS: u32 = 15 * 60;
-const MAX_BIKE_DURATION_SECONDS: u32 = 60 * 60;
-const MAX_BIKE_DISTANCE_METRES: u32 = 20_000;
-
 #[derive(Clone)]
 pub(crate) struct BikeShareMovementPlanner {
+    settings: BikeMovementPolicy,
     pub(crate) network: Arc<BikeShareNetwork>,
     pub(crate) availability_source: Arc<dyn BikeAvailabilitySource>,
     pub(crate) street_router: Arc<dyn StreetRouter>,
@@ -84,11 +89,13 @@ impl BikeShareMovementPlanner {
         network: Arc<BikeShareNetwork>,
         availability_source: Arc<dyn BikeAvailabilitySource>,
         street_router: Arc<dyn StreetRouter>,
+        settings: BikeMovementPolicy,
     ) -> Self {
         Self {
             network,
             availability_source,
             street_router,
+            settings,
         }
     }
 
@@ -117,7 +124,7 @@ impl BikeShareMovementPlanner {
                     self.network
                         .stations_within_radius(
                             endpoint_coordinate(anchor),
-                            BIKE_ENDPOINT_RADIUS_METRES,
+                            f64::from(self.settings.endpoint_radius_metres),
                         )
                         .into_iter()
                         .map(|station| station.id.clone()),
@@ -136,11 +143,14 @@ impl BikeShareMovementPlanner {
         snapshot: &BikeAvailabilitySnapshot,
         now: OffsetDateTime,
     ) -> Option<BikeMovementCandidate> {
-        let view =
-            self.network
-                .availability_view_at(snapshot, now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE);
-        let pickups = endpoint_station_choices(&self.network, &view, from, true);
-        let dropoffs = endpoint_station_choices(&self.network, &view, to, false);
+        let view = self.network.availability_view_with_policy(
+            snapshot,
+            now,
+            time::Duration::seconds(i64::from(self.settings.availability_max_age_seconds)),
+            time::Duration::seconds(i64::from(self.settings.availability_max_clock_skew_seconds)),
+        );
+        let pickups = endpoint_station_choices(&self.network, &view, from, true, &self.settings);
+        let dropoffs = endpoint_station_choices(&self.network, &view, to, false, &self.settings);
         if pickups.is_empty() || dropoffs.is_empty() {
             return None;
         }
@@ -259,13 +269,13 @@ impl BikeShareMovementPlanner {
                             continue;
                         }
                         if let Some(bike_movement) = bike_movement_from_cell(
-                            from_anchor,
-                            to_anchor,
+                            (from_anchor, to_anchor),
                             &pickup_chunk[pickup_index].station_id,
                             &dropoff_chunk[dropoff_index].station_id,
                             pickup_chunk[pickup_index].walking,
                             cell,
                             dropoff_chunk[dropoff_index].walking,
+                            &self.settings,
                         ) {
                             bike_movements.push(bike_movement);
                         }
@@ -339,7 +349,8 @@ impl BikeShareMovementPlanner {
                 } else {
                     &result.cells[index][0]
                 };
-                if let Some(walking) = walking_access(cell) {
+                if let Some(walking) = walking_access(cell, self.settings.max_endpoint_walk_seconds)
+                {
                     exact.push(StationChoice {
                         station_id: choice.station_id.clone(),
                         walking,
@@ -441,6 +452,7 @@ impl BikeShareSession {
                 Arc::new(BikeShareNetwork::new(Vec::new())),
                 Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
                 Arc::new(crate::street::FakeStreetRouter::builder().build()),
+                crate::config::ViaConfig::default().bike_policy(),
             ),
             Arc::new(BikeAvailabilitySnapshot::new(
                 OffsetDateTime::now_utc(),
@@ -486,9 +498,9 @@ impl BikeShareSession {
     }
 }
 
-fn walking_access(cell: &MatrixCell) -> Option<BikeWalkingAccess> {
+fn walking_access(cell: &MatrixCell, max_walk_seconds: u32) -> Option<BikeWalkingAccess> {
     match cell {
-        MatrixCell::Reachable { duration, distance } if duration.0 <= MAX_BIKE_WALK_SECONDS => {
+        MatrixCell::Reachable { duration, distance } if duration.0 <= max_walk_seconds => {
             Some(BikeWalkingAccess::new(duration.0, distance.0))
         }
         _ => None,
@@ -501,18 +513,21 @@ fn matrix_has_shape(matrix: &MatrixResult, expected_rows: usize, expected_column
 }
 
 fn bike_movement_from_cell(
-    from_anchor: usize,
-    to_anchor: usize,
+    anchors: (usize, usize),
     pickup_station_id: &BikeStationId,
     dropoff_station_id: &BikeStationId,
     walk_to_pickup: BikeWalkingAccess,
     cell: &MatrixCell,
     walk_from_dropoff: BikeWalkingAccess,
+    settings: &BikeMovementPolicy,
 ) -> Option<BikeShareMovement> {
+    let (from_anchor, to_anchor) = anchors;
     let MatrixCell::Reachable { duration, distance } = cell else {
         return None;
     };
-    if duration.0 > MAX_BIKE_DURATION_SECONDS || distance.0 > MAX_BIKE_DISTANCE_METRES {
+    if duration.0 > settings.max_bike_duration_seconds
+        || distance.0 > settings.max_bike_distance_metres
+    {
         return None;
     }
     BikeShareMovement::new(
@@ -555,6 +570,7 @@ struct StationChoice {
 fn station_choices<'a>(
     accesses: impl IntoIterator<Item = &'a BikeStationAccess>,
     pickup: bool,
+    settings: &BikeMovementPolicy,
 ) -> Vec<StationChoice> {
     let mut choices = HashMap::<BikeStationId, BikeWalkingAccess>::new();
     for access in accesses {
@@ -593,9 +609,9 @@ fn station_choices<'a>(
             .then(left.station_id.as_str().cmp(right.station_id.as_str()))
     });
     choices.truncate(if pickup {
-        MAX_PICKUP_STATIONS_PER_ANCHOR
+        settings.max_pickup_stations_per_anchor
     } else {
-        MAX_DROPOFF_STATIONS_PER_ANCHOR
+        settings.max_dropoff_stations_per_anchor
     });
     choices
 }
@@ -612,6 +628,7 @@ fn endpoint_station_choices(
     view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
     endpoint: &CorridorAnchor,
     pickup: bool,
+    settings: &BikeMovementPolicy,
 ) -> Vec<StationChoice> {
     if let Some(id) = endpoint.boarding_point() {
         return station_choices(
@@ -621,11 +638,12 @@ fn endpoint_station_choices(
                 view.usable_dropoffs(id)
             },
             pickup,
+            settings,
         );
     }
     let point = endpoint_coordinate(endpoint);
     let mut choices = network
-        .stations_within_radius(point, BIKE_ENDPOINT_RADIUS_METRES)
+        .stations_within_radius(point, f64::from(settings.endpoint_radius_metres))
         .into_iter()
         .filter(|station| {
             if pickup {
@@ -639,7 +657,7 @@ fn endpoint_station_choices(
             StationChoice {
                 station_id: station.id.clone(),
                 walking: BikeWalkingAccess::new(
-                    (distance / OPTIMISTIC_WALK_SPEED_METRES_PER_SECOND).floor() as u32,
+                    (distance / settings.optimistic_walk_speed_metres_per_second).floor() as u32,
                     distance.floor() as u32,
                 ),
             }
@@ -651,7 +669,7 @@ fn endpoint_station_choices(
             .cmp(&right.walking.distance_metres)
             .then(left.station_id.as_str().cmp(right.station_id.as_str()))
     });
-    choices.truncate(MAX_BIKE_STATIONS_PER_ENDPOINT);
+    choices.truncate(settings.max_stations_per_endpoint);
     choices
 }
 
@@ -681,6 +699,72 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_endpoint_radius_controls_snapshot_and_candidate_selection() {
+        let now = datetime!(2026-09-21 10:00 UTC);
+        let network = Arc::new(BikeShareNetwork::new(vec![
+            BikeStation::new(
+                BikeStationId::new("first"),
+                "First",
+                GeoCoordinate {
+                    latitude: 25.002,
+                    longitude: 121.5,
+                },
+            ),
+            BikeStation::new(
+                BikeStationId::new("second"),
+                "Second",
+                GeoCoordinate {
+                    latitude: 25.003,
+                    longitude: 121.5,
+                },
+            ),
+        ]));
+        let snapshot = BikeAvailabilitySnapshot::new(
+            now,
+            network
+                .stations
+                .iter()
+                .map(|station| {
+                    (
+                        station.id.clone(),
+                        BikeStationAvailability::new(station.id.clone(), 1, 1, true, now),
+                    )
+                })
+                .collect(),
+        );
+        let from = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::Origin,
+            coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
+        };
+        let to = CorridorAnchor {
+            kind: super::super::realized::JourneyAnchorKind::Destination,
+            coordinate: Coordinate::try_new(25.005, 121.5).unwrap(),
+        };
+        for (radius, expected) in [(100, 0), (300, 2)] {
+            let config = crate::config::ViaConfig::from_toml(
+                &include_str!("../../config/via.toml").replace(
+                    "endpoint_radius_metres = 1500",
+                    &format!("endpoint_radius_metres = {radius}"),
+                ),
+            )
+            .unwrap();
+            let planner = BikeShareMovementPlanner::new(
+                network.clone(),
+                Arc::new(UnavailableBikeAvailabilitySource),
+                Arc::new(FakeStreetRouter::builder().build()),
+                config.bike_policy(),
+            );
+            assert_eq!(planner.required_station_ids([&from, &to]).len(), expected);
+            assert_eq!(
+                planner
+                    .movement_candidate(&from, &to, &snapshot, now)
+                    .is_some(),
+                expected > 0
+            );
+        }
+    }
+
+    #[test]
     fn candidate_discovery_rejects_missing_or_same_station_pairs() {
         let now = datetime!(2026-09-21 10:00 UTC);
         let station_id = BikeStationId::new("only-station");
@@ -703,6 +787,7 @@ mod tests {
             network,
             Arc::new(UnavailableBikeAvailabilitySource),
             Arc::new(FakeStreetRouter::builder().build()),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let from = CorridorAnchor {
             kind: super::super::realized::JourneyAnchorKind::Origin,
@@ -819,6 +904,7 @@ mod tests {
             network,
             Arc::new(UnavailableBikeAvailabilitySource),
             Arc::new(FakeStreetRouter::builder().build()),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let required = planner.required_station_ids(anchors.iter().chain(anchors.iter()));
         assert_eq!(required.len(), 10);
@@ -865,14 +951,21 @@ mod tests {
         let candidate = planner
             .movement_candidate(&anchors[0], anchors.last().unwrap(), &snapshot, now)
             .unwrap();
-        assert_eq!(candidate.pickups.len(), MAX_BIKE_STATIONS_PER_ENDPOINT);
+        assert_eq!(
+            candidate.pickups.len(),
+            crate::config::ViaConfig::default()
+                .bikeshare
+                .max_stations_per_endpoint
+        );
         assert_eq!(candidate.pickups[0].station_id.as_str(), "near-origin-0");
         let boarding_candidate = planner
             .movement_candidate(&anchors[1], anchors.last().unwrap(), &snapshot, now)
             .unwrap();
         assert_eq!(
             boarding_candidate.pickups.len(),
-            MAX_PICKUP_STATIONS_PER_ANCHOR
+            crate::config::ViaConfig::default()
+                .bikeshare
+                .max_pickup_stations_per_anchor
         );
     }
 
@@ -902,11 +995,29 @@ mod tests {
             })
             .collect();
         let network = BikeShareNetwork::new(stations).with_access_links(access_links);
-        let pickups = station_choices(network.access_from_boarding_point(&anchor), true);
-        let dropoffs = station_choices(network.access_to_boarding_point(&anchor), false);
+        let pickups = station_choices(
+            network.access_from_boarding_point(&anchor),
+            true,
+            &BikeMovementPolicy::default(),
+        );
+        let dropoffs = station_choices(
+            network.access_to_boarding_point(&anchor),
+            false,
+            &BikeMovementPolicy::default(),
+        );
 
-        assert_eq!(pickups.len(), MAX_PICKUP_STATIONS_PER_ANCHOR);
-        assert_eq!(dropoffs.len(), MAX_DROPOFF_STATIONS_PER_ANCHOR);
+        assert_eq!(
+            pickups.len(),
+            crate::config::ViaConfig::default()
+                .bikeshare
+                .max_pickup_stations_per_anchor
+        );
+        assert_eq!(
+            dropoffs.len(),
+            crate::config::ViaConfig::default()
+                .bikeshare
+                .max_dropoff_stations_per_anchor
+        );
         assert_eq!(
             pickups
                 .iter()
@@ -976,6 +1087,7 @@ mod tests {
             bike_network,
             Arc::new(UnavailableBikeAvailabilitySource),
             Arc::new(FakeStreetRouter::builder().build()),
+            crate::config::ViaConfig::default().bike_policy(),
         );
 
         let from_endpoint = CorridorAnchor {
@@ -1079,6 +1191,7 @@ mod tests {
                     )
                     .build(),
             ),
+            crate::config::ViaConfig::default().bike_policy(),
         );
         let from = CorridorAnchor {
             kind: JourneyAnchorKind::Origin,
@@ -1131,17 +1244,23 @@ mod tests {
     fn station_walks_over_fifteen_minutes_are_unavailable() {
         use crate::street::{Metres, Seconds};
         assert!(
-            walking_access(&MatrixCell::Reachable {
-                duration: Seconds(901),
-                distance: Metres(1)
-            })
+            walking_access(
+                &MatrixCell::Reachable {
+                    duration: Seconds(901),
+                    distance: Metres(1)
+                },
+                900
+            )
             .is_none()
         );
         assert!(
-            walking_access(&MatrixCell::Reachable {
-                duration: Seconds(900),
-                distance: Metres(1)
-            })
+            walking_access(
+                &MatrixCell::Reachable {
+                    duration: Seconds(900),
+                    distance: Metres(1)
+                },
+                900
+            )
             .is_some()
         );
     }

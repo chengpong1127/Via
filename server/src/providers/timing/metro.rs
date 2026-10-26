@@ -28,8 +28,6 @@ use crate::{
     tdx::TdxClient,
 };
 
-const MAX_REALTIME_BATCH_PAIRS: usize = 64;
-
 #[derive(Clone)]
 pub struct MetroDepartureSource {
     network: Arc<TransitRuntime>,
@@ -37,6 +35,9 @@ pub struct MetroDepartureSource {
     tdx: Arc<TdxClient>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
+    batch_size: usize,
+    response_limit: usize,
+    max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -52,9 +53,12 @@ impl MetroDepartureSource {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx,
+            tdx: tdx.clone(),
             realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_default(),
+            freshness_policy: tdx.settings.realtime.freshness_policy(),
+            batch_size: tdx.settings.batch.metro_pairs,
+            response_limit: tdx.settings.batch.metro_response_limit,
+            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -241,11 +245,12 @@ impl MetroDepartureSource {
         let request_keys = requested_pairs.keys().cloned().collect::<Vec<_>>();
         let mut observations = Vec::new();
         let mut errors_by_query = HashMap::new();
-        for pairs in request_keys.chunks(MAX_REALTIME_BATCH_PAIRS) {
+        for pairs in request_keys.chunks(self.batch_size) {
             let filter = metro_filter(pairs);
+            let response_limit = self.response_limit.to_string();
             let request = [
                 ("$filter", filter.as_str()),
-                ("$top", "1000"),
+                ("$top", response_limit.as_str()),
                 ("$format", "JSON"),
             ];
             let payload = self
@@ -253,7 +258,12 @@ impl MetroDepartureSource {
                 .get_json::<Vec<TdxMetroLiveBoard>>(&self.realtime_path, &request)
                 .await;
             let parsed = match payload {
-                Ok(payload) => parse_realtime_payload(payload, &self.freshness_policy),
+                Ok(payload) if payload.len() < self.response_limit => parse_realtime_payload(
+                    payload,
+                    &self.freshness_policy,
+                    self.max_clock_skew_seconds,
+                ),
+                Ok(_) => Err(DepartureError::InvalidResponse),
                 Err(error) => Err(map_tdx_error(error)),
             };
             match parsed {

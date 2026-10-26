@@ -1,5 +1,7 @@
 # Via server
 
+Configuration is centralized in [config/via.toml](config/via.toml). See the [configuration reference](docs/configuration.md) for precedence, validation, provider limits, and artifact rebuild requirements.
+
 The Rust/Axum server exposes Via's provider-neutral journey-planning API. It
 loads one validated `.via-static.json` artifact, then uses TDX for realtime
 transit timing and YouBike availability, and Valhalla for street routing.

@@ -99,6 +99,7 @@ fn query(
         )],
         vec![EgressPoint::new(id(destination), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes(modes.iter().copied())
     .with_limits(crate::routing::PlannerLimits {

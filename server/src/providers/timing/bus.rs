@@ -26,8 +26,6 @@ use crate::{
     tdx::TdxClient,
 };
 
-const MAX_REALTIME_STOPS_PER_REQUEST: usize = 100;
-
 struct RealtimeRequestPlan {
     stops_by_scope: BTreeMap<String, HashSet<BoardingPointId>>,
     services_by_scope: BTreeMap<String, HashSet<TransitPatternId>>,
@@ -50,6 +48,8 @@ pub struct BusDepartureSource {
     schedule: ScheduleTiming,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
+    batch_size: usize,
+    max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -58,9 +58,11 @@ impl BusDepartureSource {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx,
+            tdx: tdx.clone(),
             realtime_path: DEFAULT_ARRIVAL_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_default(),
+            freshness_policy: tdx.settings.realtime.freshness_policy(),
+            batch_size: tdx.settings.batch.bus_stops,
+            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -205,7 +207,7 @@ impl BusDepartureSource {
         let batch_count: usize = plan
             .stops_by_scope
             .values()
-            .map(|stops| stops.len().div_ceil(MAX_REALTIME_STOPS_PER_REQUEST))
+            .map(|stops| stops.len().div_ceil(self.batch_size))
             .sum();
         ::metrics::counter!("via_bus_timing_logical_departure_needs_total")
             .increment(active_queries.len() as u64);
@@ -333,7 +335,7 @@ impl BusDepartureSource {
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
         let mut completed_stops = HashSet::new();
         let mut rate_limited = false;
-        for stops in unique_stops.chunks(MAX_REALTIME_STOPS_PER_REQUEST) {
+        for stops in unique_stops.chunks(self.batch_size) {
             if rate_limited {
                 for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
                     results
@@ -398,9 +400,12 @@ impl BusDepartureSource {
         results.http_requests += 1;
         let payload = self.tdx.get_json::<serde_json::Value>(&path, &query).await;
         let values = match payload {
-            Ok(payload) => {
-                parse_bus_realtime_payload(&payload, requested_services, &self.freshness_policy)
-            }
+            Ok(payload) => parse_bus_realtime_payload(
+                &payload,
+                requested_services,
+                &self.freshness_policy,
+                self.max_clock_skew_seconds,
+            ),
             Err(error) => Err(map_tdx_error(error)),
         };
         if let Err(error) = &values {

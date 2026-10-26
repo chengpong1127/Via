@@ -10,7 +10,6 @@ use crate::{
 };
 
 pub(super) const DEFAULT_LIVE_BOARD_PATH: &str = "v2/Rail/Metro/LiveBoard/TRTC";
-const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 
 #[derive(Debug, Deserialize)]
 pub(super) struct TdxMetroLiveBoard {
@@ -52,6 +51,7 @@ pub(super) struct MetroObservation {
 pub(super) fn parse_realtime_payload(
     payload: Vec<TdxMetroLiveBoard>,
     freshness_policy: &FreshnessPolicy,
+    max_clock_skew_seconds: u32,
 ) -> Result<Vec<MetroObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let mut observations = Vec::new();
@@ -61,8 +61,8 @@ pub(super) fn parse_realtime_payload(
         }
         let source_update = parse_timestamp(&board.source_update_time)?;
         let platform_update = parse_timestamp(&board.update_time)?;
-        reject_future_timestamp(source_update, received_at)?;
-        reject_future_timestamp(platform_update, received_at)?;
+        reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
+        reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
         let observed_at = source_update.min(platform_update);
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
@@ -124,8 +124,9 @@ fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
 fn reject_future_timestamp(
     timestamp: OffsetDateTime,
     received_at: OffsetDateTime,
+    max_clock_skew_seconds: u32,
 ) -> Result<(), DepartureError> {
-    if timestamp > received_at + MAX_PROVIDER_CLOCK_SKEW {
+    if timestamp > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
         return Err(DepartureError::InvalidResponse);
     }
     Ok(())

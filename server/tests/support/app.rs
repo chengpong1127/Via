@@ -19,10 +19,13 @@ use via_server::{
 
 fn failing_tdx_client() -> Arc<TdxClient> {
     Arc::new(
-        TdxClient::with_urls(
+        TdxClient::new(
             TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
-            "http://127.0.0.1:1/",
-            "http://127.0.0.1:1/",
+            via_server::tdx::TdxSettings {
+                api_base_url: "http://127.0.0.1:1/".into(),
+                token_url: "http://127.0.0.1:1/".into(),
+                ..via_server::config::ViaConfig::default().tdx
+            },
         )
         .unwrap(),
     )
@@ -95,5 +98,6 @@ where
         runtime.health,
         metrics,
         via_server::config::Environment::Development,
+        &via_server::config::ViaConfig::default().server,
     ))
 }

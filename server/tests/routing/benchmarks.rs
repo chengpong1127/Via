@@ -47,6 +47,7 @@ async fn deterministic_routing_benchmark() {
         Arc::new(FakeStreetRouter::builder().build()),
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("benchmark-disabled")),
         Arc::new(UnavailableBikeAvailabilitySource),
+        via_server::config::ViaConfig::default().bike_policy(),
     );
     let cases = [
         ("metro", "F-M1", "F-M2-RED", vec![TransitMode::Metro]),
@@ -97,6 +98,7 @@ async fn deterministic_routing_benchmark() {
             )],
             vec![EgressPoint::new(BoardingPointId::new(destination), 0, 0)],
             departure,
+            via_server::config::ViaConfig::default().planner_limits(),
         )
         .with_allowed_transit_modes(modes);
         let mut static_samples = Vec::with_capacity(ITERATIONS);

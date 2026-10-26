@@ -74,6 +74,7 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
         )],
         vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes(modes.iter().copied())
     .with_limits(crate::routing::PlannerLimits {
@@ -646,6 +647,7 @@ fn bike_can_replace_a_surface_walking_edge() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -703,6 +705,7 @@ fn slower_bike_preserves_a_less_walking_tradeoff() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -810,6 +813,7 @@ fn slower_exact_bike_survives_with_less_walking() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -872,6 +876,7 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -938,6 +943,7 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
             0,
         )],
         departure_at,
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -1007,6 +1013,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("d"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
     .with_limits(crate::routing::PlannerLimits {
@@ -1132,6 +1139,7 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -1206,6 +1214,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes([TransitMode::Bus]);
     let corridor = RetainedCorridorSet::from_retained_for_test(
@@ -1284,6 +1293,7 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         ],
         vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     query.limits.max_candidates = 10;
     let corridor = RetainedCorridorSet::from_retained_for_test(
@@ -2054,6 +2064,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         )],
         vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
+        crate::config::ViaConfig::default().planner_limits(),
     );
     let retained = RetainedCorridorSet::from_retained_for_test(
         &network,
@@ -2922,6 +2933,7 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
                 Vec::new(),
                 Vec::new(),
                 datetime!(2026-09-21 10:00 UTC),
+                crate::config::ViaConfig::default().planner_limits(),
             );
             if latest_arrival {
                 query.latest_arrival = Some(query.departure_time + Duration::seconds(30));

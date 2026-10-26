@@ -17,12 +17,6 @@ use crate::{
     },
 };
 
-const RADIUS_METRES: f64 = 500.0;
-const MAX_DURATION_SECONDS: u32 = 480;
-const MAX_DISTANCE_METRES: u32 = 800;
-const MAX_OUTGOING: usize = 12;
-const CONCURRENCY: usize = 8;
-
 #[derive(Clone, Copy)]
 struct WalkingTransferMetrics {
     duration_seconds: u32,
@@ -59,6 +53,7 @@ fn mode_name(mode: TransitMode) -> &'static str {
 pub async fn enrich_network_with_static_transfers(
     network: &mut TransitNetwork,
     street: &dyn StreetRouter,
+    policy: TransferSettings,
 ) -> Result<TransferStatistics, StreetRoutingError> {
     let started = Instant::now();
     let indices = used_stop_indices(network);
@@ -81,9 +76,10 @@ pub async fn enrich_network_with_static_transfers(
         &spatial,
         limits.max_targets,
         &mut stats,
+        policy,
     )
     .await?;
-    network.transfer_edges = retain_outgoing_transfers(best, &mut stats);
+    network.transfer_edges = retain_outgoing_transfers(best, &mut stats, policy);
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
     stats.elapsed_milliseconds = started.elapsed().as_millis();
@@ -109,12 +105,13 @@ fn candidate_targets(
     spatial: &SpatialPointIndex,
     indices: &[usize],
     source: usize,
+    policy: TransferSettings,
 ) -> Vec<usize> {
     let mut targets = spatial
         .within_radius(
             &network.stops,
             network.stops[source].coordinate,
-            RADIUS_METRES,
+            f64::from(policy.radius_metres),
         )
         .into_iter()
         .filter(|&target| target != source && indices.binary_search(&target).is_ok())
@@ -131,14 +128,15 @@ async fn query_walking_transfers(
     spatial: &SpatialPointIndex,
     max_targets: usize,
     stats: &mut TransferStatistics,
+    policy: TransferSettings,
 ) -> Result<HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>, StreetRoutingError>
 {
     let mut best = HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
 
-    for source_group in indices.chunks(128) {
+    for source_group in indices.chunks(policy.source_group_size) {
         let mut requests = Vec::new();
         for &source in source_group {
-            let targets = candidate_targets(network, spatial, indices, source);
+            let targets = candidate_targets(network, spatial, indices, source, policy);
             stats.geographic_candidate_pairs += targets.len();
             for chunk in targets.chunks(max_targets) {
                 requests.push((source, chunk.to_vec()));
@@ -156,13 +154,13 @@ async fn query_walking_transfers(
                     .collect(),
                 constraints: RoutingConstraints {
                     time: None,
-                    max_distance: Some(Metres(MAX_DISTANCE_METRES)),
+                    max_distance: Some(Metres(policy.max_distance_metres)),
                 },
             };
             let matrix = street.matrix(query).await?;
             Ok::<_, StreetRoutingError>((source, targets, matrix))
         }))
-        .buffer_unordered(CONCURRENCY)
+        .buffer_unordered(policy.max_concurrency)
         .collect::<Vec<_>>()
         .await;
         for result in results {
@@ -178,8 +176,8 @@ async fn query_walking_transfers(
                 if let MatrixCell::Reachable { duration, distance } = value {
                     stats.reachable_walking_pairs += 1;
                     if duration.0 == 0
-                        || duration.0 > MAX_DURATION_SECONDS
-                        || distance.0 > MAX_DISTANCE_METRES
+                        || duration.0 > policy.max_duration_seconds
+                        || distance.0 > policy.max_distance_metres
                     {
                         stats.removed_by_limits += 1;
                         continue;
@@ -205,6 +203,7 @@ async fn query_walking_transfers(
 fn retain_outgoing_transfers(
     best: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
     stats: &mut TransferStatistics,
+    policy: TransferSettings,
 ) -> Vec<TransferEdge> {
     let mut by_source =
         HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
@@ -218,8 +217,8 @@ fn retain_outgoing_transfers(
                 .cmp(&b.1.duration_seconds)
                 .then_with(|| a.0.as_str().cmp(b.0.as_str()))
         });
-        stats.removed_by_fanout += targets.len().saturating_sub(MAX_OUTGOING);
-        for (to, metrics) in targets.into_iter().take(MAX_OUTGOING) {
+        stats.removed_by_fanout += targets.len().saturating_sub(policy.max_outgoing);
+        for (to, metrics) in targets.into_iter().take(policy.max_outgoing) {
             transfer_edges.push(TransferEdge::new(
                 from.clone(),
                 to,
@@ -269,6 +268,17 @@ fn record_mode_statistics(network: &TransitNetwork, stats: &mut TransferStatisti
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransferSettings {
+    pub radius_metres: u32,
+    pub max_duration_seconds: u32,
+    pub max_distance_metres: u32,
+    pub max_outgoing: usize,
+    pub max_concurrency: usize,
+    pub source_group_size: usize,
 }
 
 #[cfg(test)]
@@ -336,7 +346,11 @@ mod tests {
             removed_by_fanout: 3,
             ..Default::default()
         };
-        let edges = retain_outgoing_transfers(best, &mut stats);
+        let edges = retain_outgoing_transfers(
+            best,
+            &mut stats,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        );
         let pairs = edges
             .iter()
             .map(|edge| (edge.from.as_str().to_owned(), edge.to.as_str().to_owned()))
@@ -377,11 +391,22 @@ mod tests {
                         && network.stops[source]
                             .coordinate
                             .distance_metres(network.stops[target].coordinate)
-                            <= RADIUS_METRES
+                            <= f64::from(
+                                crate::config::ViaConfig::default()
+                                    .preprocessing
+                                    .transfers
+                                    .radius_metres,
+                            )
                 })
                 .collect::<Vec<_>>();
             assert_eq!(
-                candidate_targets(&network, &spatial, &indices, source),
+                candidate_targets(
+                    &network,
+                    &spatial,
+                    &indices,
+                    source,
+                    crate::config::ViaConfig::default().preprocessing.transfers
+                ),
                 expected
             );
         }
@@ -412,9 +437,13 @@ mod tests {
                 Metres(20),
             )
             .build();
-        let stats = enrich_network_with_static_transfers(&mut network, &street)
-            .await
-            .unwrap();
+        let stats = enrich_network_with_static_transfers(
+            &mut network,
+            &street,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        )
+        .await
+        .unwrap();
         assert_eq!(stats.boarding_points, 4);
         assert_eq!(stats.geographic_candidate_pairs, 6);
         assert_eq!(stats.matrix_pairs_queried, 6);
@@ -509,9 +538,13 @@ mod tests {
                 Metres(801),
             )
             .build();
-        let stats = enrich_network_with_static_transfers(&mut network, &street)
-            .await
-            .unwrap();
+        let stats = enrich_network_with_static_transfers(
+            &mut network,
+            &street,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             network.transfer_edges,
             vec![
@@ -543,9 +576,13 @@ mod tests {
             );
         }
         let mut network = network(stops);
-        let stats = enrich_network_with_static_transfers(&mut network, &builder.build())
-            .await
-            .unwrap();
+        let stats = enrich_network_with_static_transfers(
+            &mut network,
+            &builder.build(),
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             network
                 .transfer_edges
@@ -582,9 +619,13 @@ mod tests {
             )
             .build();
         let mut network = network(stops);
-        let stats = enrich_network_with_static_transfers(&mut network, &street)
-            .await
-            .unwrap();
+        let stats = enrich_network_with_static_transfers(
+            &mut network,
+            &street,
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        )
+        .await
+        .unwrap();
         assert!(stats.matrix_pairs_queried >= 65);
         assert_eq!(network.transfer_edges.len(), 1);
         assert_eq!(network.transfer_edges[0].to.as_str(), "target65");

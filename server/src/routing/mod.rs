@@ -23,3 +23,5 @@ pub use realized::{
 };
 pub use realized::{JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJourneyError};
 pub use service::RoutingService;
+
+pub use bike::BikeMovementPolicy;

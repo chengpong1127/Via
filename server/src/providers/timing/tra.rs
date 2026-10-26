@@ -24,7 +24,6 @@ use super::source::TransitDepartureSource;
 use crate::providers::tdx_bindings::TdxProviderBindings;
 
 const DEFAULT_TRAIN_LIVE_BOARD_PATH: &str = "v3/Rail/TRA/TrainLiveBoard";
-const MAX_PROVIDER_CLOCK_SKEW: TimeDuration = TimeDuration::minutes(5);
 
 #[derive(Debug, Deserialize)]
 struct TdxTraTrainLiveBoardResponse {
@@ -58,6 +57,7 @@ pub struct TraDepartureSource {
     tdx: Arc<TdxClient>,
     realtime_path: String,
     freshness_policy: FreshnessPolicy,
+    max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -66,9 +66,10 @@ impl TraDepartureSource {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx,
+            tdx: tdx.clone(),
             realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
-            freshness_policy: FreshnessPolicy::tdx_default(),
+            freshness_policy: tdx.settings.realtime.freshness_policy(),
+            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -149,9 +150,12 @@ impl TraDepartureSource {
             .get_json::<TdxTraTrainLiveBoardResponse>(&self.realtime_path, &request)
             .await;
         let observations = match payload {
-            Ok(payload) => {
-                parse_realtime_payload(payload, &requested_train_numbers, &self.freshness_policy)
-            }
+            Ok(payload) => parse_realtime_payload(
+                payload,
+                &requested_train_numbers,
+                &self.freshness_policy,
+                self.max_clock_skew_seconds,
+            ),
             Err(error) => Err(map_tdx_error(error)),
         };
 
@@ -309,12 +313,13 @@ fn parse_realtime_payload(
     payload: TdxTraTrainLiveBoardResponse,
     requested_train_numbers: &BTreeSet<String>,
     freshness_policy: &FreshnessPolicy,
+    max_clock_skew_seconds: u32,
 ) -> Result<BTreeMap<String, TraDelayObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let platform_update = parse_timestamp(&payload.update_time)?;
     let source_update = parse_timestamp(&payload.source_update_time)?;
-    reject_future_timestamp(platform_update, received_at)?;
-    reject_future_timestamp(source_update, received_at)?;
+    reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
+    reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
     let wrapper_evidence_at = platform_update.min(source_update);
     let wrapper_freshness = freshness_policy.evaluate(
         LiveStatusTimes {
@@ -339,7 +344,7 @@ fn parse_realtime_payload(
             continue;
         }
         let observed_at = parse_timestamp(&board.update_time)?;
-        reject_future_timestamp(observed_at, received_at)?;
+        reject_future_timestamp(observed_at, received_at, max_clock_skew_seconds)?;
         let evidence_at = observed_at.min(wrapper_evidence_at);
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
@@ -376,8 +381,9 @@ fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
 fn reject_future_timestamp(
     timestamp: OffsetDateTime,
     received_at: OffsetDateTime,
+    max_clock_skew_seconds: u32,
 ) -> Result<(), DepartureError> {
-    if timestamp > received_at + MAX_PROVIDER_CLOCK_SKEW {
+    if timestamp > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
         return Err(DepartureError::InvalidResponse);
     }
     Ok(())

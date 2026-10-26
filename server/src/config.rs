@@ -1,12 +1,12 @@
+mod settings;
+pub use settings::*;
+
 use std::{env, num::ParseIntError, path::PathBuf, str::FromStr};
 
 use thiserror::Error;
 use url::Url;
 
-use crate::providers::valhalla::DEFAULT_VALHALLA_BASE_URL;
-use crate::tdx::{DEFAULT_TDX_API_BASE_URL, TdxCredentials, TdxCredentialsError};
-
-const DEFAULT_PORT: u16 = 3000;
+use crate::tdx::{TdxCredentials, TdxCredentialsError};
 
 pub fn load_dotenv() {
     dotenvy::dotenv().ok();
@@ -54,6 +54,20 @@ impl FromStr for Environment {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("cannot read configuration {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("configuration {path}: {source}")]
+    File {
+        path: PathBuf,
+        #[source]
+        source: Box<ConfigError>,
+    },
+    #[error("Invalid configuration: {0}")]
+    Invalid(String),
     #[error("VIA_ENV must be explicitly set to development or production")]
     MissingEnvironment,
     #[error("VIA_ENV must be development or production")]
@@ -83,16 +97,25 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
+        let mut settings = ViaConfig::load(None)?;
+        settings.apply_environment()?;
+        Self::from_settings(&settings)
+    }
+
+    pub fn from_settings(settings: &ViaConfig) -> Result<Self, ConfigError> {
         let environment = Environment::required_from_env()?;
-        let static_path = env::var("VIA_STATIC").map_err(|_| ConfigError::MissingStaticPath)?;
-        let port = match env::var("PORT") {
-            Ok(value) => parse_port(Some(&value))?,
-            Err(_) => parse_port(None)?,
-        };
+        settings.validate_environment(environment)?;
+        let static_path = env::var_os("VIA_STATIC")
+            .map(PathBuf::from)
+            .or_else(|| settings.server.static_path.clone())
+            .ok_or(ConfigError::MissingStaticPath)?;
+        if static_path.as_os_str().is_empty() {
+            return Err(ConfigError::MissingStaticPath);
+        }
         Ok(Self {
             environment,
-            static_path: PathBuf::from(static_path),
-            port,
+            static_path,
+            port: settings.server.port,
         })
     }
 }
@@ -104,19 +127,20 @@ pub struct TdxRuntimeConfig {
 }
 
 impl TdxRuntimeConfig {
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let api_base_url = match env::var("VIA_TDX_BASE_URL") {
-            Ok(value) => parse_url("VIA_TDX_BASE_URL", &value)?,
-            Err(_) => Url::parse(DEFAULT_TDX_API_BASE_URL).expect("static TDX API URL is valid"),
-        };
-        let credentials = TdxCredentials::from_client_credentials(
-            required_credential("TDX_CLIENT_ID")?,
-            required_credential("TDX_CLIENT_SECRET")?,
-        );
+    pub fn from_settings(settings: &TdxSettings) -> Result<Self, ConfigError> {
         Ok(Self {
-            api_base_url,
-            credentials,
+            api_base_url: parse_url("tdx.api_base_url", &settings.api_base_url)?,
+            credentials: TdxCredentials::from_client_credentials(
+                required_credential("TDX_CLIENT_ID")?,
+                required_credential("TDX_CLIENT_SECRET")?,
+            ),
         })
+    }
+
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let mut settings = ViaConfig::load(None)?;
+        settings.apply_environment()?;
+        Self::from_settings(&settings.tdx)
     }
 }
 
@@ -127,11 +151,11 @@ pub struct ValhallaRuntimeConfig {
 
 impl ValhallaRuntimeConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let base_url = match env::var("VIA_VALHALLA_URL") {
-            Ok(value) => parse_url("VIA_VALHALLA_URL", &value)?,
-            Err(_) => Url::parse(DEFAULT_VALHALLA_BASE_URL).expect("static Valhalla URL is valid"),
-        };
-        Ok(Self { base_url })
+        let mut settings = ViaConfig::load(None)?;
+        settings.apply_environment()?;
+        Ok(Self {
+            base_url: parse_url("valhalla.base_url", &settings.valhalla.base_url)?,
+        })
     }
 }
 
@@ -140,18 +164,31 @@ pub struct RuntimeConfig {
     pub(crate) environment: Environment,
     pub(crate) valhalla: ValhallaRuntimeConfig,
     pub(crate) tdx: TdxRuntimeConfig,
+    pub(crate) settings: ViaConfig,
 }
 
 impl RuntimeConfig {
-    pub fn from_env(environment: Environment) -> Result<Self, ConfigError> {
-        let valhalla = ValhallaRuntimeConfig::from_env()?;
-        let tdx = TdxRuntimeConfig::from_env()?;
-        validate_transport_security(environment, &valhalla, &tdx)?;
+    pub fn from_settings(
+        environment: Environment,
+        settings: ViaConfig,
+    ) -> Result<Self, ConfigError> {
+        settings.validate_environment(environment)?;
+        let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
+        let valhalla = ValhallaRuntimeConfig {
+            base_url: parse_url("valhalla.base_url", &settings.valhalla.base_url)?,
+        };
         Ok(Self {
             environment,
-            valhalla,
             tdx,
+            valhalla,
+            settings,
         })
+    }
+
+    pub fn from_env(environment: Environment) -> Result<Self, ConfigError> {
+        let mut settings = ViaConfig::load(None)?;
+        settings.apply_environment()?;
+        Self::from_settings(environment, settings)
     }
 }
 
@@ -169,10 +206,11 @@ fn parse_url(setting: &'static str, value: &str) -> Result<Url, ConfigError> {
 fn parse_port(value: Option<&str>) -> Result<u16, ConfigError> {
     match value {
         Some(value) => value.parse().map_err(ConfigError::InvalidPort),
-        None => Ok(DEFAULT_PORT),
+        None => Ok(ViaConfig::default().server.port),
     }
 }
 
+#[cfg(test)]
 fn validate_transport_security(
     environment: Environment,
     valhalla: &ValhallaRuntimeConfig,
@@ -197,8 +235,8 @@ fn validate_transport_security(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigError, DEFAULT_TDX_API_BASE_URL, Environment, TdxRuntimeConfig,
-        ValhallaRuntimeConfig, parse_port, validate_transport_security,
+        ConfigError, Environment, TdxRuntimeConfig, ValhallaRuntimeConfig, parse_port,
+        validate_transport_security,
     };
     use crate::tdx::TdxCredentials;
     use url::Url;
@@ -285,7 +323,7 @@ mod tests {
         assert!(debug.contains("<redacted>"));
 
         let config = TdxRuntimeConfig {
-            api_base_url: Url::parse(DEFAULT_TDX_API_BASE_URL).unwrap(),
+            api_base_url: Url::parse(&super::ViaConfig::default().tdx.api_base_url).unwrap(),
             credentials,
         };
         let debug = format!("{config:?}");

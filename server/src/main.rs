@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use via_server::{
     app::build_router,
-    config::{RuntimeConfig, ServerConfig, load_dotenv},
+    config::{RuntimeConfig, ServerConfig, ViaConfig, load_dotenv},
     data::load_static_artifact,
     metrics,
     runtime::{RuntimeOptions, build_runtime},
@@ -11,7 +11,9 @@ use via_server::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_dotenv();
 
-    let config = ServerConfig::from_env()?;
+    let mut settings = ViaConfig::load(None)?;
+    settings.apply_environment()?;
+    let config = ServerConfig::from_settings(&settings)?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -25,9 +27,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let via_static = load_static_artifact(&config.static_path)
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
-    let runtime_config = RuntimeConfig::from_env(config.environment)?;
+    let runtime_config = RuntimeConfig::from_settings(config.environment, settings.clone())?;
     let runtime = build_runtime(via_static, RuntimeOptions::default(), runtime_config).await?;
-    let router = build_router(runtime.routing, runtime.health, metrics, config.environment);
+    let router = build_router(
+        runtime.routing,
+        runtime.health,
+        metrics,
+        config.environment,
+        &settings.server,
+    );
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(port = config.port, "Via server listening");

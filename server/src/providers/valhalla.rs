@@ -27,7 +27,6 @@ use crate::{
 
 const OSM_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
 const ODBL_URL: &str = "https://opendatacommons.org/licenses/odbl/1-0/";
-pub const DEFAULT_VALHALLA_BASE_URL: &str = "http://127.0.0.1:8002/";
 
 #[derive(Clone, Debug)]
 pub struct ValhallaConfig {
@@ -40,17 +39,6 @@ pub struct ValhallaConfig {
 }
 
 impl ValhallaConfig {
-    pub fn local() -> Self {
-        Self {
-            base_url: Url::parse(DEFAULT_VALHALLA_BASE_URL).expect("static URL is valid"),
-            request_timeout: Duration::from_millis(1_200),
-            max_concurrency: 8,
-            max_sources: 32,
-            max_targets: 32,
-            max_response_bytes: 2 * 1024 * 1024,
-        }
-    }
-
     fn validate(&self) -> Result<(), StreetRoutingError> {
         if !matches!(self.base_url.scheme(), "http" | "https") || self.base_url.host_str().is_none()
         {

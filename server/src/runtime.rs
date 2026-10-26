@@ -11,8 +11,7 @@ use crate::{
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxBikeAvailabilitySource,
         ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
-        TransitDepartureSource, ValhallaConfig, ValhallaProvider,
-        bikeshare::BikeAvailabilitySource,
+        TransitDepartureSource, ValhallaProvider, bikeshare::BikeAvailabilitySource,
     },
     routing::{JourneyPlanningLimits, RoutingService},
     street::StreetRouter,
@@ -38,7 +37,7 @@ pub struct ViaRuntimeDependencies {
 
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeOptions {
-    pub limits: JourneyPlanningLimits,
+    pub limits: Option<JourneyPlanningLimits>,
     pub valhalla_request_timeout: Option<Duration>,
 }
 
@@ -88,7 +87,7 @@ pub async fn build_runtime(
     config: RuntimeConfig,
 ) -> Result<ViaRuntime, Box<dyn Error>> {
     via_static.validate()?;
-    let mut valhalla_config = ValhallaConfig::local();
+    let mut valhalla_config = config.settings.valhalla.provider_config(false)?;
     if let Some(timeout) = options.valhalla_request_timeout {
         valhalla_config.request_timeout = timeout;
     }
@@ -101,14 +100,18 @@ pub async fn build_runtime(
         return Err("Valhalla is not healthy".into());
     }
 
-    let tdx = Arc::new(TdxClient::with_api_base_url(
+    let tdx = Arc::new(TdxClient::new(
         config.tdx.credentials,
-        config.tdx.api_base_url.as_str(),
+        config.settings.tdx.clone(),
     )?);
     let bindings = via_static.provider_bindings.clone();
     let bike_share_network = Arc::new(via_static.bike_share);
     let bike_availability: Arc<dyn BikeAvailabilitySource> =
-        Arc::new(TdxBikeAvailabilitySource::new(tdx.clone()));
+        Arc::new(TdxBikeAvailabilitySource::new(
+            tdx.clone(),
+            config.settings.tdx.batch.bike_stations,
+            config.settings.tdx.bikeshare.clone(),
+        ));
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
         environment: config.environment,
         transit_network: via_static.transit,
@@ -118,7 +121,9 @@ pub async fn build_runtime(
         street_health: street.clone(),
         tdx,
         bike_availability,
-        limits: options.limits,
+        limits: options
+            .limits
+            .unwrap_or_else(|| config.settings.journey_limits()),
     });
     Ok(runtime)
 }
@@ -180,10 +185,13 @@ mod tests {
             street: street.clone(),
             street_health: street,
             tdx: Arc::new(
-                TdxClient::with_urls(
+                TdxClient::new(
                     TdxCredentials::from_client_credentials("test", "test"),
-                    "http://127.0.0.1:1/",
-                    "http://127.0.0.1:1/",
+                    crate::tdx::TdxSettings {
+                        api_base_url: "http://127.0.0.1:1/".into(),
+                        token_url: "http://127.0.0.1:1/".into(),
+                        ..crate::config::ViaConfig::default().tdx
+                    },
                 )
                 .unwrap(),
             ),
@@ -229,6 +237,7 @@ mod tests {
             runtime.health,
             recorder.handle(),
             environment,
+            &crate::config::ViaConfig::default().server,
         );
         router
             .oneshot(

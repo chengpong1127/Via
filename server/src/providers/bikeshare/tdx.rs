@@ -13,9 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     domain::{
-        bikeshare::{
-            BikeAvailabilitySnapshot, BikeStationAvailability, DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
-        },
+        bikeshare::{BikeAvailabilitySnapshot, BikeStationAvailability},
         ids::BikeStationId,
     },
     tdx::{
@@ -24,30 +22,31 @@ use crate::{
     },
 };
 
-use super::{BikeAvailabilityError, BikeAvailabilitySource, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL};
-
-const MAX_STATIONS_PER_REQUEST: usize = 50;
-const MAX_CONCURRENT_CITIES: usize = 4;
+use super::{BikeAvailabilityError, BikeAvailabilitySource};
 
 #[derive(Clone)]
 pub struct TdxBikeAvailabilitySource {
     tdx_client: Arc<TdxClient>,
+    batch_size: usize,
+    settings: crate::tdx::BikeAvailabilitySettings,
     station_cache: Cache<BikeStationId, BikeStationAvailability>,
     city_refreshes: Arc<HashMap<&'static str, Mutex<()>>>,
 }
 
 impl TdxBikeAvailabilitySource {
-    pub fn new(tdx_client: Arc<TdxClient>) -> Self {
-        Self::with_cache_ttl(tdx_client, DEFAULT_BIKE_AVAILABILITY_CACHE_TTL)
-    }
-
-    pub fn with_cache_ttl(tdx_client: Arc<TdxClient>, cache_ttl: Duration) -> Self {
+    pub fn new(
+        tdx_client: Arc<TdxClient>,
+        batch_size: usize,
+        settings: crate::tdx::BikeAvailabilitySettings,
+    ) -> Self {
         Self {
             tdx_client,
+            batch_size,
             station_cache: Cache::builder()
-                .max_capacity(50_000)
-                .time_to_live(cache_ttl.max(Duration::from_millis(1)))
+                .max_capacity(settings.cache_capacity)
+                .time_to_live(Duration::from_secs(settings.cache_ttl_seconds))
                 .build(),
+            settings,
             city_refreshes: Arc::new(
                 BIKE_CITIES
                     .iter()
@@ -59,7 +58,11 @@ impl TdxBikeAvailabilitySource {
 
     async fn fresh_cached(&self, id: &BikeStationId) -> Option<BikeStationAvailability> {
         self.station_cache.get(id).await.filter(|availability| {
-            availability.is_fresh(OffsetDateTime::now_utc(), DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+            availability.is_fresh_with_skew(
+                OffsetDateTime::now_utc(),
+                time::Duration::seconds(i64::from(self.settings.max_age_seconds)),
+                time::Duration::seconds(i64::from(self.settings.max_clock_skew_seconds)),
+            )
         })
     }
 
@@ -82,7 +85,7 @@ impl TdxBikeAvailabilitySource {
             }
         }
         let mut failure = None;
-        for batch in missing.chunks(MAX_STATIONS_PER_REQUEST) {
+        for batch in missing.chunks(self.batch_size) {
             match self.fetch_batch(city, batch).await {
                 Ok(records) => {
                     for (id, availability) in records {
@@ -139,7 +142,8 @@ impl TdxBikeAvailabilitySource {
         let record_count = records.len();
         let mut stations = HashMap::new();
         for record in records {
-            let Some(availability) = normalize_record(city, record, received_at) else {
+            let Some(availability) = normalize_record(city, record, received_at, &self.settings)
+            else {
                 continue;
             };
             if !required.contains(&availability.station_id) {
@@ -190,7 +194,7 @@ impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
                 .into_iter()
                 .map(|(city, ids)| async move { self.load_city(&city, ids).await }),
         )
-        .buffer_unordered(MAX_CONCURRENT_CITIES);
+        .buffer_unordered(self.settings.max_concurrent_cities);
         let mut failure = None;
         while let Some((loaded, error)) = results.next().await {
             stations.extend(loaded);
@@ -200,7 +204,11 @@ impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
         }
         let now = OffsetDateTime::now_utc();
         stations.retain(|_, availability| {
-            availability.is_fresh(now, DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+            availability.is_fresh_with_skew(
+                now,
+                time::Duration::seconds(i64::from(self.settings.max_age_seconds)),
+                time::Duration::seconds(i64::from(self.settings.max_clock_skew_seconds)),
+            )
         });
         if stations.is_empty()
             && let Some(error) = failure
@@ -240,6 +248,7 @@ fn normalize_record(
     city: &str,
     record: TdxBikeAvailabilityRecord,
     received_at: OffsetDateTime,
+    settings: &crate::tdx::BikeAvailabilitySettings,
 ) -> Option<BikeStationAvailability> {
     let station_uid = record.station_uid?.trim().to_owned();
     if station_uid.is_empty() {
@@ -265,7 +274,11 @@ fn normalize_record(
         observed_at,
     );
     availability
-        .is_fresh(received_at, DEFAULT_BIKE_AVAILABILITY_MAX_AGE)
+        .is_fresh_with_skew(
+            received_at,
+            time::Duration::seconds(i64::from(settings.max_age_seconds)),
+            time::Duration::seconds(i64::from(settings.max_clock_skew_seconds)),
+        )
         .then_some(availability)
 }
 

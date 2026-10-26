@@ -25,6 +25,7 @@ pub fn build_router(
     health: Health,
     metrics: PrometheusHandle,
     environment: Environment,
+    settings: &crate::config::ServerSettings,
 ) -> Router {
     let (router, openapi) = openapi::documented_router().split_for_parts();
     let openapi = openapi::configure_openapi(openapi);
@@ -39,27 +40,39 @@ pub fn build_router(
             metrics,
             openapi,
         })
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024));
-    with_http_timeout(router, environment)
-        .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(middleware::make_request_span)
-                .on_response(middleware::on_http_response)
-                .on_failure(()),
-        )
-        .layer(SetRequestIdLayer::x_request_id(
-            middleware::ViaMakeRequestId,
-        ))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            settings.max_body_bytes,
+        ));
+    with_http_timeout(
+        router,
+        environment,
+        std::time::Duration::from_millis(settings.http_timeout_ms),
+    )
+    .layer(PropagateRequestIdLayer::x_request_id())
+    .layer(
+        TraceLayer::new_for_http()
+            .make_span_with(middleware::make_request_span)
+            .on_response(middleware::on_http_response)
+            .on_failure(()),
+    )
+    .layer(SetRequestIdLayer::x_request_id(
+        middleware::ViaMakeRequestId,
+    ))
 }
 
 pub fn openapi_document() -> OpenApi {
     openapi::openapi_document()
 }
 
-fn with_http_timeout(router: Router, environment: Environment) -> Router {
+fn with_http_timeout(
+    router: Router,
+    environment: Environment,
+    timeout: std::time::Duration,
+) -> Router {
     if environment.is_production() {
-        router.layer(axum::middleware::from_fn(middleware::http_timeout))
+        router.layer(axum::middleware::from_fn(move |request, next| {
+            middleware::http_timeout(request, next, timeout)
+        }))
     } else {
         router
     }

@@ -15,7 +15,8 @@ use crate::{
     },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeAccessPolicy {
     pub max_geometric_radius_metres: u32,
     pub max_walking_duration_seconds: u32,
@@ -27,14 +28,7 @@ pub struct BikeAccessPolicy {
 
 impl Default for BikeAccessPolicy {
     fn default() -> Self {
-        Self {
-            max_geometric_radius_metres: 300,
-            max_walking_duration_seconds: 8 * 60,
-            max_walking_distance_metres: 800,
-            max_geometric_candidates_per_boarding_point: 16,
-            max_access_stations_per_boarding_point: 8,
-            max_matrix_concurrency: 4,
-        }
+        crate::config::ViaConfig::default().bikeshare.preprocessing
     }
 }
 

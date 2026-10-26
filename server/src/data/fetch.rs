@@ -15,7 +15,6 @@ use zip::ZipArchive;
 use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
-const BIKE_PAGE_SIZE: &str = "1000";
 const BIKE_STATION_ORDER: &str = "StationUID asc";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,7 +196,7 @@ async fn fetch_stations(
             .get_bytes(
                 url,
                 &[
-                    ("$top", BIKE_PAGE_SIZE),
+                    ("$top", &client.settings.bike_catalog_page_size.to_string()),
                     ("$skip", skip_value.as_str()),
                     ("$orderby", BIKE_STATION_ORDER),
                     ("$format", "JSON"),
@@ -519,10 +518,13 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         let base_url = format!("http://{address}");
-        let client = TdxClient::with_urls(
+        let client = TdxClient::new(
             TdxCredentials::from_client_credentials("client", "secret"),
-            &format!("{base_url}/basic/"),
-            &format!("{base_url}/token"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/basic/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
         )
         .unwrap();
         let sources = FetchSources {

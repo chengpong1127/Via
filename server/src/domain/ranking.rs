@@ -65,7 +65,8 @@ pub struct RankedJourney {
     pub main_pattern_sequence: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RankingPolicy {
     pub metro_transfer_buffer_seconds: u32,
     pub bus_transfer_buffer_seconds: u32,
