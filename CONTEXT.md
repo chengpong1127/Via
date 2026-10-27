@@ -122,8 +122,10 @@ live in `routing/corridor.rs`. Rental transitions and `ActiveBikeRental` live in
 `ExpansionResolver` executes each state sequentially, keeping cache access, I/O,
 deadline checks, and provider failure classification outside pure transitions.
 `transit_next_state`, `walking_next_state`, and `bike_next_states` construct states
-without evaluator access. Each expansion returns local statistics and failures;
-the evaluator aggregates them and prunes once after collecting the edge's successors.
+without evaluator access. Transit, Walking, and BikeShare each return an `ExpansionOutcome` with local
+statistics and failures. The sequential state orchestrator merges those outcomes
+and stops on fatal errors. The evaluator records each state outcome before
+propagating its error and prunes once after collecting the edge's successors.
 Request-local Walking and BikeShare caches still require mutable access. Phase B
 must split cache lookup/update from independent provider work before bounded
 parallel expansion can preserve deterministic cache and result ordering.

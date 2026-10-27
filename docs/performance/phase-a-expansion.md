@@ -12,7 +12,11 @@ their existing behavior.
 snapshot, and query. `ExpansionResolver::expand_state_sequential` runs Transit,
 Walking, and BikeShare in that order. It returns `ExpansionOutcome`, including
 local work statistics and provider failure classification even on a fatal result.
-The evaluator aggregates outcomes in input order and prunes once per edge.
+Transit, Walking, and BikeShare now each return an `ExpansionOutcome`; the state
+orchestrator merges them in movement order and stops on a fatal result. The
+evaluator aggregates state outcomes before error propagation and prunes once per
+edge. The follow-up cleanup comparison is recorded in
+[outcome-cleanup.md](outcome-cleanup.md).
 
 `transit_ready_at`, `transit_next_state`, `walking_next_state`, and
 `bike_next_states` are deterministic functions without provider access, cache

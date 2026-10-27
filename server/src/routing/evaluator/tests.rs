@@ -2146,23 +2146,20 @@ async fn transit_expansion_emits_multiple_departures_before_pruning() {
         ],
     );
     let mut planners = test_dependencies();
-    let mut evaluator = FixedCorridorEvaluator::new(
-        &network,
-        &retained,
-        &snapshot,
-        &query,
-        &mut planners.walking,
-        planners.bike_share.as_mut(),
-    );
-    let next = evaluator
-        .expand_state(
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut planners.walking,
+        bike_share: planners.bike_share.as_mut(),
+    };
+    let outcome = resolver
+        .expand_state_sequential(
             &EvaluationState::initial(&query),
             &corridor,
             &corridor.edges()[1],
             1,
         )
-        .await
-        .unwrap();
+        .await;
+    let next = outcome.successors.unwrap();
     assert_eq!(next.len(), 2);
     let trip_ids = next
         .iter()
@@ -2175,7 +2172,7 @@ async fn transit_expansion_emits_multiple_departures_before_pruning() {
         trip_ids,
         vec![EffectiveTripId::new("early"), EffectiveTripId::new("later")]
     );
-    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
+    assert_eq!(outcome.stats.transit_departure_lookups, 1);
 }
 
 #[tokio::test]
@@ -2212,23 +2209,20 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
             hits: 0,
         }))),
     };
-    let mut evaluator = FixedCorridorEvaluator::new(
-        &network,
-        &retained,
-        &snapshot,
-        &query,
-        &mut planners.walking,
-        planners.bike_share.as_mut(),
-    );
-    let next = evaluator
-        .expand_state(
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut planners.walking,
+        bike_share: planners.bike_share.as_mut(),
+    };
+    let outcome = resolver
+        .expand_state_sequential(
             &EvaluationState::initial(&query),
             &corridor,
             &corridor.edges()[1],
             1,
         )
-        .await
-        .unwrap();
+        .await;
+    let next = outcome.successors.unwrap();
     let kinds = next
         .iter()
         .map(|state| match &state.movements[0].kind {
@@ -2240,12 +2234,12 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
     assert_eq!(kinds, vec!["early", "later", "walking", "bike_share"]);
     assert!(next[2].ready_at > next[0].ready_at);
     assert!(next[3].ready_at > next[0].ready_at);
-    assert_eq!(evaluator.stats.states_expanded, 1);
-    assert_eq!(evaluator.stats.transit_operations_attempted, 1);
-    assert_eq!(evaluator.stats.walking_operations_attempted, 1);
-    assert_eq!(evaluator.stats.bike_operations_attempted, 1);
-    assert_eq!(evaluator.stats.successors_generated, 4);
-    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
+    assert_eq!(outcome.stats.states_expanded, 1);
+    assert_eq!(outcome.stats.transit_operations_attempted, 1);
+    assert_eq!(outcome.stats.walking_operations_attempted, 1);
+    assert_eq!(outcome.stats.bike_operations_attempted, 1);
+    assert_eq!(outcome.stats.successors_generated, 4);
+    assert_eq!(outcome.stats.transit_departure_lookups, 1);
 }
 
 #[tokio::test]
@@ -2950,31 +2944,28 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
         cache: HashMap::new(),
         hits: 0,
     }));
-    let mut evaluator = FixedCorridorEvaluator::new(
-        &network,
-        &retained,
-        &snapshot,
-        &query,
-        &mut walking,
-        Some(&mut bike),
-    );
-    let next = evaluator
-        .expand_state(
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut walking,
+        bike_share: Some(&mut bike),
+    };
+    let outcome = resolver
+        .expand_state_sequential(
             &EvaluationState::initial(&query),
             &corridor,
             &corridor.edges()[0],
             0,
         )
-        .await
-        .unwrap();
+        .await;
+    let next = outcome.successors.unwrap();
     assert!(next.iter().all(|state| !matches!(
         state.movements[0].kind,
         JourneyMovementKind::BikeShare { .. }
     )));
     assert_eq!(
-        (evaluator.stats.transit_operations_attempted
-            + evaluator.stats.walking_operations_attempted
-            + evaluator.stats.bike_operations_attempted),
+        (outcome.stats.transit_operations_attempted
+            + outcome.stats.walking_operations_attempted
+            + outcome.stats.bike_operations_attempted),
         1
     );
     assert_eq!(bike.realization_stats().exact_requests, 0);
@@ -3179,4 +3170,591 @@ async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
     assert_eq!(result.stats.walking_matrix_requests, 1);
     assert_eq!(result.stats.walking_cache_hits, 2399);
     assert_eq!(result.journeys.len(), 1);
+}
+
+fn expansion_inputs<'a>(
+    network: &'a TransitRuntime,
+    retained: &'a RetainedCorridorSet,
+    snapshot: &'a TimingSnapshot,
+    query: &'a PlanningQuery,
+) -> expansion::ExpansionInputs<'a> {
+    expansion::ExpansionInputs {
+        network,
+        corridor: retained,
+        snapshot,
+        query,
+    }
+}
+
+#[tokio::test]
+async fn operation_outcomes_sum_to_the_state_outcome_without_extra_matrix_requests() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 2]),
+            trip("later", "bus", &["origin", "destination"], &[2, 3]),
+        ],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+        calls: calls.clone(),
+        error: None,
+    }));
+    let mut bike = BikeShareSession::for_test(Box::new(TestBikePlanner {
+        routes: HashMap::from([(
+            corridor_movement(0, 1, "origin", "destination"),
+            vec![bike_movement(0, 1, 60), bike_movement(0, 1, 120)],
+        )]),
+        cache: HashMap::new(),
+        hits: 0,
+    }));
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut walking,
+        bike_share: Some(&mut bike),
+    };
+    let state = EvaluationState::initial(&query);
+    let transit = resolver
+        .inputs
+        .resolve_transit(&state, &corridor.edges()[1], 1);
+    assert_eq!(
+        transit.stats,
+        expansion::ExpansionStats {
+            transit_operations_attempted: 1,
+            transit_departure_lookups: 1,
+            successors_generated: 2,
+            ..Default::default()
+        }
+    );
+    let walking = resolver
+        .resolve_walking(&state, &corridor, &corridor.edges()[1], 1)
+        .await;
+    assert_eq!(
+        walking.stats,
+        expansion::ExpansionStats {
+            walking_operations_attempted: 1,
+            successors_generated: 1,
+            ..Default::default()
+        }
+    );
+    let bike = resolver.resolve_bike_share(&state, &corridor, 1).await;
+    assert_eq!(
+        bike.stats,
+        expansion::ExpansionStats {
+            bike_operations_attempted: 1,
+            successors_generated: 2,
+            ..Default::default()
+        }
+    );
+    let mut expected_stats = expansion::ExpansionStats {
+        states_expanded: 1,
+        ..Default::default()
+    };
+    let mut expected_movements = Vec::new();
+    for operation in [transit, walking, bike] {
+        expected_stats.merge(operation.stats);
+        assert!(!operation.failures.transient && !operation.failures.internal);
+        expected_movements.extend(
+            operation
+                .successors
+                .unwrap()
+                .into_iter()
+                .map(|state| state.movements),
+        );
+    }
+    let outcome = resolver
+        .expand_state_sequential(&state, &corridor, &corridor.edges()[1], 1)
+        .await;
+    assert_eq!(outcome.stats, expected_stats);
+    assert_eq!(
+        outcome
+            .successors
+            .unwrap()
+            .into_iter()
+            .map(|state| state.movements)
+            .collect::<Vec<_>>(),
+        expected_movements
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(resolver.walking.cache_hits, 1);
+    assert_eq!(
+        resolver
+            .bike_share
+            .as_ref()
+            .unwrap()
+            .realization_stats()
+            .exact_requests,
+        1
+    );
+    assert_eq!(
+        resolver
+            .bike_share
+            .as_ref()
+            .unwrap()
+            .realization_stats()
+            .cache_hits,
+        1
+    );
+}
+
+#[tokio::test]
+async fn walking_operation_returns_local_failures_and_reuses_cached_results() {
+    use crate::street::StreetRoutingError;
+    let network = network(Vec::new(), &[], Vec::new());
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    let query = query(&[], 0, 1);
+    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    for (error, transient, internal) in [
+        (None, false, false),
+        (Some(StreetRoutingError::Timeout), true, false),
+        (Some(StreetRoutingError::MalformedResponse), false, true),
+        (Some(StreetRoutingError::Unreachable), false, false),
+    ] {
+        let succeeds = error.is_none();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+            calls: calls.clone(),
+            error,
+        }));
+        let mut resolver = expansion::ExpansionResolver {
+            inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+            walking: &mut walking,
+            bike_share: None,
+        };
+        for _ in 0..2 {
+            let outcome = resolver
+                .resolve_walking(
+                    &EvaluationState::initial(&query),
+                    &corridor,
+                    &corridor.edges()[0],
+                    0,
+                )
+                .await;
+            assert_eq!(
+                outcome.stats,
+                expansion::ExpansionStats {
+                    walking_operations_attempted: 1,
+                    successors_generated: usize::from(succeeds),
+                    ..Default::default()
+                }
+            );
+            assert_eq!(
+                (outcome.failures.transient, outcome.failures.internal),
+                (transient, internal)
+            );
+            assert_eq!(outcome.successors.unwrap().len(), usize::from(succeeds));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(resolver.walking.cache_hits, 1);
+    }
+}
+
+struct OutcomeBikeProvider {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    error: Option<crate::street::StreetRoutingError>,
+    expire_deadline: bool,
+}
+
+#[async_trait::async_trait]
+impl TestBikeProvider for OutcomeBikeProvider {
+    fn has_candidate(&self, _: &BikeMovementRequest<'_>) -> bool {
+        true
+    }
+    async fn realize(
+        &mut self,
+        request: &BikeMovementRequest<'_>,
+    ) -> Result<Vec<BikeShareMovement>, crate::street::StreetRoutingError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.expire_deadline {
+            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        }
+        if let Some(error) = &self.error {
+            return Err(error.clone());
+        }
+        Ok(vec![bike_movement(
+            request.from_anchor,
+            request.to_anchor,
+            60,
+        )])
+    }
+}
+
+#[tokio::test]
+async fn bike_operation_returns_local_failures_and_keeps_walking_fallback() {
+    use crate::street::StreetRoutingError;
+    let network = network(Vec::new(), &[], Vec::new());
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    let query = query(&[], 0, 1);
+    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    for (error, transient, internal) in [
+        (None, false, false),
+        (Some(StreetRoutingError::Timeout), true, false),
+        (Some(StreetRoutingError::MalformedResponse), false, true),
+        (Some(StreetRoutingError::Unreachable), false, false),
+    ] {
+        let succeeds = error.is_none();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            error: None,
+        }));
+        let mut bike = BikeShareSession::for_test(Box::new(OutcomeBikeProvider {
+            calls: calls.clone(),
+            error,
+            expire_deadline: false,
+        }));
+        let mut resolver = expansion::ExpansionResolver {
+            inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+            walking: &mut walking,
+            bike_share: Some(&mut bike),
+        };
+        let state = EvaluationState::initial(&query);
+        let operation = resolver.resolve_bike_share(&state, &corridor, 0).await;
+        assert_eq!(
+            operation.stats,
+            expansion::ExpansionStats {
+                bike_operations_attempted: 1,
+                successors_generated: usize::from(succeeds),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            (operation.failures.transient, operation.failures.internal),
+            (transient, internal)
+        );
+        let outcome = resolver
+            .expand_state_sequential(&state, &corridor, &corridor.edges()[0], 0)
+            .await;
+        assert_eq!(
+            (outcome.failures.transient, outcome.failures.internal),
+            (transient, internal)
+        );
+        assert_eq!(outcome.successors.unwrap().len(), 1 + usize::from(succeeds));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(resolver.walking.requests, 1);
+    }
+}
+
+#[tokio::test]
+async fn fatal_transit_outcome_preserves_counts_and_skips_both_surface_operations() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let snapshot = TimingSnapshot::default();
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut leg = retained.retained()[0]
+        .transit_legs()
+        .next()
+        .unwrap()
+        .clone();
+    leg.alight_index = leg.board_index;
+    let edge = CorridorEdge {
+        planned_movement: PlannedMovement::Transit(leg),
+    };
+    let walking_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bike_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+        calls: walking_calls.clone(),
+        error: None,
+    }));
+    let mut bike = BikeShareSession::for_test(Box::new(OutcomeBikeProvider {
+        calls: bike_calls.clone(),
+        error: None,
+        expire_deadline: false,
+    }));
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut walking,
+        bike_share: Some(&mut bike),
+    };
+    let outcome = resolver
+        .expand_state_sequential(&EvaluationState::initial(&query), &corridor, &edge, 1)
+        .await;
+    assert!(matches!(outcome.successors, Err(RoutingError::Internal(_))));
+    assert_eq!(
+        outcome.stats,
+        expansion::ExpansionStats {
+            states_expanded: 1,
+            transit_operations_attempted: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(walking_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(bike_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+struct DeadlineWalkingRouter;
+
+#[async_trait::async_trait]
+impl crate::street::StreetRouter for DeadlineWalkingRouter {
+    async fn matrix(
+        &self,
+        _: crate::street::MatrixQuery,
+    ) -> Result<crate::street::MatrixResult, crate::street::StreetRoutingError> {
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        Ok(crate::street::MatrixResult {
+            cells: vec![vec![crate::street::MatrixCell::Reachable {
+                duration: crate::street::Seconds(60),
+                distance: crate::street::Metres(100),
+            }]],
+        })
+    }
+    async fn route(
+        &self,
+        _: crate::street::RouteQuery,
+    ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
+        unreachable!()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn fatal_walking_outcome_preserves_transit_successor_counts_and_skips_bike() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let mut query = query(&[TransitMode::Bus], 0, 1);
+    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
+    let retained = candidate_corridor(&network, &query);
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 2]),
+            trip("later", "bus", &["origin", "destination"], &[2, 3]),
+        ],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut walking = WalkingCache::new(Arc::new(DeadlineWalkingRouter));
+    let mut bike = BikeShareSession::for_test(Box::new(OutcomeBikeProvider {
+        calls: calls.clone(),
+        error: None,
+        expire_deadline: false,
+    }));
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut walking,
+        bike_share: Some(&mut bike),
+    };
+    let outcome = resolver
+        .expand_state_sequential(
+            &EvaluationState::initial(&query),
+            &corridor,
+            &corridor.edges()[1],
+            1,
+        )
+        .await;
+    assert!(matches!(
+        outcome.successors,
+        Err(RoutingError::DeadlineExceeded)
+    ));
+    assert_eq!(
+        outcome.stats,
+        expansion::ExpansionStats {
+            states_expanded: 1,
+            transit_operations_attempted: 1,
+            transit_departure_lookups: 1,
+            walking_operations_attempted: 1,
+            successors_generated: 2,
+            ..Default::default()
+        }
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn fatal_bike_outcome_keeps_the_earlier_walking_failure() {
+    let network = network(Vec::new(), &[], Vec::new());
+    let mut query = query(&[], 0, 1);
+    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        error: Some(crate::street::StreetRoutingError::Timeout),
+    }));
+    let mut bike = BikeShareSession::for_test(Box::new(OutcomeBikeProvider {
+        calls: calls.clone(),
+        error: None,
+        expire_deadline: true,
+    }));
+    let mut resolver = expansion::ExpansionResolver {
+        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
+        walking: &mut walking,
+        bike_share: Some(&mut bike),
+    };
+    let outcome = resolver
+        .expand_state_sequential(
+            &EvaluationState::initial(&query),
+            &corridor,
+            &corridor.edges()[0],
+            0,
+        )
+        .await;
+    assert!(matches!(
+        outcome.successors,
+        Err(RoutingError::DeadlineExceeded)
+    ));
+    assert_eq!(
+        outcome.stats,
+        expansion::ExpansionStats {
+            states_expanded: 1,
+            walking_operations_attempted: 1,
+            bike_operations_attempted: 1,
+            ..Default::default()
+        }
+    );
+    assert!(outcome.failures.transient && !outcome.failures.internal);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn evaluator_aggregates_outcomes_before_propagating_a_fatal_walking_error() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let mut query = query(&[TransitMode::Bus], 0, 1);
+    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
+    let retained = candidate_corridor(&network, &query);
+    let corridor =
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 2]),
+            trip("later", "bus", &["origin", "destination"], &[2, 3]),
+        ],
+    );
+    let mut walking = WalkingCache::new(Arc::new(DeadlineWalkingRouter));
+    let mut evaluator =
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut walking, None);
+    assert!(matches!(
+        evaluator.evaluate(&[corridor]).await,
+        Err(RoutingError::DeadlineExceeded)
+    ));
+    assert_eq!(evaluator.stats.states_expanded, 2);
+    assert_eq!(evaluator.stats.walking_operations_attempted, 2);
+    assert_eq!(evaluator.stats.transit_operations_attempted, 1);
+    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
+    assert_eq!(evaluator.stats.successors_generated, 3);
+    assert_eq!(evaluator.stats.corridors_completed, 0);
+}
+
+#[tokio::test]
+#[ignore = "deterministic outcome cleanup comparison"]
+async fn outcome_cleanup_multimodal_benchmark() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let mut snapshot = TimingSnapshot::default();
+    snapshot.insert(
+        TransitPatternId::new("bus"),
+        0,
+        vec![
+            trip("early", "bus", &["origin", "destination"], &[1, 2]),
+            trip("later", "bus", &["origin", "destination"], &[2, 3]),
+        ],
+    );
+    let corridors = vec![
+        EvaluationCorridor::direct_walking(query.origin, query.destination),
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
+        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
+    ];
+    let mut samples = Vec::new();
+    let mut expected = None;
+    for iteration in 0..25 {
+        let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            error: None,
+        }));
+        let mut bike = BikeShareSession::for_test(Box::new(TestBikePlanner {
+            routes: HashMap::from([(
+                corridor_movement(0, 1, "origin", "destination"),
+                vec![bike_movement(0, 1, 60), bike_movement(0, 1, 240)],
+            )]),
+            cache: HashMap::new(),
+            hits: 0,
+        }));
+        let result = FixedCorridorEvaluator::new(
+            &network,
+            &retained,
+            &snapshot,
+            &query,
+            &mut walking,
+            Some(&mut bike),
+        )
+        .evaluate(&corridors)
+        .await
+        .unwrap();
+        let fingerprints = result
+            .journeys
+            .iter()
+            .map(|j| {
+                format!(
+                    "{}@{:?}",
+                    j.identity().canonical_signature(),
+                    j.movements()
+                        .iter()
+                        .map(|m| (
+                            m.departure_at.unix_timestamp_nanos(),
+                            m.arrival_at.unix_timestamp_nanos()
+                        ))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut work = result.stats;
+        work.phase2_latency_us = 0;
+        if let Some(expected) = &expected {
+            assert_eq!(&(work, fingerprints.clone()), expected);
+        } else {
+            expected = Some((work, fingerprints.clone()));
+        }
+        if iteration >= 5 {
+            samples.push(result.stats.phase2_latency_us);
+        }
+        if iteration == 24 {
+            eprintln!(
+                "cleanup_multimodal stats={:?} fingerprints={fingerprints:?}",
+                result.stats
+            );
+        }
+    }
+    samples.sort_unstable();
+    eprintln!(
+        "cleanup_multimodal median_us={} p95_us={}",
+        samples[10], samples[19]
+    );
 }

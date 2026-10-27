@@ -36,7 +36,10 @@ movement expansion search. `ExpansionInputs` borrows immutable inputs and
 `ExpansionResolver` resolves Transit, Walking, then BikeShare sequentially in
 `evaluator/expansion.rs`. Pure transition functions construct successors from
 resolved movements without touching caches, providers, statistics, or deadlines.
-Each state returns local work counts and failures for evaluator aggregation.
+Each movement operation returns local work counts, failures, and a nested
+successor result in `ExpansionOutcome`. The state orchestrator merges outcomes
+in movement order and stops on a fatal error. The evaluator records per-state
+outcomes before error propagation, preserving partial statistics and failures.
 A concrete `WalkingCache` owns request-local Matrix results; BikeShare borrows
 an optional concrete request-local session. The evaluator collects all feasible
 successors before shared per-edge Pareto pruning and candidate finalization.

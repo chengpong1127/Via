@@ -51,10 +51,28 @@ pub struct Phase2EvaluationStats {
     pub phase2_latency_us: u64,
 }
 
+impl Phase2EvaluationStats {
+    fn record_expansion(&mut self, stats: expansion::ExpansionStats) {
+        self.states_expanded += stats.states_expanded;
+        self.transit_operations_attempted += stats.transit_operations_attempted;
+        self.transit_departure_lookups += stats.transit_departure_lookups;
+        self.walking_operations_attempted += stats.walking_operations_attempted;
+        self.bike_operations_attempted += stats.bike_operations_attempted;
+        self.successors_generated += stats.successors_generated;
+    }
+}
+
 #[derive(Default, Clone, Copy)]
 pub(crate) struct EvaluationFailures {
     pub transient: bool,
     pub internal: bool,
+}
+
+impl EvaluationFailures {
+    fn merge(&mut self, other: Self) {
+        self.transient |= other.transient;
+        self.internal |= other.internal;
+    }
 }
 
 pub(super) struct EvaluationResult {
@@ -156,14 +174,12 @@ impl<'a> FixedCorridorEvaluator<'a> {
             Ok(())
         }
     }
-    async fn expand_state(
+    async fn evaluate_corridor(
         &mut self,
-        state: &EvaluationState,
         corridor: &EvaluationCorridor,
-        edge: &CorridorEdge,
-        index: usize,
-    ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let outcome = expansion::ExpansionResolver {
+    ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
+        self.check_deadline()?;
+        let mut resolver = expansion::ExpansionResolver {
             inputs: expansion::ExpansionInputs {
                 network: self.network,
                 corridor: self.corridor,
@@ -172,31 +188,17 @@ impl<'a> FixedCorridorEvaluator<'a> {
             },
             walking: self.walking,
             bike_share: self.bike_share.as_deref_mut(),
-        }
-        .expand_state_sequential(state, corridor, edge, index)
-        .await;
-        self.stats.states_expanded += outcome.stats.states_expanded;
-        self.stats.transit_operations_attempted += outcome.stats.transit_operations_attempted;
-        self.stats.transit_departure_lookups += outcome.stats.transit_departure_lookups;
-        self.stats.walking_operations_attempted += outcome.stats.walking_operations_attempted;
-        self.stats.bike_operations_attempted += outcome.stats.bike_operations_attempted;
-        self.stats.successors_generated += outcome.stats.successors_generated;
-        self.failures.transient |= outcome.failures.transient;
-        self.failures.internal |= outcome.failures.internal;
-        outcome.successors
-    }
-
-    async fn evaluate_corridor(
-        &mut self,
-        corridor: &EvaluationCorridor,
-    ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
-        self.check_deadline()?;
+        };
         let mut states = vec![EvaluationState::initial(self.query)];
         for (index, edge) in corridor.edges().iter().enumerate() {
             let mut next = Vec::new();
             for state in states {
-                let successors = self.expand_state(&state, corridor, edge, index).await?;
-                next.extend(successors);
+                let outcome = resolver
+                    .expand_state_sequential(&state, corridor, edge, index)
+                    .await;
+                self.stats.record_expansion(outcome.stats);
+                self.failures.merge(outcome.failures);
+                next.extend(outcome.successors?);
             }
             states = prune_states(next, self.query.limits.max_candidates);
             if states.is_empty() {
