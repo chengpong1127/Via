@@ -41,9 +41,16 @@ geographic rounding, serialization hash, or hash-only identity is used. Hash-map
 collisions still compare complete keys. Destructuring `MatrixQuery` without a
 wildcard makes new query fields require an explicit key decision.
 
-Walking retains its `(from anchor key, to anchor key, OffsetDateTime)` movement
-cache, including direction, boarding identity, subsecond departure instants and
-errors. BikeShare retains its directional anchor-pair candidate cache (including
+Walking uses a `(from anchor key, to anchor key)` movement cache, preserving
+direction, coordinates, boarding identity and errors. Phase B.1 intentionally
+treats pedestrian and bicycle Matrix durations and distances as time-independent.
+States with different departure times can share a movement result, while each
+transition applies its duration to the state’s own `ready_at`. BikeShare endpoint
+walking and bicycle matrices also use default, time-free constraints. The general
+Matrix key still includes all constraints for other callers. Omitting Valhalla’s
+`date_time` can change reachability, duration, distance or route choice on
+time-restricted infrastructure; this model is not a claim that such routes are
+always time-independent. BikeShare retains its directional anchor-pair candidate cache (including
 `None`) and realization cache (including errors). Candidate discovery holds a
 short synchronous lock; async realization holds no session-wide lock. Realized
 BikeShare movements are still remapped to the requesting indices. Availability,
@@ -137,7 +144,7 @@ in the transition helpers and no expansion-wide mutex.
 
 ## Verification and measurements
 
-See [measurements](measurements.md) for release results and reproduction commands.
+See [measurements](measurements.md) for Phase B release results and reproduction commands, and [Phase B.1 measurements](phase-b1.md) for the time-independent comparison.
 The controlled tests cover query identity, overlapping misses, cached errors,
 request isolation, reverse completion, partial fatal outcomes, cancellation,
 BikeShare remapping/rentals/filtering, complete corridor evaluation and ordered
@@ -145,6 +152,6 @@ journey equivalence. Integration tests compare reconstructed, ranked Top-3
 options at concurrency 1, 2, 4 and 8.
 
 Remaining bounds are sequential corridors/edges, BikeShare's dependent Matrix
-chain, exact-time queries that cannot share results, the provider semaphore and
+chain, distinct Matrix queries that cannot share results, the provider semaphore and
 CPU/cache overhead for zero-delay workloads. No cross-state Matrix batching or
 cross-request caching is attempted.

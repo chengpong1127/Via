@@ -1864,7 +1864,7 @@ impl crate::street::StreetRouter for CountingWalkingRouter {
         assert_eq!(query.travel_mode, crate::street::StreetTravelMode::Walking);
         assert_eq!(query.sources.len(), 1);
         assert_eq!(query.targets.len(), 1);
-        assert!(query.constraints.time.is_some());
+        assert!(query.constraints.time.is_none());
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
@@ -2642,7 +2642,7 @@ async fn direct_corridor_has_observable_constant_work() {
 }
 
 #[tokio::test]
-async fn walking_cache_reuses_exact_requests_but_keeps_departure_times_distinct() {
+async fn walking_cache_reuses_exact_requests() {
     let query = query(&[], 0, 1);
     let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2652,22 +2652,13 @@ async fn walking_cache_reuses_exact_requests_but_keeps_departure_times_distinct(
     }));
     let from = &corridor.anchors()[0];
     let to = &corridor.anchors()[1];
-    let first = walking
-        .realize(from, to, query.departure_time)
-        .await
-        .unwrap();
-    let cached = walking
-        .realize(from, to, query.departure_time)
-        .await
-        .unwrap();
+    let first = walking.realize(from, to).await.unwrap();
+    let cached = walking.realize(from, to).await.unwrap();
     assert_eq!(first, cached);
-    walking
-        .realize(from, to, query.departure_time + Duration::seconds(1))
-        .await
-        .unwrap();
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(walking.requests(), 2);
-    assert_eq!(walking.cache_hits(), 1);
+    walking.realize(from, to).await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(walking.requests(), 1);
+    assert_eq!(walking.cache_hits(), 2);
 }
 
 #[tokio::test]

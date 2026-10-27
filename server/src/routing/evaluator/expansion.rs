@@ -1,18 +1,17 @@
 use super::*;
 use crate::routing::request_cache::RequestCache;
 use crate::{
-    domain::normalize_to_taipei,
     routing::corridor::CorridorAnchorKey,
     street::{
-        MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, RoutingTime,
-        RoutingTimeKind, StreetRouter, StreetRoutingError, StreetTravelMode,
+        MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
     },
 };
 
 pub(crate) struct WalkingCache {
     street: Arc<crate::routing::matrix::SharedMatrixResolver>,
     cache: RequestCache<
-        (CorridorAnchorKey, CorridorAnchorKey, OffsetDateTime),
+        (CorridorAnchorKey, CorridorAnchorKey),
         Result<MatrixCell, StreetRoutingError>,
     >,
 }
@@ -40,25 +39,17 @@ impl WalkingCache {
         &self,
         from: &super::super::corridor::CorridorAnchor,
         to: &super::super::corridor::CorridorAnchor,
-        departure_at: OffsetDateTime,
     ) -> Result<MatrixCell, StreetRoutingError> {
-        let key = (from.cache_key(), to.cache_key(), departure_at);
+        let key = (from.cache_key(), to.cache_key());
         self.cache
             .get_or_init(key, || async {
-                let local = normalize_to_taipei(departure_at);
                 self.street
                     .matrix(MatrixQuery {
                         orientation: MatrixOrientation::OneToMany,
                         travel_mode: StreetTravelMode::Walking,
                         sources: vec![from.coordinate],
                         targets: vec![to.coordinate],
-                        constraints: RoutingConstraints {
-                            time: Some(RoutingTime {
-                                kind: RoutingTimeKind::DepartAt,
-                                local_date_time: local.date().with_time(local.time()),
-                            }),
-                            max_distance: None,
-                        },
+                        constraints: RoutingConstraints::default(),
                     })
                     .await
                     .and_then(|matrix| {
@@ -310,7 +301,7 @@ impl ExpansionResolver<'_> {
             }
             let from = &corridor.anchors()[index];
             let to = &corridor.anchors()[index + 1];
-            let result = self.walking.realize(from, to, state.ready_at).await;
+            let result = self.walking.realize(from, to).await;
             self.inputs.check_deadline()?;
             let (cell, classified) = resolved_data(result);
             failures = classified;
@@ -588,7 +579,6 @@ mod tests {
         street::{Coordinate, MatrixResult, RouteQuery, StreetPath},
     };
     use std::sync::Mutex;
-    use time::macros::datetime;
 
     struct RecordingStreet {
         queries: Mutex<Vec<MatrixQuery>>,
@@ -609,7 +599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_preserves_direction_time_coordinates_and_boarding_identity() {
+    async fn cache_preserves_direction_coordinates_and_boarding_identity() {
         let street = Arc::new(RecordingStreet {
             queries: Mutex::new(Vec::new()),
             result: Ok(MatrixCell::Reachable {
@@ -626,36 +616,24 @@ mod tests {
             kind: JourneyAnchorKind::Destination,
             coordinate: Coordinate::try_new(25.001, 121.501).unwrap(),
         };
-        let departure = datetime!(2026-09-21 23:59 UTC);
-        walking.realize(&from, &to, departure).await.unwrap();
-        walking
-            .realize(
-                &from,
-                &to,
-                departure.to_offset(time::UtcOffset::from_hms(8, 0, 0).unwrap()),
-            )
-            .await
-            .unwrap();
-        walking.realize(&to, &from, departure).await.unwrap();
-        walking
-            .realize(&from, &to, departure + Duration::seconds(1))
-            .await
-            .unwrap();
+        walking.realize(&from, &to).await.unwrap();
+        walking.realize(&from, &to).await.unwrap();
+        walking.realize(&to, &from).await.unwrap();
         let boarding = CorridorAnchor {
             kind: JourneyAnchorKind::BoardingPoint {
                 id: crate::domain::ids::BoardingPointId::new("a"),
             },
             ..from.clone()
         };
-        walking.realize(&boarding, &to, departure).await.unwrap();
+        walking.realize(&boarding, &to).await.unwrap();
         let moved = CorridorAnchor {
             coordinate: Coordinate::try_new(25.00001, 121.5).unwrap(),
             ..from.clone()
         };
-        walking.realize(&moved, &to, departure).await.unwrap();
-        assert_eq!((walking.requests(), walking.cache_hits()), (5, 1));
+        walking.realize(&moved, &to).await.unwrap();
+        assert_eq!((walking.requests(), walking.cache_hits()), (4, 1));
         let other_request = WalkingCache::new(street.clone());
-        other_request.realize(&from, &to, departure).await.unwrap();
+        other_request.realize(&from, &to).await.unwrap();
         assert_eq!(
             (other_request.requests(), other_request.cache_hits()),
             (1, 0)
@@ -665,12 +643,11 @@ mod tests {
         assert_eq!(queries[0].targets, vec![to.coordinate]);
         assert_eq!(queries[1].sources, vec![to.coordinate]);
         assert_eq!(queries[1].targets, vec![from.coordinate]);
-        assert_eq!(
-            queries[0].constraints.time,
-            Some(RoutingTime {
-                kind: RoutingTimeKind::DepartAt,
-                local_date_time: time::macros::datetime!(2026-09-22 07:59)
-            })
+        assert!(
+            queries
+                .iter()
+                .all(|query| query.travel_mode == StreetTravelMode::Walking
+                    && query.constraints.time.is_none())
         );
     }
 
@@ -693,11 +670,7 @@ mod tests {
             for _ in 0..2 {
                 assert_eq!(
                     walking
-                        .realize(
-                            &corridor.anchors()[0],
-                            &corridor.anchors()[1],
-                            datetime!(2026-09-21 10:00 UTC)
-                        )
+                        .realize(&corridor.anchors()[0], &corridor.anchors()[1],)
                         .await,
                     result
                 );
