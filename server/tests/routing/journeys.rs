@@ -352,30 +352,6 @@ async fn zero_transfer_configuration_excludes_interchange_journeys() {
 }
 
 #[tokio::test]
-async fn phase2_safety_limit_is_returned_as_a_planning_error() {
-    let network = network();
-    let origin = near_stop(&network, "F-M1");
-    let destination = near_stop(&network, "F-M3-BLUE");
-    let limits = JourneyPlanningLimits {
-        planner: via_server::routing::PlannerLimits {
-            max_phase2_expansions: 1,
-            ..via_server::routing::PlannerLimits::default()
-        },
-        ..JourneyPlanningLimits::default()
-    };
-
-    let result = route_body_with_limits(
-        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
-        FixtureRealtime::empty(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
-        limits,
-    )
-    .await;
-
-    assert_eq!(result.unwrap_err(), PlanningError::Internal);
-}
-
-#[tokio::test]
 async fn phase1_safety_limit_is_not_reported_as_an_empty_result() {
     let network = network();
     let origin = near_stop(&network, "F-M1");
@@ -972,60 +948,53 @@ async fn walking_corridor_realization_survives_a_transit_timing_failure() {
 }
 
 #[tokio::test]
-async fn direct_first_budget_policy_returns_complete_walk_before_transit_can_finish() {
+async fn direct_walking_and_transit_both_complete() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
     let access = stop_coordinate(&transit, "F-M1");
     let egress = stop_coordinate(&transit, "F-M2-RED");
-    for budget in [1, 5, 2000] {
-        let street = FakeStreetRouter::builder()
-            .path(
-                StreetTravelMode::Walking,
-                origin,
-                access,
-                path(origin, access, 60),
-            )
-            .path(
-                StreetTravelMode::Walking,
-                egress,
-                destination,
-                path(egress, destination, 60),
-            )
-            .path(
-                StreetTravelMode::Walking,
-                origin,
-                destination,
-                path(origin, destination, 300),
-            )
-            .build();
-        let mut limits = JourneyPlanningLimits::default();
-        limits.planner.max_phase2_expansions = budget;
-        let body = route_body_with_limits(
-            street,
-            FixtureRealtime::empty(),
-            request(origin, destination, &["metro"]),
-            limits,
+    let street = FakeStreetRouter::builder()
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            access,
+            path(origin, access, 60),
         )
-        .await
+        .path(
+            StreetTravelMode::Walking,
+            egress,
+            destination,
+            path(egress, destination, 60),
+        )
+        .path(
+            StreetTravelMode::Walking,
+            origin,
+            destination,
+            path(origin, destination, 300),
+        )
+        .build();
+    let limits = JourneyPlanningLimits::default();
+    let body = route_body_with_limits(
+        street,
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro"]),
+        limits,
+    )
+    .await
+    .unwrap();
+    let options = body["journey_options"].as_array().unwrap();
+    let walking = options
+        .iter()
+        .find(|option| leg_modes(option) == vec!["walking"])
         .unwrap();
-        let options = body["journey_options"].as_array().unwrap();
-        let walking = options
+    assert_eq!(walking["duration_seconds"], 300);
+    assert_eq!(walking["legs"].as_array().unwrap().len(), 1);
+    assert!(
+        options
             .iter()
-            .find(|option| leg_modes(option) == vec!["walking"])
-            .unwrap();
-        assert_eq!(walking["duration_seconds"], 300);
-        assert_eq!(walking["legs"].as_array().unwrap().len(), 1);
-        if budget <= 5 {
-            assert_eq!(options.len(), 1);
-        } else {
-            assert!(
-                options
-                    .iter()
-                    .any(|option| leg_modes(option).contains(&"transit"))
-            );
-        }
-    }
+            .any(|option| leg_modes(option).contains(&"transit"))
+    );
 }
 
 #[tokio::test]

@@ -80,7 +80,6 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
     .with_limits(crate::routing::PlannerLimits {
         max_transfers,
         max_candidates: 16,
-        max_phase2_expansions: 2_000,
         max_departures_per_query: 3,
         max_journey_duration_seconds: 4 * 60 * 60,
         ..crate::routing::PlannerLimits::default()
@@ -1019,7 +1018,6 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
     .with_limits(crate::routing::PlannerLimits {
         max_transfers: 2,
         max_candidates: 16,
-        max_phase2_expansions: 2_000,
         max_departures_per_query: 3,
         max_journey_duration_seconds: 4 * 60 * 60,
         ..crate::routing::PlannerLimits::default()
@@ -1539,7 +1537,6 @@ fn phase2_respects_maximum_journey_duration_and_latest_arrival() {
         .with_limits(crate::routing::PlannerLimits {
             max_transfers: 0,
             max_candidates: 16,
-            max_phase2_expansions: 2_000,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 10 * 60,
             ..crate::routing::PlannerLimits::default()
@@ -1585,7 +1582,7 @@ fn phase2_caps_each_edge_frontier_after_pareto_pruning() {
 }
 
 #[test]
-fn phase2_expansion_limit_rejects_partial_candidates() {
+fn phase2_completes_prepared_candidates_without_a_work_budget() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -1600,7 +1597,6 @@ fn phase2_expansion_limit_rejects_partial_candidates() {
         0,
     ));
     query.deadline = crate::routing::PlanningDeadline::disabled();
-    query.limits.max_phase2_expansions = 1;
     let corridor = candidate_corridor(&network, &query);
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
@@ -1609,7 +1605,12 @@ fn phase2_expansion_limit_rejects_partial_candidates() {
         vec![trip("bus-trip", "bus", &["origin", "destination"], &[1, 5])],
     );
 
-    assert!(evaluate_with_stats(&network, &corridor, &snapshot, query).is_err());
+    assert!(
+        !evaluate_with_stats(&network, &corridor, &snapshot, query)
+            .unwrap()
+            .0
+            .is_empty()
+    );
 }
 
 #[test]
@@ -2018,7 +2019,12 @@ async fn walking_replacement_respects_latest_arrival() {
     assert!(result.journeys.is_empty());
     assert_eq!(calls, 1);
     assert_eq!(result.stats.walking_matrix_requests, 1);
-    assert_eq!(result.stats.corridor_states_evaluated, 3);
+    assert_eq!(
+        (result.stats.transit_operations_attempted
+            + result.stats.walking_operations_attempted
+            + result.stats.bike_operations_attempted),
+        3
+    );
 }
 
 #[tokio::test]
@@ -2234,7 +2240,11 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
     assert_eq!(kinds, vec!["early", "later", "walking", "bike_share"]);
     assert!(next[2].ready_at > next[0].ready_at);
     assert!(next[3].ready_at > next[0].ready_at);
-    assert_eq!(evaluator.stats.corridor_states_evaluated, 3);
+    assert_eq!(evaluator.stats.states_expanded, 1);
+    assert_eq!(evaluator.stats.transit_operations_attempted, 1);
+    assert_eq!(evaluator.stats.walking_operations_attempted, 1);
+    assert_eq!(evaluator.stats.bike_operations_attempted, 1);
+    assert_eq!(evaluator.stats.successors_generated, 4);
     assert_eq!(evaluator.stats.transit_departure_lookups, 1);
 }
 
@@ -2281,7 +2291,12 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         assert!(result.journeys.is_empty());
         assert_eq!(result.stats.bike_exact_candidates_requested, 1);
         assert_eq!(result.stats.walking_matrix_requests, 1);
-        assert_eq!(result.stats.corridor_states_evaluated, 4);
+        assert_eq!(
+            (result.stats.transit_operations_attempted
+                + result.stats.walking_operations_attempted
+                + result.stats.bike_operations_attempted),
+            4
+        );
     }
 }
 
@@ -2407,15 +2422,14 @@ fn state_pruning_preserves_rental_and_transit_capabilities_across_modes() {
 }
 
 #[tokio::test]
-async fn surface_realization_shares_the_transit_expansion_budget() {
+async fn surface_realization_completes_alongside_transit() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
         Vec::new(),
     );
-    let mut query = query(&[TransitMode::Bus], 0, 1);
+    let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    query.limits.max_phase2_expansions = 2;
     let corridor =
         EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
     let mut snapshot = TimingSnapshot::default();
@@ -2441,9 +2455,9 @@ async fn surface_realization_shares_the_transit_expansion_budget() {
         planners.bike_share.as_mut(),
     );
     let result = evaluator.evaluate(&[corridor]).await;
-    assert!(matches!(result, Err(RoutingError::Phase2EvaluationLimit)));
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(evaluator.stats.corridor_states_evaluated, 2);
+    assert!(!result.unwrap().journeys.is_empty());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(evaluator.stats.corridors_completed, 1);
 }
 
 #[test]
@@ -2548,7 +2562,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
 }
 
 #[tokio::test]
-async fn direct_corridor_cost_and_shared_budget_are_bounded() {
+async fn direct_corridor_has_observable_constant_work() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -2615,75 +2629,22 @@ async fn direct_corridor_cost_and_shared_budget_are_bounded() {
         }
         latencies.sort_unstable();
         eprintln!(
-            "direct={include_direct}: P2 median={}us p95={}us expansions={} walking_calls={}",
+            "direct={include_direct}: P2 median={}us p95={}us states_expanded={} walking_calls={}",
             latencies[50],
             latencies[95],
-            last_stats.corridor_states_evaluated,
+            last_stats.states_expanded,
             if include_direct { 2 } else { 1 }
         );
         measurements.push(last_stats);
     }
     assert_eq!(
-        measurements[1].corridor_states_evaluated,
-        measurements[0].corridor_states_evaluated + 1
+        measurements[1].states_expanded,
+        measurements[0].states_expanded + 1
     );
     assert_eq!(
         measurements[1].transit_departure_lookups,
         measurements[0].transit_departure_lookups
     );
-    assert!(measurements[1].corridor_states_evaluated < query.limits.max_phase2_expansions);
-    for (budget, succeeds) in [
-        (measurements[0].corridor_states_evaluated, false),
-        (measurements[1].corridor_states_evaluated, true),
-    ] {
-        query.limits.max_phase2_expansions = budget;
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut planners = TestDependencies {
-            walking: WalkingCache::new(Arc::new(CountingWalkingRouter {
-                calls: calls.clone(),
-                error: None,
-            })),
-            bike_share: None,
-        };
-        let corridors = vec![
-            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
-            EvaluationCorridor::direct_walking(query.origin, query.destination),
-        ];
-        let result = FixedCorridorEvaluator::new(
-            &network,
-            &retained,
-            &snapshot,
-            &query,
-            &mut planners.walking,
-            planners.bike_share.as_mut(),
-        )
-        .evaluate(&corridors)
-        .await;
-        let result = result.unwrap();
-        assert_eq!(result.stats.expansion_limit_reached, !succeeds);
-        assert_eq!(result.stats.corridor_states_evaluated, budget);
-        assert!(
-            result
-                .journeys
-                .iter()
-                .any(|journey| !journey.transit_pattern_sequence().is_empty())
-        );
-        assert_eq!(
-            result.stats.corridors_completed,
-            if succeeds { 2 } else { 1 }
-        );
-        assert_eq!(
-            result
-                .journeys
-                .iter()
-                .any(|journey| journey.anchors().len() == 2),
-            succeeds
-        );
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::SeqCst),
-            if succeeds { 2 } else { 1 }
-        );
-    }
 }
 
 #[tokio::test]
@@ -2716,14 +2677,13 @@ async fn walking_cache_reuses_exact_requests_but_keeps_departure_times_distinct(
 }
 
 #[tokio::test]
-async fn exhausted_transit_corridor_preserves_completed_direct_walking_and_bike_share() {
+async fn all_corridors_complete_with_direct_walking_and_bike_share() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
         Vec::new(),
     );
-    let mut query = query(&[TransitMode::Bus], 0, 1);
-    query.limits.max_phase2_expansions = 3;
+    let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
     let transit =
@@ -2752,15 +2712,15 @@ async fn exhausted_transit_corridor_preserves_completed_direct_walking_and_bike_
     .evaluate(&[direct, transit])
     .await
     .unwrap();
-    assert!(result.stats.expansion_limit_reached);
-    assert_eq!(result.stats.corridors_completed, 1);
-    assert_eq!(result.stats.corridor_states_evaluated, 3);
-    assert_eq!(result.journeys.len(), 2);
+    assert_eq!(result.stats.corridors_completed, 2);
+    assert_eq!(result.journeys.len(), 3);
     assert!(
         result
             .journeys
             .iter()
-            .all(|journey| journey.anchors().len() == 2 && journey.movements().len() == 1)
+            .filter(|journey| journey.anchors().len() == 2 && journey.movements().len() == 1)
+            .count()
+            == 2
     );
     assert!(result.journeys.iter().any(|journey| matches!(
         journey.movements()[0].kind,
@@ -2778,8 +2738,9 @@ struct DirectBikePlanner {
 
 #[async_trait::async_trait]
 impl TestBikeProvider for DirectBikePlanner {
-    fn has_candidate(&self, _: &BikeMovementRequest<'_>) -> bool {
-        true
+    fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool {
+        matches!(request.from.kind, JourneyAnchorKind::Origin)
+            && matches!(request.to.kind, JourneyAnchorKind::Destination)
     }
     async fn realize(
         &mut self,
@@ -2850,14 +2811,12 @@ async fn deadline_remains_a_hard_failure_after_a_completed_corridor() {
         Err(RoutingError::DeadlineExceeded)
     ));
     assert_eq!(evaluator.stats.corridors_completed, 1);
-    assert!(!evaluator.stats.expansion_limit_reached);
 }
 
 #[tokio::test]
-async fn unfinished_direct_corridor_reports_exhaustion_without_returning_temporary_states() {
+async fn direct_corridor_returns_both_resolved_surface_successors() {
     let network = network(Vec::new(), &[], Vec::new());
-    let mut query = query(&[], 0, 1);
-    query.limits.max_phase2_expansions = 1;
+    let query = query(&[], 0, 1);
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
@@ -2878,15 +2837,14 @@ async fn unfinished_direct_corridor_reports_exhaustion_without_returning_tempora
         &mut planners.walking,
         planners.bike_share.as_mut(),
     );
-    assert!(matches!(
-        evaluator.evaluate(&[corridor]).await,
-        Err(RoutingError::Phase2EvaluationLimit)
-    ));
-    assert!(evaluator.stats.expansion_limit_reached);
-    assert_eq!(evaluator.stats.corridor_states_evaluated, 1);
-    assert_eq!(evaluator.stats.corridors_completed, 0);
-    assert_eq!(evaluator.stats.final_candidates, 0);
-    assert_eq!(evaluator.stats.walking_matrix_requests, 1);
+    let result = evaluator.evaluate(&[corridor]).await.unwrap();
+    assert_eq!(result.journeys.len(), 2);
+    assert_eq!(result.stats.states_expanded, 1);
+    assert_eq!(result.stats.successors_generated, 2);
+    assert_eq!(result.stats.walking_operations_attempted, 1);
+    assert_eq!(result.stats.bike_operations_attempted, 1);
+    assert_eq!(result.stats.corridors_completed, 1);
+    assert_eq!(result.stats.walking_matrix_requests, 1);
 }
 
 #[tokio::test]
@@ -2913,7 +2871,12 @@ async fn unreachable_walking_matrix_has_no_successor_or_provider_failure() {
     assert!(result.journeys.is_empty());
     assert!(!result.failures.internal && !result.failures.transient);
     assert_eq!(result.stats.walking_matrix_requests, 1);
-    assert_eq!(result.stats.corridor_states_evaluated, 1);
+    assert_eq!(
+        (result.stats.transit_operations_attempted
+            + result.stats.walking_operations_attempted
+            + result.stats.bike_operations_attempted),
+        1
+    );
 }
 
 #[tokio::test]
@@ -2964,13 +2927,18 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
             .unwrap();
             assert_eq!(result.journeys.len(), usize::from(actual_seconds <= 30));
             assert_eq!(result.stats.walking_matrix_requests, 1);
-            assert_eq!(result.stats.corridor_states_evaluated, 1);
+            assert_eq!(
+                (result.stats.transit_operations_attempted
+                    + result.stats.walking_operations_attempted
+                    + result.stats.bike_operations_attempted),
+                1
+            );
         }
     }
 }
 
 #[tokio::test]
-async fn absent_bike_candidate_does_not_charge_or_realize() {
+async fn absent_bike_candidate_does_not_attempt_or_realize() {
     let network = network(Vec::new(), &[], Vec::new());
     let retained = RetainedCorridorSet::from_retained_for_test(&network, Vec::new());
     let snapshot = TimingSnapshot::default();
@@ -3003,6 +2971,212 @@ async fn absent_bike_candidate_does_not_charge_or_realize() {
         state.movements[0].kind,
         JourneyMovementKind::BikeShare { .. }
     )));
-    assert_eq!(evaluator.stats.corridor_states_evaluated, 1);
+    assert_eq!(
+        (evaluator.stats.transit_operations_attempted
+            + evaluator.stats.walking_operations_attempted
+            + evaluator.stats.bike_operations_attempted),
+        1
+    );
     assert_eq!(bike.realization_stats().exact_requests, 0);
+}
+
+#[tokio::test]
+#[ignore = "deterministic Phase A comparison"]
+async fn phase_a_deterministic_benchmark() {
+    let network = network(Vec::new(), &[], Vec::new());
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    for count in [32, 2400] {
+        let query = query(&[], 0, 1);
+        let corridors = (0..count)
+            .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
+            .collect::<Vec<_>>();
+        let mut samples = Vec::new();
+        let mut expected = None;
+        for iteration in 0..25 {
+            let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                error: None,
+            }));
+            let result = FixedCorridorEvaluator::new(
+                &network,
+                &retained,
+                &snapshot,
+                &query,
+                &mut walking,
+                None,
+            )
+            .evaluate(&corridors)
+            .await
+            .unwrap();
+            let fingerprints = result
+                .journeys
+                .iter()
+                .map(|j| j.identity().canonical_signature())
+                .collect::<Vec<_>>();
+            if let Some(expected) = &expected {
+                assert_eq!(&fingerprints, expected);
+            } else {
+                expected = Some(fingerprints);
+            }
+            if iteration >= 5 {
+                samples.push(result.stats.phase2_latency_us);
+            }
+            if iteration == 24 {
+                eprintln!(
+                    "phase_a count={count} stats={:?} fingerprints={expected:?}",
+                    result.stats
+                );
+            }
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "phase_a count={count} median_us={} p95_us={}",
+            samples[10], samples[19]
+        );
+    }
+}
+
+#[test]
+fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
+    let mut query = query(&[], 0, 1);
+    query.limits.max_journey_duration_seconds = 60;
+    let state = EvaluationState::initial(&query);
+    for (seconds, available_at, succeeds) in [
+        (60, None, true),
+        (61, None, false),
+        (1, Some(query.departure_time - Duration::seconds(1)), false),
+        (20, Some(query.departure_time + Duration::seconds(40)), true),
+    ] {
+        let next = expansion::walking_next_state(
+            &query,
+            &state,
+            expansion::ResolvedWalking {
+                kind: WalkingMovementKind::Access,
+                duration_seconds: seconds,
+                distance_metres: 123,
+                access_available_at: available_at,
+            },
+            0,
+        );
+        assert_eq!(next.is_some(), succeeds);
+        if let Some(next) = next {
+            assert_eq!(
+                next.ready_at,
+                available_at
+                    .unwrap_or(query.departure_time + Duration::seconds(i64::from(seconds)))
+            );
+            assert!(
+                matches!(next.movements[0].kind, JourneyMovementKind::Walking { duration_seconds, distance_metres: 123, .. } if duration_seconds == seconds)
+            );
+        }
+    }
+    assert!(state.movements.is_empty());
+    assert_eq!(state.ready_at, query.departure_time);
+}
+
+#[test]
+fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
+    let network = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 1);
+    let retained = candidate_corridor(&network, &query);
+    let leg = retained.retained()[0].transit_legs().next().unwrap();
+    let state = EvaluationState::initial(&query);
+    let ride = trip("ride", "bus", &["origin", "destination"], &[1, 5]);
+    let next =
+        expansion::transit_next_state(&network, &query, &state, &ride, leg, 1, state.ready_at)
+            .unwrap();
+    assert_eq!(next.ready_at, query.departure_time + Duration::minutes(5));
+    assert!(next.last_was_transit);
+    assert_eq!(
+        expansion::transit_ready_at(&next, 120),
+        next.ready_at + Duration::seconds(120)
+    );
+    assert!(
+        expansion::transit_next_state(&network, &query, &next, &ride, leg, 1, next.ready_at)
+            .is_none()
+    );
+    let invalid = trip("invalid", "bus", &["origin", "destination"], &[5, 1]);
+    assert!(
+        expansion::transit_next_state(&network, &query, &state, &invalid, leg, 1, state.ready_at)
+            .is_none()
+    );
+    let mut limited = query.clone();
+    limited.limits.max_journey_duration_seconds = 299;
+    assert!(
+        expansion::transit_next_state(&network, &limited, &state, &ride, leg, 1, state.ready_at)
+            .is_none()
+    );
+    assert!(state.movements.is_empty());
+}
+
+#[test]
+fn pure_bike_transitions_preserve_order_and_continue_one_rental() {
+    let query = query(&[], 0, 1);
+    let state = EvaluationState::initial(&query);
+    let next = expansion::bike_next_states(
+        &query,
+        &state,
+        vec![bike_movement(0, 1, 60), bike_movement(0, 1, 120)],
+        0,
+    );
+    assert_eq!(
+        next.iter()
+            .map(|s| (s.ready_at - query.departure_time).whole_seconds())
+            .collect::<Vec<_>>(),
+        vec![60, 120]
+    );
+    let continued =
+        expansion::bike_next_states(&query, &next[0], vec![bike_movement(0, 2, 180)], 1);
+    assert_eq!(continued.len(), 1);
+    assert_eq!(continued[0].movements.len(), 1);
+    assert_eq!(continued[0].movements[0].from_anchor, 0);
+    assert_eq!(continued[0].movements[0].to_anchor, 2);
+    assert_eq!(
+        continued[0].ready_at,
+        query.departure_time + Duration::seconds(180)
+    );
+    assert!(expansion::bike_next_states(&query, &state, Vec::new(), 0).is_empty());
+    let mut limited = query.clone();
+    limited.latest_arrival = Some(query.departure_time + Duration::seconds(59));
+    assert!(
+        expansion::bike_next_states(&limited, &state, vec![bike_movement(0, 1, 60)], 0).is_empty()
+    );
+    assert!(state.movements.is_empty());
+}
+
+#[tokio::test]
+async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
+    let network = network(Vec::new(), &[], Vec::new());
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    let mut query = query(&[], 0, 1);
+    query.deadline = crate::routing::PlanningDeadline::disabled();
+    let mut walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
+        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        error: None,
+    }));
+    let corridors = (0..2400)
+        .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
+        .collect::<Vec<_>>();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &mut walking, None)
+            .evaluate(&corridors),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result.stats.corridors_attempted, 2400);
+    assert_eq!(result.stats.corridors_completed, 2400);
+    assert_eq!(result.stats.states_expanded, 2400);
+    assert_eq!(result.stats.walking_operations_attempted, 2400);
+    assert_eq!(result.stats.successors_generated, 2400);
+    assert_eq!(result.stats.walking_matrix_requests, 1);
+    assert_eq!(result.stats.walking_cache_hits, 2399);
+    assert_eq!(result.journeys.len(), 1);
 }

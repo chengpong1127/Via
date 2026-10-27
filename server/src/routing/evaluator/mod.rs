@@ -34,14 +34,18 @@ use std::{sync::Arc, time::Instant};
 use time::{Duration, OffsetDateTime};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Phase2EvaluationStats {
-    pub corridor_states_evaluated: usize,
+    pub states_expanded: usize,
+    pub transit_operations_attempted: usize,
+    pub walking_operations_attempted: usize,
+    pub bike_operations_attempted: usize,
+    pub successors_generated: usize,
+    pub corridors_attempted: usize,
     pub transit_departure_lookups: usize,
     pub bike_exact_candidates_requested: usize,
     pub bike_exact_cache_hits: usize,
     pub bike_matrix_requests: usize,
     pub walking_matrix_requests: usize,
     pub walking_cache_hits: usize,
-    pub expansion_limit_reached: bool,
     pub corridors_completed: usize,
     pub final_candidates: usize,
     pub phase2_latency_us: u64,
@@ -98,25 +102,9 @@ impl<'a> FixedCorridorEvaluator<'a> {
         let started = Instant::now();
         let mut candidates = Vec::new();
         for corridor in corridors {
-            match self.evaluate_corridor(corridor).await {
-                Ok(completed) => {
-                    self.stats.corridors_completed += 1;
-                    candidates.extend(completed);
-                }
-                Err(RoutingError::Phase2EvaluationLimit) => {
-                    self.stats.expansion_limit_reached = true;
-                    ::metrics::counter!("via_planner_phase2_budget_exhaustions_total").increment(1);
-                    tracing::warn!(
-                        target: "via_server::routing",
-                        states_evaluated = self.stats.corridor_states_evaluated,
-                        corridors_completed = self.stats.corridors_completed,
-                        completed_candidates = candidates.len(),
-                        "Phase 2 budget exhausted; retaining only completed corridors"
-                    );
-                    break;
-                }
-                Err(error) => return Err(error),
-            }
+            self.stats.corridors_attempted += 1;
+            candidates.extend(self.evaluate_corridor(corridor).await?);
+            self.stats.corridors_completed += 1;
         }
 
         self.check_deadline()?;
@@ -137,22 +125,23 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.stats.bike_matrix_requests = bike_work.matrix_requests;
         tracing::debug!(
             target: "via_server::routing",
-            states_evaluated = self.stats.corridor_states_evaluated,
+            states_expanded = self.stats.states_expanded,
+            transit_operations_attempted = self.stats.transit_operations_attempted,
+            walking_operations_attempted = self.stats.walking_operations_attempted,
+            bike_operations_attempted = self.stats.bike_operations_attempted,
+            successors_generated = self.stats.successors_generated,
+            corridors_attempted = self.stats.corridors_attempted,
             departure_lookups = self.stats.transit_departure_lookups,
             bike_exact_requests = self.stats.bike_exact_candidates_requested,
             bike_cache_hits = self.stats.bike_exact_cache_hits,
             bike_matrix_requests = self.stats.bike_matrix_requests,
             final_candidates = self.stats.final_candidates,
-            expansion_limit_reached = self.stats.expansion_limit_reached,
             corridors_completed = self.stats.corridors_completed,
             walking_matrix_requests = self.stats.walking_matrix_requests,
             walking_cache_hits = self.stats.walking_cache_hits,
             latency_us = self.stats.phase2_latency_us,
             "Phase 2 corridor evaluation"
         );
-        if self.stats.expansion_limit_reached && candidates.is_empty() {
-            return Err(RoutingError::Phase2EvaluationLimit);
-        }
         Ok(EvaluationResult {
             journeys: candidates.into_iter().map(|c| c.journey).collect(),
             stats: self.stats,
@@ -167,6 +156,36 @@ impl<'a> FixedCorridorEvaluator<'a> {
             Ok(())
         }
     }
+    async fn expand_state(
+        &mut self,
+        state: &EvaluationState,
+        corridor: &EvaluationCorridor,
+        edge: &CorridorEdge,
+        index: usize,
+    ) -> Result<Vec<EvaluationState>, RoutingError> {
+        let outcome = expansion::ExpansionResolver {
+            inputs: expansion::ExpansionInputs {
+                network: self.network,
+                corridor: self.corridor,
+                snapshot: self.snapshot,
+                query: self.query,
+            },
+            walking: self.walking,
+            bike_share: self.bike_share.as_deref_mut(),
+        }
+        .expand_state_sequential(state, corridor, edge, index)
+        .await;
+        self.stats.states_expanded += outcome.stats.states_expanded;
+        self.stats.transit_operations_attempted += outcome.stats.transit_operations_attempted;
+        self.stats.transit_departure_lookups += outcome.stats.transit_departure_lookups;
+        self.stats.walking_operations_attempted += outcome.stats.walking_operations_attempted;
+        self.stats.bike_operations_attempted += outcome.stats.bike_operations_attempted;
+        self.stats.successors_generated += outcome.stats.successors_generated;
+        self.failures.transient |= outcome.failures.transient;
+        self.failures.internal |= outcome.failures.internal;
+        outcome.successors
+    }
+
     async fn evaluate_corridor(
         &mut self,
         corridor: &EvaluationCorridor,

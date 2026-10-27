@@ -69,72 +69,64 @@ impl WalkingCache {
     }
 }
 
-impl FixedCorridorEvaluator<'_> {
-    pub(super) async fn expand_state(
-        &mut self,
-        state: &EvaluationState,
-        corridor: &EvaluationCorridor,
-        edge: &CorridorEdge,
-        index: usize,
-    ) -> Result<Vec<EvaluationState>, RoutingError> {
-        self.check_deadline()?;
-        let mut next = self.expand_transit(state, edge, index)?;
-        self.check_deadline()?;
-        next.extend(self.expand_walking(state, corridor, edge, index).await?);
-        self.check_deadline()?;
-        next.extend(self.expand_bike_share(state, corridor, index).await?);
-        Ok(next)
-    }
-    fn charge(&mut self) -> Result<(), RoutingError> {
-        self.check_deadline()?;
-        if self.stats.corridor_states_evaluated >= self.query.limits.max_phase2_expansions {
-            return Err(RoutingError::Phase2EvaluationLimit);
-        }
-        self.stats.corridor_states_evaluated += 1;
-        Ok(())
-    }
+pub(super) struct ExpansionInputs<'a> {
+    pub network: &'a TransitRuntime,
+    pub corridor: &'a RetainedCorridorSet,
+    pub snapshot: &'a TimingSnapshot,
+    pub query: &'a PlanningQuery,
+}
 
-    fn finish_realization<T>(
-        &mut self,
-        result: Result<T, crate::street::StreetRoutingError>,
-    ) -> Result<Option<T>, RoutingError> {
-        self.check_deadline()?;
-        match result {
-            Ok(items) => Ok(Some(items)),
-            Err(error) => {
-                match error.failure_class() {
-                    ProviderFailureClass::Transient => self.failures.transient = true,
-                    ProviderFailureClass::Internal => self.failures.internal = true,
-                    ProviderFailureClass::Unreachable => {}
-                }
-                Ok(None)
-            }
+pub(super) struct ExpansionResolver<'a> {
+    pub inputs: ExpansionInputs<'a>,
+    pub walking: &'a mut WalkingCache,
+    pub bike_share: Option<&'a mut BikeShareSession>,
+}
+
+#[derive(Default)]
+pub(super) struct ExpansionStats {
+    pub states_expanded: usize,
+    pub transit_operations_attempted: usize,
+    pub transit_departure_lookups: usize,
+    pub walking_operations_attempted: usize,
+    pub bike_operations_attempted: usize,
+    pub successors_generated: usize,
+}
+
+pub(super) struct ExpansionOutcome {
+    pub successors: Result<Vec<EvaluationState>, RoutingError>,
+    pub stats: ExpansionStats,
+    pub failures: EvaluationFailures,
+}
+
+impl ExpansionInputs<'_> {
+    fn check_deadline(&self) -> Result<(), RoutingError> {
+        if self.query.deadline.is_elapsed() {
+            Err(RoutingError::DeadlineExceeded)
+        } else {
+            Ok(())
         }
     }
 
-    fn expand_transit(
-        &mut self,
+    fn resolve_transit(
+        &self,
         state: &EvaluationState,
         edge: &CorridorEdge,
         anchor: usize,
+        stats: &mut ExpansionStats,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let PlannedMovement::Transit(leg) = &edge.planned_movement else {
             return Ok(Vec::new());
         };
         let mut next = Vec::new();
         for equivalent_leg in self.corridor.equivalent_legs_for(self.network, leg) {
-            self.charge()?;
+            self.check_deadline()?;
+            stats.transit_operations_attempted += 1;
             valid_pattern_leg(self.network, self.corridor, leg, &equivalent_leg)?;
-            let ready_at = if state.last_was_transit {
-                state.ready_at
-                    + Duration::seconds(i64::from(self.network.same_stop_transfer_seconds()))
-            } else {
-                state.ready_at
-            };
+            let ready_at = transit_ready_at(state, self.network.same_stop_transfer_seconds());
             if !within_query_bounds(self.query, ready_at) {
                 continue;
             }
-            self.stats.transit_departure_lookups += 1;
+            stats.transit_departure_lookups += 1;
             let departures = self.snapshot.departures(
                 &equivalent_leg.pattern_id,
                 equivalent_leg.board_index,
@@ -143,38 +135,86 @@ impl FixedCorridorEvaluator<'_> {
             );
             for trip in departures {
                 self.check_deadline()?;
-                let Some(arrival) =
-                    retained_alight_time(self.network, trip, &equivalent_leg, ready_at)
-                else {
-                    continue;
-                };
-                if !within_query_bounds(self.query, arrival) {
-                    continue;
+                if let Some(successor) = transit_next_state(
+                    self.network,
+                    self.query,
+                    state,
+                    trip,
+                    &equivalent_leg,
+                    anchor,
+                    ready_at,
+                ) {
+                    stats.successors_generated += 1;
+                    next.push(successor);
                 }
-                next.push(state.after_movement(JourneyMovement {
-                    from_anchor: anchor,
-                    to_anchor: anchor + 1,
-                    departure_at: trip.stop_times[equivalent_leg.board_index].departure_at,
-                    arrival_at: arrival,
-                    kind: JourneyMovementKind::Transit {
-                        trip: Arc::new(trip.clone()),
-                        board_index: equivalent_leg.board_index,
-                        alight_index: equivalent_leg.alight_index,
-                    },
-                }));
             }
         }
         Ok(next)
     }
+}
 
-    async fn expand_walking(
+impl ExpansionResolver<'_> {
+    pub async fn expand_state_sequential(
         &mut self,
         state: &EvaluationState,
         corridor: &EvaluationCorridor,
         edge: &CorridorEdge,
         index: usize,
+    ) -> ExpansionOutcome {
+        let mut stats = ExpansionStats::default();
+        let mut failures = EvaluationFailures::default();
+        let successors = async {
+            self.inputs.check_deadline()?;
+            stats.states_expanded += 1;
+            let mut next = self
+                .inputs
+                .resolve_transit(state, edge, index, &mut stats)?;
+            self.inputs.check_deadline()?;
+            stats.walking_operations_attempted += 1;
+            let walking = self
+                .resolve_walking(state, corridor, edge, index, &mut failures)
+                .await?;
+            stats.successors_generated += walking.len();
+            next.extend(walking);
+            self.inputs.check_deadline()?;
+            let (start_anchor, _) = state.bike_departure(index);
+            let request = super::super::bike::BikeMovementRequest {
+                from: &corridor.anchors()[start_anchor],
+                to: &corridor.anchors()[index + 1],
+                from_anchor: start_anchor,
+                to_anchor: index + 1,
+            };
+            if let Some(session) = self.bike_share.as_deref_mut()
+                && let Some(candidate) = session.candidate(&request)
+            {
+                self.inputs.check_deadline()?;
+                stats.bike_operations_attempted += 1;
+                let result = session.realize(&request, &candidate).await;
+                self.inputs.check_deadline()?;
+                let movements = resolved_data(result, &mut failures).unwrap_or_default();
+                let bike = bike_next_states(self.inputs.query, state, movements, index);
+                stats.successors_generated += bike.len();
+                next.extend(bike);
+            }
+            Ok(next)
+        }
+        .await;
+        ExpansionOutcome {
+            successors,
+            stats,
+            failures,
+        }
+    }
+
+    async fn resolve_walking(
+        &mut self,
+        state: &EvaluationState,
+        corridor: &EvaluationCorridor,
+        edge: &CorridorEdge,
+        index: usize,
+        failures: &mut EvaluationFailures,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let mut next = Vec::new();
+        self.inputs.check_deadline()?;
         if let PlannedMovement::RetainedWalking {
             kind,
             duration_seconds,
@@ -182,36 +222,28 @@ impl FixedCorridorEvaluator<'_> {
             access_available_at,
         } = &edge.planned_movement
         {
-            self.charge()?;
-            let arrival = access_available_at
-                .unwrap_or(state.ready_at + Duration::seconds(i64::from(*duration_seconds)));
-            if within_query_bounds(self.query, arrival) {
-                next.push(state.after_movement(JourneyMovement {
-                    from_anchor: index,
-                    to_anchor: index + 1,
-                    departure_at: state.ready_at,
-                    arrival_at: arrival,
-                    kind: JourneyMovementKind::Walking {
-                        kind: *kind,
-                        duration_seconds: *duration_seconds,
-                        distance_metres: *distance_metres,
-                    },
-                }));
-            }
-            return Ok(next);
+            return Ok(walking_next_state(
+                self.inputs.query,
+                state,
+                ResolvedWalking {
+                    kind: *kind,
+                    duration_seconds: *duration_seconds,
+                    distance_metres: *distance_metres,
+                    access_available_at: *access_available_at,
+                },
+                index,
+            )
+            .into_iter()
+            .collect());
         }
         let from = &corridor.anchors()[index];
         let to = &corridor.anchors()[index + 1];
-        self.charge()?;
         let result = self.walking.realize(from, to, state.ready_at).await;
-        let (duration, distance) = match self.finish_realization(result)? {
-            Some(MatrixCell::Reachable { duration, distance }) => (duration, distance),
-            Some(MatrixCell::Unreachable) | None => return Ok(next),
+        self.inputs.check_deadline()?;
+        let Some(MatrixCell::Reachable { duration, distance }) = resolved_data(result, failures)
+        else {
+            return Ok(Vec::new());
         };
-        let arrival = state.ready_at + Duration::seconds(i64::from(duration.0));
-        if !within_query_bounds(self.query, arrival) {
-            return Ok(next);
-        }
         let kind = match (&from.kind, &to.kind) {
             (JourneyAnchorKind::Origin, JourneyAnchorKind::Destination) => {
                 WalkingMovementKind::Direct
@@ -220,63 +252,127 @@ impl FixedCorridorEvaluator<'_> {
             (_, JourneyAnchorKind::Destination) => WalkingMovementKind::Egress,
             _ => WalkingMovementKind::Transfer,
         };
-        next.push(state.after_movement(JourneyMovement {
+        Ok(walking_next_state(
+            self.inputs.query,
+            state,
+            ResolvedWalking {
+                kind,
+                duration_seconds: duration.0,
+                distance_metres: distance.0,
+                access_available_at: None,
+            },
+            index,
+        )
+        .into_iter()
+        .collect())
+    }
+}
+
+fn resolved_data<T>(
+    result: Result<T, StreetRoutingError>,
+    failures: &mut EvaluationFailures,
+) -> Option<T> {
+    match result {
+        Ok(items) => Some(items),
+        Err(error) => {
+            match error.failure_class() {
+                ProviderFailureClass::Transient => failures.transient = true,
+                ProviderFailureClass::Internal => failures.internal = true,
+                ProviderFailureClass::Unreachable => {}
+            }
+            None
+        }
+    }
+}
+
+pub(super) fn transit_ready_at(state: &EvaluationState, transfer_seconds: u32) -> OffsetDateTime {
+    if state.last_was_transit {
+        state.ready_at + Duration::seconds(i64::from(transfer_seconds))
+    } else {
+        state.ready_at
+    }
+}
+
+pub(super) fn transit_next_state(
+    network: &TransitRuntime,
+    query: &PlanningQuery,
+    state: &EvaluationState,
+    trip: &EffectiveTrip,
+    leg: &StaticTransitLeg,
+    anchor: usize,
+    ready_at: OffsetDateTime,
+) -> Option<EvaluationState> {
+    let arrival = retained_alight_time(network, trip, leg, ready_at)?;
+    within_query_bounds(query, arrival).then(|| {
+        state.after_movement(JourneyMovement {
+            from_anchor: anchor,
+            to_anchor: anchor + 1,
+            departure_at: trip.stop_times[leg.board_index].departure_at,
+            arrival_at: arrival,
+            kind: JourneyMovementKind::Transit {
+                trip: Arc::new(trip.clone()),
+                board_index: leg.board_index,
+                alight_index: leg.alight_index,
+            },
+        })
+    })
+}
+
+pub(super) struct ResolvedWalking {
+    pub kind: WalkingMovementKind,
+    pub duration_seconds: u32,
+    pub distance_metres: u32,
+    pub access_available_at: Option<OffsetDateTime>,
+}
+
+pub(super) fn walking_next_state(
+    query: &PlanningQuery,
+    state: &EvaluationState,
+    walking: ResolvedWalking,
+    index: usize,
+) -> Option<EvaluationState> {
+    let arrival = walking
+        .access_available_at
+        .unwrap_or(state.ready_at + Duration::seconds(i64::from(walking.duration_seconds)));
+    within_query_bounds(query, arrival).then(|| {
+        state.after_movement(JourneyMovement {
             from_anchor: index,
             to_anchor: index + 1,
             departure_at: state.ready_at,
             arrival_at: arrival,
             kind: JourneyMovementKind::Walking {
-                kind,
-                duration_seconds: duration.0,
-                distance_metres: distance.0,
+                kind: walking.kind,
+                duration_seconds: walking.duration_seconds,
+                distance_metres: walking.distance_metres,
             },
-        }));
-        Ok(next)
-    }
+        })
+    })
+}
 
-    async fn expand_bike_share(
-        &mut self,
-        state: &EvaluationState,
-        corridor: &EvaluationCorridor,
-        index: usize,
-    ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let mut next = Vec::new();
-        let (start_anchor, started_at) = state.bike_departure(index);
-        let request = super::super::bike::BikeMovementRequest {
-            from: &corridor.anchors()[start_anchor],
-            to: &corridor.anchors()[index + 1],
-            from_anchor: start_anchor,
-            to_anchor: index + 1,
-        };
-        let Some(planner) = self.bike_share.as_deref_mut() else {
-            return Ok(next);
-        };
-        let Some(candidate) = planner.candidate(&request) else {
-            return Ok(next);
-        };
-        self.charge()?;
-        let result = match self.bike_share.as_mut() {
-            Some(session) => session.realize(&request, &candidate).await,
-            None => return Ok(next),
-        };
-        for movement in self.finish_realization(result)?.unwrap_or_default() {
+pub(super) fn bike_next_states(
+    query: &PlanningQuery,
+    state: &EvaluationState,
+    movements: Vec<BikeShareMovement>,
+    index: usize,
+) -> Vec<EvaluationState> {
+    let (start_anchor, started_at) = state.bike_departure(index);
+    movements
+        .into_iter()
+        .filter_map(|movement| {
             let arrival = started_at + Duration::seconds(i64::from(movement.total_seconds));
-            if !within_query_bounds(self.query, arrival) {
-                continue;
+            if !within_query_bounds(query, arrival) {
+                return None;
             }
-            if let Some(successor) = state.after_bike_share(
+            state.after_bike_share(
                 movement,
                 start_anchor,
                 index + 1,
                 started_at,
                 arrival,
-                self.query.departure_time,
-            ) {
-                next.push(successor);
-            }
-        }
-        Ok(next)
-    }
+                query.departure_time,
+            )
+        })
+        .collect()
 }
 
 fn valid_pattern_leg(

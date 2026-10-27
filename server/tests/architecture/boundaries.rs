@@ -112,7 +112,12 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     assert!(!evaluator.contains("SurfaceKind"));
     assert!(evaluator.contains(".matrix(MatrixQuery"));
     let expansion = source("src/routing/evaluator/expansion.rs");
-    for method in ["expand_transit", "expand_walking", "expand_bike_share"] {
+    for method in [
+        "transit_next_state",
+        "walking_next_state",
+        "bike_next_states",
+        "expand_state_sequential",
+    ] {
         assert!(expansion.contains(&format!("fn {method}(")));
     }
     for removed in ["transit", "walking", "bike"] {

@@ -41,19 +41,19 @@ The direct corridor competes with successful transit in
 `viable_transit_corridor_competes_with_direct_bike_share`.
 `reconstruction_failure_preserves_direct_walking_without_reloading_snapshots`
 keeps a Matrix-realized slower walk when transit geometry fails.
-`direct_corridor_cost_and_shared_budget_are_bounded` compares transit-only and
-combined P2 work over 100 iterations and checks the exact shared budget boundary.
+`direct_corridor_has_observable_constant_work` compares transit-only and
+combined P2 work over 100 iterations and checks state and Matrix work counts.
 Run its release measurements with:
 
 ```bash
-cargo test --manifest-path server/Cargo.toml --release --lib direct_corridor_cost_and_shared_budget_are_bounded -- --nocapture
+cargo test --manifest-path server/Cargo.toml --release --lib direct_corridor_has_observable_constant_work -- --nocapture
 ```
 
 `ranking_considers_three_corridors_before_applying_a_one_result_limit` checks
 that two earlier fallback-timed MRT routes cannot exclude a later preferred
 walk, and that ranking rejection of both MRT routes still leaves the walk.
-`exhausted_transit_corridor_preserves_completed_direct_walking_and_bike_share`
-checks surface fairness, the hard budget, and omission of incomplete transit.
+`all_corridors_complete_with_direct_walking_and_bike_share` checks that surface
+results survive while all prepared corridors complete.
 `deadline_remains_a_hard_failure_after_a_completed_corridor` uses paused time
 to verify that partial-result handling never suppresses a deadline.
 
@@ -146,10 +146,9 @@ catches a later departure, transfer followed by egress through both anchors,
 unreachable geometry without synthetic success, actual direct-walk metrics and
 maximum duration, and recomputation of rental waits after exit-walk changes.
 
-The stricter street-path retention can increase reconstruction work and cause
-small budgets to finish fewer transit corridors. Incomplete corridors contribute
-nothing; completed direct and transit corridors survive later exhaustion. All
-frontier, expansion, deadline, station, and batching limits remain unchanged.
+The stricter street-path retention can increase reconstruction work. Phase A
+now evaluates all prepared corridors without a P2 work budget; frontier, deadline,
+station, and batching limits remain unchanged.
 
 ## Explicit expansion and actual-time feasibility
 
@@ -167,10 +166,10 @@ after counts are asserted by the updated tests:
 | Fixture work | Before | After |
 | --- | ---: | ---: |
 | Walking latest-arrival rejection: P2 Walking Matrix requests | 0 | 1 |
-| Walking latest-arrival rejection: charged expansions | 2 | 3 |
+| Walking latest-arrival rejection: movement operations attempted | 2 | 3 |
 | BikeShare hard-time rejection: synthetic exact realizations | 0 | 1 |
 | BikeShare hard-time rejection: P2 Walking Matrix requests | 1 | 1 |
-| BikeShare hard-time rejection: charged expansions | 3 | 4 |
+| BikeShare hard-time rejection: movement operations attempted | 3 | 4 |
 
 `walking_replacement_respects_latest_arrival` rejects the actual 300-second walk
 against a 299-second arrival window after one Matrix request.
@@ -178,8 +177,8 @@ against a 299-second arrival window after one Matrix request.
 120-second synthetic BikeShare movement against a 30-second maximum duration or
 latest-arrival window. Its Walking alternative is also realized before rejection.
 The BikeShare injection makes no physical bicycle Matrix calls. No usable station
-pair still causes no BikeShare realization or charge. Budgets and limits are
-unchanged; requests with tight time limits can therefore exhaust them earlier.
+pair still causes no BikeShare realization. Phase A keeps these actual-time
+checks and operation counts while removing the P2 expansion budget.
 
 `walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_query_limit`
 uses deliberately synthetic Matrix timings to verify that only actual returned

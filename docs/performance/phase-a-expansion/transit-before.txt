@@ -1,0 +1,8 @@
+
+running 1 test
+test routing::evaluator::tests::direct_corridor_cost_and_shared_budget_are_bounded ... direct=false: P2 median=5us p95=45us expansions=5 walking_calls=1
+direct=true: P2 median=9us p95=46us expansions=6 walking_calls=2
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.01s
+

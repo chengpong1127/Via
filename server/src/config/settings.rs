@@ -40,7 +40,6 @@ pub struct RoutingSettings {
     pub max_transfers: usize,
     pub max_static_corridors: usize,
     pub max_phase1_expansions: usize,
-    pub max_phase2_expansions: usize,
     pub max_candidates: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
@@ -190,10 +189,6 @@ impl ViaConfig {
             (
                 "routing.max_phase1_expansions",
                 self.routing.max_phase1_expansions as u64,
-            ),
-            (
-                "routing.max_phase2_expansions",
-                self.routing.max_phase2_expansions as u64,
             ),
             ("routing.max_candidates", self.routing.max_candidates as u64),
             (
@@ -542,7 +537,6 @@ impl ViaConfig {
             max_transfers: self.routing.max_transfers,
             max_static_corridors: self.routing.max_static_corridors,
             max_phase1_expansions: self.routing.max_phase1_expansions,
-            max_phase2_expansions: self.routing.max_phase2_expansions,
             max_candidates: self.routing.max_candidates,
             max_departures_per_query: self.routing.max_departures_per_query,
             max_journey_duration_seconds: self.routing.max_journey_duration_seconds,

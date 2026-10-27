@@ -721,7 +721,6 @@ mod tests {
         .with_limits(crate::routing::PlannerLimits {
             max_transfers: 0,
             max_candidates: 16,
-            max_phase2_expansions: 2_000,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
             ..crate::routing::PlannerLimits::default()
@@ -900,40 +899,6 @@ mod tests {
         assert!(rendered.contains("via_planner_transit_reachable_boardings_total 2\n"));
         assert!(rendered.contains("via_planner_transit_reachable_patterns_total 2\n"));
         assert!(rendered.contains("via_planner_transit_realtime_stops_requested_total 1\n"));
-
-        // Completed Phase 1 work remains observable when evaluation hits its bound.
-        let mut limited = query(1);
-        limited.limits.max_phase2_expansions = 0;
-        assert_eq!(
-            planner.plan_with_stats(limited).await.unwrap_err(),
-            RoutingError::Phase2EvaluationLimit
-        );
-        let rendered = handle.render();
-        assert!(rendered.contains("via_planner_phase2_budget_exhaustions_total 1\n"));
-        assert!(rendered.contains("via_planner_transit_reachable_boardings_total 4\n"));
-        assert!(rendered.contains(&format!(
-            "via_planner_transit_departure_lookups_total {lookups}\n"
-        )));
-    }
-
-    #[tokio::test]
-    async fn phase2_expansion_limit_is_returned_to_the_planner_caller() {
-        let loader = Arc::new(RecordingTimingLoader {
-            trips: HashMap::from([(
-                TransitPatternId::new("static-fast"),
-                vec![effective_trip("static-fast-live", "static-fast", 20)],
-            )]),
-            ..RecordingTimingLoader::default()
-        });
-        let planner = test_planner(network(), loader);
-        let mut query = query(1);
-        query.origin_access.push(query.origin_access[0].clone());
-        query.limits.max_phase2_expansions = 1;
-
-        assert!(matches!(
-            planner.plan_with_stats(query).await,
-            Err(RoutingError::Phase2EvaluationLimit)
-        ));
     }
 
     #[tokio::test]
@@ -1004,7 +969,6 @@ mod tests {
             .with_limits(crate::routing::PlannerLimits {
                 max_transfers: 1,
                 max_candidates: 16,
-                max_phase2_expansions: 2_000,
                 max_departures_per_query: 3,
                 max_journey_duration_seconds: 4 * 60 * 60,
                 ..crate::routing::PlannerLimits::default()
@@ -1116,9 +1080,6 @@ mod tests {
         let primary = session.evaluate().await.unwrap();
 
         assert_eq!(primary.len(), 1);
-        assert_eq!(
-            session.stats().phase2_evaluation.corridor_states_evaluated,
-            1
-        );
+        assert_eq!(session.stats().phase2_evaluation.states_expanded, 1);
     }
 }

@@ -263,8 +263,7 @@ impl RoutingService {
                     "bounded Phase 2 candidates reconstructed"
                 );
                 attempt.failures.transient |= session.failures().transient;
-                attempt.failures.internal |= session.failures().internal
-                    || session.stats().phase2_evaluation.expansion_limit_reached;
+                attempt.failures.internal |= session.failures().internal;
                 Ok::<_, super::model::RoutingError>(())
             }
             .await;
@@ -285,8 +284,7 @@ impl RoutingService {
                         super::model::RoutingError::Timing(timing) => {
                             attempt.failures.transient |= timing.is_transient();
                         }
-                        super::model::RoutingError::StaticSearchLimit
-                        | super::model::RoutingError::Phase2EvaluationLimit => {
+                        super::model::RoutingError::StaticSearchLimit => {
                             attempt.failures.internal = true;
                         }
                         super::model::RoutingError::DeadlineExceeded => {
@@ -459,7 +457,7 @@ mod limits_tests {
     #[test]
     fn direct_query_limits_preserve_explicit_zero_safety_bounds() {
         let limits = PlannerLimits {
-            max_phase2_expansions: 0,
+            max_phase1_expansions: 0,
             ..PlannerLimits::default()
         };
         let query = PlanningQuery::new(
@@ -472,7 +470,7 @@ mod limits_tests {
             crate::config::ViaConfig::default().planner_limits(),
         )
         .with_limits(limits);
-        assert_eq!(query.limits.max_phase2_expansions, 0);
+        assert_eq!(query.limits.max_phase1_expansions, 0);
         assert_eq!(
             JourneyPlanningLimits {
                 planner: limits,
@@ -480,7 +478,7 @@ mod limits_tests {
             }
             .normalized()
             .planner
-            .max_phase2_expansions,
+            .max_phase1_expansions,
             1
         );
     }

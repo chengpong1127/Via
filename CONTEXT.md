@@ -100,19 +100,10 @@ The TDX provider caches individual station records for 45 seconds, rechecks
 original observation freshness, and fetches only missing/stale IDs in filtered
 50-station batches grouped by city (up to four cities concurrently). Partial
 failures preserve successful records; empty requests make no availability calls.
-The direct corridor is evaluated first, outside static Top-K. Its single edge
-can charge at most two expansions: one Walking realization and one optional
-BikeShare realization. Transit then follows its deterministic static order,
-using the same unchanged hard budget. On budget exhaustion the interrupted
-corridor contributes no journeys; completed corridor candidates remain eligible.
-If no candidate from a completed corridor exists, evaluation returns
-`Phase2EvaluationLimit`. Deadlines always terminate the request. Partial evaluation
-is reported in stats, a warning, and `via_planner_phase2_budget_exhaustions_total`.
-A BikeShare-enabled direct corridor may need both expansions to complete;
-with only one available, its temporary Walking successor is discarded and
-no complete candidate means a limit error.
-Small budgets may leave insufficient work for transit; no mode has an unlimited
-allowance and no work exceeds the configured limit.
+The direct corridor is evaluated first, outside static Top-K, followed by every
+prepared transit corridor in deterministic order. Phase 2 has no expansion-count
+termination condition. Deadlines remain hard failures even after a completed
+corridor; the existing frontier, duration, transfer, and provider limits remain.
 
 For each edge, `FixedCorridorEvaluator` explicitly expands Transit, Walking,
 then BikeShare in `evaluator/expansion.rs`. Transit resolves retained equivalent
@@ -127,7 +118,15 @@ choices by anchor pair and requires at least one distinct pickup/dropoff pair;
 it does not estimate movement duration. `CorridorAnchor` and its exact cache key
 live in `routing/corridor.rs`. Rental transitions and `ActiveBikeRental` live in
 `evaluator/state.rs`.
-Shared expansion accounting enforces deadlines, budgets, and failure classification.
+`ExpansionInputs` borrows immutable network, retained corridors, timing, and query.
+`ExpansionResolver` executes each state sequentially, keeping cache access, I/O,
+deadline checks, and provider failure classification outside pure transitions.
+`transit_next_state`, `walking_next_state`, and `bike_next_states` construct states
+without evaluator access. Each expansion returns local statistics and failures;
+the evaluator aggregates them and prunes once after collecting the edge's successors.
+Request-local Walking and BikeShare caches still require mutable access. Phase B
+must split cache lookup/update from independent provider work before bounded
+parallel expansion can preserve deterministic cache and result ordering.
 Walking caches successful, unreachable, and failed Matrix requests by ordered
 anchor keys and departure instant across the entire evaluation pass.
 `walking_matrix_requests` counts physical P2 Walking Matrix calls, including
@@ -149,12 +148,12 @@ the service reconstructs the entire bounded Pareto pool before deduplication
 and ranking. Ranking applies the final limit, the smaller of its normal result
 limit and configured `max_candidates`. Failed reconstruction or ranking rejection
 cannot consume an earlier insertion-order slot. The pool is bounded by retained
-corridors times the per-edge frontier cap (defaults: 101 × 16), expansion limits,
-and the request deadline. `plan_with_stats()` deliberately remains a capped P2
+corridors times the per-edge frontier cap (defaults: 101 × 16) and the request
+deadline. `plan_with_stats()` deliberately remains a capped P2
 diagnostic API: it returns arrival-ordered journeys without reconstruction or
 ranking and reports the capped returned count.
 This can increase exact street work compared with baseline-first screening;
-request-local caches, expansion budgets, and station/route limits still bound it.
+request-local caches, deadlines, and station/route limits still bound it.
 All P2 movements contain timing and metrics without geometry. Reconstruction
 routes every Walking movement (Access, Transfer, Egress, and Direct) and hydrates
 BikeShare's pickup walk, bicycle ride, and return walk. Adjacent transfer and
@@ -175,8 +174,8 @@ observed at request time; future DepartAt and ArriveBy inventory is not
 forecast.
 
 Transit departures after a movement are selected from the same timing
-snapshot using the new arrival time. State expansion and retained frontiers
-are bounded by the query's expansion and candidate limits. Walking and
+snapshot using the new arrival time. Retained frontiers use the query's candidate
+limit; P2 state expansion has no count budget. Walking and
 BikeShare cannot add transit stops, patterns, or connections.
 
 ## Static and live data

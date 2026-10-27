@@ -96,7 +96,6 @@ pub struct PlannerLimits {
     pub max_static_corridors: usize,
     pub max_phase1_expansions: usize,
     pub max_candidates: usize,
-    pub max_phase2_expansions: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
 }
@@ -108,7 +107,6 @@ impl PlannerLimits {
             max_static_corridors: self.max_static_corridors.max(1),
             max_phase1_expansions: self.max_phase1_expansions.max(1),
             max_candidates: self.max_candidates.max(1),
-            max_phase2_expansions: self.max_phase2_expansions.max(1),
             max_departures_per_query: self.max_departures_per_query.max(1),
             max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
         }
@@ -320,8 +318,6 @@ pub enum RoutingError {
     InvalidQuery,
     #[error("static corridor search exceeded its safety expansion bound")]
     StaticSearchLimit,
-    #[error("fixed-corridor evaluation exceeded its safety expansion bound")]
-    Phase2EvaluationLimit,
     #[error("routing request deadline elapsed")]
     DeadlineExceeded,
     #[error("routing invariant failed: {0}")]

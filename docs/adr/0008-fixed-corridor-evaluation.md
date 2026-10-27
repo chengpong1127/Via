@@ -32,13 +32,14 @@ timing for retained transit positions and availability only when BikeShare is
 selected. An empty timing query set does not call the timing provider.
 
 `FixedCorridorEvaluator` processes each corridor's ordered edges as a unified
-movement expansion search. Explicit evaluator methods in `evaluator/expansion.rs`
-expand Transit, Walking, then BikeShare. Shared evaluator helpers enforce charging,
-deadlines, and provider failure classification; there is no separate expansion
-context or movement-dispatch trait. A concrete `WalkingCache` owns the request-local
-Matrix cache and router; BikeShare borrows an optional concrete request-local
-session. The evaluator collects feasible successors, applies shared per-edge Pareto
-pruning, and finalizes candidates.
+movement expansion search. `ExpansionInputs` borrows immutable inputs and
+`ExpansionResolver` resolves Transit, Walking, then BikeShare sequentially in
+`evaluator/expansion.rs`. Pure transition functions construct successors from
+resolved movements without touching caches, providers, statistics, or deadlines.
+Each state returns local work counts and failures for evaluator aggregation.
+A concrete `WalkingCache` owns request-local Matrix results; BikeShare borrows
+an optional concrete request-local session. The evaluator collects all feasible
+successors before shared per-edge Pareto pruning and candidate finalization.
 
 Transit expands equivalent Patterns and multiple feasible departures from the
 timing snapshot using each state's ready time and transfer constraints. Walking
@@ -51,8 +52,8 @@ availability filtering, station discovery, batching, and exact result caching in
 `BikeShareSession` and `BikeShareMovementPlanner`. Candidate discovery is cached by
 anchor pair; eligible station choices require at least one distinct pickup/dropoff
 pair and are reused for realization without a duration estimate. Provider failures
-are classified centrally and leave other modes available. Deadlines abort evaluation; budget exhaustion retains
-only candidates from completed corridors.
+are classified centrally and leave other modes available. Deadlines abort evaluation. Every prepared corridor is evaluated unless a real
+error or deadline prevents completion.
 
 Walking and BikeShare perform actual Matrix realization before checking hard
 query time limits. Movement implementations determine physical and temporal
@@ -89,7 +90,7 @@ availability and distinct-station pairing are checked before realization. Exact
 bicycle legs are capped at 60 minutes and 20 kilometres.
 Only the current next anchor is considered, except that an active continuous
 Bike run can be extended from its original start to that next anchor. The
-request's expansion and candidate limits bound evaluation. Equivalent transit
+request's frontier and duration limits bound evaluation. Equivalent transit
 legs share mode and boarding/alighting points, so Pattern substitution does
 not change the retained transit structure.
 
@@ -120,23 +121,15 @@ Rental transitions and `ActiveBikeRental` live in `evaluator/state.rs`. A test-o
 BikeShare injection seam preserves synthetic rental and expansion regressions; production
 uses no generic BikeShare dispatch.
 
-The direct corridor runs first and naturally charges at most two expansions
-(one Walking realization and one optional BikeShare realization). This protects
-an early opportunity for both surface modes without a scheduler or increased
-limits. Transit corridors retain their static relative order. All calls use the
-same hard counter at `charge()`. An exhausted corridor contributes nothing,
-including any temporary states on its unfinished edges; previously completed
-corridor candidates remain eligible. If none exist, `Phase2EvaluationLimit` is
-returned. Deadline expiry remains a hard error even after a completed corridor.
-Warnings, an exhaustion counter, and stats report partial evaluation.
+The direct corridor runs first, followed by transit corridors in static relative
+order. No Phase-2 expansion counter terminates evaluation. Work counters are
+observational; deadline expiry remains a hard error after any completed corridor.
 
-A BikeShare-enabled direct corridor may need both expansions to complete;
-with only one available, its temporary Walking successor is discarded and
-no complete candidate means a limit error.
-This policy can leave too little budget for transit under very small limits.
-It preserves completed work rather than guaranteeing that every mode can finish
-under an insufficient budget. The one-edge direct corridor needs no separate
-allowance implementation: Walking and optional BikeShare bound its charged work.
+Phase A remains sequential. Request-local Walking and BikeShare caches require
+mutable access in the resolver. Phase B must separate their lookup/update boundary
+from provider execution, return per-expansion cache/statistics effects, bound
+concurrent provider work, and merge outcomes in input order before pruning. No
+synchronization or concurrent state execution is introduced here.
 
 A candidate containing any street movement cannot dominate a distinct candidate
 before geometry and timing are confirmed. State dominance requires identical
@@ -148,8 +141,8 @@ Per-edge candidate caps still apply. The service
 reconstructs the bounded Pareto pool, deduplicates stable keys, and ranks all usable
 candidates before final selection. The final result cap is the smaller of the
 ranking policy limit and configured `max_candidates`. The reconstruction pool is
-bounded by corridor count times the frontier cap (101 × 16 with defaults), the
-shared expansion budget, and deadline. This may hydrate more candidates than the
+bounded by corridor count times the frontier cap (101 × 16 with defaults) and
+the deadline. This may hydrate more candidates than the
 old first-N reconstruction rule; it avoids losing later preferred or eligible
 journeys. `plan_with_stats()` remains an arrival-ordered, capped P2 diagnostic API
 without reconstruction or ranking; its candidate count is the returned count.
@@ -159,11 +152,9 @@ for a stop, departures inconsistent with query time, or access availability
 inconsistent with walking duration produce `InvalidQuery` before Phase 1.
 
 The direct-corridor regression checks one additional Walking request and one
-expansion without changing transit lookups. At the transit-only budget boundary,
-completed transit candidates remain available and evaluation is marked partial.
-Conservative hydration pruning can change the bounded P2 pool and work counts;
-it does not increase the frontier or expansion limits. Measurements and their
-fixture-only scope are recorded in `docs/route-corpus.md`.
+state expansion without changing transit lookups. Deterministic budget-removal
+measurements and the Phase B boundary are recorded in
+`docs/performance/phase-a-expansion.md`.
 
 GTFS contains no BikeShare station catalog. `via-data build` can take local TDX
 configured Taiwan Bike Station City JSON snapshots to create static

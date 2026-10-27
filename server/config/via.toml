@@ -10,7 +10,6 @@ max_body_bytes = 65536
 max_transfers = 4
 max_static_corridors = 100
 max_phase1_expansions = 20000
-max_phase2_expansions = 2000
 max_candidates = 16
 max_departures_per_query = 3
 max_journey_duration_seconds = 14400

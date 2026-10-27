@@ -25,7 +25,9 @@ corridors only. Phase 2 represents each retained corridor as an
 Destination. Each edge has exactly one `PlannedMovement`: transit, retained
 walking metrics, or walking requiring routing. The planner includes a direct
 Origin-to-Destination walking corridor outside Top-K and evaluates it first,
-using at most two charged expansions before the ordered transit corridors. With no transit mode selected, Phase 1 is skipped. All corridors use the
+before the ordered transit corridors. Phase 2 evaluates all prepared corridors
+subject to deadlines and the existing feasibility and frontier limits. With no
+transit mode selected, Phase 1 is skipped. All corridors use the
 same evaluation pass; there is no separate surface fallback.
 
 `selected_modes` lists only optional non-walking modes. `[]` enables walking

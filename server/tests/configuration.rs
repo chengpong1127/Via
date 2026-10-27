@@ -11,7 +11,6 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     assert_eq!(limits.planner.max_transfers, 4);
     assert_eq!(limits.planner.max_static_corridors, 100);
     assert_eq!(limits.planner.max_phase1_expansions, 20_000);
-    assert_eq!(limits.planner.max_phase2_expansions, 2_000);
     assert_eq!(limits.planner.max_candidates, 16);
     assert_eq!(limits.planner.max_departures_per_query, 3);
     assert_eq!(limits.planner.max_journey_duration_seconds, 14_400);
@@ -53,7 +52,6 @@ fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
             "request_timeout_ms = 1200",
             "request_timeout_ms = 9223372036854775807",
         ),
-        TOML.replace("max_phase2_expansions = 2000", "max_phase2_expansions = 0"),
         TOML.replace("max_sources = 32", "max_sources = 0"),
         TOML.replace("degraded_seconds = 180", "degraded_seconds = 119"),
         TOML.replace("max_targets = 32", "max_targets = 8"),
@@ -137,7 +135,7 @@ fn explicit_path_precedes_environment_and_default_is_absolute() {
 fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
     let config = ViaConfig::from_toml(
         &TOML
-            .replace("max_phase2_expansions = 2000", "max_phase2_expansions = 7")
+            .replace("max_candidates = 16", "max_candidates = 7")
             .replace("max_sources = 32", "max_sources = 17")
             .replace(
                 "max_geometric_radius_metres = 300",
@@ -145,7 +143,7 @@ fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
             ),
     )
     .unwrap();
-    assert_eq!(config.journey_limits().planner.max_phase2_expansions, 7);
+    assert_eq!(config.journey_limits().planner.max_candidates, 7);
     assert_eq!(
         config.valhalla.provider_config(false).unwrap().max_sources,
         17
@@ -354,4 +352,14 @@ fn route_cli_reports_explicit_config_errors_before_loading_dependencies() {
     std::fs::remove_file(&path).unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains(path.to_str().unwrap()));
+}
+
+#[test]
+fn obsolete_phase2_expansion_setting_is_rejected() {
+    let body = TOML.replace("[routing]", "[routing]\nmax_phase2_expansions = 2000");
+    let error = ViaConfig::from_toml(&body).unwrap_err().to_string();
+    assert!(
+        error.contains("unknown field `max_phase2_expansions`"),
+        "{error}"
+    );
 }

@@ -105,7 +105,6 @@ fn query(
     .with_limits(crate::routing::PlannerLimits {
         max_transfers,
         max_candidates: 16,
-        max_phase2_expansions: 2_000,
         max_departures_per_query: 3,
         max_journey_duration_seconds: 4 * 60 * 60,
         ..crate::routing::PlannerLimits::default()
