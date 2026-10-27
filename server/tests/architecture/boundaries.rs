@@ -8,12 +8,23 @@ fn source(path: &str) -> String {
 }
 
 fn source_tree(path: &str) -> String {
+    source_tree_with_test_files(path, true)
+}
+
+fn source_tree_with_test_files(path: &str, include_test_files: bool) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path);
     let mut files = fs::read_dir(&root)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .filter(|path| {
+            include_test_files
+                || !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == "tests.rs" || name.ends_with("_tests.rs"))
+        })
         .collect::<Vec<_>>();
     files.sort();
     files
@@ -100,7 +111,7 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
 
 #[test]
 fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
-    let evaluator = source_tree("src/routing/evaluator");
+    let evaluator = source_tree_with_test_files("src/routing/evaluator", false);
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("BikeShareSession"));
     assert!(evaluator.contains("StreetRouter"));
@@ -116,10 +127,12 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
         "transit_next_state",
         "walking_next_state",
         "bike_next_states",
-        "expand_state_sequential",
+        "expand_state",
+        "expand_edge",
     ] {
         assert!(expansion.contains(&format!("fn {method}(")));
     }
+    assert!(!expansion.contains("expand_state_sequential"));
     for removed in ["transit", "walking", "bike"] {
         assert!(
             !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

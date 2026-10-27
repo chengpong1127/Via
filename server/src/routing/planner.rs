@@ -248,9 +248,14 @@ impl MultimodalPlanner {
         let loading =
             self.load_request_snapshots(&query, &retained, &static_stats, &bike_station_ids);
         let snapshots = query.deadline.run(loading).await??;
-        let walking = WalkingCache::new(self.street.clone());
+        let matrix = Arc::new(super::matrix::SharedMatrixResolver::new(
+            self.street.clone(),
+        ));
+        let walking = WalkingCache::with_resolver(matrix.clone());
         let bike_share = snapshots.bike.clone().map(|snapshot| {
-            BikeShareSession::new(self.bike.clone(), snapshot, OffsetDateTime::now_utc())
+            let mut bike = self.bike.clone();
+            bike.street_router = matrix.clone();
+            BikeShareSession::new(bike, snapshot, OffsetDateTime::now_utc())
         });
         Ok(PlanningSession {
             network: &self.network,
@@ -457,20 +462,20 @@ impl PlanningSession<'_> {
             &self.retained,
             &self.snapshots.timing,
             &self.query,
-            &mut self.walking,
-            self.bike_share.as_mut(),
+            &self.walking,
+            self.bike_share.as_ref(),
         );
-        let evaluation_result = self
-            .query
-            .deadline
-            .run(evaluator.evaluate(&self.corridors))
-            .await??;
-        ::metrics::counter!("via_planner_transit_departure_lookups_total")
-            .increment(evaluation_result.stats.transit_departure_lookups as u64);
-        self.stats.phase2_evaluation = evaluation_result.stats;
+        let evaluation_result = evaluator.evaluate(&self.corridors).await;
+        self.stats.phase2_evaluation = evaluator.stats;
+        self.failures = evaluator.failures;
+        self.failures.transient |= self.snapshots.failures.transient;
+        self.failures.internal |= self.snapshots.failures.internal;
+        let evaluation_result = evaluation_result?;
         self.failures = evaluation_result.failures;
         self.failures.transient |= self.snapshots.failures.transient;
         self.failures.internal |= self.snapshots.failures.internal;
+        ::metrics::counter!("via_planner_transit_departure_lookups_total")
+            .increment(evaluation_result.stats.transit_departure_lookups as u64);
         Ok(evaluation_result.journeys)
     }
 }

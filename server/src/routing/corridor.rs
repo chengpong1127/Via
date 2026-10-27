@@ -28,7 +28,7 @@ pub(crate) enum PlannedMovement {
 }
 
 impl EvaluationCorridor {
-    fn new(anchors: Vec<CorridorAnchor>, edges: Vec<CorridorEdge>) -> Option<Self> {
+    pub(crate) fn new(anchors: Vec<CorridorAnchor>, edges: Vec<CorridorEdge>) -> Option<Self> {
         (anchors.len() >= 2 && edges.len() == anchors.len() - 1).then_some(Self { anchors, edges })
     }
 

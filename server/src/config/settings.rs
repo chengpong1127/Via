@@ -40,6 +40,7 @@ pub struct RoutingSettings {
     pub max_transfers: usize,
     pub max_static_corridors: usize,
     pub max_phase1_expansions: usize,
+    pub max_concurrent_phase2_states: usize,
     pub max_candidates: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
@@ -498,6 +499,11 @@ impl ViaConfig {
                 "bikeshare.optimistic_walk_speed_metres_per_second must be finite".into(),
             ));
         }
+        if !(1..=32).contains(&self.routing.max_concurrent_phase2_states) {
+            return Err(ConfigError::Invalid(
+                "routing.max_concurrent_phase2_states must be in 1..=32".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -537,6 +543,7 @@ impl ViaConfig {
             max_transfers: self.routing.max_transfers,
             max_static_corridors: self.routing.max_static_corridors,
             max_phase1_expansions: self.routing.max_phase1_expansions,
+            max_concurrent_phase2_states: self.routing.max_concurrent_phase2_states,
             max_candidates: self.routing.max_candidates,
             max_departures_per_query: self.routing.max_departures_per_query,
             max_journey_duration_seconds: self.routing.max_journey_duration_seconds,

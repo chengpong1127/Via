@@ -1,4 +1,5 @@
 use super::*;
+use crate::routing::request_cache::RequestCache;
 use crate::{
     domain::normalize_to_taipei,
     routing::corridor::CorridorAnchorKey,
@@ -7,65 +8,75 @@ use crate::{
         RoutingTimeKind, StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
-use std::collections::HashMap;
 
 pub(crate) struct WalkingCache {
-    street: Arc<dyn StreetRouter>,
-    cache: HashMap<
+    street: Arc<crate::routing::matrix::SharedMatrixResolver>,
+    cache: RequestCache<
         (CorridorAnchorKey, CorridorAnchorKey, OffsetDateTime),
         Result<MatrixCell, StreetRoutingError>,
     >,
-    pub requests: usize,
-    pub cache_hits: usize,
 }
 
 impl WalkingCache {
+    #[cfg(test)]
     pub fn new(street: Arc<dyn StreetRouter>) -> Self {
+        Self::with_resolver(Arc::new(crate::routing::matrix::SharedMatrixResolver::new(
+            street,
+        )))
+    }
+
+    pub fn with_resolver(street: Arc<crate::routing::matrix::SharedMatrixResolver>) -> Self {
         Self {
             street,
-            cache: HashMap::new(),
-            requests: 0,
-            cache_hits: 0,
+            cache: RequestCache::default(),
         }
     }
 
+    pub fn matrix_stats(&self) -> crate::routing::MatrixResolverStats {
+        self.street.stats()
+    }
+
     pub(super) async fn realize(
-        &mut self,
+        &self,
         from: &super::super::corridor::CorridorAnchor,
         to: &super::super::corridor::CorridorAnchor,
         departure_at: OffsetDateTime,
     ) -> Result<MatrixCell, StreetRoutingError> {
         let key = (from.cache_key(), to.cache_key(), departure_at);
-        if let Some(result) = self.cache.get(&key) {
-            self.cache_hits += 1;
-            return result.clone();
-        }
-        self.requests += 1;
-        let local = normalize_to_taipei(departure_at);
-        let result = self
-            .street
-            .matrix(MatrixQuery {
-                orientation: MatrixOrientation::OneToMany,
-                travel_mode: StreetTravelMode::Walking,
-                sources: vec![from.coordinate],
-                targets: vec![to.coordinate],
-                constraints: RoutingConstraints {
-                    time: Some(RoutingTime {
-                        kind: RoutingTimeKind::DepartAt,
-                        local_date_time: local.date().with_time(local.time()),
-                    }),
-                    max_distance: None,
-                },
+        self.cache
+            .get_or_init(key, || async {
+                let local = normalize_to_taipei(departure_at);
+                self.street
+                    .matrix(MatrixQuery {
+                        orientation: MatrixOrientation::OneToMany,
+                        travel_mode: StreetTravelMode::Walking,
+                        sources: vec![from.coordinate],
+                        targets: vec![to.coordinate],
+                        constraints: RoutingConstraints {
+                            time: Some(RoutingTime {
+                                kind: RoutingTimeKind::DepartAt,
+                                local_date_time: local.date().with_time(local.time()),
+                            }),
+                            max_distance: None,
+                        },
+                    })
+                    .await
+                    .and_then(|matrix| {
+                        if matrix.cells.len() != 1 || matrix.cells[0].len() != 1 {
+                            return Err(StreetRoutingError::MalformedResponse);
+                        }
+                        Ok(matrix.cells[0][0])
+                    })
             })
             .await
-            .and_then(|matrix| {
-                if matrix.cells.len() != 1 || matrix.cells[0].len() != 1 {
-                    return Err(StreetRoutingError::MalformedResponse);
-                }
-                Ok(matrix.cells[0][0])
-            });
-        self.cache.insert(key, result.clone());
-        result
+    }
+
+    pub fn requests(&self) -> usize {
+        self.cache.stats().initializations
+    }
+    pub fn cache_hits(&self) -> usize {
+        let stats = self.cache.stats();
+        stats.ready_hits + stats.inflight_hits
     }
 }
 
@@ -78,8 +89,8 @@ pub(super) struct ExpansionInputs<'a> {
 
 pub(super) struct ExpansionResolver<'a> {
     pub inputs: ExpansionInputs<'a>,
-    pub walking: &'a mut WalkingCache,
-    pub bike_share: Option<&'a mut BikeShareSession>,
+    pub walking: &'a WalkingCache,
+    pub bike_share: Option<&'a BikeShareSession>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -184,8 +195,60 @@ impl ExpansionInputs<'_> {
 }
 
 impl ExpansionResolver<'_> {
-    pub async fn expand_state_sequential(
-        &mut self,
+    pub async fn expand_edge(
+        &self,
+        states: &[EvaluationState],
+        corridor: &EvaluationCorridor,
+        edge: &CorridorEdge,
+        index: usize,
+    ) -> ExpansionOutcome {
+        use futures_util::{StreamExt, stream};
+        let concurrency = self
+            .inputs
+            .query
+            .limits
+            .max_concurrent_phase2_states
+            .clamp(1, 32);
+        let mut pending = stream::iter(0..states.len())
+            .map(|position| async move {
+                (
+                    position,
+                    self.expand_state(&states[position], corridor, edge, index)
+                        .await,
+                )
+            })
+            .buffer_unordered(concurrency);
+        let mut observed = std::collections::BTreeMap::new();
+        let fatal = loop {
+            match self.inputs.query.deadline.run(pending.next()).await {
+                Ok(Some((position, outcome))) => {
+                    let fatal = outcome.successors.as_ref().err().cloned();
+                    observed.insert(position, outcome);
+                    if fatal.is_some() {
+                        break fatal;
+                    }
+                }
+                Ok(None) => break None,
+                Err(error) => break Some(error),
+            }
+        };
+        drop(pending);
+        let mut result = ExpansionOutcome {
+            successors: Ok(Vec::new()),
+            stats: ExpansionStats::default(),
+            failures: EvaluationFailures::default(),
+        };
+        for outcome in observed.into_values() {
+            result.append(outcome);
+        }
+        if let Some(error) = fatal {
+            result.successors = Err(error);
+        }
+        result
+    }
+
+    pub async fn expand_state(
+        &self,
         state: &EvaluationState,
         corridor: &EvaluationCorridor,
         edge: &CorridorEdge,
@@ -212,7 +275,7 @@ impl ExpansionResolver<'_> {
     }
 
     pub(super) async fn resolve_walking(
-        &mut self,
+        &self,
         state: &EvaluationState,
         corridor: &EvaluationCorridor,
         edge: &CorridorEdge,
@@ -288,7 +351,7 @@ impl ExpansionResolver<'_> {
     }
 
     pub(super) async fn resolve_bike_share(
-        &mut self,
+        &self,
         state: &EvaluationState,
         corridor: &EvaluationCorridor,
         index: usize,
@@ -304,7 +367,7 @@ impl ExpansionResolver<'_> {
                 from_anchor: start_anchor,
                 to_anchor: index + 1,
             };
-            let Some(session) = self.bike_share.as_deref_mut() else {
+            let Some(session) = self.bike_share else {
                 return Ok(Vec::new());
             };
             let Some(candidate) = session.candidate(&request) else {
@@ -554,7 +617,7 @@ mod tests {
                 distance: crate::street::Metres(90),
             }),
         });
-        let mut walking = WalkingCache::new(street.clone());
+        let walking = WalkingCache::new(street.clone());
         let from = CorridorAnchor {
             kind: JourneyAnchorKind::Origin,
             coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
@@ -590,10 +653,13 @@ mod tests {
             ..from.clone()
         };
         walking.realize(&moved, &to, departure).await.unwrap();
-        assert_eq!((walking.requests, walking.cache_hits), (5, 1));
-        let mut other_request = WalkingCache::new(street.clone());
+        assert_eq!((walking.requests(), walking.cache_hits()), (5, 1));
+        let other_request = WalkingCache::new(street.clone());
         other_request.realize(&from, &to, departure).await.unwrap();
-        assert_eq!((other_request.requests, other_request.cache_hits), (1, 0));
+        assert_eq!(
+            (other_request.requests(), other_request.cache_hits()),
+            (1, 0)
+        );
         let queries = street.queries.lock().unwrap();
         assert_eq!(queries[0].sources, vec![from.coordinate]);
         assert_eq!(queries[0].targets, vec![to.coordinate]);
@@ -619,7 +685,7 @@ mod tests {
                 queries: Mutex::new(Vec::new()),
                 result: result.clone(),
             });
-            let mut walking = WalkingCache::new(street.clone());
+            let walking = WalkingCache::new(street.clone());
             let corridor = EvaluationCorridor::direct_walking(
                 Coordinate::try_new(25.0, 121.5).unwrap(),
                 Coordinate::try_new(25.01, 121.5).unwrap(),
@@ -636,7 +702,7 @@ mod tests {
                     result
                 );
             }
-            assert_eq!((walking.requests, walking.cache_hits), (1, 1));
+            assert_eq!((walking.requests(), walking.cache_hits()), (1, 1));
             assert_eq!(street.queries.lock().unwrap().len(), 1);
         }
     }

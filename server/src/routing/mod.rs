@@ -2,10 +2,14 @@ pub(crate) mod access;
 mod bike;
 mod corridor;
 mod evaluator;
+mod matrix;
+#[cfg(test)]
+mod matrix_tests;
 pub mod model;
 pub mod planner;
 mod realized;
 mod reconstruct;
+mod request_cache;
 pub mod static_search;
 pub mod topology;
 pub mod transfers;
@@ -25,3 +29,5 @@ pub use realized::{JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJ
 pub use service::RoutingService;
 
 pub use bike::BikeMovementPolicy;
+
+pub use matrix::MatrixResolverStats;

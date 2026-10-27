@@ -49,6 +49,7 @@ pub struct Phase2EvaluationStats {
     pub corridors_completed: usize,
     pub final_candidates: usize,
     pub phase2_latency_us: u64,
+    pub matrix: crate::routing::MatrixResolverStats,
 }
 
 impl Phase2EvaluationStats {
@@ -86,8 +87,8 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     corridor: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
     query: &'a PlanningQuery,
-    walking: &'a mut WalkingCache,
-    bike_share: Option<&'a mut BikeShareSession>,
+    walking: &'a WalkingCache,
+    bike_share: Option<&'a BikeShareSession>,
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
 }
@@ -98,8 +99,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &'a RetainedCorridorSet,
         snapshot: &'a TimingSnapshot,
         query: &'a PlanningQuery,
-        walking: &'a mut WalkingCache,
-        bike_share: Option<&'a mut BikeShareSession>,
+        walking: &'a WalkingCache,
+        bike_share: Option<&'a BikeShareSession>,
     ) -> Self {
         Self {
             network,
@@ -116,31 +117,20 @@ impl<'a> FixedCorridorEvaluator<'a> {
         &mut self,
         corridors: &[EvaluationCorridor],
     ) -> Result<EvaluationResult, RoutingError> {
-        self.check_deadline()?;
         let started = Instant::now();
-        let mut candidates = Vec::new();
-        for corridor in corridors {
-            self.stats.corridors_attempted += 1;
-            candidates.extend(self.evaluate_corridor(corridor).await?);
-            self.stats.corridors_completed += 1;
-        }
-
-        self.check_deadline()?;
-        let candidates = pareto_candidates(candidates);
-        self.check_deadline()?;
-        self.stats.final_candidates = candidates.len();
+        let result = self.evaluate_inner(corridors).await;
         self.stats.phase2_latency_us +=
             u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let bike_work = self
+        self.stats.matrix = self.walking.matrix_stats();
+        self.stats.walking_matrix_requests = self.walking.requests();
+        self.stats.walking_cache_hits = self.walking.cache_hits();
+        let bike = self
             .bike_share
-            .as_ref()
-            .map(|planner| planner.realization_stats())
+            .map(BikeShareSession::realization_stats)
             .unwrap_or_default();
-        self.stats.walking_matrix_requests = self.walking.requests;
-        self.stats.walking_cache_hits = self.walking.cache_hits;
-        self.stats.bike_exact_candidates_requested = bike_work.exact_requests;
-        self.stats.bike_exact_cache_hits = bike_work.cache_hits;
-        self.stats.bike_matrix_requests = bike_work.matrix_requests;
+        self.stats.bike_exact_candidates_requested = bike.exact_requests;
+        self.stats.bike_exact_cache_hits = bike.cache_hits;
+        self.stats.bike_matrix_requests = bike.matrix_requests;
         tracing::debug!(
             target: "via_server::routing",
             states_expanded = self.stats.states_expanded,
@@ -160,6 +150,28 @@ impl<'a> FixedCorridorEvaluator<'a> {
             latency_us = self.stats.phase2_latency_us,
             "Phase 2 corridor evaluation"
         );
+        result.map(|mut result| {
+            result.stats = self.stats;
+            result
+        })
+    }
+
+    async fn evaluate_inner(
+        &mut self,
+        corridors: &[EvaluationCorridor],
+    ) -> Result<EvaluationResult, RoutingError> {
+        self.check_deadline()?;
+        let mut candidates = Vec::new();
+        for corridor in corridors {
+            self.stats.corridors_attempted += 1;
+            candidates.extend(self.evaluate_corridor(corridor).await?);
+            self.stats.corridors_completed += 1;
+        }
+
+        self.check_deadline()?;
+        let candidates = pareto_candidates(candidates);
+        self.check_deadline()?;
+        self.stats.final_candidates = candidates.len();
         Ok(EvaluationResult {
             journeys: candidates.into_iter().map(|c| c.journey).collect(),
             stats: self.stats,
@@ -179,7 +191,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridor: &EvaluationCorridor,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         self.check_deadline()?;
-        let mut resolver = expansion::ExpansionResolver {
+        let resolver = expansion::ExpansionResolver {
             inputs: expansion::ExpansionInputs {
                 network: self.network,
                 corridor: self.corridor,
@@ -187,20 +199,14 @@ impl<'a> FixedCorridorEvaluator<'a> {
                 query: self.query,
             },
             walking: self.walking,
-            bike_share: self.bike_share.as_deref_mut(),
+            bike_share: self.bike_share,
         };
         let mut states = vec![EvaluationState::initial(self.query)];
         for (index, edge) in corridor.edges().iter().enumerate() {
-            let mut next = Vec::new();
-            for state in states {
-                let outcome = resolver
-                    .expand_state_sequential(&state, corridor, edge, index)
-                    .await;
-                self.stats.record_expansion(outcome.stats);
-                self.failures.merge(outcome.failures);
-                next.extend(outcome.successors?);
-            }
-            states = prune_states(next, self.query.limits.max_candidates);
+            let outcome = resolver.expand_edge(&states, corridor, edge, index).await;
+            self.stats.record_expansion(outcome.stats);
+            self.failures.merge(outcome.failures);
+            states = prune_states(outcome.successors?, self.query.limits.max_candidates);
             if states.is_empty() {
                 break;
             }
@@ -230,8 +236,10 @@ type TestBikeRoutes = std::collections::HashMap<CorridorMovement, Vec<BikeShareM
 #[cfg(test)]
 struct TestBikePlanner {
     routes: TestBikeRoutes,
-    cache: std::collections::HashMap<(BoardingPointId, BoardingPointId), Vec<BikeShareMovement>>,
-    hits: usize,
+    cache: std::sync::Mutex<
+        std::collections::HashMap<(BoardingPointId, BoardingPointId), Vec<BikeShareMovement>>,
+    >,
+    hits: std::sync::atomic::AtomicUsize,
 }
 #[cfg(test)]
 impl TestBikePlanner {
@@ -249,8 +257,8 @@ impl TestBikePlanner {
 impl TestBikeProvider for TestBikePlanner {
     fn realization_stats(&self) -> BikeSessionStats {
         BikeSessionStats {
-            exact_requests: self.cache.len(),
-            cache_hits: self.hits,
+            exact_requests: self.cache.lock().unwrap().len(),
+            cache_hits: self.hits.load(std::sync::atomic::Ordering::Relaxed),
             matrix_requests: 0,
         }
     }
@@ -260,19 +268,20 @@ impl TestBikeProvider for TestBikePlanner {
             .is_some_and(|items| !items.is_empty())
     }
     async fn realize(
-        &mut self,
+        &self,
         request: &BikeMovementRequest<'_>,
     ) -> Result<Vec<BikeShareMovement>, crate::street::StreetRoutingError> {
         let Some(movement) = self.movement(request) else {
             return Ok(Vec::new());
         };
         let key = (movement.from.clone(), movement.to.clone());
-        let mut options = if let Some(cached) = self.cache.get(&key) {
-            self.hits += 1;
+        let mut cache = self.cache.lock().unwrap();
+        let mut options = if let Some(cached) = cache.get(&key) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             cached.clone()
         } else {
             let options = self.routes.get(&movement).cloned().unwrap_or_default();
-            self.cache.insert(key, options.clone());
+            cache.insert(key, options.clone());
             options
         };
         for bike_movement in &mut options {
@@ -320,6 +329,7 @@ fn run_test_evaluation(
     routes: Option<&TestBikeRoutes>,
 ) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
     tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .expect("test runtime")
         .block_on(async {
@@ -335,8 +345,8 @@ fn run_test_evaluation(
             dependencies.bike_share = routes.map(|routes| {
                 BikeShareSession::for_test(Box::new(TestBikePlanner {
                     routes: routes.clone(),
-                    cache: std::collections::HashMap::new(),
-                    hits: 0,
+                    cache: Default::default(),
+                    hits: Default::default(),
                 }))
             });
             let result = FixedCorridorEvaluator::new(
@@ -344,8 +354,8 @@ fn run_test_evaluation(
                 corridor,
                 snapshot,
                 &query,
-                &mut dependencies.walking,
-                dependencies.bike_share.as_mut(),
+                &dependencies.walking,
+                dependencies.bike_share.as_ref(),
             )
             .evaluate(&evaluation_corridors)
             .await?;

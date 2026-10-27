@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use time::OffsetDateTime;
 
@@ -16,6 +19,8 @@ use crate::{
         RoutingConstraints, StreetRouter, StreetRoutingError, StreetTravelMode,
     },
 };
+
+use super::request_cache::RequestCache;
 
 use super::{
     corridor::{CorridorAnchor, CorridorAnchorKey},
@@ -52,13 +57,13 @@ pub(crate) struct BikeSessionStats {
 
 #[cfg(test)]
 #[async_trait::async_trait]
-pub(crate) trait TestBikePlanner: Send {
+pub(crate) trait TestBikePlanner: Send + Sync {
     fn realization_stats(&self) -> BikeSessionStats {
         BikeSessionStats::default()
     }
     fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool;
     async fn realize(
-        &mut self,
+        &self,
         request: &BikeMovementRequest<'_>,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
 }
@@ -367,19 +372,31 @@ impl BikeShareMovementPlanner {
     }
 }
 
+struct BikeWork<'a> {
+    stats: BikePlanningStats,
+    total: &'a AtomicUsize,
+}
+
+impl Drop for BikeWork<'_> {
+    fn drop(&mut self) {
+        self.total
+            .fetch_add(self.stats.matrix_requests, Ordering::Relaxed);
+    }
+}
+
 pub(crate) struct BikeShareSession {
     planner: BikeShareMovementPlanner,
     snapshot: Arc<BikeAvailabilitySnapshot>,
     now: OffsetDateTime,
-    cache: HashMap<
+    cache: RequestCache<
         (CorridorAnchorKey, CorridorAnchorKey),
         Result<Vec<BikeShareMovement>, StreetRoutingError>,
     >,
-    pub stats: BikePlanningStats,
-    pub cache_hits: usize,
-    candidates: HashMap<(CorridorAnchorKey, CorridorAnchorKey), Option<BikeMovementCandidate>>,
+    matrix_requests: AtomicUsize,
+    candidates:
+        Mutex<HashMap<(CorridorAnchorKey, CorridorAnchorKey), Option<BikeMovementCandidate>>>,
     #[cfg(test)]
-    candidate_discoveries: usize,
+    candidate_discoveries: AtomicUsize,
     #[cfg(test)]
     test_planner: Option<Box<dyn TestBikePlanner>>,
 }
@@ -394,12 +411,11 @@ impl BikeShareSession {
             planner,
             snapshot,
             now,
-            cache: HashMap::new(),
-            stats: BikePlanningStats::default(),
-            cache_hits: 0,
-            candidates: HashMap::new(),
+            cache: RequestCache::default(),
+            matrix_requests: AtomicUsize::new(0),
+            candidates: Mutex::new(HashMap::new()),
             #[cfg(test)]
-            candidate_discoveries: 0,
+            candidate_discoveries: AtomicUsize::new(0),
             #[cfg(test)]
             test_planner: None,
         }
@@ -410,16 +426,14 @@ impl BikeShareSession {
         if let Some(planner) = &self.test_planner {
             return planner.realization_stats();
         }
+        let cache = self.cache.stats();
         BikeSessionStats {
-            exact_requests: self.cache.len(),
-            cache_hits: self.cache_hits,
-            matrix_requests: self.stats.matrix_requests,
+            exact_requests: cache.completed_entries,
+            cache_hits: cache.ready_hits + cache.inflight_hits,
+            matrix_requests: self.matrix_requests.load(Ordering::Relaxed),
         }
     }
-    pub fn candidate(
-        &mut self,
-        request: &BikeMovementRequest<'_>,
-    ) -> Option<BikeMovementCandidate> {
+    pub fn candidate(&self, request: &BikeMovementRequest<'_>) -> Option<BikeMovementCandidate> {
         #[cfg(test)]
         if let Some(planner) = &self.test_planner {
             return planner
@@ -433,11 +447,13 @@ impl BikeShareSession {
         }
         let key = (request.from.cache_key(), request.to.cache_key());
         self.candidates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .entry(key)
             .or_insert_with(|| {
                 #[cfg(test)]
                 {
-                    self.candidate_discoveries += 1;
+                    self.candidate_discoveries.fetch_add(1, Ordering::Relaxed);
                 }
                 self.planner
                     .movement_candidate(request.from, request.to, &self.snapshot, self.now)
@@ -465,36 +481,36 @@ impl BikeShareSession {
     }
 
     pub async fn realize(
-        &mut self,
+        &self,
         request: &BikeMovementRequest<'_>,
         candidate: &BikeMovementCandidate,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         #[cfg(test)]
-        if let Some(planner) = &mut self.test_planner {
+        if let Some(planner) = &self.test_planner {
             return planner.realize(request).await;
         }
         let key = (request.from.cache_key(), request.to.cache_key());
-        if self.cache.contains_key(&key) {
-            self.cache_hits += 1;
-        } else {
-            let mut stats = BikePlanningStats::default();
-            let result = self
-                .planner
-                .realize_with_stats(candidate, 0, 1, &mut stats)
-                .await;
-            self.stats.matrix_requests += stats.matrix_requests;
-            self.cache.insert(key.clone(), result);
-        }
-        self.cache[&key].clone().map(|bike_movements| {
-            bike_movements
-                .into_iter()
-                .map(|mut bike_movement| {
-                    bike_movement.from_anchor = request.from_anchor;
-                    bike_movement.to_anchor = request.to_anchor;
-                    bike_movement
-                })
-                .collect()
-        })
+        self.cache
+            .get_or_init(key, || async {
+                let mut work = BikeWork {
+                    stats: BikePlanningStats::default(),
+                    total: &self.matrix_requests,
+                };
+                self.planner
+                    .realize_with_stats(candidate, 0, 1, &mut work.stats)
+                    .await
+            })
+            .await
+            .map(|bike_movements| {
+                bike_movements
+                    .into_iter()
+                    .map(|mut bike_movement| {
+                        bike_movement.from_anchor = request.from_anchor;
+                        bike_movement.to_anchor = request.to_anchor;
+                        bike_movement
+                    })
+                    .collect()
+            })
     }
 }
 
@@ -1201,7 +1217,7 @@ mod tests {
             kind: JourneyAnchorKind::BoardingPoint { id: to_id },
             coordinate: dropoff,
         };
-        let mut session = BikeShareSession::new(planner.clone(), Arc::new(snapshot.clone()), now);
+        let session = BikeShareSession::new(planner.clone(), Arc::new(snapshot.clone()), now);
         let request = BikeMovementRequest {
             from: &from,
             to: &to,
@@ -1210,12 +1226,12 @@ mod tests {
         };
         let candidate = session.candidate(&request).unwrap();
         assert!(session.candidate(&request).is_some());
-        assert_eq!(session.candidate_discoveries, 1);
+        assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
         let movements = session.realize(&request, &candidate).await.unwrap();
         let bike_movement = &movements[0];
         assert_eq!(bike_movement.total_seconds, 130);
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
-        assert_eq!(session.stats.matrix_requests, 2);
+        assert_eq!(session.realization_stats().matrix_requests, 2);
         let remapped = session
             .realize(
                 &BikeMovementRequest {
@@ -1229,10 +1245,10 @@ mod tests {
             .unwrap();
         let bike_movement = &remapped[0];
         assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
-        assert_eq!(session.cache_hits, 1);
-        assert_eq!(session.stats.matrix_requests, 2);
-        assert_eq!(session.candidate_discoveries, 1);
-        let mut unavailable = BikeShareSession::new(
+        assert_eq!(session.realization_stats().cache_hits, 1);
+        assert_eq!(session.realization_stats().matrix_requests, 2);
+        assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
+        let unavailable = BikeShareSession::new(
             planner,
             Arc::new(BikeAvailabilitySnapshot::new(now, HashMap::new())),
             now,
@@ -1263,5 +1279,45 @@ mod tests {
             )
             .is_some()
         );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_candidate_discovery_caches_none_once() {
+        let now = datetime!(2026-09-21 10:00 UTC);
+        let session = Arc::new(BikeShareSession::new(
+            BikeShareMovementPlanner::new(
+                Arc::new(BikeShareNetwork::new(Vec::new())),
+                Arc::new(UnavailableBikeAvailabilitySource),
+                Arc::new(FakeStreetRouter::builder().build()),
+                crate::config::ViaConfig::default().bike_policy(),
+            ),
+            Arc::new(BikeAvailabilitySnapshot::new(now, HashMap::new())),
+            now,
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(10));
+        let tasks = (0..10)
+            .map(|_| {
+                let session = session.clone();
+                let barrier = barrier.clone();
+                tokio::spawn(async move {
+                    let corridor = crate::routing::corridor::EvaluationCorridor::direct_walking(
+                        Coordinate::try_new(25.0, 121.5).unwrap(),
+                        Coordinate::try_new(25.01, 121.5).unwrap(),
+                    );
+                    barrier.wait().await;
+                    let request = BikeMovementRequest {
+                        from: &corridor.anchors()[0],
+                        to: &corridor.anchors()[1],
+                        from_anchor: 0,
+                        to_anchor: 1,
+                    };
+                    assert!(session.candidate(&request).is_none());
+                })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
+        assert_eq!(session.realization_stats().exact_requests, 0);
     }
 }

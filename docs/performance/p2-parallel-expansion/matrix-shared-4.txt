@@ -1,0 +1,22 @@
+
+running 1 test
+matrix raw=false concurrency=4 delay=0 identical=false requests=1 p50_us=15 p95_us=56 worst_us=274 logical=10 physical=10 peak=1 completed_hits=0 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=0 identical=false requests=4 p50_us=57 p95_us=98 worst_us=558 logical=40 physical=40 peak=1 completed_hits=0 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=0 identical=true requests=1 p50_us=8 p95_us=12 worst_us=12 logical=10 physical=1 peak=1 completed_hits=9 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=0 identical=true requests=4 p50_us=32 p95_us=98 worst_us=295 logical=40 physical=4 peak=1 completed_hits=36 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=10 identical=false requests=1 p50_us=47926 p95_us=184833 worst_us=191188 logical=10 physical=10 peak=4 completed_hits=0 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=10 identical=false requests=4 p50_us=93092 p95_us=192498 worst_us=503853 logical=40 physical=40 peak=8 completed_hits=0 inflight_hits=0 wait_us=680390
+matrix raw=false concurrency=4 delay=10 identical=true requests=1 p50_us=15061 p95_us=25663 worst_us=102956 logical=10 physical=1 peak=1 completed_hits=6 inflight_hits=3 wait_us=0
+matrix raw=false concurrency=4 delay=10 identical=true requests=4 p50_us=13441 p95_us=43147 worst_us=197486 logical=40 physical=4 peak=4 completed_hits=24 inflight_hits=12 wait_us=0
+matrix raw=false concurrency=4 delay=50 identical=false requests=1 p50_us=169411 p95_us=339091 worst_us=2139070 logical=10 physical=10 peak=4 completed_hits=0 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=50 identical=false requests=4 p50_us=371039 p95_us=781454 worst_us=2057248 logical=40 physical=40 peak=8 completed_hits=0 inflight_hits=0 wait_us=13843825
+matrix raw=false concurrency=4 delay=50 identical=true requests=1 p50_us=77416 p95_us=245060 worst_us=29003027 logical=10 physical=1 peak=1 completed_hits=6 inflight_hits=3 wait_us=0
+matrix raw=false concurrency=4 delay=50 identical=true requests=4 p50_us=70303 p95_us=151346 worst_us=163730 logical=40 physical=4 peak=4 completed_hits=24 inflight_hits=12 wait_us=0
+test routing::evaluator::tests::parallel_tests::phase_b_matrix_benchmark has been running for over 60 seconds
+matrix raw=false concurrency=4 delay=100 identical=false requests=1 p50_us=379590 p95_us=682338 worst_us=1986057 logical=10 physical=10 peak=4 completed_hits=0 inflight_hits=0 wait_us=0
+matrix raw=false concurrency=4 delay=100 identical=false requests=4 p50_us=623692 p95_us=2107975 worst_us=3038271 logical=40 physical=40 peak=8 completed_hits=0 inflight_hits=0 wait_us=3077995
+matrix raw=false concurrency=4 delay=100 identical=true requests=1 p50_us=106058 p95_us=230956 worst_us=243230 logical=10 physical=1 peak=1 completed_hits=6 inflight_hits=3 wait_us=0
+matrix raw=false concurrency=4 delay=100 identical=true requests=4 p50_us=106170 p95_us=201873 worst_us=231659 logical=40 physical=4 peak=4 completed_hits=24 inflight_hits=12 wait_us=0
+test routing::evaluator::tests::parallel_tests::phase_b_matrix_benchmark ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 217 filtered out; finished in 91.79s

@@ -11,6 +11,7 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     assert_eq!(limits.planner.max_transfers, 4);
     assert_eq!(limits.planner.max_static_corridors, 100);
     assert_eq!(limits.planner.max_phase1_expansions, 20_000);
+    assert_eq!(limits.planner.max_concurrent_phase2_states, 4);
     assert_eq!(limits.planner.max_candidates, 16);
     assert_eq!(limits.planner.max_departures_per_query, 3);
     assert_eq!(limits.planner.max_journey_duration_seconds, 14_400);
@@ -362,4 +363,28 @@ fn obsolete_phase2_expansion_setting_is_rejected() {
         error.contains("unknown field `max_phase2_expansions`"),
         "{error}"
     );
+}
+
+#[test]
+fn phase2_concurrency_is_configurable_and_bounded() {
+    for value in [1, 2, 4, 8, 32] {
+        let body = TOML.replace(
+            "max_concurrent_phase2_states = 4",
+            &format!("max_concurrent_phase2_states = {value}"),
+        );
+        assert_eq!(
+            ViaConfig::from_toml(&body)
+                .unwrap()
+                .planner_limits()
+                .max_concurrent_phase2_states,
+            value
+        );
+    }
+    for value in [0, 33, usize::MAX] {
+        let body = TOML.replace(
+            "max_concurrent_phase2_states = 4",
+            &format!("max_concurrent_phase2_states = {value}"),
+        );
+        assert!(ViaConfig::from_toml(&body).is_err());
+    }
 }

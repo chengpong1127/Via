@@ -388,3 +388,69 @@ fn transfer_fixture_rejects_unknown_zero_duration_and_self_transfers() {
     ));
     assert!(self_transfer.validate().is_err());
 }
+
+#[tokio::test]
+async fn phase2_concurrency_preserves_reconstruction_and_ordered_top_three() {
+    use crate::support::routing::{path, stop_coordinate};
+    use via_server::street::StreetTravelMode;
+    let transit = network();
+    let origin = near_stop(&transit, "F-M1");
+    let destination = near_stop(&transit, "F-M4");
+    let access = stop_coordinate(&transit, "F-M1");
+    let egress = stop_coordinate(&transit, "F-M4");
+    let street = || {
+        let mut builder = FakeStreetRouter::builder()
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                destination,
+                path(origin, destination, 900),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                access,
+                path(origin, access, 60),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                egress,
+                destination,
+                path(egress, destination, 60),
+            );
+        for transfer in &transit.transfer_edges {
+            let from = stop_coordinate(&transit, transfer.from.as_str());
+            let to = stop_coordinate(&transit, transfer.to.as_str());
+            builder = builder.path(
+                StreetTravelMode::Walking,
+                from,
+                to,
+                path(from, to, transfer.duration_seconds),
+            );
+        }
+        builder.build()
+    };
+    for modes in [vec![], vec!["metro"], vec!["bus", "metro"]] {
+        let mut expected = None;
+        for concurrency in [1, 2, 4, 8] {
+            let mut limits = JourneyPlanningLimits::default();
+            limits.planner.max_concurrent_phase2_states = concurrency;
+            let body = route_body_with_limits(
+                street(),
+                FixtureRealtime::empty(),
+                request(origin, destination, &modes),
+                limits,
+            )
+            .await
+            .unwrap();
+            let options = body["journey_options"].as_array().unwrap();
+            assert!(!options.is_empty());
+            assert!(options.len() <= 3);
+            if let Some(expected) = &expected {
+                assert_eq!(options, expected);
+            } else {
+                expected = Some(options.clone());
+            }
+        }
+    }
+}
