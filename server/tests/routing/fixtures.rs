@@ -432,9 +432,12 @@ async fn phase2_concurrency_preserves_reconstruction_and_ordered_top_three() {
     };
     for modes in [vec![], vec!["metro"], vec!["bus", "metro"]] {
         let mut expected = None;
-        for concurrency in [1, 2, 4, 8] {
+        for (phase2_concurrency, reconstruction_concurrency) in
+            [(1, 4), (2, 4), (4, 4), (8, 4), (4, 1), (4, 2), (4, 8)]
+        {
             let mut limits = JourneyPlanningLimits::default();
-            limits.planner.max_concurrent_phase2_states = concurrency;
+            limits.planner.max_concurrent_phase2_states = phase2_concurrency;
+            limits.max_concurrent_reconstruction_candidates = reconstruction_concurrency;
             let body = route_body_with_limits(
                 street(),
                 FixtureRealtime::empty(),

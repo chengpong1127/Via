@@ -388,3 +388,27 @@ fn phase2_concurrency_is_configurable_and_bounded() {
         assert!(ViaConfig::from_toml(&body).is_err());
     }
 }
+
+#[test]
+fn reconstruction_concurrency_is_configurable_and_bounded() {
+    for value in [1, 2, 4, 8, 16] {
+        let body = TOML.replace(
+            "max_concurrent_reconstruction_candidates = 4",
+            &format!("max_concurrent_reconstruction_candidates = {value}"),
+        );
+        assert_eq!(
+            ViaConfig::from_toml(&body)
+                .unwrap()
+                .journey_limits()
+                .max_concurrent_reconstruction_candidates,
+            value
+        );
+    }
+    for value in [0, 17, usize::MAX] {
+        let body = TOML.replace(
+            "max_concurrent_reconstruction_candidates = 4",
+            &format!("max_concurrent_reconstruction_candidates = {value}"),
+        );
+        assert!(ViaConfig::from_toml(&body).is_err());
+    }
+}

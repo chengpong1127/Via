@@ -1,9 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::Arc,
     time::Instant,
 };
 
+use futures_util::{Stream, StreamExt, stream};
 use time::OffsetDateTime;
 
 use crate::{
@@ -249,8 +251,19 @@ impl RoutingService {
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
                 let reconstruction_attempts = journeys.len();
-                for journey in journeys {
-                    match self.reconstructor.reconstruct(&journey, context).await {
+                let journeys = &journeys;
+                let futures = (0..journeys.len()).map(|index| async move {
+                    self.reconstructor
+                        .reconstruct(&journeys[index], context)
+                        .await
+                });
+                let results = ordered_reconstruction(
+                    futures,
+                    self.limits.max_concurrent_reconstruction_candidates,
+                );
+                futures_util::pin_mut!(results);
+                while let Some(result) = results.next().await {
+                    match result {
                         Ok(Some(candidate)) => attempt.candidates.push(candidate),
                         Ok(None) => {}
                         Err(error) => attempt.failures.record_planning(&error),
@@ -390,6 +403,13 @@ impl RoutingService {
     }
 }
 
+fn ordered_reconstruction<F: Future>(
+    futures: impl Iterator<Item = F>,
+    concurrency: usize,
+) -> impl Stream<Item = F::Output> {
+    stream::iter(futures).buffered(concurrency)
+}
+
 #[derive(Default)]
 struct PlanningAttempt {
     candidates: Vec<JourneyCandidate>,
@@ -505,5 +525,102 @@ mod limits_tests {
                 internal: true
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod reconstruction_concurrency_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::{Semaphore, mpsc, oneshot};
+
+    struct Active(Arc<AtomicUsize>);
+
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_futures_overlap_and_keep_input_order() {
+        for limit in [1, 2, 4] {
+            let active = Arc::new(AtomicUsize::new(0));
+            let maximum = Arc::new(AtomicUsize::new(0));
+            let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+            let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+            let mut releases = Vec::new();
+            let futures = (0..4)
+                .map(|id| {
+                    let (tx, rx) = oneshot::channel();
+                    releases.push(Some(tx));
+                    let active = active.clone();
+                    let maximum = maximum.clone();
+                    let started = started_tx.clone();
+                    let finished = finished_tx.clone();
+                    async move {
+                        let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(count, Ordering::SeqCst);
+                        let _active = Active(active);
+                        started.send(id).unwrap();
+                        rx.await.unwrap();
+                        finished.send(id).unwrap();
+                        id
+                    }
+                })
+                .collect::<Vec<_>>();
+            let task = tokio::spawn(async move {
+                ordered_reconstruction(futures.into_iter(), limit)
+                    .collect::<Vec<_>>()
+                    .await
+            });
+            for batch in (0..4).step_by(limit) {
+                let size = limit.min(4 - batch);
+                for _ in 0..size {
+                    started_rx.recv().await.unwrap();
+                }
+                assert_eq!(active.load(Ordering::SeqCst), size);
+                for id in (batch..batch + size).rev() {
+                    releases[id].take().unwrap().send(()).unwrap();
+                    assert_eq!(finished_rx.recv().await.unwrap(), id);
+                }
+            }
+            assert_eq!(task.await.unwrap(), vec![0, 1, 2, 3]);
+            assert_eq!(maximum.load(Ordering::SeqCst), limit);
+            assert_eq!(active.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_buffered_work_releases_active_futures_and_permits() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let permits = Arc::new(Semaphore::new(4));
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let futures = (0..4)
+            .map(|_| {
+                let active = active.clone();
+                let permits = permits.clone();
+                let started = started_tx.clone();
+                async move {
+                    let _permit = permits.acquire().await.unwrap();
+                    active.fetch_add(1, Ordering::SeqCst);
+                    let _active = Active(active);
+                    started.send(()).unwrap();
+                    std::future::pending::<()>().await;
+                }
+            })
+            .collect::<Vec<_>>();
+        let task = tokio::spawn(async move {
+            ordered_reconstruction(futures.into_iter(), 4)
+                .collect::<Vec<_>>()
+                .await
+        });
+        for _ in 0..4 {
+            started_rx.recv().await.unwrap();
+        }
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(permits.available_permits(), 4);
     }
 }

@@ -122,6 +122,7 @@ pub struct JourneyPlanningLimits {
     pub planner: PlannerLimits,
     pub request_timeout: std::time::Duration,
     pub max_concurrent_requests: usize,
+    pub max_concurrent_reconstruction_candidates: usize,
     pub max_transit_access_stops: usize,
     pub max_transit_egress_stops: usize,
     pub max_walking_radius_metres: u32,
@@ -136,6 +137,9 @@ impl JourneyPlanningLimits {
             planner: self.planner.normalized(),
             request_timeout: self.request_timeout,
             max_concurrent_requests: self.max_concurrent_requests.max(1),
+            max_concurrent_reconstruction_candidates: self
+                .max_concurrent_reconstruction_candidates
+                .clamp(1, 16),
             max_transit_access_stops: self.max_transit_access_stops.max(1),
             max_transit_egress_stops: self.max_transit_egress_stops.max(1),
             max_walking_radius_metres: self.max_walking_radius_metres.max(1),

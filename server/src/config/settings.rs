@@ -41,6 +41,7 @@ pub struct RoutingSettings {
     pub max_static_corridors: usize,
     pub max_phase1_expansions: usize,
     pub max_concurrent_phase2_states: usize,
+    pub max_concurrent_reconstruction_candidates: usize,
     pub max_candidates: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
@@ -504,6 +505,11 @@ impl ViaConfig {
                 "routing.max_concurrent_phase2_states must be in 1..=32".into(),
             ));
         }
+        if !(1..=16).contains(&self.routing.max_concurrent_reconstruction_candidates) {
+            return Err(ConfigError::Invalid(
+                "routing.max_concurrent_reconstruction_candidates must be in 1..=16".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -531,6 +537,9 @@ impl ViaConfig {
             planner: self.planner_limits(),
             request_timeout: Duration::from_millis(self.server.request_timeout_ms),
             max_concurrent_requests: self.server.max_concurrent_requests,
+            max_concurrent_reconstruction_candidates: self
+                .routing
+                .max_concurrent_reconstruction_candidates,
             max_transit_access_stops: self.routing.access.max_transit_access_stops,
             max_transit_egress_stops: self.routing.access.max_transit_egress_stops,
             max_walking_radius_metres: self.routing.access.max_walking_radius_metres,
