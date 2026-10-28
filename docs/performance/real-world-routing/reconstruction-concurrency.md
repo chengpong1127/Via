@@ -16,9 +16,8 @@ reconstruction log is emitted only after the result stream has finished.
 
 ## Measurement status
 
-No Phase C.1 synthetic or live comparison has been collected in this checkout.
-The real-world routing pilot and its harness referenced in the task are absent
-from the checkout. The earlier pilot observations in the task do not establish
-speedup, provider contention, timeout rates, or production latency percentiles.
-A live comparison requires verified TDX quota and physical-attempt accounting,
-including retries, as well as request-correlated Route and semaphore metrics.
+The earlier [surrogate benchmark](reconstruction-concurrency-benchmark.md) and
+[planner-generated candidate benchmark](reconstruction-representative-benchmark.md)
+measure reconstruction against Valhalla. The representative comparison uses
+static timing and fixture bike availability, with limited large-pool samples;
+end-to-end performance remains unmeasured. The default of 4 is unchanged.

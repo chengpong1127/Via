@@ -624,3 +624,11 @@ mod reconstruction_concurrency_tests {
         assert_eq!(permits.available_permits(), 4);
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/reconstruction_benchmark.rs"]
+mod reconstruction_benchmark;
+
+#[cfg(test)]
+#[path = "../../tests/support/reconstruction_representative.rs"]
+mod reconstruction_representative;
