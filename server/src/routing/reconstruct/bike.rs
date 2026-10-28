@@ -91,7 +91,6 @@ async fn append_bike_share(
         from,
         &pickup,
         StreetTravelMode::Walking,
-        assembly.arrival_time,
     )
     .await?
     else {
@@ -105,7 +104,6 @@ async fn append_bike_share(
         &pickup,
         &dropoff,
         StreetTravelMode::Bicycle,
-        assembly.arrival_time,
     )
     .await?
     else {
@@ -128,7 +126,6 @@ async fn append_bike_share(
         &dropoff,
         to,
         StreetTravelMode::Walking,
-        assembly.arrival_time,
     )
     .await?
     else {

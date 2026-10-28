@@ -11,7 +11,8 @@ use crate::{
         realized::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
     },
     street::{
-        Coordinate, ProviderFailureClass, RouteQuery, RoutingTimeKind, StreetPath, StreetTravelMode,
+        Coordinate, ProviderFailureClass, RouteQuery, RoutingConstraints, StreetPath,
+        StreetTravelMode,
     },
 };
 
@@ -45,7 +46,6 @@ impl ReconstructionState<'_, '_> {
             &from,
             &to,
             StreetTravelMode::Walking,
-            self.assembly.arrival_time,
         )
         .await?
         else {
@@ -117,19 +117,17 @@ pub(super) async fn hydrate_path(
     from: &Place,
     to: &Place,
     mode: StreetTravelMode,
-    departure: OffsetDateTime,
 ) -> Result<Option<StreetPath>, PlanningError> {
     context.ensure_before_deadline()?;
     let from = Coordinate::try_from(from.coordinate).map_err(|_| PlanningError::Internal)?;
     let to = Coordinate::try_from(to.coordinate).map_err(|_| PlanningError::Internal)?;
-    let constraints = context.constraints(departure, RoutingTimeKind::DepartAt);
     let result = reconstructor
         .street_routing
         .route(RouteQuery {
             travel_mode: mode,
             origin: from,
             destination: to,
-            constraints,
+            constraints: RoutingConstraints::default(),
         })
         .await;
     context.ensure_before_deadline()?;

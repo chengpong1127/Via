@@ -10,6 +10,7 @@ pub mod planner;
 mod realized;
 mod reconstruct;
 mod request_cache;
+mod route_cache;
 pub mod static_search;
 pub mod topology;
 pub mod transfers;

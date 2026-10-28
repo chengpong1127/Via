@@ -252,10 +252,10 @@ impl RoutingService {
                     .increment(realtime_evidence_values as u64);
                 let reconstruction_attempts = journeys.len();
                 let journeys = &journeys;
+                let reconstructor = self.reconstructor.request_local();
+                let reconstructor = &reconstructor;
                 let futures = (0..journeys.len()).map(|index| async move {
-                    self.reconstructor
-                        .reconstruct(&journeys[index], context)
-                        .await
+                    reconstructor.reconstruct(&journeys[index], context).await
                 });
                 let results = ordered_reconstruction(
                     futures,

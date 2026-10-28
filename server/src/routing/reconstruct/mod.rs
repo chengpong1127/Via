@@ -51,6 +51,16 @@ impl JourneyReconstructor {
         }
     }
 
+    pub(super) fn request_local(&self) -> Self {
+        Self {
+            street_routing: Arc::new(super::route_cache::RouteCache::new(
+                self.street_routing.clone(),
+            )),
+            transit_runtime: self.transit_runtime.clone(),
+            bike_share_network: self.bike_share_network.clone(),
+        }
+    }
+
     pub(super) async fn reconstruct(
         &self,
         journey: &RealizedJourney,
@@ -200,6 +210,99 @@ mod tests {
             Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
             Arc::new(BikeShareNetwork::new(Vec::new())),
         )
+    }
+
+    #[tokio::test]
+    async fn cached_walking_paths_keep_candidate_timelines_independent() {
+        use crate::{
+            domain::location::GeoCoordinate,
+            routing::{
+                JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
+                PlanningDeadline, RealizedJourney, WalkingMovementKind,
+                model::JourneyPlanningContext,
+            },
+            street::{Coordinate, Metres, Seconds, StreetPath, StreetTravelMode},
+        };
+        use time::{Duration, macros::datetime};
+        let start = datetime!(2026-08-31 10:00 +08:00);
+        let origin = Coordinate::try_new(25.0, 121.5).unwrap();
+        let destination = Coordinate::try_new(25.01, 121.51).unwrap();
+        let geo = |p: Coordinate| GeoCoordinate {
+            latitude: p.latitude(),
+            longitude: p.longitude(),
+        };
+        let request = serde_json::from_value(serde_json::json!({"origin":{"coordinate":geo(origin),"display_text":"origin"},"destination":{"coordinate":geo(destination),"display_text":"destination"},"selected_modes":[],"departure_setting":{"type":"depart_now"}})).unwrap();
+        let context =
+            JourneyPlanningContext::new(&request, start, 14400, PlanningDeadline::disabled())
+                .unwrap();
+        let street = FakeStreetRouter::builder()
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                destination,
+                StreetPath {
+                    duration: Seconds(180),
+                    distance: Metres(100),
+                    geometry: vec![origin, destination],
+                    maneuvers: vec![],
+                    attribution: vec![],
+                },
+            )
+            .build();
+        let reconstructor = JourneyReconstructor::new(
+            Arc::new(street),
+            Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+        )
+        .request_local();
+        let journey = |departure| {
+            RealizedJourney::from_movements(
+                vec![
+                    JourneyAnchor {
+                        kind: JourneyAnchorKind::Origin,
+                        reached_at: departure,
+                    },
+                    JourneyAnchor {
+                        kind: JourneyAnchorKind::Destination,
+                        reached_at: departure + Duration::seconds(180),
+                    },
+                ],
+                vec![JourneyMovement {
+                    from_anchor: 0,
+                    to_anchor: 1,
+                    departure_at: departure,
+                    arrival_at: departure + Duration::seconds(180),
+                    kind: JourneyMovementKind::Walking {
+                        kind: WalkingMovementKind::Direct,
+                        duration_seconds: 180,
+                        distance_metres: 100,
+                    },
+                }],
+                departure,
+            )
+            .unwrap()
+        };
+        let first = reconstructor
+            .reconstruct(&journey(start), &context)
+            .await
+            .unwrap()
+            .unwrap()
+            .option;
+        let second = reconstructor
+            .reconstruct(&journey(start + Duration::minutes(15)), &context)
+            .await
+            .unwrap()
+            .unwrap()
+            .option;
+        assert_eq!(
+            first.legs[0].geometry.points,
+            second.legs[0].geometry.points
+        );
+        assert_eq!(first.legs[0].arrival_time, start + Duration::seconds(180));
+        assert_eq!(
+            second.legs[0].arrival_time,
+            start + Duration::minutes(15) + Duration::seconds(180)
+        );
     }
 
     #[test]

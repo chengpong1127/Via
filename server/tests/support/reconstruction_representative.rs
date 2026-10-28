@@ -188,6 +188,72 @@ async fn capture_representative_pools() {
             request_timeout: None,
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
         };
+        if std::env::var_os("VIA_ROUTE_CACHE_COMPARE").is_some() {
+            for cached in [false, true] {
+                let cache = Arc::new(crate::routing::route_cache::RouteCache::new(street.clone()));
+                let router: Arc<dyn StreetRouter> = if cached {
+                    cache.clone()
+                } else {
+                    street.clone()
+                };
+                let replay_reconstructor =
+                    JourneyReconstructor::new(router, runtime.clone(), network.clone());
+                metrics.reset();
+                observer.0.lock().unwrap().clear();
+                let started = Instant::now();
+                let results = ordered_reconstruction(
+                    journeys
+                        .iter()
+                        .map(|journey| replay_reconstructor.reconstruct(journey, &context)),
+                    4,
+                )
+                .collect::<Vec<_>>()
+                .await;
+                let wall = started.elapsed().as_secs_f64() * 1000.0;
+                let mut candidates = Vec::new();
+                let mut rejected = 0;
+                let mut failed = 0;
+                let mut fingerprint = sha2::Sha256::new();
+                use sha2::Digest;
+                for result in results {
+                    match result {
+                        Ok(Some(candidate)) => {
+                            fingerprint.update(format!("{:?}", candidate.ranking));
+                            fingerprint.update(serde_json::to_vec(&candidate.option).unwrap());
+                            candidates.push(candidate);
+                        }
+                        Ok(None) => {
+                            rejected += 1;
+                            fingerprint.update(b"rejected");
+                        }
+                        Err(error) => {
+                            failed += 1;
+                            fingerprint.update(format!("{error:?}"));
+                        }
+                    }
+                }
+                let candidate_digest = format!("{:x}", fingerprint.finalize());
+                let outcome = service
+                    .rank_candidates(context.search_start, candidates)
+                    .unwrap();
+                let top = format!(
+                    "{:x}",
+                    sha2::Sha256::digest(serde_json::to_vec(&outcome).unwrap())
+                );
+                let events = observer.0.lock().unwrap();
+                let timeouts = events
+                    .iter()
+                    .filter(|e| e.outcome == OperationOutcome::Timeout)
+                    .count();
+                let stats = cache.stats();
+                use std::sync::atomic::Ordering;
+                println!(
+                    "CACHE_COMPARE {}",
+                    serde_json::json!({"bike":bike,"cached":cached,"candidates":journeys.len(),"wall_ms":wall,"cache_stats":stats,"physical_http_attempts":metrics.attempts.load(Ordering::SeqCst),"max_http_active":metrics.max_active.load(Ordering::SeqCst),"timeouts":timeouts,"rejected":rejected,"failed":failed,"candidate_digest":candidate_digest,"top_digest":top})
+                );
+            }
+            continue;
+        }
         let mut sizes = [16, 64, 256]
             .into_iter()
             .filter(|size| *size < journeys.len())
