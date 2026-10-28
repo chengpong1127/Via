@@ -146,3 +146,45 @@ response shape are unchanged by the static-data workflow.
 ViaStatic schema version 2 requires measured `distance_metres` on static walking
 transfer edges. Rebuild version 1 artifacts with `via-data build`; missing
 transfer distances are not inferred from walking speed.
+
+## Chrome performance traces
+
+Set `VIA_CHROME_TRACE` to a writable file before starting either binary. The
+parent directory must exist. Stop the server gracefully (Ctrl-C or SIGTERM), or
+let the CLI exit normally, to flush and close the trace. The output is a Chrome
+trace JSON file: open https://ui.perfetto.dev/ and choose **Open trace file**.
+Trace files may contain operational counts and timing information; store them
+in a suitable location. The examples use the ignored `*.trace.json` suffix.
+
+```bash
+VIA_STATIC=server/data/build/{build_datetime}/.via-static.json \
+VIA_CHROME_TRACE=/tmp/server.trace.json \
+cargo run --release --manifest-path server/Cargo.toml --bin via-server
+
+VIA_CHROME_TRACE=/tmp/route.trace.json \
+cargo run --release --manifest-path server/Cargo.toml --bin via-route -- \
+  --static server/data/build/{build_datetime}/.via-static.json \
+  --from-lat 25.0478 --from-lon 121.5170 \
+  --to-lat 25.0339 --to-lon 121.5645 --depart-now \
+  --modes bus,metro,bike_share
+```
+
+The trace includes Routing Request, Candidate Discovery, Phase 1, Snapshot
+Loading (TDX Timing and BikeShare Availability), Phase 2 (Corridor Evaluation),
+Reconstruction, Route Cache, Final Ranking, Valhalla Matrix and Route, semaphore waits, and
+HTTP execution. Counts on phase spans include retained corridors, expanded
+states, candidates, and walking/BikeShare cache hits when available. Valhalla
+spans report matrix dimensions, not coordinates, URLs, credentials, or payloads.
+Normal logs and their fields are not exported. `RUST_LOG` and `via-route --trace`
+continue to control normal logging independently.
+
+Async spans measure elapsed wall time, including suspension and waiting, rather
+than CPU time. Concurrent operations overlap and should not be summed. Trace
+names include a unique span ID to distinguish concurrent operations with the
+same name. The Chrome exporter groups spans by root operation; nesting is
+inferred from timing and does not encode a complete explicit parent graph.
+Traces can grow with Valhalla request volume and have runtime and I/O overhead;
+profiling is disabled unless the environment variable is set. Abrupt termination
+may leave incomplete JSON, and errors after a file is opened (for example a full
+filesystem) are subject to the exporter’s background writer limitations. Compare
+release builds under representative load before interpreting small differences.

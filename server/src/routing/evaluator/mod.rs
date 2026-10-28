@@ -113,6 +113,7 @@ impl<'a> FixedCorridorEvaluator<'a> {
             failures: EvaluationFailures::default(),
         }
     }
+    #[tracing::instrument(target = "via_profile", name = "Corridor Evaluation", skip_all, fields(corridor_count = corridors.len(), states_expanded = tracing::field::Empty, candidate_count = tracing::field::Empty, walking_cache_hits = tracing::field::Empty, bike_cache_hits = tracing::field::Empty))]
     pub async fn evaluate(
         &mut self,
         corridors: &[EvaluationCorridor],
@@ -131,6 +132,11 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.stats.bike_exact_candidates_requested = bike.exact_requests;
         self.stats.bike_exact_cache_hits = bike.cache_hits;
         self.stats.bike_matrix_requests = bike.matrix_requests;
+        tracing::Span::current()
+            .record("states_expanded", self.stats.states_expanded)
+            .record("candidate_count", self.stats.final_candidates)
+            .record("walking_cache_hits", self.stats.walking_cache_hits)
+            .record("bike_cache_hits", self.stats.bike_exact_cache_hits);
         tracing::debug!(
             target: "via_server::routing",
             states_expanded = self.stats.states_expanded,

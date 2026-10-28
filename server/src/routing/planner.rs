@@ -273,6 +273,7 @@ impl MultimodalPlanner {
         })
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Phase 1", skip_all, fields(states_expanded = tracing::field::Empty, corridor_count = tracing::field::Empty))]
     fn execute_phase1(
         &self,
         query: &PlanningQuery,
@@ -288,6 +289,9 @@ impl MultimodalPlanner {
         }
         let (retained_corridors, static_stats) =
             static_search::generate(&self.network, &self.topology, &self.transfers, query);
+        tracing::Span::current()
+            .record("states_expanded", static_stats.states_expanded)
+            .record("corridor_count", static_stats.corridors_retained);
         if static_stats.deadline_exceeded || query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
@@ -331,6 +335,7 @@ impl MultimodalPlanner {
         Ok((retained_corridors, static_stats))
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = retained_corridors.retained().len(), bike_station_count = bike_station_ids.len()))]
     async fn load_request_snapshots(
         &self,
         query: &PlanningQuery,
@@ -392,7 +397,11 @@ impl MultimodalPlanner {
                 None
             }
         };
-        let (snapshot, bike_result) = tokio::join!(timing_future, bike_future);
+        use tracing::Instrument;
+        let (snapshot, bike_result) = tokio::join!(
+            timing_future.instrument(tracing::info_span!(target: "via_profile", "TDX Timing")),
+            bike_future.instrument(tracing::info_span!(target: "via_profile", "BikeShare Availability", enabled = bike_enabled))
+        );
         let bike_snapshot = match bike_result {
             None => None,
             Some(Ok(snapshot)) => Some(snapshot),
@@ -456,6 +465,7 @@ impl PlanningSession<'_> {
         &self.failures
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Phase 2", skip_all, fields(corridor_count = self.corridors.len()))]
     pub async fn evaluate(&mut self) -> Result<Vec<RealizedJourney>, RoutingError> {
         let mut evaluator = evaluator::FixedCorridorEvaluator::new(
             self.network,

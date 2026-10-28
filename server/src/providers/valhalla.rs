@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tracing::Instrument;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -203,6 +204,7 @@ impl ValhallaProvider {
         self
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Valhalla Semaphore Wait", skip_all)]
     async fn permit(&self) -> Result<OwnedSemaphorePermit, StreetRoutingError> {
         self.concurrency
             .clone()
@@ -306,6 +308,7 @@ impl ValhallaProvider {
             .client
             .get(self.endpoint("status")?)
             .send()
+            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
         let wire: StatusResponse = self.parse_response(response).await?;
@@ -322,6 +325,7 @@ impl ValhallaProvider {
         Ok(true)
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Valhalla Matrix", skip_all, fields(source_count = query.sources.len(), target_count = query.targets.len()))]
     async fn matrix_inner(&self, query: &MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
         if query.sources.len() > self.config.max_sources
             || query.targets.len() > self.config.max_targets
@@ -358,6 +362,7 @@ impl ValhallaProvider {
             .post(self.endpoint("sources_to_targets")?)
             .json(&request)
             .send()
+            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
         let wire: MatrixResponse = self.parse_response(response).await?;
@@ -381,6 +386,7 @@ impl ValhallaProvider {
         Ok(MatrixResult { cells })
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Valhalla Route", skip_all)]
     async fn route_inner(&self, query: &RouteQuery) -> Result<StreetPath, StreetRoutingError> {
         let request = RouteRequest {
             locations: vec![query.origin.into(), query.destination.into()],
@@ -407,6 +413,7 @@ impl ValhallaProvider {
             .post(self.endpoint("route")?)
             .json(&request)
             .send()
+            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
         #[cfg(test)]

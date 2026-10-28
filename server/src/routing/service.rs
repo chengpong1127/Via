@@ -82,6 +82,7 @@ impl RoutingService {
 }
 
 impl RoutingService {
+    #[tracing::instrument(target = "via_profile", name = "Routing Request", skip_all)]
     pub async fn plan(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
         let deadline = self
             .request_timeout
@@ -150,87 +151,92 @@ impl RoutingService {
             to_street_coordinate(request.destination.coordinate)
                 .map_err(|_| PlanningError::Internal)?,
         );
-        let query = if allowed_transit_modes.is_empty() {
-            PlanningQuery::new(
-                origin,
-                destination,
-                context.deadline,
-                Vec::new(),
-                Vec::new(),
-                context.search_start,
-                self.limits.planner,
-            )
-            .with_allowed_transit_modes([])
-        } else {
-            let access_started = Instant::now();
-            let access = self
-                .planner
-                .discover_access_points(
-                    self.street_routing.as_ref(),
-                    request.origin.coordinate,
+        use tracing::Instrument;
+        let query = async {
+            Ok::<_, PlanningError>(if allowed_transit_modes.is_empty() {
+                PlanningQuery::new(
+                    origin,
+                    destination,
+                    context.deadline,
+                    Vec::new(),
+                    Vec::new(),
                     context.search_start,
-                    context.access_constraints(),
-                    &allowed_transit_modes,
-                    &self.limits,
+                    self.limits.planner,
                 )
-                .await;
-            context.ensure_before_deadline()?;
-            let egress = self
-                .planner
-                .discover_egress_points(
-                    self.street_routing.as_ref(),
-                    request.destination.coordinate,
-                    context.direct_constraints(),
-                    &allowed_transit_modes,
-                    &self.limits,
-                )
-                .await;
-            context.ensure_before_deadline()?;
-            let (access, egress) = match (access, egress) {
-                (Ok(access), Ok(egress)) => (access, egress),
-                (Err(error), _) | (_, Err(error)) => {
-                    attempt.failures.record_provider(&error);
-                    (Vec::new(), Vec::new())
-                }
-            };
-            let candidate_stops = access.len() + egress.len();
-            let discovery_duration = access_started.elapsed();
-            ::metrics::counter!("via_planner_transit_candidate_stops_total")
-                .increment(candidate_stops as u64);
-            ::metrics::histogram!("via_planner_candidate_discovery_duration_seconds")
-                .record(discovery_duration.as_secs_f64());
-            tracing::debug!(
-                target: "via_server::routing",
-                candidate_discovery_ms = discovery_duration.as_millis() as u64,
-                transit_candidate_stops = candidate_stops,
-                "transit candidate discovery completed"
-            );
-            tracing::debug!(
-                target: "via_server::routing",
-                access = ?access.iter().map(|point| (
-                    point.stop_id.as_str(),
-                    self.planner.modes_at_stop(&point.stop_id),
-                    point.walking_seconds,
-                )).collect::<Vec<_>>(),
-                egress = ?egress.iter().map(|point| (
-                    point.stop_id.as_str(),
-                    self.planner.modes_at_stop(&point.stop_id),
-                    point.walking_seconds,
-                )).collect::<Vec<_>>(),
-                "discovered transit access and egress"
-            );
+                .with_allowed_transit_modes([])
+            } else {
+                let access_started = Instant::now();
+                let access = self
+                    .planner
+                    .discover_access_points(
+                        self.street_routing.as_ref(),
+                        request.origin.coordinate,
+                        context.search_start,
+                        context.access_constraints(),
+                        &allowed_transit_modes,
+                        &self.limits,
+                    )
+                    .await;
+                context.ensure_before_deadline()?;
+                let egress = self
+                    .planner
+                    .discover_egress_points(
+                        self.street_routing.as_ref(),
+                        request.destination.coordinate,
+                        context.direct_constraints(),
+                        &allowed_transit_modes,
+                        &self.limits,
+                    )
+                    .await;
+                context.ensure_before_deadline()?;
+                let (access, egress) = match (access, egress) {
+                    (Ok(access), Ok(egress)) => (access, egress),
+                    (Err(error), _) | (_, Err(error)) => {
+                        attempt.failures.record_provider(&error);
+                        (Vec::new(), Vec::new())
+                    }
+                };
+                let candidate_stops = access.len() + egress.len();
+                let discovery_duration = access_started.elapsed();
+                ::metrics::counter!("via_planner_transit_candidate_stops_total")
+                    .increment(candidate_stops as u64);
+                ::metrics::histogram!("via_planner_candidate_discovery_duration_seconds")
+                    .record(discovery_duration.as_secs_f64());
+                tracing::debug!(
+                    target: "via_server::routing",
+                    candidate_discovery_ms = discovery_duration.as_millis() as u64,
+                    transit_candidate_stops = candidate_stops,
+                    "transit candidate discovery completed"
+                );
+                tracing::debug!(
+                    target: "via_server::routing",
+                    access = ?access.iter().map(|point| (
+                        point.stop_id.as_str(),
+                        self.planner.modes_at_stop(&point.stop_id),
+                        point.walking_seconds,
+                    )).collect::<Vec<_>>(),
+                    egress = ?egress.iter().map(|point| (
+                        point.stop_id.as_str(),
+                        self.planner.modes_at_stop(&point.stop_id),
+                        point.walking_seconds,
+                    )).collect::<Vec<_>>(),
+                    "discovered transit access and egress"
+                );
 
-            PlanningQuery::new(
-                origin,
-                destination,
-                context.deadline,
-                access,
-                egress,
-                context.search_start,
-                self.limits.planner,
-            )
-            .with_allowed_transit_modes(allowed_transit_modes)
-        };
+                PlanningQuery::new(
+                    origin,
+                    destination,
+                    context.deadline,
+                    access,
+                    egress,
+                    context.search_start,
+                    self.limits.planner,
+                )
+                .with_allowed_transit_modes(allowed_transit_modes)
+            })
+        }
+        .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
+        .await?;
         let mut query = query
             .with_bike_share(request.allows_bike_share())
             .with_limits(self.limits.planner);
@@ -251,6 +257,7 @@ impl RoutingService {
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
                 let reconstruction_attempts = journeys.len();
+                let reconstruction_span = tracing::info_span!(target: "via_profile", "Reconstruction", candidate_count = reconstruction_attempts);
                 let journeys = &journeys;
                 let reconstructor = self.reconstructor.request_local();
                 let reconstructor = &reconstructor;
@@ -261,14 +268,18 @@ impl RoutingService {
                     futures,
                     self.limits.max_concurrent_reconstruction_candidates,
                 );
-                futures_util::pin_mut!(results);
-                while let Some(result) = results.next().await {
-                    match result {
-                        Ok(Some(candidate)) => attempt.candidates.push(candidate),
-                        Ok(None) => {}
-                        Err(error) => attempt.failures.record_planning(&error),
+                async {
+                    futures_util::pin_mut!(results);
+                    while let Some(result) = results.next().await {
+                        match result {
+                            Ok(Some(candidate)) => attempt.candidates.push(candidate),
+                            Ok(None) => {}
+                            Err(error) => attempt.failures.record_planning(&error),
+                        }
                     }
                 }
+                .instrument(reconstruction_span)
+                .await;
                 tracing::debug!(
                     target: "via_server::routing",
                     reconstruction_attempts,
@@ -316,6 +327,7 @@ impl RoutingService {
         Ok(attempt)
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Final Ranking", skip_all, fields(candidate_count = candidates.len()))]
     fn finalize_plan(
         &self,
         generated_at: OffsetDateTime,

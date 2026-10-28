@@ -49,12 +49,12 @@ struct Cli {
 async fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
     let cli = Cli::parse();
-    if cli.trace {
-        tracing_subscriber::fmt()
-            .with_env_filter("via_server::routing=debug,via_server::providers::timing=debug")
-            .without_time()
-            .init();
-    }
+    let log_filter = cli.trace.then(|| {
+        tracing_subscriber::EnvFilter::new(
+            "via_server::routing=debug,via_server::providers::timing=debug",
+        )
+    });
+    let _trace_guard = via_server::profiling::init(log_filter)?;
     let mut settings = ViaConfig::load(cli.config.as_deref())?;
     settings.apply_environment()?;
     let options = options_from_cli(&cli, &mut settings)?;

@@ -37,6 +37,7 @@ unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tracing-chrome = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

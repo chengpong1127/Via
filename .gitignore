@@ -7,3 +7,6 @@
 /data/dev/
 /server/var/valhalla/
 /server/var/valhalla-taiwan/
+
+*.trace.json
+trace.json

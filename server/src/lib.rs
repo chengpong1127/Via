@@ -5,6 +5,7 @@ pub mod data;
 pub mod domain;
 pub mod health;
 pub mod metrics;
+pub mod profiling;
 pub mod providers;
 pub mod routing;
 pub mod runtime;

@@ -82,8 +82,10 @@ impl StreetRouter for RouteCache {
         self.provider.matrix(query).await
     }
 
+    #[tracing::instrument(target = "via_profile", name = "Route Cache", skip_all, fields(result = tracing::field::Empty))]
     async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
         if query.constraints.time.is_some() {
+            tracing::Span::current().record("result", "bypass");
             return self.provider.route(query).await;
         }
         self.logical.fetch_add(1, Ordering::Relaxed);
@@ -92,17 +94,21 @@ impl StreetRouter for RouteCache {
             let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cell) = entries.get(&key) {
                 if cell.initialized() {
+                    tracing::Span::current().record("result", "ready");
                     self.ready.fetch_add(1, Ordering::Relaxed);
                 } else {
+                    tracing::Span::current().record("result", "inflight");
                     self.inflight.fetch_add(1, Ordering::Relaxed);
                 }
                 Some(cell.clone())
             } else if entries.len() < MAX_ENTRIES {
+                tracing::Span::current().record("result", "miss");
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 let cell = Arc::new(OnceCell::new());
                 entries.insert(key, cell.clone());
                 Some(cell)
             } else {
+                tracing::Span::current().record("result", "capacity");
                 self.misses.fetch_add(1, Ordering::Relaxed);
                 None
             }

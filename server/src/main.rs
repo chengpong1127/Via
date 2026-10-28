@@ -15,13 +15,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     settings.apply_environment()?;
     let config = ServerConfig::from_settings(&settings)?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "via_server=info".into()),
-        )
-        .without_time()
-        .init();
+    let _trace_guard = via_server::profiling::init(Some(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "via_server=info".into()),
+    ))?;
 
     let metrics = metrics::install_prometheus()?;
 
