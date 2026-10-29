@@ -53,6 +53,15 @@ pub struct Phase2EvaluationStats {
 }
 
 impl Phase2EvaluationStats {
+    fn merge_corridor(&mut self, stats: Self) {
+        self.states_expanded += stats.states_expanded;
+        self.transit_operations_attempted += stats.transit_operations_attempted;
+        self.walking_operations_attempted += stats.walking_operations_attempted;
+        self.bike_operations_attempted += stats.bike_operations_attempted;
+        self.successors_generated += stats.successors_generated;
+        self.transit_departure_lookups += stats.transit_departure_lookups;
+    }
+
     fn record_expansion(&mut self, stats: expansion::ExpansionStats) {
         self.states_expanded += stats.states_expanded;
         self.transit_operations_attempted += stats.transit_operations_attempted;
@@ -167,13 +176,84 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridors: &[EvaluationCorridor],
     ) -> Result<EvaluationResult, RoutingError> {
         self.check_deadline()?;
-        let mut candidates = Vec::new();
-        for corridor in corridors {
-            self.stats.corridors_attempted += 1;
-            candidates.extend(self.evaluate_corridor(corridor).await?);
-            self.stats.corridors_completed += 1;
+        use futures_util::{
+            future::{AbortHandle, Abortable},
+            stream::{FuturesUnordered, StreamExt},
+        };
+        use tracing::Instrument;
+        let concurrency = self
+            .query
+            .limits
+            .max_concurrent_phase2_corridors
+            .clamp(1, 8);
+        let mut pending = FuturesUnordered::new();
+        let mut handles = std::collections::BTreeMap::new();
+        let mut outcomes = std::collections::BTreeMap::new();
+        let mut next = 0;
+        let mut fatal: Option<(usize, RoutingError)> = None;
+        let network = self.network;
+        let retained = self.corridor;
+        let snapshot = self.snapshot;
+        let query = self.query;
+        let walking = self.walking;
+        let bike_share = self.bike_share;
+        let make_future = |index: usize, registration| async move {
+            let mut evaluator = FixedCorridorEvaluator::new(
+                network, retained, snapshot, query, walking, bike_share,
+            );
+            let span = tracing::info_span!(target: "via_profile", "Phase 2 Corridor", corridor_index = index);
+            let result = Abortable::new(
+                evaluator
+                    .evaluate_corridor(&corridors[index])
+                    .instrument(span),
+                registration,
+            )
+            .await;
+            (index, result, evaluator.stats, evaluator.failures)
+        };
+        loop {
+            while fatal.is_none()
+                && !query.deadline.is_elapsed()
+                && next < corridors.len()
+                && pending.len() < concurrency
+            {
+                let (handle, registration) = AbortHandle::new_pair();
+                handles.insert(next, handle);
+                pending.push(make_future(next, registration));
+                self.stats.corridors_attempted += 1;
+                next += 1;
+            }
+            if pending.is_empty() {
+                break;
+            }
+            let Some((index, result, stats, failures)) = pending.next().await else {
+                break;
+            };
+            handles.remove(&index);
+            self.stats.merge_corridor(stats);
+            self.failures.merge(failures);
+            match result {
+                Ok(Ok(candidates)) => {
+                    self.stats.corridors_completed += 1;
+                    outcomes.insert(index, candidates);
+                }
+                Ok(Err(error)) => {
+                    if fatal.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
+                        fatal = Some((index, error));
+                        for (&other, handle) in &handles {
+                            if other > index {
+                                handle.abort();
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
         }
-
+        if let Some((_, error)) = fatal {
+            return Err(error);
+        }
+        let candidates = outcomes.into_values().flatten().collect();
         self.check_deadline()?;
         let candidates = pareto_candidates(candidates);
         self.check_deadline()?;

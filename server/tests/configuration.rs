@@ -12,6 +12,7 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     assert_eq!(limits.planner.max_static_corridors, 100);
     assert_eq!(limits.planner.max_phase1_expansions, 20_000);
     assert_eq!(limits.planner.max_concurrent_phase2_states, 4);
+    assert_eq!(limits.planner.max_concurrent_phase2_corridors, 1);
     assert_eq!(limits.planner.max_candidates, 16);
     assert_eq!(limits.planner.max_departures_per_query, 3);
     assert_eq!(limits.planner.max_journey_duration_seconds, 14_400);
@@ -411,4 +412,37 @@ fn reconstruction_concurrency_is_configurable_and_bounded() {
         );
         assert!(ViaConfig::from_toml(&body).is_err());
     }
+}
+
+#[test]
+fn phase2_corridor_concurrency_accepts_one_through_eight_and_defaults_to_one() {
+    let original = include_str!("../config/via.toml");
+    for value in 1..=8 {
+        let config = original.replace(
+            "max_concurrent_phase2_corridors = 1",
+            &format!("max_concurrent_phase2_corridors = {value}"),
+        );
+        assert_eq!(
+            via_server::config::ViaConfig::from_toml(&config)
+                .unwrap()
+                .planner_limits()
+                .max_concurrent_phase2_corridors,
+            value
+        );
+    }
+    for value in [0, 9] {
+        let config = original.replace(
+            "max_concurrent_phase2_corridors = 1",
+            &format!("max_concurrent_phase2_corridors = {value}"),
+        );
+        assert!(via_server::config::ViaConfig::from_toml(&config).is_err());
+    }
+    let config = original.replace("max_concurrent_phase2_corridors = 1\n", "");
+    assert_eq!(
+        via_server::config::ViaConfig::from_toml(&config)
+            .unwrap()
+            .planner_limits()
+            .max_concurrent_phase2_corridors,
+        1
+    );
 }

@@ -356,7 +356,19 @@ impl ValhallaProvider {
             date_time: wire_time(query.constraints)?,
             expansion_max_distance: query.constraints.max_distance.map(|value| value.0),
         };
+        #[cfg(test)]
+        let wait = self
+            .measurement
+            .as_ref()
+            .map(|measurement| measurement.wait());
         let _permit = self.permit().await?;
+        #[cfg(test)]
+        drop(wait);
+        #[cfg(test)]
+        let mut http = self
+            .measurement
+            .as_ref()
+            .map(|measurement| measurement.http());
         let response = self
             .client
             .post(self.endpoint("sources_to_targets")?)
@@ -365,7 +377,16 @@ impl ValhallaProvider {
             .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
-        let wire: MatrixResponse = self.parse_response(response).await?;
+        #[cfg(test)]
+        let status_success = response.status().is_success();
+        let wire = self.parse_response(response).await;
+        #[cfg(test)]
+        if let Some(http) = http.as_mut() {
+            http.finish(status_success);
+        }
+        #[cfg(test)]
+        drop(http);
+        let wire: MatrixResponse = wire?;
         if wire.sources_to_targets.len() != query.sources.len()
             || wire
                 .sources_to_targets

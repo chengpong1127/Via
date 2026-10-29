@@ -34,6 +34,10 @@ pub struct ServerSettings {
     pub max_body_bytes: usize,
 }
 
+fn default_phase2_corridors() -> usize {
+    1
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoutingSettings {
@@ -41,6 +45,8 @@ pub struct RoutingSettings {
     pub max_static_corridors: usize,
     pub max_phase1_expansions: usize,
     pub max_concurrent_phase2_states: usize,
+    #[serde(default = "default_phase2_corridors")]
+    pub max_concurrent_phase2_corridors: usize,
     pub max_concurrent_reconstruction_candidates: usize,
     pub max_candidates: usize,
     pub max_departures_per_query: usize,
@@ -500,6 +506,11 @@ impl ViaConfig {
                 "bikeshare.optimistic_walk_speed_metres_per_second must be finite".into(),
             ));
         }
+        if !(1..=8).contains(&self.routing.max_concurrent_phase2_corridors) {
+            return Err(ConfigError::Invalid(
+                "routing.max_concurrent_phase2_corridors must be in 1..=8".into(),
+            ));
+        }
         if !(1..=32).contains(&self.routing.max_concurrent_phase2_states) {
             return Err(ConfigError::Invalid(
                 "routing.max_concurrent_phase2_states must be in 1..=32".into(),
@@ -553,6 +564,7 @@ impl ViaConfig {
             max_static_corridors: self.routing.max_static_corridors,
             max_phase1_expansions: self.routing.max_phase1_expansions,
             max_concurrent_phase2_states: self.routing.max_concurrent_phase2_states,
+            max_concurrent_phase2_corridors: self.routing.max_concurrent_phase2_corridors,
             max_candidates: self.routing.max_candidates,
             max_departures_per_query: self.routing.max_departures_per_query,
             max_journey_duration_seconds: self.routing.max_journey_duration_seconds,

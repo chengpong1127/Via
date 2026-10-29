@@ -25,7 +25,8 @@ use via_server::{
 
 use super::fixtures::{
     CountingStreet, CountingTiming, FixtureRealtime, leg_modes, near_stop, network,
-    option_for_patterns, request, route_body_with_bike, route_body_with_sources, transit_street,
+    option_for_patterns, request, route_body_inner, route_body_with_bike, route_body_with_sources,
+    transit_street,
 };
 use crate::support::routing::{path, stop_coordinate};
 
@@ -126,51 +127,67 @@ async fn bike_can_replace_a_transit_leg() {
     let m1 = stop_coordinate(&transit, "F-M1");
     let m2 = stop_coordinate(&transit, "F-M2-RED");
     let (bike_network, pickup, dropoff) = segment_network("F-M1", "F-M2-RED", m1, m2);
-    let street = FakeStreetRouter::builder()
-        .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
-        .path(
-            StreetTravelMode::Walking,
-            m2,
-            destination,
-            path(m2, destination, 60),
-        )
-        .path(StreetTravelMode::Walking, m1, pickup, path(m1, pickup, 10))
-        .path(
-            StreetTravelMode::Bicycle,
-            pickup,
-            dropoff,
-            path(pickup, dropoff, 90),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            dropoff,
-            m2,
-            path(dropoff, m2, 10),
-        )
-        .build();
+    let street = || {
+        FakeStreetRouter::builder()
+            .path(StreetTravelMode::Walking, origin, m1, path(origin, m1, 60))
+            .path(
+                StreetTravelMode::Walking,
+                m2,
+                destination,
+                path(m2, destination, 60),
+            )
+            .path(StreetTravelMode::Walking, m1, pickup, path(m1, pickup, 10))
+            .path(
+                StreetTravelMode::Bicycle,
+                pickup,
+                dropoff,
+                path(pickup, dropoff, 90),
+            )
+            .path(
+                StreetTravelMode::Walking,
+                dropoff,
+                m2,
+                path(dropoff, m2, 10),
+            )
+            .build()
+    };
     let calls = Arc::new(AtomicUsize::new(0));
-    let body = route_body_with_bike(
-        street,
-        FixtureRealtime::empty(),
-        request(origin, destination, &["metro", "bike_share"]),
-        bike_network,
-        Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
-            calls: calls.clone(),
-        }),
-    )
-    .await;
-
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
-    let options = body["journey_options"].as_array().unwrap();
-    assert!(
-        options
-            .iter()
-            .any(|option| leg_modes(option).contains(&"transit"))
-    );
-    assert!(options.iter().any(|option| bike_share_uses(option) == 1));
+    let mut baseline = None;
+    for concurrency in [1, 2, 4, 8] {
+        let mut limits = via_server::routing::JourneyPlanningLimits::default();
+        limits.planner.max_concurrent_phase2_states = 4;
+        limits.planner.max_concurrent_phase2_corridors = concurrency;
+        let body = route_body_inner(
+            Arc::new(street()),
+            FixtureRealtime::empty(),
+            request(origin, destination, &["metro", "bike_share"]),
+            Some((
+                bike_network.clone(),
+                Arc::new(FixtureAvailabilitySource {
+                    snapshot: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
+                    calls: calls.clone(),
+                }),
+            )),
+            limits,
+            transit.clone(),
+        )
+        .await
+        .unwrap();
+        let options = body["journey_options"].as_array().unwrap();
+        assert!(
+            options
+                .iter()
+                .any(|option| leg_modes(option).contains(&"transit"))
+        );
+        assert!(options.iter().any(|option| bike_share_uses(option) == 1));
+        if let Some(expected) = &baseline {
+            assert_eq!(options, expected);
+        } else {
+            baseline = Some(options.clone());
+        }
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
 }
-
 #[tokio::test]
 async fn bike_availability_is_not_loaded_when_bike_share_is_not_selected() {
     let transit = network();

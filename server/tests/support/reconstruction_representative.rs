@@ -460,3 +460,205 @@ async fn reconstruction_head_of_line_measurement() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "representative Phase 2 corridor concurrency benchmark"]
+async fn phase2_corridor_representative_benchmark() {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
+    let _trace = if std::env::var_os("VIA_CHROME_TRACE").is_some() {
+        crate::profiling::init(None).unwrap()
+    } else {
+        None
+    };
+    let path = std::path::Path::new("data/build/20261001T173300Z/.via-static.json");
+    let artifact = crate::data::load_static_artifact(path).unwrap();
+    let runtime = Arc::new(TransitRuntime::new(Arc::new(artifact.transit)));
+    let network = Arc::new(artifact.bike_share);
+    let settings =
+        crate::config::ViaConfig::load(Some(std::path::Path::new("config/via.toml"))).unwrap();
+    let limits = settings.journey_limits();
+    let metrics = Arc::new(RouteMeasurement::default());
+    let observer = Arc::new(RouteObserver::default());
+    let street = Arc::new(
+        ValhallaProvider::with_observer(
+            ValhallaConfig {
+                base_url: "http://valhalla:8002/".parse().unwrap(),
+                request_timeout: std::time::Duration::from_millis(1200),
+                max_concurrency: 8,
+                max_sources: 32,
+                max_targets: 32,
+                max_response_bytes: 2_097_152,
+            },
+            observer.clone(),
+        )
+        .unwrap()
+        .with_measurement(metrics.clone()),
+    );
+    let planner = MultimodalPlanner::new(
+        runtime.clone(),
+        Arc::new(StaticTiming(ScheduleTiming::new(runtime.clone()))),
+        street.clone(),
+        network.clone(),
+        Arc::new(AvailableBikes),
+        limits.bike.clone(),
+    );
+    let departure = time::macros::datetime!(2026-10-01 10:00 +08:00);
+    for bike in [false, true] {
+        let modes = if bike {
+            serde_json::json!(["bus", "metro", "bike_share"])
+        } else {
+            serde_json::json!(["bus", "metro"])
+        };
+        let request: PlanningRequest = serde_json::from_value(serde_json::json!({"origin":{"coordinate":{"latitude":25.0478,"longitude":121.5170},"display_text":"Taipei Main Station"},"destination":{"coordinate":{"latitude":25.0338,"longitude":121.5645},"display_text":"Xinyi"},"selected_modes":modes,"departure_setting":{"type":"depart_now"}})).unwrap();
+        let context = JourneyPlanningContext::new(
+            &request,
+            departure,
+            limits.planner.max_journey_duration_seconds,
+            PlanningDeadline::disabled(),
+        )
+        .unwrap();
+        let allowed = request.allowed_transit_modes();
+        let access = planner
+            .discover_access_points(
+                street.as_ref(),
+                request.origin.coordinate,
+                departure,
+                context.access_constraints(),
+                &allowed,
+                &limits,
+            )
+            .await
+            .unwrap();
+        let egress = planner
+            .discover_egress_points(
+                street.as_ref(),
+                request.destination.coordinate,
+                context.direct_constraints(),
+                &allowed,
+                &limits,
+            )
+            .await
+            .unwrap();
+        println!(
+            "CAPTURE access={} egress={} bike={bike}",
+            access.len(),
+            egress.len()
+        );
+        let query = PlanningQuery::new(
+            to_street_coordinate(request.origin.coordinate).unwrap(),
+            to_street_coordinate(request.destination.coordinate).unwrap(),
+            PlanningDeadline::disabled(),
+            access,
+            egress,
+            departure,
+            limits.planner,
+        )
+        .with_allowed_transit_modes(allowed)
+        .with_bike_share(bike)
+        .with_limits(limits.planner);
+        let mut reference = None;
+        for round in 0..4 {
+            for offset in 0..4 {
+                let concurrency = [1, 2, 4, 8][(round + offset) % 4];
+                let mut sample_query = query.clone();
+                sample_query.limits.max_concurrent_phase2_states = 4;
+                sample_query.limits.max_concurrent_phase2_corridors = concurrency;
+                let mut session = planner.prepare(sample_query).await.unwrap();
+                metrics.reset();
+                observer.0.lock().unwrap().clear();
+                let started = Instant::now();
+                let journeys = session.evaluate().await.unwrap();
+                let wall_us = started.elapsed().as_micros();
+                let stats = session.stats().phase2_evaluation;
+                let signature = journeys
+                    .iter()
+                    .map(|j| j.identity().canonical_signature())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let digest = format!("{:x}", Sha256::digest(signature.as_bytes()));
+                let (timeouts, failures) = {
+                    let events = observer.0.lock().unwrap();
+                    (
+                        events
+                            .iter()
+                            .filter(|e| e.outcome == OperationOutcome::Timeout)
+                            .count(),
+                        events
+                            .iter()
+                            .filter(|e| e.outcome != OperationOutcome::Success)
+                            .count(),
+                    )
+                };
+                let wait_us: u64 = metrics.waits_us.lock().unwrap().iter().sum();
+                let peak = metrics.max_active.load(Ordering::SeqCst);
+                let http = metrics.attempts.load(Ordering::SeqCst);
+                println!(
+                    "P2 bike={bike} round={round} concurrency={concurrency} wall_us={wall_us} states={} successors={} candidates={} physical={} hits={} inflight={} wait_us={wait_us} timeouts={timeouts} failures={failures} peak={peak} http={http} digest={digest}",
+                    stats.states_expanded,
+                    stats.successors_generated,
+                    journeys.len(),
+                    stats.matrix.physical_requests,
+                    stats.matrix.completed_hits,
+                    stats.matrix.inflight_hits
+                );
+                if round == 3 {
+                    let reconstructor =
+                        JourneyReconstructor::new(street.clone(), runtime.clone(), network.clone())
+                            .request_local();
+                    let candidates = ordered_reconstruction(
+                        journeys
+                            .iter()
+                            .map(|journey| reconstructor.reconstruct(journey, &context)),
+                        limits.max_concurrent_reconstruction_candidates,
+                    )
+                    .collect::<Vec<_>>()
+                    .await;
+                    let mut reconstructed = Vec::new();
+                    let mut reconstruction_failures = 0;
+                    for candidate in candidates {
+                        match candidate {
+                            Ok(Some(candidate)) => reconstructed.push(candidate),
+                            Ok(None) => {}
+                            Err(_) => reconstruction_failures += 1,
+                        }
+                    }
+                    let service = RoutingService {
+                        street_routing: street.clone(),
+                        planner: planner.clone(),
+                        reconstructor: reconstructor.clone(),
+                        ranking: limits.ranking.clone(),
+                        limits: limits.clone(),
+                        request_timeout: None,
+                        request_slots: Arc::new(tokio::sync::Semaphore::new(
+                            limits.max_concurrent_requests,
+                        )),
+                    };
+                    let outcome = service
+                        .rank_candidates(context.search_start, reconstructed)
+                        .unwrap();
+                    let keys = match outcome {
+                        PlanningOutcome::Options(options) => options
+                            .journey_options
+                            .into_iter()
+                            .map(|option| option.matching_key)
+                            .collect::<Vec<_>>(),
+                        PlanningOutcome::Empty(_) => Vec::new(),
+                    };
+                    let top3_digest = format!("{:x}", Sha256::digest(keys.join("\n").as_bytes()));
+                    println!(
+                        "P2_TOP3 bike={bike} concurrency={concurrency} count={} errors={reconstruction_failures} digest={top3_digest}",
+                        keys.len()
+                    );
+                }
+                if let Some(expected) = &reference {
+                    if expected != &digest {
+                        println!("P2_DIGEST_MISMATCH bike={bike} concurrency={concurrency}");
+                    }
+                } else {
+                    reference = Some(digest);
+                }
+            }
+        }
+    }
+}

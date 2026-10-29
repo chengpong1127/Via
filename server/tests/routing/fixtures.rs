@@ -234,7 +234,7 @@ pub(crate) async fn route_body_with_street(street: Arc<dyn StreetRouter>, body: 
     .unwrap()
 }
 
-async fn route_body_inner(
+pub(crate) async fn route_body_inner(
     street: Arc<dyn StreetRouter>,
     realtime: FixtureRealtime,
     body: Value,
@@ -437,6 +437,7 @@ async fn phase2_concurrency_preserves_reconstruction_and_ordered_top_three() {
         {
             let mut limits = JourneyPlanningLimits::default();
             limits.planner.max_concurrent_phase2_states = phase2_concurrency;
+            limits.planner.max_concurrent_phase2_corridors = phase2_concurrency;
             limits.max_concurrent_reconstruction_candidates = reconstruction_concurrency;
             let body = route_body_with_limits(
                 street(),
