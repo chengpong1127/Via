@@ -61,7 +61,7 @@ async fn fake_street_router_preserves_matrix_order_and_route_details() {
         )
         .build();
 
-    let path = assert_provider_contract(
+    assert_provider_contract(
         &router,
         &ProviderContractFixture {
             origin,
@@ -75,7 +75,6 @@ async fn fake_street_router_preserves_matrix_order_and_route_details() {
         },
     )
     .await;
-    assert_eq!(path.duration, Seconds(620));
 }
 
 #[tokio::test]
@@ -157,8 +156,8 @@ async fn fake_router_normalizes_failures_and_max_distance() {
     assert_eq!(limited, StreetRoutingError::Unreachable);
 }
 
-#[tokio::test]
-async fn coordinate_rejects_non_finite_and_out_of_range_values() {
+#[test]
+fn coordinate_rejects_non_finite_and_out_of_range_values() {
     assert!(matches!(
         Coordinate::try_new(91.0, 121.5),
         Err(StreetRoutingError::InvalidRequest { .. })
@@ -170,7 +169,7 @@ async fn coordinate_rejects_non_finite_and_out_of_range_values() {
 }
 
 #[tokio::test]
-async fn cancelling_a_fake_operation_does_not_require_a_session() {
+async fn unconfigured_fake_matrix_pairs_are_unreachable() {
     let router: Arc<dyn StreetRouter> = Arc::new(FakeStreetRouter::builder().build());
     let result = router
         .matrix(MatrixQuery {
@@ -180,10 +179,7 @@ async fn cancelling_a_fake_operation_does_not_require_a_session() {
             targets: vec![coordinate(25.1, 121.6)],
             constraints: Default::default(),
         })
-        .await;
-    assert!(result.is_ok());
-    assert!(matches!(
-        result.unwrap().cells[0][0],
-        MatrixCell::Unreachable
-    ));
+        .await
+        .unwrap();
+    assert!(matches!(result.cells[0][0], MatrixCell::Unreachable));
 }

@@ -332,19 +332,17 @@ async fn valhalla_adapter_enforces_its_own_matrix_and_response_bounds() {
 
 #[tokio::test]
 async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
-    async fn slow_matrix() -> Json<Value> {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        Json(json!({"sources_to_targets": [[{"time": 1, "distance": 0.001}]]}))
-    }
-
-    let app = Router::new().route("/sources_to_targets", post(slow_matrix));
+    let app = Router::new().route(
+        "/sources_to_targets",
+        post(|| async { std::future::pending::<Json<Value>>().await }),
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let mut deadline_config = config(url::Url::parse(&format!("http://{address}/")).unwrap());
     deadline_config.max_concurrency = 1;
     deadline_config.request_timeout = Duration::from_millis(40);
-    let provider = Arc::new(ValhallaProvider::new(deadline_config).unwrap());
+    let provider = ValhallaProvider::new(deadline_config).unwrap();
     let query = MatrixQuery {
         orientation: MatrixOrientation::OneToMany,
         constraints: Default::default(),
@@ -353,30 +351,39 @@ async fn operation_deadline_includes_waiting_for_the_concurrency_permit() {
         targets: vec![coordinate(25.1, 121.6)],
     };
 
-    let first_provider = provider.clone();
-    let first_query = query.clone();
-    let first = tokio::spawn(async move { first_provider.matrix(first_query).await });
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    let started = std::time::Instant::now();
-    let second_error = provider.matrix(query).await.unwrap_err();
-    assert_timeout(second_error);
-    assert!(started.elapsed() < Duration::from_millis(80));
-    assert_timeout(first.await.unwrap().unwrap_err());
+    tokio::time::pause();
+    let first = provider.matrix(query.clone());
+    tokio::pin!(first);
+    assert!(futures_util::poll!(first.as_mut()).is_pending());
+    let second = provider.matrix(query);
+    tokio::pin!(second);
+    assert!(futures_util::poll!(second.as_mut()).is_pending());
+
+    tokio::time::advance(Duration::from_millis(41)).await;
+    let std::task::Poll::Ready(result) = futures_util::poll!(second.as_mut()) else {
+        panic!("operation deadline did not cover the semaphore wait");
+    };
+    assert_timeout(result.unwrap_err());
+    assert_timeout(first.await.unwrap_err());
 }
 
 #[tokio::test]
 async fn cancelling_an_operation_releases_its_concurrency_permit() {
-    async fn cancellable_matrix(State(calls): State<Arc<AtomicUsize>>) -> Json<Value> {
+    async fn cancellable_matrix(
+        State((calls, started)): State<(Arc<AtomicUsize>, Arc<tokio::sync::Notify>)>,
+    ) -> Json<Value> {
         if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            started.notify_one();
+            std::future::pending::<()>().await;
         }
         Json(json!({"sources_to_targets": [[{"time": 1, "distance": 0.001}]]}))
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
     let app = Router::new()
         .route("/sources_to_targets", post(cancellable_matrix))
-        .with_state(calls);
+        .with_state((calls, started.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -395,8 +402,11 @@ async fn cancelling_an_operation_releases_its_concurrency_permit() {
     let cancelled_provider = provider.clone();
     let cancelled_query = query.clone();
     let cancelled = tokio::spawn(async move { cancelled_provider.matrix(cancelled_query).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("first request did not reach the fixture");
     cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
 
     let follow_up = provider.matrix(query).await;
     assert_cancellation_follow_up_succeeds(follow_up.clone());
