@@ -231,17 +231,44 @@ mod tests {
 
     #[tokio::test]
     async fn canceled_initializer_releases_waiters_and_future_requests() {
-        let provider = Arc::new(Provider {
+        struct CancelProvider {
+            calls: AtomicUsize,
+            started: tokio::sync::Notify,
+        }
+
+        #[async_trait::async_trait]
+        impl StreetRouter for CancelProvider {
+            async fn matrix(&self, _: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
+                unreachable!()
+            }
+
+            async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.started.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                Ok(StreetPath {
+                    duration: Seconds(180),
+                    distance: Metres(100),
+                    geometry: vec![query.origin, query.destination],
+                    maneuvers: vec![],
+                    attribution: vec![],
+                })
+            }
+        }
+
+        let provider = Arc::new(CancelProvider {
             calls: AtomicUsize::new(0),
-            error: Mutex::new(None),
+            started: tokio::sync::Notify::new(),
         });
         let cache = Arc::new(RouteCache::new(provider.clone()));
         let task = tokio::spawn({
             let cache = cache.clone();
             async move { cache.route(query()).await }
         });
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        provider.started.notified().await;
         task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
         assert!(
             tokio::time::timeout(Duration::from_secs(1), cache.route(query()))
                 .await
