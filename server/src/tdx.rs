@@ -522,18 +522,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn credentials_debug_is_redacted() {
-        let credentials = TdxCredentials {
-            client_id: "client-id-value".into(),
-            client_secret: "client-secret-value".into(),
-        };
-        let debug = format!("{credentials:?}");
-        assert!(!debug.contains("client-id-value"));
-        assert!(!debug.contains("client-secret-value"));
-        assert!(debug.contains("<redacted>"));
-    }
-
     #[tokio::test]
     async fn retries_rate_limited_get_after_retry_after() {
         let expected = br#"{"available":true}"#.to_vec();

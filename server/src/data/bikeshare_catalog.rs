@@ -134,36 +134,15 @@ mod tests {
         );
         assert!(
             network
+                .station(&bike_station_id("Taipei", "TPE-BIKE-002"))
+                .is_some()
+        );
+        assert!(
+            network
                 .station(&bike_station_id("NewTaipei", "NWT-BIKE-001"))
                 .is_some()
         );
         assert!(network.access_links.is_empty());
-    }
-
-    #[test]
-    fn maps_records_from_one_json_array_per_city() {
-        let taipei = r#"[{"StationUID":"TPE-1","StationName":{"Zh_tw":"台北一站"},"StationPosition":{"PositionLat":25.0,"PositionLon":121.5},"ServiceType":2},{"StationUID":"TPE-2","StationName":{"Zh_tw":"台北二站"},"StationPosition":{"PositionLat":25.1,"PositionLon":121.6},"ServiceType":2}]"#;
-        let new_taipei = r#"[{"StationUID":"NTP-1","StationName":{"Zh_tw":"新北一站"},"StationPosition":{"PositionLat":25.2,"PositionLon":121.7},"ServiceType":2}]"#;
-
-        let network =
-            parse_tdx_station_catalog([("Taipei", taipei), ("NewTaipei", new_taipei)]).unwrap();
-
-        assert_eq!(network.stations.len(), 3);
-        assert!(
-            network
-                .station(&bike_station_id("Taipei", "TPE-1"))
-                .is_some()
-        );
-        assert!(
-            network
-                .station(&bike_station_id("Taipei", "TPE-2"))
-                .is_some()
-        );
-        assert!(
-            network
-                .station(&bike_station_id("NewTaipei", "NTP-1"))
-                .is_some()
-        );
     }
 
     #[test]

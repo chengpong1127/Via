@@ -233,22 +233,15 @@ mod tests {
 
     #[test]
     fn via_static_rejects_unsupported_schema_versions() {
-        let mut value = serde_json::to_value(artifact()).unwrap();
-        value["schema_version"] = serde_json::Value::from(VIA_STATIC_SCHEMA_VERSION + 1);
-        assert!(matches!(
-            ViaStatic::from_json(&value.to_string()),
-            Err(ViaStaticValidationError::UnsupportedSchemaVersion(3))
-        ));
-    }
-
-    #[test]
-    fn via_static_rejects_legacy_schema_without_transfer_distances() {
-        let mut value = serde_json::to_value(artifact()).unwrap();
-        value["schema_version"] = serde_json::Value::from(1);
-        assert!(matches!(
-            ViaStatic::from_json(&value.to_string()),
-            Err(ViaStaticValidationError::UnsupportedSchemaVersion(1))
-        ));
+        for version in [1, VIA_STATIC_SCHEMA_VERSION + 1] {
+            let mut value = serde_json::to_value(artifact()).unwrap();
+            value["schema_version"] = serde_json::Value::from(version);
+            assert_eq!(
+                ViaStatic::from_json(&value.to_string()).unwrap_err(),
+                ViaStaticValidationError::UnsupportedSchemaVersion(version),
+                "schema version {version}"
+            );
+        }
     }
 
     #[test]
