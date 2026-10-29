@@ -685,9 +685,9 @@ mod reconstruction_concurrency_tests {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/reconstruction_benchmark.rs"]
+#[path = "../../benchmarks/reconstruction.rs"]
 mod reconstruction_benchmark;
 
 #[cfg(test)]
-#[path = "../../tests/support/reconstruction_representative.rs"]
+#[path = "../../benchmarks/representative.rs"]
 mod reconstruction_representative;

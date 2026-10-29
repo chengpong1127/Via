@@ -76,7 +76,18 @@ From the repository root:
 
 ```sh
 cargo fmt --manifest-path server/Cargo.toml --check
-cargo clippy --manifest-path server/Cargo.toml --all-targets --all-features -- -D warnings
-cargo test --manifest-path server/Cargo.toml --all-targets --all-features
+cargo clippy --manifest-path server/Cargo.toml --locked --all-targets --all-features -- -D warnings
+cargo test --manifest-path server/Cargo.toml --locked --all-targets --all-features
 cargo run --manifest-path server/Cargo.toml --bin export-openapi > /tmp/via-openapi.json
+```
+
+For a fast unit-test pass, run `cargo test --manifest-path server/Cargo.toml --locked --lib`.
+The full command above runs the offline correctness suite; ignored measurements
+are excluded. There are currently no separate live-service correctness tests.
+For the optional Valhalla pilot and other manual measurements, prerequisites and
+individual commands are documented in the linked Notion testing guide. Run the
+offline routing measurement with:
+
+```sh
+cargo test --manifest-path server/Cargo.toml --locked --release --test performance -- --ignored --nocapture
 ```

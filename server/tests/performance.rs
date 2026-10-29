@@ -16,8 +16,18 @@ use via_server::{
     },
 };
 
-use super::fixtures::network;
 use via_server::street::FakeStreetRouter;
+
+#[allow(dead_code)]
+#[path = "support/tdx.rs"]
+mod tdx;
+
+fn network() -> via_server::domain::transit::TransitNetwork {
+    via_server::domain::transit::TransitNetwork::from_artifact_json(include_str!(
+        "../fixtures/routing/network.json"
+    ))
+    .unwrap()
+}
 
 // Run the same command/profile before and after a refactor; there are no machine-dependent thresholds.
 #[tokio::test]
@@ -29,15 +39,15 @@ async fn deterministic_routing_benchmark() {
     let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
         Arc::new(BusDepartureSource::new(
             runtime.clone(),
-            crate::support::tdx::failing_tdx_client(),
+            tdx::failing_tdx_client(),
         )),
         Arc::new(MetroDepartureSource::new(
             runtime.clone(),
-            crate::support::tdx::failing_tdx_client(),
+            tdx::failing_tdx_client(),
         )),
         Arc::new(TraDepartureSource::new(
             runtime.clone(),
-            crate::support::tdx::failing_tdx_client(),
+            tdx::failing_tdx_client(),
         )),
         Arc::new(ThsrDepartureSource::new(runtime.clone())),
     ];
