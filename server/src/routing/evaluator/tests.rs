@@ -3860,3 +3860,450 @@ fn final_pareto_removes_dominated_frontier_and_keeps_first_equal_identity() {
     assert_eq!(result[0].journey, winner.journey);
     assert_eq!(result[0].metrics, winner.metrics);
 }
+
+fn pruning_state(movements: Vec<JourneyMovement>) -> EvaluationState {
+    let ready_at = movements
+        .last()
+        .map_or(datetime!(2026-09-21 10:00 UTC), |movement| {
+            movement.arrival_at
+        });
+    let last_was_transit = movements
+        .last()
+        .is_some_and(|movement| matches!(movement.kind, JourneyMovementKind::Transit { .. }));
+    EvaluationState {
+        ready_at,
+        last_was_transit,
+        active_bike_rental: None,
+        bike_reuse_available_at: None,
+        movements,
+    }
+}
+
+fn pruning_transit_state(
+    id: &str,
+    departure_minute: i64,
+    arrival_minute: i64,
+    timing_basis: TimingBasis,
+    timing_reliability: TimingReliability,
+    evidence_id: Option<&str>,
+) -> EvaluationState {
+    let mut effective_trip = trip(
+        id,
+        "bus",
+        &["origin", "destination"],
+        &[departure_minute, arrival_minute],
+    );
+    effective_trip.timing_basis = timing_basis;
+    effective_trip.timing_reliability = timing_reliability;
+    if let Some(evidence_id) = evidence_id {
+        let transmitted_at = datetime!(2026-09-21 10:00 UTC) + Duration::minutes(departure_minute);
+        effective_trip
+            .evidence
+            .push(crate::domain::realtime::NormalizedRealtimeValue {
+                freshness: crate::domain::realtime::FreshnessState::Fresh,
+                value: crate::domain::realtime::ArrivalEstimate {
+                    transit_pattern_id: TransitPatternId::new("bus"),
+                    boarding_point_id: BoardingPointId::new(evidence_id),
+                    predicted_arrival_at: Some(
+                        datetime!(2026-09-21 10:00 UTC) + Duration::minutes(arrival_minute),
+                    ),
+                    state: crate::domain::realtime::ArrivalState::Predicted,
+                    transmitted_at,
+                },
+            });
+    }
+    pruning_state(vec![realized_ride(0, effective_trip)])
+}
+
+fn pruning_walk_state(distance_metres: u32) -> EvaluationState {
+    let transit = realized_ride(
+        0,
+        trip("walk-prefix", "bus", &["origin", "destination"], &[1, 3]),
+    );
+    let departure_at = transit.arrival_at;
+    let walking = JourneyMovement {
+        from_anchor: 1,
+        to_anchor: 2,
+        departure_at,
+        arrival_at: departure_at + Duration::minutes(2),
+        kind: JourneyMovementKind::Walking {
+            kind: WalkingMovementKind::Transfer,
+            duration_seconds: 120,
+            distance_metres,
+        },
+    };
+    pruning_state(vec![transit, walking])
+}
+
+fn pruning_bike_state(rental_started_at_delta: i64, reuse_delta: i64) -> EvaluationState {
+    let transit = realized_ride(
+        0,
+        trip("bike-prefix", "bus", &["origin", "destination"], &[1, 3]),
+    );
+    let started_at = transit.arrival_at + Duration::seconds(rental_started_at_delta);
+    let bike = bike_movement(1, 2, 300);
+    let bike_step = JourneyMovement {
+        from_anchor: 1,
+        to_anchor: 2,
+        departure_at: started_at,
+        arrival_at: started_at + Duration::seconds(i64::from(bike.total_seconds)),
+        kind: JourneyMovementKind::BikeShare {
+            movement: bike.clone(),
+        },
+    };
+    let mut state = pruning_state(vec![transit.clone(), bike_step]);
+    state.active_bike_rental = Some(super::state::ActiveBikeRental {
+        start_anchor: 1,
+        started_at,
+        prefix_movements: vec![transit],
+        movement: bike.clone(),
+    });
+    state.bike_reuse_available_at =
+        Some(started_at + Duration::minutes(20) + Duration::seconds(reuse_delta));
+    state
+}
+
+fn pruning_state_corpus() -> Vec<EvaluationState> {
+    let mut states = vec![
+        pruning_transit_state(
+            "tie-first",
+            1,
+            6,
+            TimingBasis::RealtimePrediction,
+            TimingReliability::Reliable,
+            None,
+        ),
+        pruning_transit_state(
+            "tie-second",
+            1,
+            6,
+            TimingBasis::RealtimePrediction,
+            TimingReliability::Reliable,
+            None,
+        ),
+        pruning_transit_state(
+            "different-basis",
+            1,
+            6,
+            TimingBasis::Schedule,
+            TimingReliability::Reliable,
+            None,
+        ),
+        pruning_transit_state(
+            "different-evidence",
+            1,
+            6,
+            TimingBasis::RealtimePrediction,
+            TimingReliability::Reliable,
+            Some("origin-a"),
+        ),
+        pruning_transit_state(
+            "different-reliability",
+            1,
+            6,
+            TimingBasis::RealtimePrediction,
+            TimingReliability::Fallback,
+            None,
+        ),
+        pruning_walk_state(120),
+        pruning_walk_state(120),
+        pruning_walk_state(121),
+        pruning_bike_state(0, 0),
+        pruning_bike_state(0, 1),
+        pruning_bike_state(1, 0),
+    ];
+    let mut transfer_state = pruning_state(vec![
+        realized_ride(
+            0,
+            trip("transfer-first", "bus", &["origin", "destination"], &[1, 3]),
+        ),
+        realized_ride(
+            1,
+            trip(
+                "transfer-second",
+                "bus",
+                &["origin", "destination"],
+                &[4, 6],
+            ),
+        ),
+    ]);
+    transfer_state.last_was_transit = true;
+    states.push(transfer_state);
+    states
+}
+
+#[test]
+fn intermediate_state_pruning_matches_reference_for_capabilities_ties_and_permutations() {
+    let states = pruning_state_corpus();
+    let mut reversed = states.clone();
+    reversed.reverse();
+    let mut rotated = states.clone();
+    rotated.rotate_left(3);
+    let mut interleaved = states.clone();
+    interleaved.sort_by_key(|state| state.ready_at.unix_timestamp_nanos() % 2);
+
+    let unbounded = super::pareto::prune_states_reference(states.clone(), usize::MAX);
+    assert!(unbounded.len() < states.len());
+    assert_eq!(
+        unbounded
+            .iter()
+            .filter(|state| state.active_bike_rental.is_some())
+            .count(),
+        3
+    );
+
+    for permutation in [states, reversed, rotated, interleaved] {
+        for limit in [0, 1, 2, 4, 16] {
+            let expected = super::pareto::prune_states_reference(permutation.clone(), limit);
+            let actual = super::pareto::prune_states(permutation.clone(), limit);
+            assert_eq!(actual, expected, "limit={limit}");
+        }
+    }
+}
+
+#[test]
+fn reference_pruning_preserves_complete_journeys_and_ranked_journey_options() {
+    let runtime = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let query = query(&[TransitMode::Bus], 0, 8);
+    let corridor = candidate_corridor(&runtime, &query);
+    let mut snapshot = TimingSnapshot::default();
+    let mut departures = vec![
+        trip("early", "bus", &["origin", "destination"], &[1, 5]),
+        trip("middle", "bus", &["origin", "destination"], &[2, 6]),
+        trip("late", "bus", &["origin", "destination"], &[3, 7]),
+    ];
+    departures[1].timing_basis = TimingBasis::Schedule;
+    departures[2].timing_reliability = TimingReliability::Fallback;
+    snapshot.insert(TransitPatternId::new("bus"), 0, departures);
+
+    struct ReferencePruningReset;
+    impl Drop for ReferencePruningReset {
+        fn drop(&mut self) {
+            super::pareto::set_reference_state_pruning(false);
+        }
+    }
+    let _reset = ReferencePruningReset;
+    super::pareto::set_reference_state_pruning(true);
+    let reference = evaluate(&runtime, &corridor, &snapshot, query.clone()).unwrap();
+    super::pareto::set_reference_state_pruning(false);
+    let optimized = evaluate(&runtime, &corridor, &snapshot, query).unwrap();
+    assert_eq!(optimized, reference);
+
+    let departure_at = datetime!(2026-09-21 10:00 UTC);
+    let request = crate::api::PlanningRequest {
+        origin: crate::api::SelectedPlace {
+            coordinate: crate::api::GeoCoordinate {
+                latitude: 25.0,
+                longitude: 121.5,
+            },
+            display_text: "Origin".into(),
+        },
+        destination: crate::api::SelectedPlace {
+            coordinate: crate::api::GeoCoordinate {
+                latitude: 25.0,
+                longitude: 121.5,
+            },
+            display_text: "Destination".into(),
+        },
+        selected_modes: vec![crate::api::PlanningMode::Bus],
+        departure_setting: crate::api::DepartureSetting::DepartAt { time: departure_at },
+    };
+    let context = super::super::model::JourneyPlanningContext::new(
+        &request,
+        departure_at,
+        4 * 60 * 60,
+        super::super::model::PlanningDeadline::disabled(),
+    )
+    .unwrap();
+    let reconstructor = super::super::reconstruct::JourneyReconstructor::new(
+        Arc::new(crate::street::StraightLineStreetRouter::default()),
+        runtime,
+        Arc::new(crate::domain::bikeshare::BikeShareNetwork::new(Vec::new())),
+    );
+    let ranked_options = |journeys: Vec<RealizedJourney>| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let mut candidates = Vec::new();
+                for journey in &journeys {
+                    candidates.push(
+                        reconstructor
+                            .reconstruct(journey, &context)
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                    );
+                }
+                let ranked = crate::domain::ranking::RankingPolicy::default().rank(
+                    candidates
+                        .iter()
+                        .map(|candidate| candidate.ranking.clone())
+                        .collect(),
+                );
+                let mut candidates_by_key = candidates
+                    .into_iter()
+                    .map(|candidate| (candidate.ranking.stable_key.clone(), candidate))
+                    .collect::<HashMap<_, _>>();
+                let options = ranked
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, ranked)| {
+                        let mut candidate = candidates_by_key.remove(&ranked.stable_key).unwrap();
+                        super::super::reconstruct::apply_ranked_journey(
+                            &mut candidate.option,
+                            &ranked,
+                        );
+                        super::super::reconstruct::assign_result_local_ids(
+                            &mut candidate.option,
+                            index,
+                        );
+                        candidate.option
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::to_value(options).unwrap()
+            })
+    };
+    assert_eq!(ranked_options(optimized), ranked_options(reference));
+}
+
+fn capture_phase2_pruning_pools() -> Vec<(Vec<EvaluationState>, usize)> {
+    let runtime = network(
+        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
+        &["origin", "destination"],
+        Vec::new(),
+    );
+    let mut query = query(&[TransitMode::Bus], 0, 8);
+    query.limits.max_candidates = 64;
+    query.limits.max_departures_per_query = 32;
+    let corridor = candidate_corridor(&runtime, &query);
+    let mut snapshot = TimingSnapshot::default();
+    let departures = (0..24)
+        .map(|index| {
+            let mut departure = trip(
+                &format!("bench-{index:02}"),
+                "bus",
+                &["origin", "destination"],
+                &[1 + index, 4 + index],
+            );
+            departure.timing_basis = match index % 4 {
+                0 => TimingBasis::RealtimePrediction,
+                1 => TimingBasis::DelayAdjustedSchedule,
+                2 => TimingBasis::Schedule,
+                _ => TimingBasis::FrequencyEstimate,
+            };
+            if index % 7 == 0 {
+                departure.timing_reliability = TimingReliability::Fallback;
+            }
+            departure
+        })
+        .collect();
+    snapshot.insert(TransitPatternId::new("bus"), 0, departures);
+    let routes = HashMap::from([(
+        corridor_movement(0, 1, "origin", "destination"),
+        vec![bike_movement(0, 1, 8 * 60)],
+    )]);
+
+    super::pareto::set_reference_state_pruning(false);
+    super::pareto::start_state_pool_capture();
+    let (transit_journeys, _) =
+        evaluate_with_stats(&runtime, &corridor, &snapshot, query.clone()).unwrap();
+    assert!(!transit_journeys.is_empty());
+    let (journeys, _) =
+        evaluate_with_test_bike_routes(&runtime, &corridor, &snapshot, query, &routes).unwrap();
+    assert!(!journeys.is_empty());
+    let pools = super::pareto::take_captured_state_pools();
+    assert!(!pools.is_empty());
+    pools
+}
+
+fn prune_states_benchmark_sample(pools: &[(Vec<EvaluationState>, usize)], reference: bool) -> u128 {
+    const REPLAYS: usize = 64;
+    let inputs = pools
+        .iter()
+        .flat_map(|(states, limit)| (0..REPLAYS).map(move |_| (states.clone(), *limit)))
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    for (states, limit) in inputs {
+        let output = if reference {
+            super::pareto::prune_states_reference(states, limit)
+        } else {
+            super::pareto::prune_states(states, limit)
+        };
+        std::hint::black_box(output);
+    }
+    started.elapsed().as_nanos()
+}
+
+#[test]
+#[ignore = "isolated intermediate state pruning performance comparison"]
+fn prune_states_isolated_benchmark() {
+    const WARMUP: usize = 5;
+    const SAMPLES: usize = 31;
+    let pools = capture_phase2_pruning_pools();
+    let input_states = pools.iter().map(|(states, _)| states.len()).sum::<usize>();
+    let mut outputs = Vec::with_capacity(pools.len());
+    let mut profile = super::pareto::StatePruningProfile::default();
+    for (states, limit) in &pools {
+        let expected = super::pareto::prune_states_reference(states.clone(), *limit);
+        let (profiled, counts) =
+            super::pareto::profile_prune_states_reference(states.clone(), *limit);
+        let actual = super::pareto::prune_states(states.clone(), *limit);
+        assert_eq!(profiled, expected);
+        assert_eq!(actual, expected);
+        outputs.push(expected.len());
+        profile.path_metrics_computations += counts.path_metrics_computations;
+        profile.capability_comparisons += counts.capability_comparisons;
+        profile.dominance_comparisons += counts.dominance_comparisons;
+        profile.peak_frontier_size = profile.peak_frontier_size.max(counts.peak_frontier_size);
+    }
+    let output_states = outputs.iter().sum::<usize>();
+    let metrics_after = input_states;
+    let mut size_distribution = pools
+        .iter()
+        .map(|(states, _)| states.len())
+        .collect::<Vec<_>>();
+    size_distribution.sort_unstable();
+    let mut reference_samples = Vec::with_capacity(SAMPLES);
+    let mut optimized_samples = Vec::with_capacity(SAMPLES);
+    for sample in 0..WARMUP + SAMPLES {
+        let (reference_ns, optimized_ns) = if sample % 2 == 0 {
+            (
+                prune_states_benchmark_sample(&pools, true),
+                prune_states_benchmark_sample(&pools, false),
+            )
+        } else {
+            let optimized = prune_states_benchmark_sample(&pools, false);
+            let reference = prune_states_benchmark_sample(&pools, true);
+            (reference, optimized)
+        };
+        if sample >= WARMUP {
+            let calls_per_sample = (pools.len() * 64) as f64;
+            reference_samples.push(reference_ns as f64 / calls_per_sample);
+            optimized_samples.push(optimized_ns as f64 / calls_per_sample);
+        }
+    }
+    reference_samples.sort_by(f64::total_cmp);
+    optimized_samples.sort_by(f64::total_cmp);
+    println!(
+        "STATE_PRUNE_BENCH invocations={} input_states={} output_states={} size_distribution={size_distribution:?} metrics_old={} metrics_new={} capability_comparisons={} dominance_comparisons={} peak_frontier={}",
+        pools.len(),
+        input_states,
+        output_states,
+        profile.path_metrics_computations,
+        metrics_after,
+        profile.capability_comparisons,
+        profile.dominance_comparisons,
+        profile.peak_frontier_size,
+    );
+    println!(
+        "STATE_PRUNE_BENCH warmup={WARMUP} samples={SAMPLES} replays_per_pool=64 median_ns_per_call_old={:.1} median_ns_per_call_new={:.1}",
+        reference_samples[SAMPLES / 2],
+        optimized_samples[SAMPLES / 2],
+    );
+}

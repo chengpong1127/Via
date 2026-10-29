@@ -1,6 +1,7 @@
 use super::*;
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(super) struct EvaluationState {
     pub ready_at: OffsetDateTime,
     pub last_was_transit: bool,
@@ -137,6 +138,7 @@ impl PathMetrics {
 }
 
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(super) struct ActiveBikeRental {
     pub start_anchor: usize,
     pub started_at: OffsetDateTime,
