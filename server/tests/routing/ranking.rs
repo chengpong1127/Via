@@ -149,9 +149,17 @@ fn direct_through_journey_dominates_same_arrival_reboarding_route() {
 #[test]
 fn ranking_replay_is_deterministic() {
     let input = vec![candidate("b", 2_000), candidate("a", 2_000)];
-    let first = RankingPolicy::default().rank(input.clone());
-    let second = RankingPolicy::default().rank(input);
-    assert_eq!(first, second);
+    let expected = RankingPolicy::default().rank(input.clone());
+    assert_eq!(
+        expected
+            .iter()
+            .map(|value| value.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
+    );
+    for candidates in [input.clone(), input.into_iter().rev().collect()] {
+        assert_eq!(RankingPolicy::default().rank(candidates), expected);
+    }
 }
 
 #[test]
@@ -175,51 +183,66 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
 }
 
 #[test]
-fn reliable_journey_wins_when_arrivals_are_within_reliability_window() {
-    let reliable = candidate("reliable", 13 * 60);
-    let mut feasible = candidate("schedule-only", 12 * 60);
-    feasible.timing_bases = vec![TimingBasis::Schedule];
-    feasible.timing_reliability = TimingReliability::Fallback;
+fn reliability_preference_obeys_exact_window_boundaries() {
+    let default_window = RankingPolicy::default().reliability_preference_window_seconds;
+    for (gap, window, expected_key) in [
+        (60, default_window, "reliable"),
+        (300, 300, "reliable"),
+        (301, 300, "schedule-only"),
+        (30, 30, "reliable"),
+        (31, 30, "schedule-only"),
+    ] {
+        let reliable = candidate("reliable", 12 * 60 + gap);
+        let mut feasible = candidate("schedule-only", 12 * 60);
+        feasible.timing_bases = vec![TimingBasis::Schedule];
+        feasible.timing_reliability = TimingReliability::Fallback;
+        let policy = RankingPolicy {
+            reliability_preference_window_seconds: window,
+            ..RankingPolicy::default()
+        };
 
-    let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
+        let ranked = policy.rank(vec![feasible, reliable]);
 
-    assert_eq!(ranked[0].stable_key, "reliable");
-    assert_eq!(ranked[1].class, JourneyClass::Feasible);
+        assert_eq!(
+            ranked[0].stable_key, expected_key,
+            "gap={gap}, window={window}"
+        );
+        assert_eq!(
+            ranked
+                .iter()
+                .find(|value| value.stable_key == "schedule-only")
+                .unwrap()
+                .class,
+            JourneyClass::Feasible,
+            "gap={gap}, window={window}"
+        );
+    }
 }
 
 #[test]
-fn reliability_preference_window_is_configurable() {
-    let mut reliable = candidate("reliable", 13 * 60);
-    reliable.transfer_count = 0;
-    reliable.walking_seconds = 0;
-    let mut feasible = candidate("schedule-only", 12 * 60);
-    feasible.transfer_count = 1;
-    feasible.walking_seconds = 600;
-    feasible.timing_bases = vec![TimingBasis::Schedule];
-    feasible.timing_reliability = TimingReliability::Fallback;
-    let policy = RankingPolicy {
-        reliability_preference_window_seconds: 30,
-        ..RankingPolicy::default()
-    };
+fn earlier_feasible_journey_wins_outside_the_configured_reliability_window() {
+    let default_window = RankingPolicy::default().reliability_preference_window_seconds;
+    for (reliable_arrival, feasible_arrival, window, transfers, walking) in [
+        (13 * 60, 12 * 60, 30, 0, 0),
+        (30 * 60, 15 * 60, default_window, 1, 300),
+    ] {
+        let mut reliable = candidate("reliable", reliable_arrival);
+        reliable.transfer_count = transfers;
+        reliable.walking_seconds = walking;
+        let mut feasible = candidate("schedule-only", feasible_arrival);
+        feasible.walking_seconds = 600;
+        feasible.timing_bases = vec![TimingBasis::Schedule];
+        feasible.timing_reliability = TimingReliability::Fallback;
+        let policy = RankingPolicy {
+            reliability_preference_window_seconds: window,
+            ..RankingPolicy::default()
+        };
 
-    let ranked = policy.rank(vec![reliable, feasible]);
+        let ranked = policy.rank(vec![reliable, feasible]);
 
-    assert_eq!(ranked[0].stable_key, "schedule-only");
-}
-
-#[test]
-fn feasible_journey_wins_when_arrival_difference_is_material() {
-    let reliable = candidate("reliable", 30 * 60);
-    let mut feasible = candidate("schedule-only", 15 * 60);
-    feasible.transfer_count = 1;
-    feasible.walking_seconds = 600;
-    feasible.timing_bases = vec![TimingBasis::Schedule];
-    feasible.timing_reliability = TimingReliability::Fallback;
-
-    let ranked = RankingPolicy::default().rank(vec![reliable, feasible]);
-
-    assert_eq!(ranked[0].stable_key, "schedule-only");
-    assert_eq!(ranked[0].class, JourneyClass::Feasible);
+        assert_eq!(ranked[0].stable_key, "schedule-only", "window={window}");
+        assert_eq!(ranked[0].class, JourneyClass::Feasible, "window={window}");
+    }
 }
 
 #[test]
@@ -246,6 +269,25 @@ fn same_arrival_and_class_prefers_fewer_transfers_then_less_walking() {
 
     assert_eq!(ranked[0].stable_key, "fewer-transfers");
     assert_eq!(ranked[1].stable_key, "less-walking");
+
+    let mut more_walking = candidate("more-walking", 2_000);
+    more_walking.transfer_count = 2;
+    more_walking.walking_seconds = 600;
+    let mut less_walking = candidate("less-walking", 2_000);
+    less_walking.transfer_count = 2;
+    less_walking.walking_seconds = 0;
+    less_walking.bicycle_seconds = 600;
+    less_walking.bike_share_uses = 1;
+
+    let ranked = RankingPolicy::default().rank(vec![more_walking, less_walking]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| value.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["less-walking", "more-walking"]
+    );
 }
 
 #[test]
