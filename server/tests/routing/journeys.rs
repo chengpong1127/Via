@@ -201,35 +201,37 @@ async fn terminal_egress_routes_from_the_retained_alighting_anchor() {
 
 #[tokio::test]
 async fn simple_bus_uses_the_earliest_realtime_departure() {
-    let network = network();
-    let origin = near_stop(&network, "F-BUS-A");
-    let destination = near_stop(&network, "F-BUS-B");
-    let updated_at = current_minute_in_taipei();
-    let mut request = request(origin, destination, &["bus"]);
-    request["departure_setting"]["time"] = json!(format_fixture_time(updated_at));
-    let body = route_body(
-        transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
-        FixtureRealtime::bus_at(updated_at),
-        request,
-    )
-    .await;
-    let option = option_for_patterns(&body, &["fixture-bus-main"]);
+    for modes in [&["bus"][..], &["bus", "metro", "tra", "thsr"][..]] {
+        let network = network();
+        let origin = near_stop(&network, "F-BUS-A");
+        let destination = near_stop(&network, "F-BUS-B");
+        let updated_at = current_minute_in_taipei();
+        let mut request = request(origin, destination, modes);
+        request["departure_setting"]["time"] = json!(format_fixture_time(updated_at));
+        let body = route_body(
+            transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
+            FixtureRealtime::bus_at(updated_at),
+            request,
+        )
+        .await;
+        let option = option_for_patterns(&body, &["fixture-bus-main"]);
 
-    assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
-    assert_eq!(option["legs"][1]["details"]["transit_mode"], "bus");
-    assert_eq!(
-        option["legs"][1]["details"]["via_pattern_id"],
-        "fixture-bus-main"
-    );
-    assert_eq!(
-        option["legs"][1]["departure_time"],
-        json!(format_fixture_time(updated_at + Duration::minutes(4)))
-    );
-    assert_eq!(
-        option["legs"][1]["arrival_time"],
-        json!(format_fixture_time(updated_at + Duration::minutes(14)))
-    );
-    assert_eq!(option["live_status_summary"]["state"], "fresh");
+        assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
+        assert_eq!(option["legs"][1]["details"]["transit_mode"], "bus");
+        assert_eq!(
+            option["legs"][1]["details"]["via_pattern_id"],
+            "fixture-bus-main"
+        );
+        assert_eq!(
+            option["legs"][1]["departure_time"],
+            json!(format_fixture_time(updated_at + Duration::minutes(4)))
+        );
+        assert_eq!(
+            option["legs"][1]["arrival_time"],
+            json!(format_fixture_time(updated_at + Duration::minutes(14)))
+        );
+        assert_eq!(option["live_status_summary"]["state"], "fresh");
+    }
 }
 
 #[tokio::test]
@@ -639,32 +641,6 @@ async fn missed_transfer_is_rejected_by_the_two_minute_connection_constraint() {
 }
 
 #[tokio::test]
-async fn competing_realtime_bus_departures_choose_the_first_usable_one() {
-    let network = network();
-    let origin = near_stop(&network, "F-BUS-A");
-    let destination = near_stop(&network, "F-BUS-B");
-    let updated_at = current_minute_in_taipei();
-    let mut request = request(origin, destination, &["bus", "metro", "tra", "thsr"]);
-    request["departure_setting"]["time"] = json!(format_fixture_time(updated_at));
-    let body = route_body(
-        transit_street(&network, origin, "F-BUS-A", destination, "F-BUS-B"),
-        FixtureRealtime::bus_at(updated_at),
-        request,
-    )
-    .await;
-    let option = option_for_patterns(&body, &["fixture-bus-main"]);
-
-    assert_eq!(
-        option["legs"][1]["departure_time"],
-        json!(format_fixture_time(updated_at + Duration::minutes(4)))
-    );
-    assert_eq!(
-        option["legs"][1]["arrival_time"],
-        json!(format_fixture_time(updated_at + Duration::minutes(14)))
-    );
-}
-
-#[tokio::test]
 async fn retained_corridors_without_departures_resolve_direct_walking_once() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
@@ -749,11 +725,12 @@ async fn viable_transit_corridors_compete_with_direct_walking() {
 
     assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
     let options = body["journey_options"].as_array().unwrap();
-    assert!(
-        options
-            .iter()
-            .any(|option| leg_modes(option) == vec!["walking"])
-    );
+    let walking = options
+        .iter()
+        .find(|option| leg_modes(option) == vec!["walking"])
+        .unwrap();
+    assert_eq!(walking["duration_seconds"], 300);
+    assert_eq!(walking["legs"].as_array().unwrap().len(), 1);
     assert!(
         options
             .iter()
@@ -945,56 +922,6 @@ async fn walking_corridor_realization_survives_a_transit_timing_failure() {
     assert_eq!(options.len(), 1);
     assert!(leg_modes(&options[0]).iter().all(|mode| *mode == "walking"));
     assert_eq!(options[0]["duration_seconds"], 420);
-}
-
-#[tokio::test]
-async fn direct_walking_and_transit_both_complete() {
-    let transit = network();
-    let origin = near_stop(&transit, "F-M1");
-    let destination = near_stop(&transit, "F-M2-RED");
-    let access = stop_coordinate(&transit, "F-M1");
-    let egress = stop_coordinate(&transit, "F-M2-RED");
-    let street = FakeStreetRouter::builder()
-        .path(
-            StreetTravelMode::Walking,
-            origin,
-            access,
-            path(origin, access, 60),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            egress,
-            destination,
-            path(egress, destination, 60),
-        )
-        .path(
-            StreetTravelMode::Walking,
-            origin,
-            destination,
-            path(origin, destination, 300),
-        )
-        .build();
-    let limits = JourneyPlanningLimits::default();
-    let body = route_body_with_limits(
-        street,
-        FixtureRealtime::empty(),
-        request(origin, destination, &["metro"]),
-        limits,
-    )
-    .await
-    .unwrap();
-    let options = body["journey_options"].as_array().unwrap();
-    let walking = options
-        .iter()
-        .find(|option| leg_modes(option) == vec!["walking"])
-        .unwrap();
-    assert_eq!(walking["duration_seconds"], 300);
-    assert_eq!(walking["legs"].as_array().unwrap().len(), 1);
-    assert!(
-        options
-            .iter()
-            .any(|option| leg_modes(option).contains(&"transit"))
-    );
 }
 
 #[tokio::test]

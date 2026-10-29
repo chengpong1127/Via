@@ -353,19 +353,16 @@ async fn bike_can_realize_a_surface_transfer_without_skipping_transit() {
 }
 
 #[tokio::test]
-async fn no_bike_at_pickup_keeps_the_walking_transfer() {
-    let body = surface_transfer_options(0, 2).await;
-    let options = body["journey_options"].as_array().unwrap();
-    assert!(options.iter().any(|option| bike_share_uses(option) == 0));
-    assert!(options.iter().all(|option| bike_share_uses(option) == 0));
-}
-
-#[tokio::test]
-async fn no_dock_at_dropoff_keeps_the_walking_transfer() {
-    let body = surface_transfer_options(2, 0).await;
-    let options = body["journey_options"].as_array().unwrap();
-    assert!(options.iter().any(|option| bike_share_uses(option) == 0));
-    assert!(options.iter().all(|option| bike_share_uses(option) == 0));
+async fn unavailable_pickup_or_return_keeps_the_walking_transfer() {
+    for (bikes, docks) in [(0, 2), (2, 0)] {
+        let body = surface_transfer_options(bikes, docks).await;
+        let options = body["journey_options"].as_array().unwrap();
+        assert!(!options.is_empty(), "bikes={bikes}, docks={docks}");
+        assert!(
+            options.iter().all(|option| bike_share_uses(option) == 0),
+            "bikes={bikes}, docks={docks}: {body}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -630,51 +627,55 @@ async fn walking_only_skips_timing_and_bike_availability() {
     assert_eq!(options[0]["duration_seconds"], 300);
 }
 
-async fn bike_only_walking_result(
-    availability: Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>,
-) {
-    let origin = crate::support::routing::coordinate(25.30, 121.60);
-    let destination = crate::support::routing::coordinate(25.301, 121.601);
-    let timing = Arc::new(CountingTiming::default());
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (bike_network, _, _) = segment_network("F-M1", "F-M2-RED", origin, destination);
-    let body = route_body_with_sources(
-        Arc::new(
-            FakeStreetRouter::builder()
-                .path(
-                    StreetTravelMode::Walking,
-                    origin,
-                    destination,
-                    path(origin, destination, 300),
-                )
-                .build(),
+#[tokio::test]
+async fn bike_only_keeps_walking_when_availability_is_unusable() {
+    for (case, availability) in [
+        (
+            "empty pickup",
+            Ok(bike_snapshot(&[("pickup", 0, 0), ("dropoff", 0, 2)])),
         ),
-        timing.clone(),
-        request(origin, destination, &["bike_share"]),
-        bike_network,
-        Arc::new(FixtureAvailabilitySource {
-            snapshot: availability,
-            calls: calls.clone(),
-        }),
-    )
-    .await;
+        (
+            "transient failure",
+            Err(BikeAvailabilityError::TemporarilyUnavailable),
+        ),
+        (
+            "invalid configuration",
+            Err(BikeAvailabilityError::InvalidConfiguration),
+        ),
+    ] {
+        let origin = crate::support::routing::coordinate(25.30, 121.60);
+        let destination = crate::support::routing::coordinate(25.301, 121.601);
+        let timing = Arc::new(CountingTiming::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (bike_network, _, _) = segment_network("F-M1", "F-M2-RED", origin, destination);
+        let body = route_body_with_sources(
+            Arc::new(
+                FakeStreetRouter::builder()
+                    .path(
+                        StreetTravelMode::Walking,
+                        origin,
+                        destination,
+                        path(origin, destination, 300),
+                    )
+                    .build(),
+            ),
+            timing.clone(),
+            request(origin, destination, &["bike_share"]),
+            bike_network,
+            Arc::new(FixtureAvailabilitySource {
+                snapshot: availability,
+                calls: calls.clone(),
+            }),
+        )
+        .await;
 
-    assert_eq!(timing.calls.load(Ordering::Relaxed), 0);
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
-    let options = body["journey_options"].as_array().unwrap();
-    assert_eq!(options.len(), 1);
-    assert_eq!(leg_modes(&options[0]), vec!["walking"]);
-    assert_eq!(options[0]["duration_seconds"], 300);
-}
-
-#[tokio::test]
-async fn bike_only_keeps_walking_when_pickup_has_no_bikes() {
-    bike_only_walking_result(Ok(bike_snapshot(&[("pickup", 0, 0), ("dropoff", 0, 2)]))).await;
-}
-
-#[tokio::test]
-async fn bike_only_keeps_walking_when_availability_fails() {
-    bike_only_walking_result(Err(BikeAvailabilityError::TemporarilyUnavailable)).await;
+        assert_eq!(timing.calls.load(Ordering::Relaxed), 0, "{case}");
+        assert_eq!(calls.load(Ordering::Relaxed), 1, "{case}");
+        let options = body["journey_options"].as_array().unwrap();
+        assert_eq!(options.len(), 1, "{case}");
+        assert_eq!(leg_modes(&options[0]), vec!["walking"], "{case}");
+        assert_eq!(options[0]["duration_seconds"], 300, "{case}");
+    }
 }
 
 #[tokio::test]
@@ -754,11 +755,6 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
         assert_eq!(leg_modes(&options[0]), vec!["walking"]);
         assert_eq!(options[0]["duration_seconds"], 3000);
     }
-}
-
-#[tokio::test]
-async fn optional_internal_bike_availability_error_keeps_walking() {
-    bike_only_walking_result(Err(BikeAvailabilityError::InvalidConfiguration)).await;
 }
 
 struct RankingStreet {
