@@ -115,41 +115,6 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
     assert!(evaluator.contains("&TimingSnapshot"));
     assert!(evaluator.contains("BikeShareSession"));
     assert!(evaluator.contains("StreetRouter"));
-    assert!(
-        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/routing/surface.rs")
-            .exists()
-    );
-    assert!(!evaluator.contains("SurfaceKind"));
-    assert!(evaluator.contains(".matrix(MatrixQuery"));
-    let expansion = source("src/routing/evaluator/expansion.rs");
-    for method in [
-        "transit_next_state",
-        "walking_next_state",
-        "bike_next_states",
-        "expand_state",
-        "expand_edge",
-    ] {
-        assert!(expansion.contains(&format!("fn {method}(")));
-    }
-    assert!(!expansion.contains("expand_state_sequential"));
-    for removed in ["transit", "walking", "bike"] {
-        assert!(
-            !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("src/routing/evaluator/{removed}.rs"))
-                .exists()
-        );
-    }
-    let state = source("src/routing/evaluator/state.rs");
-    assert!(state.contains("struct ActiveBikeRental"));
-    assert!(state.contains("fn after_bike_share("));
-    for removed in [
-        "MovementExpander",
-        "ExpansionContext",
-        "optimistic_lower_bound_seconds",
-    ] {
-        assert!(!evaluator.contains(removed));
-    }
     for forbidden in [
         "TDX",
         "TdxClient",

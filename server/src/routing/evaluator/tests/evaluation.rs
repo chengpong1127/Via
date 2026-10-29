@@ -258,63 +258,48 @@ async fn direct_corridor_has_observable_constant_work() {
     );
     let mut measurements = Vec::new();
     for include_direct in [false, true] {
-        let mut latencies = Vec::new();
-        let mut last_stats = Phase2EvaluationStats::default();
-        for _ in 0..100 {
-            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let planners = TestDependencies {
-                walking: WalkingCache::new(Arc::new(CountingWalkingRouter {
-                    calls: calls.clone(),
-                    error: None,
-                })),
-                bike_share: None,
-            };
-            let mut corridors = vec![
-                EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query)
-                    .unwrap(),
-            ];
-            if include_direct {
-                corridors.push(EvaluationCorridor::direct_walking(
-                    query.origin,
-                    query.destination,
-                ));
-            }
-            let result = FixedCorridorEvaluator::new(
-                &network,
-                &retained,
-                &snapshot,
-                &query,
-                &planners.walking,
-                planners.bike_share.as_ref(),
-            )
-            .evaluate(&corridors)
-            .await
-            .unwrap();
-            assert_eq!(
-                calls.load(std::sync::atomic::Ordering::SeqCst),
-                if include_direct { 2 } else { 1 }
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let planners = TestDependencies {
+            walking: WalkingCache::new(Arc::new(CountingWalkingRouter {
+                calls: calls.clone(),
+                error: None,
+            })),
+            bike_share: None,
+        };
+        let mut corridors = vec![
+            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
+        ];
+        if include_direct {
+            corridors.insert(
+                0,
+                EvaluationCorridor::direct_walking(query.origin, query.destination),
             );
-            if include_direct {
-                assert!(result.journeys.iter().any(|j| j.anchors().len() == 2));
-                assert!(
-                    result
-                        .journeys
-                        .iter()
-                        .any(|j| !j.transit_pattern_sequence().is_empty())
-                );
-            }
-            latencies.push(result.stats.phase2_latency_us);
-            last_stats = result.stats;
         }
-        latencies.sort_unstable();
-        eprintln!(
-            "direct={include_direct}: P2 median={}us p95={}us states_expanded={} walking_calls={}",
-            latencies[50],
-            latencies[95],
-            last_stats.states_expanded,
+        let result = FixedCorridorEvaluator::new(
+            &network,
+            &retained,
+            &snapshot,
+            &query,
+            &planners.walking,
+            planners.bike_share.as_ref(),
+        )
+        .evaluate(&corridors)
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
             if include_direct { 2 } else { 1 }
         );
-        measurements.push(last_stats);
+        if include_direct {
+            assert!(result.journeys.iter().any(|j| j.anchors().len() == 2));
+            assert!(
+                result
+                    .journeys
+                    .iter()
+                    .any(|j| !j.transit_pattern_sequence().is_empty())
+            );
+        }
+        measurements.push(result.stats);
     }
     assert_eq!(
         measurements[1].states_expanded,

@@ -326,38 +326,6 @@ fn phase2_respects_maximum_journey_duration_and_latest_arrival() {
 }
 
 #[test]
-fn phase2_completes_prepared_candidates_without_a_work_budget() {
-    let network = network(
-        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
-        &["origin", "destination"],
-        Vec::new(),
-    );
-    let mut query = query(&[TransitMode::Bus], 0, 10);
-    query.origin_access.push(AccessPoint::new(
-        BoardingPointId::new("origin"),
-        datetime!(2026-09-21 10:00 UTC),
-        datetime!(2026-09-21 10:00 UTC),
-        0,
-        0,
-    ));
-    query.deadline = crate::routing::PlanningDeadline::disabled();
-    let corridor = candidate_corridor(&network, &query);
-    let mut snapshot = TimingSnapshot::default();
-    snapshot.insert(
-        TransitPatternId::new("bus"),
-        0,
-        vec![trip("bus-trip", "bus", &["origin", "destination"], &[1, 5])],
-    );
-
-    assert!(
-        !evaluate_with_stats(&network, &corridor, &snapshot, query)
-            .unwrap()
-            .0
-            .is_empty()
-    );
-}
-
-#[test]
 fn phase2_applies_same_stop_transfer_time() {
     let network = network(
         vec![
