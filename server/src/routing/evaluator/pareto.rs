@@ -1,18 +1,5 @@
 use super::*;
 
-pub(super) fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> bool {
-    fn unique(bases: &[TimingBasis]) -> Vec<TimingBasis> {
-        let mut normalized = Vec::new();
-        for basis in bases {
-            if normalized.last() != Some(basis) {
-                normalized.push(*basis);
-            }
-        }
-        normalized
-    }
-    unique(left) == unique(right)
-}
-
 #[cfg_attr(test, derive(Clone))]
 pub(super) struct EvaluatedCandidate {
     pub metrics: PathMetrics,

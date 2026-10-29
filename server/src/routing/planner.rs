@@ -77,7 +77,6 @@ impl MultimodalPlanner {
 
     pub(crate) async fn discover_access_points(
         &self,
-        street: &dyn StreetRouter,
         origin: GeoCoordinate,
         departure_time: OffsetDateTime,
         constraints: RoutingConstraints,
@@ -96,7 +95,8 @@ impl MultimodalPlanner {
         if stops.is_empty() {
             return Ok(Vec::new());
         }
-        let matrix = street
+        let matrix = self
+            .street
             .matrix(MatrixQuery {
                 orientation: MatrixOrientation::OneToMany,
                 travel_mode: StreetTravelMode::Walking,
@@ -140,7 +140,6 @@ impl MultimodalPlanner {
 
     pub(crate) async fn discover_egress_points(
         &self,
-        street: &dyn StreetRouter,
         destination: GeoCoordinate,
         constraints: RoutingConstraints,
         allowed_transit_modes: &[TransitMode],
@@ -158,7 +157,8 @@ impl MultimodalPlanner {
         if stops.is_empty() {
             return Ok(Vec::new());
         }
-        let matrix = street
+        let matrix = self
+            .street
             .matrix(MatrixQuery {
                 orientation: MatrixOrientation::ManyToOne,
                 travel_mode: StreetTravelMode::Walking,

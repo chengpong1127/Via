@@ -128,7 +128,6 @@ async fn capture_representative_pools() {
         let allowed = request.allowed_transit_modes();
         let access = planner
             .discover_access_points(
-                street.as_ref(),
                 request.origin.coordinate,
                 departure,
                 context.access_constraints(),
@@ -139,7 +138,6 @@ async fn capture_representative_pools() {
             .unwrap();
         let egress = planner
             .discover_egress_points(
-                street.as_ref(),
                 request.destination.coordinate,
                 context.direct_constraints(),
                 &allowed,
@@ -180,7 +178,6 @@ async fn capture_representative_pools() {
         let reconstructor =
             JourneyReconstructor::new(street.clone(), runtime.clone(), network.clone());
         let service = RoutingService {
-            street_routing: street.clone(),
             planner: planner.clone(),
             reconstructor: reconstructor.clone(),
             ranking: limits.ranking.clone(),
@@ -619,7 +616,6 @@ async fn phase2_corridor_representative_benchmark() {
         let allowed = request.allowed_transit_modes();
         let access = planner
             .discover_access_points(
-                street.as_ref(),
                 request.origin.coordinate,
                 departure,
                 context.access_constraints(),
@@ -630,7 +626,6 @@ async fn phase2_corridor_representative_benchmark() {
             .unwrap();
         let egress = planner
             .discover_egress_points(
-                street.as_ref(),
                 request.destination.coordinate,
                 context.direct_constraints(),
                 &allowed,
@@ -727,7 +722,6 @@ async fn phase2_corridor_representative_benchmark() {
                         }
                     }
                     let service = RoutingService {
-                        street_routing: street.clone(),
                         planner: planner.clone(),
                         reconstructor: reconstructor.clone(),
                         ranking: limits.ranking.clone(),

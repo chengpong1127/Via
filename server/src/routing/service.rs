@@ -33,7 +33,6 @@ use super::{
 
 #[derive(Clone)]
 pub struct RoutingService {
-    street_routing: Arc<dyn StreetRouter>,
     planner: MultimodalPlanner,
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
@@ -64,7 +63,6 @@ impl RoutingService {
             JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network);
         let limits = limits.normalized();
         Self {
-            street_routing,
             planner,
             reconstructor,
             ranking: RankingPolicy {
@@ -169,7 +167,6 @@ impl RoutingService {
                 let access = self
                     .planner
                     .discover_access_points(
-                        self.street_routing.as_ref(),
                         request.origin.coordinate,
                         context.search_start,
                         context.access_constraints(),
@@ -181,7 +178,6 @@ impl RoutingService {
                 let egress = self
                     .planner
                     .discover_egress_points(
-                        self.street_routing.as_ref(),
                         request.destination.coordinate,
                         context.direct_constraints(),
                         &allowed_transit_modes,

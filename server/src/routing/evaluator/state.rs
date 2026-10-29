@@ -116,7 +116,7 @@ impl PathMetrics {
     }
     pub fn same_timing_quality(&self, other: &Self) -> bool {
         self.timing_reliability == other.timing_reliability
-            && super::pareto::same_timing_bases(&self.timing_bases, &other.timing_bases)
+            && same_timing_bases(&self.timing_bases, &other.timing_bases)
             && self.evidence == other.evidence
     }
     pub fn dominates(&self, other: &Self) -> bool {
@@ -135,6 +135,19 @@ impl PathMetrics {
                 || self.bicycle_seconds < other.bicycle_seconds
                 || self.bike_share_uses < other.bike_share_uses)
     }
+}
+
+fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> bool {
+    fn unique(bases: &[TimingBasis]) -> Vec<TimingBasis> {
+        let mut normalized = Vec::new();
+        for basis in bases {
+            if normalized.last() != Some(basis) {
+                normalized.push(*basis);
+            }
+        }
+        normalized
+    }
+    unique(left) == unique(right)
 }
 
 #[derive(Clone)]
