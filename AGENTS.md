@@ -10,17 +10,26 @@ absent.
 
 Do not add comments to code in `src` directories.
 
-Consult [CONTEXT.md](CONTEXT.md) for the current architecture and
-[docs/adr/](docs/adr/) for decisions that constrain it. Keep the dependency
+Consult [CONTEXT.md](CONTEXT.md) for the current architecture. Keep the dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
 interfaces. Do not reintroduce `planner`, `normalization`, or `routing/engine`
 modules, a generic routing-algorithm boundary, Trip-Based routing, async transfer
 resolvers, or a `JourneyPlanningService` wrapper.
 
-Walking is always available; `selected_modes` contains only optional non-walking
-modes. Fixed-corridor evaluation cannot add anchors or combine corridors, and
-reconstruction consumes `RealizedJourney` directly. Keep request-local snapshots
-and caches and avoid additional TDX calls during evaluation.
+`MultimodalPlanner` owns static bounded global Top-K transit corridor discovery
+and fixed-corridor evaluation. Include the direct walking corridor outside Top-K
+and evaluate it first. Skip transit search when no transit mode is selected;
+`selected_modes` contains only optional non-walking modes. All corridors use one
+evaluation pass. Expand Transit, Walking, then BikeShare and collect feasible
+successors before shared Pareto pruning. Check surface feasibility using actual
+Matrix metrics, without optimistic-duration screening. Fixed-corridor evaluation
+cannot add anchors, combine corridors, or make TDX calls. Load timing only for
+retained transit positions and BikeShare availability only when selected. Keep
+request-local snapshots and routing caches, and allow a continuous BikeShare
+rental across later anchors. `RealizedJourney` owns movement continuity, timing,
+and identity; reconstruction consumes it directly. Do not add a RouteGraph to
+the canonical path. Static transfer shortcut lookups are directional; Bus realtime
+is fetched by unique stop and scope and filtered locally.
 
 GTFS is the only static transit source. Do not fabricate scheduled Bus trips from
 sparse stop times. Derived segment costs are not timetable data. BikeShare station
@@ -28,5 +37,6 @@ metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.
 
-Keep iOS feature-oriented and retain `DemoJourneyPlanner` for previews and offline
+Keep iOS feature-oriented. Production planning flows through `JourneyPlanner →
+HTTPJourneyPlanner → APIClient`; retain `DemoJourneyPlanner` for previews and offline
 tests. `Features/Navigation` is not part of the current implementation.

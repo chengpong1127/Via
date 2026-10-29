@@ -8,14 +8,25 @@ transit timing and YouBike availability, and Valhalla for street routing.
 
 ## Run locally
 
-The complete static-data and routing workflow is in
-[`docs/dev-tooling.md`](../docs/dev-tooling.md). Copy the repository
-environment template, add TDX credentials, and set `VIA_STATIC` to the artifact
-created by `via-data build`:
+Copy the environment template and add TDX credentials:
+
 
 ```sh
 cp server/.env.example server/.env
 ```
+
+From the repository root, fetch source data and build an artifact with Valhalla
+running. Replace the snapshot placeholder with the path printed by `fetch`:
+
+```sh
+cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch --gtfs-file /path/to/gtfs.zip
+cargo run --manifest-path server/Cargo.toml --bin via-data -- build --input server/data/fetch/{fetch_datetime}
+cargo run --manifest-path server/Cargo.toml --bin via-data -- validate --static server/data/build/{build_datetime}/.via-static.json
+```
+
+`fetch` also retrieves TDX station catalogs and needs credentials; `build` reads
+local inputs and requires Valhalla. See [development, operations and testing](https://app.notion.com/p/408aefae2f7481cfb632eb59c2a32b95)
+for route debugging, tracing, metrics and benchmark prerequisites.
 
 Start the backend development stack from the repository root, setting
 `VIA_STATIC` to the container path for the built artifact:
@@ -33,7 +44,7 @@ The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
 `GET /health/street-routing`. Planning responses are not cached.
 
 `GET /metrics` serves Prometheus telemetry. See the
-[metric inventory and ownership](../docs/observability.md) for names and completion semantics.
+[metric inventory and ownership](https://app.notion.com/p/408aefae2f7481cfb632eb59c2a32b95) for names and completion semantics.
 
 Configuration:
 

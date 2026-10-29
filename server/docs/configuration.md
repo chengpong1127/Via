@@ -33,7 +33,7 @@ The tracked file lists every key and its default in one place. Durations use the
 | Section | Keys and units | Effect |
 | --- | --- | --- |
 | `server` | `port`, optional `static_path`, `request_timeout_ms`, `http_timeout_ms`, `max_concurrent_requests`, `max_body_bytes` | TCP binding, planning and HTTP deadlines, admission capacity and request body limit |
-| `routing` | `max_transfers`, `max_static_corridors`, `max_phase1_expansions`, `max_candidates`, `max_departures_per_query`, `max_journey_duration_seconds` | P1 expansion budget and routing bounds; `max_candidates` controls both the per-edge frontier and completed-candidate bound |
+| `routing` | `max_transfers`, `max_static_corridors`, `max_phase1_expansions`, `max_concurrent_phase2_states`, `max_concurrent_phase2_corridors`, `max_concurrent_reconstruction_candidates`, `max_candidates`, `max_departures_per_query`, `max_journey_duration_seconds` | P1 expansion budget, concurrency and routing bounds; `max_candidates` controls both the per-edge frontier and completed-candidate bound |
 | `routing.access` | `max_transit_access_stops`, `max_transit_egress_stops`, `max_walking_radius_metres`, `max_walking_seconds` | Access/egress discovery and walking checks |
 | `routing.ranking` | `metro_transfer_buffer_seconds`, `bus_transfer_buffer_seconds`, `near_duplicate_arrival_seconds`, `material_walking_difference_seconds`, `max_sequence_only_option_delay_seconds`, `reliability_preference_window_seconds`, `result_limit` | Existing ranking thresholds and output count, bounded by routing candidate capacity |
 | `bikeshare` | `max_pickup_stations_per_anchor`, `max_dropoff_stations_per_anchor`, `max_stations_per_endpoint`, `endpoint_radius_metres`, `max_endpoint_walk_seconds`, `max_bike_duration_seconds`, `max_bike_distance_metres`, `optimistic_walk_speed_metres_per_second` | Shared snapshot/endpoint discovery radius, candidate counts and movement bounds; endpoint walking bounds apply to exact endpoint walks, while retained boarding-point access uses the artifact preprocessing bounds |
@@ -46,7 +46,7 @@ The tracked file lists every key and its default in one place. Durations use the
 | `tdx.bikeshare` | `cache_ttl_seconds`, `cache_capacity`, `max_concurrent_cities`, `max_age_seconds`, `max_clock_skew_seconds` | Availability cache, city concurrency and shared provider/planner freshness checks |
 | `valhalla` | `base_url`, `request_timeout_ms`, `build_request_timeout_ms`, `max_concurrency`, `max_sources`, `max_targets`, `max_response_bytes` | Runtime/build provider limits and Matrix capacity |
 
-The only default changes are BikeShare batches 50 → 400, Bus 100 → 200, and Metro 64 → 200. BikeShare batching remains city-specific for every supported city and `$top` equals the requested station count.
+BikeShare batching is city-specific for every supported city and `$top` equals the requested station count.
 
 Metro retains its response ceiling. A response reaching `metro_response_limit` is potentially truncated and is rejected through the existing provider-error/static-fallback path. No pagination or compensating retries are added. This can increase fallback for dense observations. If upstream truncates below the requested ceiling without metadata, completeness cannot be established from the current endpoint response; investigate endpoint pagination before raising the ceiling.
 
