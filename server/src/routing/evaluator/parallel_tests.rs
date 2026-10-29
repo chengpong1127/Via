@@ -1167,7 +1167,7 @@ impl StreetRouter for FatalRaceMatrix {
 }
 
 #[tokio::test]
-async fn fatal_corridor_race_prefers_earliest_input_and_cancels_later_work() {
+async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_work() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -1221,7 +1221,7 @@ async fn fatal_corridor_race_prefers_earliest_input_and_cancels_later_work() {
         FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None);
     let result = evaluator.evaluate(&corridors).await;
     assert!(
-        matches!(result, Err(RoutingError::Internal(message)) if message.contains("reversed stop indexes"))
+        matches!(result, Err(RoutingError::Internal(message)) if message.contains("invalid alighting index"))
     );
     assert_eq!(evaluator.stats.corridors_attempted, 3);
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
@@ -1229,7 +1229,7 @@ async fn fatal_corridor_race_prefers_earliest_input_and_cancels_later_work() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn corridor_deadline_preserves_completed_edge_statistics() {
+async fn corridor_deadline_preserves_received_corridor_statistics() {
     let network = network(Vec::new(), &[], Vec::new());
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
@@ -1265,6 +1265,45 @@ async fn corridor_deadline_preserves_completed_edge_statistics() {
         evaluator.evaluate(&[corridor]).await,
         Err(RoutingError::DeadlineExceeded)
     ));
+    assert_eq!(evaluator.stats.corridors_attempted, 1);
+    assert_eq!(evaluator.stats.corridors_completed, 0);
+    assert_eq!(evaluator.stats.states_expanded, 1);
+    assert_eq!(evaluator.stats.successors_generated, 1);
+    assert_eq!(provider.active.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn corridor_deadline_keeps_completed_corridor_statistics() {
+    let network = network(Vec::new(), &[], Vec::new());
+    let retained = RetainedCorridorSet::default();
+    let snapshot = TimingSnapshot::default();
+    let mut query = query(&[], 0, 1);
+    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
+    query.limits.max_concurrent_phase2_corridors = 2;
+    let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let completed = EvaluationCorridor::new(
+        direct.anchors().to_vec(),
+        vec![CorridorEdge {
+            planned_movement: PlannedMovement::RetainedWalking {
+                kind: WalkingMovementKind::Direct,
+                duration_seconds: 1,
+                distance_metres: 1,
+                access_available_at: None,
+            },
+        }],
+    )
+    .unwrap();
+    let pending = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let provider = Arc::new(DelayedMatrix::new(2000, None));
+    let walking = WalkingCache::new(provider.clone());
+    let mut evaluator =
+        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None);
+    assert!(matches!(
+        evaluator.evaluate(&[completed, pending]).await,
+        Err(RoutingError::DeadlineExceeded)
+    ));
+    assert_eq!(evaluator.stats.corridors_attempted, 2);
+    assert_eq!(evaluator.stats.corridors_completed, 1);
     assert_eq!(evaluator.stats.states_expanded, 1);
     assert_eq!(evaluator.stats.successors_generated, 1);
     assert_eq!(provider.active.load(Ordering::Relaxed), 0);

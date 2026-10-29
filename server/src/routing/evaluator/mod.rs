@@ -176,84 +176,49 @@ impl<'a> FixedCorridorEvaluator<'a> {
         corridors: &[EvaluationCorridor],
     ) -> Result<EvaluationResult, RoutingError> {
         self.check_deadline()?;
-        use futures_util::{
-            future::{AbortHandle, Abortable},
-            stream::{FuturesUnordered, StreamExt},
-        };
+        use futures_util::{StreamExt, TryStreamExt, stream};
         use tracing::Instrument;
         let concurrency = self
             .query
             .limits
             .max_concurrent_phase2_corridors
             .clamp(1, 8);
-        let mut pending = FuturesUnordered::new();
-        let mut handles = std::collections::BTreeMap::new();
-        let mut outcomes = std::collections::BTreeMap::new();
-        let mut next = 0;
-        let mut fatal: Option<(usize, RoutingError)> = None;
         let network = self.network;
         let retained = self.corridor;
         let snapshot = self.snapshot;
         let query = self.query;
         let walking = self.walking;
         let bike_share = self.bike_share;
-        let make_future = |index: usize, registration| async move {
-            let mut evaluator = FixedCorridorEvaluator::new(
-                network, retained, snapshot, query, walking, bike_share,
-            );
-            let span = tracing::info_span!(target: "via_profile", "Phase 2 Corridor", corridor_index = index);
-            let result = Abortable::new(
-                evaluator
-                    .evaluate_corridor(&corridors[index])
-                    .instrument(span),
-                registration,
-            )
-            .await;
-            (index, result, evaluator.stats, evaluator.failures)
-        };
-        loop {
-            while fatal.is_none()
-                && !query.deadline.is_elapsed()
-                && next < corridors.len()
-                && pending.len() < concurrency
-            {
-                let (handle, registration) = AbortHandle::new_pair();
-                handles.insert(next, handle);
-                pending.push(make_future(next, registration));
-                self.stats.corridors_attempted += 1;
-                next += 1;
-            }
-            if pending.is_empty() {
-                break;
-            }
-            let Some((index, result, stats, failures)) = pending.next().await else {
-                break;
-            };
-            handles.remove(&index);
-            self.stats.merge_corridor(stats);
-            self.failures.merge(failures);
-            match result {
-                Ok(Ok(candidates)) => {
+        let mut attempted = 0;
+        let results = stream::iter(0..corridors.len())
+            .map(|index| {
+                attempted += 1;
+                async move {
+                    let mut evaluator = FixedCorridorEvaluator::new(
+                        network, retained, snapshot, query, walking, bike_share,
+                    );
+                    let span = tracing::info_span!(target: "via_profile", "Phase 2 Corridor", corridor_index = index);
+                    let result = evaluator.evaluate_corridor(&corridors[index]).instrument(span).await;
+                    (index, result, evaluator.stats, evaluator.failures)
+                }
+            })
+            .buffer_unordered(concurrency)
+            .map(|(index, result, stats, failures)| {
+                self.stats.merge_corridor(stats);
+                self.failures.merge(failures);
+                if result.is_ok() {
                     self.stats.corridors_completed += 1;
-                    outcomes.insert(index, candidates);
                 }
-                Ok(Err(error)) => {
-                    if fatal.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
-                        fatal = Some((index, error));
-                        for (&other, handle) in &handles {
-                            if other > index {
-                                handle.abort();
-                            }
-                        }
-                    }
-                }
-                Err(_) => {}
-            }
-        }
-        if let Some((_, error)) = fatal {
-            return Err(error);
-        }
-        let candidates = outcomes.into_values().flatten().collect();
+                result.map(|candidates| (index, candidates))
+            });
+        let results = query.deadline.run(results.try_collect::<Vec<_>>()).await;
+        self.stats.corridors_attempted += attempted;
+        let mut results = results??;
+        results.sort_unstable_by_key(|(index, _)| *index);
+        let candidates = results
+            .into_iter()
+            .flat_map(|(_, candidates)| candidates)
+            .collect();
         self.check_deadline()?;
         let candidates = pareto_candidates(candidates);
         self.check_deadline()?;

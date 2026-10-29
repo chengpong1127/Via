@@ -188,6 +188,21 @@ async fn capture_representative_pools() {
             request_timeout: None,
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
         };
+        if std::env::var_os("VIA_SCHEDULER_COMPARE").is_some() {
+            compare_schedulers(
+                &journeys,
+                &context,
+                &service,
+                street.clone(),
+                runtime.clone(),
+                network.clone(),
+                &metrics,
+                &observer,
+                bike,
+            )
+            .await;
+            continue;
+        }
         if std::env::var_os("VIA_ROUTE_CACHE_COMPARE").is_some() {
             for cached in [false, true] {
                 let cache = Arc::new(crate::routing::route_cache::RouteCache::new(street.clone()));
@@ -283,6 +298,89 @@ async fn capture_representative_pools() {
                 (bike, size == journeys.len()),
             )
             .await;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compare_schedulers(
+    journeys: &[RealizedJourney],
+    context: &JourneyPlanningContext<'_>,
+    service: &RoutingService,
+    street: Arc<dyn StreetRouter>,
+    runtime: Arc<TransitRuntime>,
+    network: Arc<BikeShareNetwork>,
+    metrics: &RouteMeasurement,
+    observer: &RouteObserver,
+    bike: bool,
+) {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::Ordering;
+    for round in 0..3 {
+        for offset in 0..8 {
+            let cell = (offset + round * 3) % 8;
+            let concurrency = [1, 2, 4, 8][cell / 2];
+            let unordered = cell % 2 == 1;
+            let cache = Arc::new(crate::routing::route_cache::RouteCache::new(street.clone()));
+            let reconstructor =
+                JourneyReconstructor::new(cache.clone(), runtime.clone(), network.clone());
+            metrics.reset();
+            observer.0.lock().unwrap().clear();
+            let started = Instant::now();
+            let futures = journeys
+                .iter()
+                .map(|journey| reconstructor.reconstruct(journey, context));
+            let results = if unordered {
+                ordered_reconstruction(futures, concurrency)
+                    .collect::<Vec<_>>()
+                    .await
+            } else {
+                stream::iter(futures)
+                    .buffered(concurrency)
+                    .collect::<Vec<_>>()
+                    .await
+            };
+            let wall = started.elapsed().as_secs_f64() * 1000.0;
+            let mut fingerprint = Sha256::new();
+            let mut candidates = Vec::new();
+            let mut skipped = 0;
+            let mut failed = 0;
+            for result in results {
+                match result {
+                    Ok(Some(candidate)) => {
+                        fingerprint.update(format!("{:?}", candidate.ranking));
+                        fingerprint.update(serde_json::to_vec(&candidate.option).unwrap());
+                        candidates.push(candidate);
+                    }
+                    Ok(None) => {
+                        skipped += 1;
+                        fingerprint.update(b"skipped");
+                    }
+                    Err(error) => {
+                        failed += 1;
+                        fingerprint.update(format!("{error:?}"));
+                    }
+                }
+            }
+            let candidate_digest = format!("{:x}", fingerprint.finalize());
+            let outcome = service
+                .rank_candidates(context.search_start, candidates)
+                .unwrap();
+            let ranked_digest = format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&outcome).unwrap())
+            );
+            let timeouts = observer
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.outcome == OperationOutcome::Timeout)
+                .count();
+            println!(
+                "SCHEDULER {}",
+                serde_json::json!({"bike":bike,"pool":journeys.len(),"round":round,"concurrency":concurrency,"unordered":unordered,"wall_ms":wall,"cache":cache.stats(),"sends":metrics.attempts.load(Ordering::SeqCst),"timeouts":timeouts,"skipped":skipped,"failed":failed,"candidate_digest":candidate_digest,"ranked_digest":ranked_digest})
+            );
         }
     }
 }

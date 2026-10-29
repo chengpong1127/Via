@@ -7,10 +7,16 @@ remains bounded separately by `max_concurrent_phase2_states` (default 4),
 so increasing corridor concurrency can increase demand on the shared Valhalla
 semaphore. The existing request-local walking, BikeShare and Matrix caches are
 shared across corridors. Successful results are merged in original corridor
-order before the global Pareto pass. If a fatal error is observed, no more
-corridors are scheduled; later in-flight work is canceled while earlier
-in-flight work is resolved to choose the earliest failing corridor. The
-request deadline can cancel that resolution.
+order before the global Pareto pass. The first fatal error observed in completion
+order ends the stream and cancels other in-flight corridors; error precedence
+can therefore vary when failures race. The request deadline wraps the whole
+stream and also cancels unfinished work. On error or timeout, statistics and
+failure flags include outcomes consumed before termination, including a fatal
+corridor if its outcome was received. Partially evaluated corridors canceled
+before their outcome is received do not contribute their local counters or
+failure flags; request-local cache and provider counters still reflect their
+work. The attempted count records corridors admitted to the stream, and the
+completed count records successful corridor outcomes consumed before termination.
 
 The ignored `phase2_corridor_representative_benchmark` uses the existing
 2026-10-01 static artifact and fixed Taipei Main Station–Xinyi workload,
@@ -34,7 +40,10 @@ CARGO_BUILD_JOBS=1 VIA_CHROME_TRACE=/tmp/via-phase2-corridors.trace.json \
 Open the resulting trace in Perfetto and inspect overlapping `Phase 2 Corridor`
 spans. Profiling adds overhead, and semaphore wait sums across concurrent calls.
 
-## Final-code repeat
+## Phase D.2 benchmark repeat
+
+These measurements were recorded at commit `a2355d9`, before the buffered-stream
+refactor, and have not been repeated for the new scheduler.
 
 This repeat ran after the deadline fix and after debug builds completed. Each
 median uses three measured samples after one warmup; this is too few for a

@@ -419,7 +419,23 @@ fn ordered_reconstruction<F: Future>(
     futures: impl Iterator<Item = F>,
     concurrency: usize,
 ) -> impl Stream<Item = F::Output> {
-    stream::iter(futures).buffered(concurrency)
+    stream::once(async move {
+        let indexed = futures
+            .enumerate()
+            .map(index_reconstruction::<F>)
+            .collect::<Vec<_>>();
+        let mut results = stream::iter(indexed)
+            .buffer_unordered(concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_unstable_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, result)| result)
+    })
+    .flat_map(stream::iter)
+}
+
+async fn index_reconstruction<F: Future>((index, future): (usize, F)) -> (usize, F::Output) {
+    (index, future.await)
 }
 
 #[derive(Default)]
@@ -556,13 +572,13 @@ mod reconstruction_concurrency_tests {
 
     #[tokio::test]
     async fn bounded_futures_overlap_and_keep_input_order() {
-        for limit in [1, 2, 4] {
+        for limit in [1, 2, 4, 8] {
             let active = Arc::new(AtomicUsize::new(0));
             let maximum = Arc::new(AtomicUsize::new(0));
             let (started_tx, mut started_rx) = mpsc::unbounded_channel();
             let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
             let mut releases = Vec::new();
-            let futures = (0..4)
+            let futures = (0..8)
                 .map(|id| {
                     let (tx, rx) = oneshot::channel();
                     releases.push(Some(tx));
@@ -586,8 +602,8 @@ mod reconstruction_concurrency_tests {
                     .collect::<Vec<_>>()
                     .await
             });
-            for batch in (0..4).step_by(limit) {
-                let size = limit.min(4 - batch);
+            for batch in (0..8).step_by(limit) {
+                let size = limit.min(8 - batch);
                 for _ in 0..size {
                     started_rx.recv().await.unwrap();
                 }
@@ -597,14 +613,14 @@ mod reconstruction_concurrency_tests {
                     assert_eq!(finished_rx.recv().await.unwrap(), id);
                 }
             }
-            assert_eq!(task.await.unwrap(), vec![0, 1, 2, 3]);
+            assert_eq!(task.await.unwrap(), (0..8).collect::<Vec<_>>());
             assert_eq!(maximum.load(Ordering::SeqCst), limit);
             assert_eq!(active.load(Ordering::SeqCst), 0);
         }
     }
 
     #[tokio::test]
-    async fn dropping_buffered_work_releases_active_futures_and_permits() {
+    async fn dropping_reconstruction_releases_active_futures_and_permits() {
         let active = Arc::new(AtomicUsize::new(0));
         let permits = Arc::new(Semaphore::new(4));
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
@@ -634,6 +650,51 @@ mod reconstruction_concurrency_tests {
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(permits.available_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn completion_admits_new_work_and_preserves_results_and_errors() {
+        for limit in [2, 4, 8] {
+            let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+            let (release_tx, release_rx) = oneshot::channel();
+            let mut release_rx = Some(release_rx);
+            let futures = (0..=limit).map(move |index| {
+                let release = if index == 0 { release_rx.take() } else { None };
+                let started = started_tx.clone();
+                async move {
+                    started.send(index).unwrap();
+                    if let Some(release) = release {
+                        release.await.unwrap();
+                    }
+                    match index {
+                        1 => Ok(None),
+                        2 => Err("failure"),
+                        _ => Ok(Some(index)),
+                    }
+                }
+            });
+            let task = tokio::spawn(async move {
+                ordered_reconstruction(futures, limit)
+                    .collect::<Vec<_>>()
+                    .await
+            });
+            for index in 0..=limit {
+                assert_eq!(started_rx.recv().await.unwrap(), index);
+            }
+            release_tx.send(()).unwrap();
+            let results = task.await.unwrap();
+            assert_eq!(results[0], Ok(Some(0)));
+            assert_eq!(results[1], Ok(None));
+            assert_eq!(results[2], Err("failure"));
+            assert_eq!(
+                results[limit],
+                if limit == 2 {
+                    Err("failure")
+                } else {
+                    Ok(Some(limit))
+                }
+            );
+        }
     }
 }
 
