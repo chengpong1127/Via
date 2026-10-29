@@ -49,68 +49,15 @@ Configuration:
 
 ## Current routing boundary
 
-```text
-build_runtime → ViaRuntime
-→ HTTP app / via-route → RoutingService.plan()
-→ transit access / egress when transit modes are selected
-→ MultimodalPlanner.prepare() → PlanningSession.evaluate_primary()
-→ Phase 1: static Top-K transit corridors
-→ EvaluationCorridors with Origin / BoardingPoint / Destination anchors
-→ request-local snapshots for retained transit positions and selected BikeShare
-→ Phase 2: fixed-corridor baselines + Walking / BikeShare surface alternatives
-→ PlanningSession.evaluate_fallback() via EvaluationCorridor::surface_only() when needed
-→ JourneyReconstructor → rank → JourneyOption[]
-```
+`ViaRuntime` assembles the HTTP server and `via-route`. `RoutingService` discovers
+transit access and egress when needed, then `MultimodalPlanner` prepares static
+transit corridors and request-local snapshots. `PlanningSession.evaluate()`
+evaluates the direct walking corridor and retained transit corridors in one pass.
+Walking is always available; `selected_modes` lists optional transit and BikeShare
+modes. Reconstruction hydrates and ranks the resulting journeys.
 
-`ViaRuntime` is the shared assembly used by the HTTP server and `via-route`.
-`RoutingService` owns the application planning use case and discovers transit
-access / egress only when a transit mode is selected. `MultimodalPlanner` owns
-both phases and keeps its topology and transfer indexes private. Phase 1
-retains one global Top-K set of structurally distinct transit corridors across
-selected modes. Phase 2 converts them to `EvaluationCorridor` values with
-explicit Origin, BoardingPoint, and Destination anchors. Bounded access and
-egress choices stay represented on corridor edges. Empty `selected_modes`
-skips transit search and timing requests; walking remains implicitly enabled.
-`[bike_share]` also skips transit search and timing while loading one
-BikeShare availability snapshot.
-
-`PlanningSession.evaluate_primary()` evaluates retained transit corridors. If
-no primary candidate survives evaluation or reconstruction, its private one-shot
-`evaluate_fallback()` evaluates `EvaluationCorridor::surface_only()`; it reuses
-the same request snapshots and caches. `FixedCorridorEvaluator` uses the
-retained baselines and a small set of
-`SurfaceMovementPlanner` implementations: Walking and BikeShare. Both screen
-with an optimistic lower bound before exact street routing and cache realized
-routes within the request. The evaluator can choose equivalent transit
-Patterns and departures, but cannot add anchors or combine corridors. If
-retained transit evaluation yields no candidate, the planner evaluates a
-trivial Origin-to-Destination corridor through the same evaluator. Bus
-realtime requests are deduplicated by stop and grouped by TDX city scope; the
-evaluator performs no TDX calls.
-
-`RealizedJourney` owns ordered anchors and movements, validates continuity and
-timing, and supplies canonical movement identity for deduplication.
-`JourneyReconstructor` owns place conversion, transit and BikeShare lookups,
-street hydration, and journey candidate assembly. It receives the shared
-request context and does not depend on the planning service. `TransitRuntime`
-exposes raw immutable network access as `network()` for search, timing, and data
-inspection; Health uses its focused revision and validation operations.
-
-Static `TransitNetwork.transfer_edges` contain directional transit walking
-transfers. Requests select optional non-walking systems through
-`selected_modes`: `bus`, `metro`, `tra`, `thsr`, and optionally `bike_share`.
-An empty list means walking alone. Walking remains an implicit capability,
-while output legs retain the coarse `walking`, `transit`, and `bicycle`
-`JourneyMode` values.
-
-Both the HTTP server and `via-route` load the same `ViaStatic` artifact and use
-the same runtime assembly. BikeShare can realize a movement between corridor
-anchors, including the `surface_only` fallback corridor, when station metadata and
-fresh availability support it.
-
-The server has no database, persistence layer, identity registry, or alternate
-planner. TDX adapters construct the same Via-owned typed IDs for static and
-realtime data.
+See [CONTEXT.md](../CONTEXT.md) for the current architecture and
+[configuration.md](docs/configuration.md) for runtime settings.
 
 ## Verification
 

@@ -1,2 +1,0 @@
-reference runs=10 median_wall_s=0.193407 median_user_s=0.173954 median_system_s=0.016871 total_cpu_s=2.100135
-current runs=10 median_wall_s=0.411957 median_user_s=0.372742 median_system_s=0.035742 total_cpu_s=4.710685

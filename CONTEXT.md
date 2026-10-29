@@ -109,8 +109,7 @@ For each edge, `FixedCorridorEvaluator` explicitly expands Transit, Walking,
 then BikeShare in `evaluator/expansion.rs`. Transit resolves retained equivalent
 patterns and multiple snapshot departures. Walking reuses retained access,
 transfer, and egress metrics without another P2 street request. Unresolved
-Walking requests a directional 1×1 Matrix at the state's DepartAt time,
-normalized to Taipei. `PlanningSession` owns the `WalkingCache`, including its
+Walking requests a directional, time-independent 1×1 Matrix. `PlanningSession` owns the `WalkingCache`, including its
 street router and request-local metrics cache, and an optional concrete
 `BikeShareSession`. The session retains station discovery, availability filtering,
 Matrix batching, and result caching. Candidate discovery caches eligible station
@@ -118,22 +117,19 @@ choices by anchor pair and requires at least one distinct pickup/dropoff pair;
 it does not estimate movement duration. `CorridorAnchor` and its exact cache key
 live in `routing/corridor.rs`. Rental transitions and `ActiveBikeRental` live in
 `evaluator/state.rs`.
-`ExpansionInputs` borrows immutable network, retained corridors, timing, and query.
-`ExpansionResolver` executes each state sequentially, keeping cache access, I/O,
-deadline checks, and provider failure classification outside pure transitions.
-`transit_next_state`, `walking_next_state`, and `bike_next_states` construct states
-without evaluator access. Transit, Walking, and BikeShare each return an `ExpansionOutcome` with local
-statistics and failures. The sequential state orchestrator merges those outcomes
-and stops on fatal errors. The evaluator records each state outcome before
-propagating its error and prunes once after collecting the edge's successors.
-Request-local Walking and BikeShare caches still require mutable access. Phase B
-must split cache lookup/update from independent provider work before bounded
-parallel expansion can preserve deterministic cache and result ordering.
-Walking caches successful, unreachable, and failed Matrix requests by ordered
-anchor keys and departure instant across the entire evaluation pass.
-`walking_matrix_requests` counts physical P2 Walking Matrix calls, including
-failures; `walking_cache_hits` counts reuse. BikeShare's existing realization,
-cache-hit, and Matrix counters retain their meanings.
+`ExpansionResolver` expands Transit, Walking, then BikeShare for each state.
+States within an edge and transit corridors can run concurrently within configured
+limits; outcomes are restored to input order before pruning. Request-local caches
+share identical Matrix requests, including in-flight requests and completed errors.
+Walking cache keys preserve ordered anchors; Matrix keys include the full query.
+The counters in `docs/observability.md` distinguish logical requests from provider
+attempts. Cancellation drops outstanding work.
+
+Walking and cycling Matrix and reconstruction Route requests are time-independent.
+Conditional road restrictions can therefore differ from a time-specific route.
+Reconstruction shares a request-local Route cache for untimed requests; successes
+and unreachable results are retained, while transient and internal failures can be
+retried. Each journey still applies actual durations to its own timeline.
 
 Walking and BikeShare realize actual Matrix metrics before checking query time
 limits. Movement expansion checks feasibility without competitiveness screening.
@@ -183,8 +179,8 @@ BikeShare cannot add transit stops, patterns, or connections.
 ## Static and live data
 
 `via-data` reads the supplied local GTFS archive and does not download or
-refresh it. GTFS is the only static transit source. TDX IDs are normalized to
-existing Via IDs when their formats map directly; unmapped IDs are reported.
+refresh it. GTFS is the only static transit source. GTFS IDs are normalized to
+existing TDX-derived Via IDs when their formats map directly; unmapped IDs are reported.
 The server has no database or identity-reconciliation layer.
 
 GTFS does not contain a YouBike station catalog. To build the static station

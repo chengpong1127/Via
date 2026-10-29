@@ -10,3 +10,14 @@
 
 *.trace.json
 trace.json
+
+# Local profiling and benchmark output
+*.profraw
+*.profdata
+*.heaptrack
+*.perf.data
+perf.data
+perf.data.*
+/flamegraph.svg
+/benchmark-output/
+/server/benchmark-output/
