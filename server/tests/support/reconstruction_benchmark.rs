@@ -140,7 +140,6 @@ async fn reconstruction_concurrency_measurement() {
                             .map(|j| reconstructor.reconstruct(j, &context)),
                         concurrency,
                     )
-                    .collect::<Vec<_>>()
                     .await;
                     let wall = start.elapsed().as_secs_f64() * 1000.0;
                     let options = results
@@ -288,7 +287,6 @@ async fn reconstruction_valhalla_pilot() {
                         .map(|journey| reconstructor.reconstruct(journey, &context)),
                     concurrency,
                 )
-                .collect::<Vec<_>>()
                 .await;
                 let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
                 let mut options = Vec::new();

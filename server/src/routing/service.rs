@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use futures_util::{Stream, StreamExt, stream};
+use futures_util::{StreamExt, stream};
 use time::OffsetDateTime;
 
 use crate::{
@@ -260,13 +260,13 @@ impl RoutingService {
                 let futures = (0..journeys.len()).map(|index| async move {
                     reconstructor.reconstruct(&journeys[index], context).await
                 });
-                let results = ordered_reconstruction(
-                    futures,
-                    self.limits.max_concurrent_reconstruction_candidates,
-                );
                 async {
-                    futures_util::pin_mut!(results);
-                    while let Some(result) = results.next().await {
+                    let results = ordered_reconstruction(
+                        futures,
+                        self.limits.max_concurrent_reconstruction_candidates,
+                    )
+                    .await;
+                    for result in results {
                         match result {
                             Ok(Some(candidate)) => attempt.candidates.push(candidate),
                             Ok(None) => {}
@@ -411,23 +411,21 @@ impl RoutingService {
     }
 }
 
-fn ordered_reconstruction<F: Future>(
-    futures: impl Iterator<Item = F>,
+async fn ordered_reconstruction<F: Future>(
+    futures: impl IntoIterator<Item = F>,
     concurrency: usize,
-) -> impl Stream<Item = F::Output> {
-    stream::once(async move {
-        let indexed = futures
-            .enumerate()
-            .map(index_reconstruction::<F>)
-            .collect::<Vec<_>>();
-        let mut results = stream::iter(indexed)
-            .buffer_unordered(concurrency)
-            .collect::<Vec<_>>()
-            .await;
-        results.sort_unstable_by_key(|(index, _)| *index);
-        results.into_iter().map(|(_, result)| result)
-    })
-    .flat_map(stream::iter)
+) -> Vec<F::Output> {
+    let indexed = futures
+        .into_iter()
+        .enumerate()
+        .map(index_reconstruction::<F>)
+        .collect::<Vec<_>>();
+    let mut results = stream::iter(indexed)
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>()
+        .await;
+    results.sort_unstable_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
 }
 
 async fn index_reconstruction<F: Future>((index, future): (usize, F)) -> (usize, F::Output) {
@@ -593,11 +591,10 @@ mod reconstruction_concurrency_tests {
                     }
                 })
                 .collect::<Vec<_>>();
-            let task = tokio::spawn(async move {
-                ordered_reconstruction(futures.into_iter(), limit)
-                    .collect::<Vec<_>>()
-                    .await
-            });
+            let task =
+                tokio::spawn(
+                    async move { ordered_reconstruction(futures.into_iter(), limit).await },
+                );
             for batch in (0..8).step_by(limit) {
                 let size = limit.min(8 - batch);
                 for _ in 0..size {
@@ -634,11 +631,8 @@ mod reconstruction_concurrency_tests {
                 }
             })
             .collect::<Vec<_>>();
-        let task = tokio::spawn(async move {
-            ordered_reconstruction(futures.into_iter(), 4)
-                .collect::<Vec<_>>()
-                .await
-        });
+        let task =
+            tokio::spawn(async move { ordered_reconstruction(futures.into_iter(), 4).await });
         for _ in 0..4 {
             started_rx.recv().await.unwrap();
         }
@@ -669,11 +663,7 @@ mod reconstruction_concurrency_tests {
                     }
                 }
             });
-            let task = tokio::spawn(async move {
-                ordered_reconstruction(futures, limit)
-                    .collect::<Vec<_>>()
-                    .await
-            });
+            let task = tokio::spawn(async move { ordered_reconstruction(futures, limit).await });
             for index in 0..=limit {
                 assert_eq!(started_rx.recv().await.unwrap(), index);
             }

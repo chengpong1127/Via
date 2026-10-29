@@ -2,8 +2,8 @@ mod candidate;
 mod expansion;
 mod pareto;
 #[cfg(test)]
-#[path = "../../../tests/support/phase2_pareto_benchmark.rs"]
-pub(crate) mod pareto_benchmark;
+#[path = "../../../tests/support/pareto_reference.rs"]
+pub(crate) mod pareto_reference;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -101,9 +101,14 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     query: &'a PlanningQuery,
     walking: &'a WalkingCache,
     bike_share: Option<&'a BikeShareSession>,
+    #[cfg(test)]
+    state_pruner: StatePruner,
     pub(super) stats: Phase2EvaluationStats,
     pub(super) failures: EvaluationFailures,
 }
+
+#[cfg(test)]
+type StatePruner = fn(Vec<EvaluationState>, usize) -> Vec<EvaluationState>;
 
 impl<'a> FixedCorridorEvaluator<'a> {
     pub fn new(
@@ -121,6 +126,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
             query,
             walking,
             bike_share,
+            #[cfg(test)]
+            state_pruner: prune_states,
             stats: Phase2EvaluationStats::default(),
             failures: EvaluationFailures::default(),
         }
@@ -192,6 +199,8 @@ impl<'a> FixedCorridorEvaluator<'a> {
         let query = self.query;
         let walking = self.walking;
         let bike_share = self.bike_share;
+        #[cfg(test)]
+        let state_pruner = self.state_pruner;
         let mut attempted = 0;
         let results = stream::iter(0..corridors.len())
             .map(|index| {
@@ -200,6 +209,10 @@ impl<'a> FixedCorridorEvaluator<'a> {
                     let mut evaluator = FixedCorridorEvaluator::new(
                         network, retained, snapshot, query, walking, bike_share,
                     );
+                    #[cfg(test)]
+                    {
+                        evaluator.state_pruner = state_pruner;
+                    }
                     let span = tracing::info_span!(target: "via_profile", "Phase 2 Corridor", corridor_index = index);
                     let result = evaluator.evaluate_corridor(&corridors[index]).instrument(span).await;
                     (index, result, evaluator.stats, evaluator.failures)
@@ -223,8 +236,6 @@ impl<'a> FixedCorridorEvaluator<'a> {
             .flat_map(|(_, candidates)| candidates)
             .collect();
         self.check_deadline()?;
-        #[cfg(test)]
-        pareto_benchmark::capture(&candidates);
         let candidates = pareto_candidates(candidates);
         self.check_deadline()?;
         self.stats.final_candidates = candidates.len();
@@ -262,7 +273,12 @@ impl<'a> FixedCorridorEvaluator<'a> {
             let outcome = resolver.expand_edge(&states, corridor, edge, index).await;
             self.stats.record_expansion(outcome.stats);
             self.failures.merge(outcome.failures);
-            states = prune_states(outcome.successors?, self.query.limits.max_candidates);
+            let successors = outcome.successors?;
+            #[cfg(test)]
+            let next = (self.state_pruner)(successors, self.query.limits.max_candidates);
+            #[cfg(not(test))]
+            let next = prune_states(successors, self.query.limits.max_candidates);
+            states = next;
             if states.is_empty() {
                 break;
             }
@@ -364,7 +380,14 @@ fn evaluate_with_stats(
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
 ) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
-    run_test_evaluation(network, corridor, snapshot, query, None)
+    run_test_evaluation(
+        network,
+        corridor,
+        snapshot,
+        query,
+        None,
+        pareto::prune_states,
+    )
 }
 #[cfg(test)]
 fn evaluate_with_test_bike_routes(
@@ -374,7 +397,31 @@ fn evaluate_with_test_bike_routes(
     query: PlanningQuery,
     routes: &TestBikeRoutes,
 ) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
-    run_test_evaluation(network, corridor, snapshot, query, Some(routes))
+    run_test_evaluation(
+        network,
+        corridor,
+        snapshot,
+        query,
+        Some(routes),
+        pareto::prune_states,
+    )
+}
+#[cfg(test)]
+fn evaluate_with_reference_state_pruning(
+    network: &TransitRuntime,
+    corridor: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: PlanningQuery,
+) -> Result<Vec<RealizedJourney>, RoutingError> {
+    run_test_evaluation(
+        network,
+        corridor,
+        snapshot,
+        query,
+        None,
+        pareto::prune_states_reference,
+    )
+    .map(|(journeys, _)| journeys)
 }
 #[cfg(test)]
 fn run_test_evaluation(
@@ -383,6 +430,7 @@ fn run_test_evaluation(
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
     routes: Option<&TestBikeRoutes>,
+    state_pruner: StatePruner,
 ) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -405,16 +453,16 @@ fn run_test_evaluation(
                     hits: Default::default(),
                 }))
             });
-            let result = FixedCorridorEvaluator::new(
+            let mut evaluator = FixedCorridorEvaluator::new(
                 network,
                 corridor,
                 snapshot,
                 &query,
                 &dependencies.walking,
                 dependencies.bike_share.as_ref(),
-            )
-            .evaluate(&evaluation_corridors)
-            .await?;
+            );
+            evaluator.state_pruner = state_pruner;
+            let result = evaluator.evaluate(&evaluation_corridors).await?;
             Ok((result.journeys, result.stats))
         })
 }

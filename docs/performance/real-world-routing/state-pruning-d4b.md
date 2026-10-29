@@ -12,7 +12,7 @@ The original pruning function remains available under `cfg(test)` as the
 structural reference. The equivalence tests compare ordered `EvaluationState`
 values, including movements and active BikeShare rental data.
 
-## Isolated benchmark
+## Historical isolated benchmark
 
 The pre-edit release baseline captured three Phase 2 pruning calls from a
 Transit + BikeShare evaluation. The state counts were `[1, 25, 25]` (51 total).
@@ -46,11 +46,11 @@ call (about 0.007%). No allocation profiler was available, so allocation
 counts are not reported. The benchmark clones pools before starting each
 timed sample and does not add per-state tracing to the timed loop.
 
-Run the isolated comparison with:
-
-```sh
-cargo test --manifest-path server/Cargo.toml --release --lib prune_states_isolated_benchmark -- --ignored --nocapture
-```
+Phase D.5 removed the capture and profiling harness because it collected state
+pools through process-wide mutable test state. The measurements and workload
+details above are retained as historical results; the old command no longer
+runs, and no current harness replays those exact six pools. Phase D.6 will own
+future performance measurements.
 
 ## End-to-end status
 

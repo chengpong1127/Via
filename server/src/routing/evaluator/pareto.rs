@@ -67,17 +67,6 @@ fn needs_hydration(movement: &JourneyMovement) -> bool {
 }
 
 pub(super) fn prune_states(states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
-    #[cfg(test)]
-    if USE_REFERENCE_STATE_PRUNING.load(std::sync::atomic::Ordering::Relaxed) {
-        return prune_states_reference(states, limit);
-    }
-    #[cfg(test)]
-    if CAPTURE_STATE_POOLS.load(std::sync::atomic::Ordering::Relaxed) {
-        CAPTURED_STATE_POOLS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push((states.clone(), limit));
-    }
     let mut states = states
         .into_iter()
         .map(|state| ScoredState {
@@ -145,49 +134,6 @@ fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
 }
 
 #[cfg(test)]
-static USE_REFERENCE_STATE_PRUNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
-static CAPTURE_STATE_POOLS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-#[cfg(test)]
-static CAPTURED_STATE_POOLS: std::sync::Mutex<Vec<(Vec<EvaluationState>, usize)>> =
-    std::sync::Mutex::new(Vec::new());
-
-#[cfg(test)]
-#[derive(Default)]
-pub(super) struct StatePruningProfile {
-    pub path_metrics_computations: usize,
-    pub capability_comparisons: usize,
-    pub dominance_comparisons: usize,
-    pub peak_frontier_size: usize,
-}
-
-#[cfg(test)]
-pub(super) fn set_reference_state_pruning(enabled: bool) {
-    USE_REFERENCE_STATE_PRUNING.store(enabled, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(super) fn start_state_pool_capture() {
-    CAPTURED_STATE_POOLS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clear();
-    CAPTURE_STATE_POOLS.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(test)]
-pub(super) fn take_captured_state_pools() -> Vec<(Vec<EvaluationState>, usize)> {
-    CAPTURE_STATE_POOLS.store(false, std::sync::atomic::Ordering::Relaxed);
-    std::mem::take(
-        &mut *CAPTURED_STATE_POOLS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()),
-    )
-}
-
-#[cfg(test)]
 pub(super) fn prune_states_reference(
     mut states: Vec<EvaluationState>,
     limit: usize,
@@ -216,48 +162,4 @@ pub(super) fn prune_states_reference(
     }
     frontier.truncate(limit.max(1));
     frontier
-}
-
-#[cfg(test)]
-pub(super) fn profile_prune_states_reference(
-    mut states: Vec<EvaluationState>,
-    limit: usize,
-) -> (Vec<EvaluationState>, StatePruningProfile) {
-    let mut profile = StatePruningProfile::default();
-    states.sort_by_cached_key(|state| {
-        profile.path_metrics_computations += 1;
-        let metrics = state.metrics();
-        (
-            state.ready_at,
-            metrics.walking_seconds,
-            metrics.transfer_count,
-        )
-    });
-    let mut frontier = Vec::<EvaluationState>::new();
-    for state in states {
-        profile.path_metrics_computations += 1;
-        let metrics = state.metrics();
-        if frontier.iter().any(|known| {
-            profile.capability_comparisons += 1;
-            same_capability(known, &state) && {
-                profile.dominance_comparisons += 1;
-                profile.path_metrics_computations += 1;
-                no_worse(&known.metrics(), &metrics)
-            }
-        }) {
-            continue;
-        }
-        frontier.retain(|known| {
-            profile.capability_comparisons += 1;
-            !(same_capability(&state, known) && {
-                profile.dominance_comparisons += 1;
-                profile.path_metrics_computations += 1;
-                no_worse(&metrics, &known.metrics())
-            })
-        });
-        frontier.push(state);
-        profile.peak_frontier_size = profile.peak_frontier_size.max(frontier.len());
-    }
-    frontier.truncate(limit.max(1));
-    (frontier, profile)
 }
