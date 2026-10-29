@@ -656,8 +656,9 @@ async fn phase2_corridor_representative_benchmark() {
         .with_bike_share(bike)
         .with_limits(limits.planner);
         let mut reference = None;
-        for round in 0..4 {
-            for offset in 0..4 {
+        let short = std::env::var_os("VIA_PARETO_BENCH_SHORT").is_some();
+        for round in 0..if short { 1 } else { 4 } {
+            for offset in 0..if short { 1 } else { 4 } {
                 let concurrency = [1, 2, 4, 8][(round + offset) % 4];
                 let mut sample_query = query.clone();
                 sample_query.limits.max_concurrent_phase2_states = 4;
@@ -700,7 +701,11 @@ async fn phase2_corridor_representative_benchmark() {
                     stats.matrix.completed_hits,
                     stats.matrix.inflight_hits
                 );
-                if round == 3 {
+                if round == 3
+                    || (round == 0
+                        && concurrency == 1
+                        && std::env::var_os("VIA_PARETO_BENCH").is_some())
+                {
                     let reconstructor =
                         JourneyReconstructor::new(street.clone(), runtime.clone(), network.clone())
                             .request_local();
@@ -735,6 +740,40 @@ async fn phase2_corridor_representative_benchmark() {
                     let outcome = service
                         .rank_candidates(context.search_start, reconstructed)
                         .unwrap();
+                    if round == 0
+                        && concurrency == 1
+                        && std::env::var_os("VIA_PARETO_BENCH").is_some()
+                    {
+                        let expected =
+                            crate::routing::evaluator::pareto_benchmark::take_expected().unwrap();
+                        let reference = ordered_reconstruction(
+                            expected
+                                .iter()
+                                .map(|journey| reconstructor.reconstruct(journey, &context)),
+                            limits.max_concurrent_reconstruction_candidates,
+                        )
+                        .collect::<Vec<_>>()
+                        .await;
+                        let reference = reference
+                            .into_iter()
+                            .collect::<Result<Vec<_>, _>>()
+                            .unwrap()
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                        let reference_outcome = service
+                            .rank_candidates(context.search_start, reference)
+                            .unwrap();
+                        assert_eq!(
+                            serde_json::to_value(&outcome).unwrap(),
+                            serde_json::to_value(&reference_outcome).unwrap()
+                        );
+                        assert_eq!(
+                            serde_json::to_string(&outcome).unwrap(),
+                            serde_json::to_string(&reference_outcome).unwrap()
+                        );
+                        println!("PARETO_RANK_EQUAL bike={bike}");
+                    }
                     let keys = match outcome {
                         PlanningOutcome::Options(options) => options
                             .journey_options

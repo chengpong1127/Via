@@ -1,0 +1,53 @@
+   Compiling via-server v0.1.0 (/workspaces/Via/server)
+    Finished `release` profile [optimized] target(s) in 1m 51s
+     Running unittests src/lib.rs (target/release/deps/via_server-873b72cd1a87b3aa)
+
+running 1 test
+CAPTURE access=19 egress=17 bike=false
+PARETO_BENCH mixed=false input=1139 output=1139 identity=1297321 signature=1139 dominance=1296182 peak=1139 samples_us=[633740, 597690, 606607, 625061, 607881, 610585, 588154, 588944, 604836, 608856, 605316, 605029, 604640, 601313, 636619]
+P2 bike=false round=0 concurrency=1 wall_us=11845047 states=4175 successors=5896 candidates=1139 physical=51 hits=35 inflight=0 wait_us=3 timeouts=0 failures=0 peak=1 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=0 concurrency=2 wall_us=948564 states=4175 successors=5896 candidates=1139 physical=51 hits=29 inflight=6 wait_us=10 timeouts=0 failures=0 peak=2 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=0 concurrency=4 wall_us=847368 states=4175 successors=5896 candidates=1139 physical=51 hits=19 inflight=16 wait_us=0 timeouts=0 failures=0 peak=4 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=0 concurrency=8 wall_us=740370 states=4175 successors=5896 candidates=1139 physical=51 hits=25 inflight=10 wait_us=1 timeouts=0 failures=0 peak=6 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=1 concurrency=2 wall_us=910592 states=4175 successors=5896 candidates=1139 physical=51 hits=29 inflight=6 wait_us=0 timeouts=0 failures=0 peak=2 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=1 concurrency=4 wall_us=792727 states=4175 successors=5896 candidates=1139 physical=51 hits=20 inflight=15 wait_us=0 timeouts=0 failures=0 peak=4 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=1 concurrency=8 wall_us=734181 states=4175 successors=5896 candidates=1139 physical=51 hits=24 inflight=11 wait_us=3 timeouts=0 failures=0 peak=6 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=1 concurrency=1 wall_us=988084 states=4175 successors=5896 candidates=1139 physical=51 hits=35 inflight=0 wait_us=0 timeouts=0 failures=0 peak=1 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=2 concurrency=4 wall_us=834777 states=4175 successors=5896 candidates=1139 physical=51 hits=19 inflight=16 wait_us=1 timeouts=0 failures=0 peak=4 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=2 concurrency=8 wall_us=724507 states=4175 successors=5896 candidates=1139 physical=51 hits=24 inflight=11 wait_us=4 timeouts=0 failures=0 peak=6 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=2 concurrency=1 wall_us=984702 states=4175 successors=5896 candidates=1139 physical=51 hits=35 inflight=0 wait_us=0 timeouts=0 failures=0 peak=1 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=2 concurrency=2 wall_us=884846 states=4175 successors=5896 candidates=1139 physical=51 hits=29 inflight=6 wait_us=0 timeouts=0 failures=0 peak=2 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2 bike=false round=3 concurrency=8 wall_us=725586 states=4175 successors=5896 candidates=1139 physical=51 hits=23 inflight=12 wait_us=1 timeouts=0 failures=0 peak=6 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2_TOP3 bike=false concurrency=8 count=1 errors=0 digest=7429f1802ee5a98e1b45e37a412013374cae3b1476f3f0cabd9db2098dd0c0aa
+P2 bike=false round=3 concurrency=1 wall_us=987800 states=4175 successors=5896 candidates=1139 physical=51 hits=35 inflight=0 wait_us=0 timeouts=0 failures=0 peak=1 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2_TOP3 bike=false concurrency=1 count=1 errors=0 digest=7429f1802ee5a98e1b45e37a412013374cae3b1476f3f0cabd9db2098dd0c0aa
+P2 bike=false round=3 concurrency=2 wall_us=877953 states=4175 successors=5896 candidates=1139 physical=51 hits=29 inflight=6 wait_us=0 timeouts=0 failures=0 peak=2 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2_TOP3 bike=false concurrency=2 count=1 errors=0 digest=7429f1802ee5a98e1b45e37a412013374cae3b1476f3f0cabd9db2098dd0c0aa
+P2 bike=false round=3 concurrency=4 wall_us=778569 states=4175 successors=5896 candidates=1139 physical=51 hits=19 inflight=16 wait_us=0 timeouts=0 failures=0 peak=4 http=51 digest=bad5b467918ad337e985f249453585f9e49babc0b828759f5188206ca1864039
+P2_TOP3 bike=false concurrency=4 count=1 errors=0 digest=7429f1802ee5a98e1b45e37a412013374cae3b1476f3f0cabd9db2098dd0c0aa
+CAPTURE access=19 egress=17 bike=true
+PARETO_BENCH mixed=true input=1434 output=242 identity=329204 signature=1434 dominance=191854 peak=242 samples_us=[58850, 58440, 58421, 59543, 59170, 59056, 59287, 59419, 60324, 61219, 59243, 58829, 60328, 58742, 58666]
+P2 bike=true round=0 concurrency=1 wall_us=4572948 states=10242 successors=101132 candidates=242 physical=279 hits=571 inflight=4 wait_us=0 timeouts=0 failures=0 peak=3 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=0 concurrency=2 wall_us=2689123 states=10242 successors=101132 candidates=242 physical=279 hits=515 inflight=60 wait_us=1 timeouts=0 failures=0 peak=4 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=0 concurrency=4 wall_us=1889363 states=10242 successors=101132 candidates=242 physical=279 hits=461 inflight=114 wait_us=12 timeouts=0 failures=0 peak=7 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=0 concurrency=8 wall_us=1402176 states=10242 successors=101132 candidates=242 physical=279 hits=449 inflight=126 wait_us=45596 timeouts=0 failures=0 peak=8 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=1 concurrency=2 wall_us=2549356 states=10242 successors=101132 candidates=242 physical=279 hits=515 inflight=60 wait_us=5 timeouts=0 failures=0 peak=4 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=1 concurrency=4 wall_us=1795957 states=10242 successors=101132 candidates=242 physical=279 hits=459 inflight=116 wait_us=1 timeouts=0 failures=0 peak=7 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=1 concurrency=8 wall_us=1437947 states=10242 successors=101132 candidates=242 physical=279 hits=454 inflight=121 wait_us=24648 timeouts=0 failures=0 peak=8 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=1 concurrency=1 wall_us=3664971 states=10242 successors=101132 candidates=242 physical=279 hits=571 inflight=4 wait_us=1 timeouts=0 failures=0 peak=3 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=2 concurrency=4 wall_us=2316801 states=10242 successors=101132 candidates=242 physical=279 hits=457 inflight=118 wait_us=24 timeouts=0 failures=0 peak=7 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=2 concurrency=8 wall_us=1437575 states=10242 successors=101132 candidates=242 physical=279 hits=453 inflight=122 wait_us=22078 timeouts=0 failures=0 peak=8 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+test routing::service::reconstruction_representative::phase2_corridor_representative_benchmark has been running for over 60 seconds
+P2 bike=true round=2 concurrency=1 wall_us=3672937 states=10242 successors=101132 candidates=242 physical=279 hits=571 inflight=4 wait_us=0 timeouts=0 failures=0 peak=3 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=2 concurrency=2 wall_us=3281542 states=10242 successors=101132 candidates=242 physical=279 hits=516 inflight=59 wait_us=7 timeouts=0 failures=0 peak=4 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2 bike=true round=3 concurrency=8 wall_us=1581775 states=10242 successors=101132 candidates=242 physical=279 hits=448 inflight=127 wait_us=56057 timeouts=0 failures=0 peak=8 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2_TOP3 bike=true concurrency=8 count=3 errors=0 digest=7b7c799a15c20fa565ec6fd4c690f750a980b6a04d5f277335d26bbefb49e080
+P2 bike=true round=3 concurrency=1 wall_us=4040264 states=10242 successors=101132 candidates=242 physical=279 hits=571 inflight=4 wait_us=13 timeouts=0 failures=0 peak=3 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2_TOP3 bike=true concurrency=1 count=3 errors=0 digest=7b7c799a15c20fa565ec6fd4c690f750a980b6a04d5f277335d26bbefb49e080
+P2 bike=true round=3 concurrency=2 wall_us=2792931 states=10242 successors=101132 candidates=242 physical=279 hits=515 inflight=60 wait_us=5 timeouts=0 failures=0 peak=4 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2_TOP3 bike=true concurrency=2 count=3 errors=0 digest=7b7c799a15c20fa565ec6fd4c690f750a980b6a04d5f277335d26bbefb49e080
+P2 bike=true round=3 concurrency=4 wall_us=1970734 states=10242 successors=101132 candidates=242 physical=279 hits=459 inflight=116 wait_us=10 timeouts=0 failures=0 peak=7 http=279 digest=15369c480e6155b9f317c74a564d27c99b2591e889e70ca330ff2e5d9037b942
+P2_TOP3 bike=true concurrency=4 count=3 errors=0 digest=7b7c799a15c20fa565ec6fd4c690f750a980b6a04d5f277335d26bbefb49e080
+test routing::service::reconstruction_representative::phase2_corridor_representative_benchmark ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 237 filtered out; finished in 80.34s

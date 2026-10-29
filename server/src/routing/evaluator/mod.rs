@@ -1,6 +1,9 @@
 mod candidate;
 mod expansion;
 mod pareto;
+#[cfg(test)]
+#[path = "../../../tests/support/phase2_pareto_benchmark.rs"]
+pub(crate) mod pareto_benchmark;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -215,11 +218,13 @@ impl<'a> FixedCorridorEvaluator<'a> {
         self.stats.corridors_attempted += attempted;
         let mut results = results??;
         results.sort_unstable_by_key(|(index, _)| *index);
-        let candidates = results
+        let candidates: Vec<_> = results
             .into_iter()
             .flat_map(|(_, candidates)| candidates)
             .collect();
         self.check_deadline()?;
+        #[cfg(test)]
+        pareto_benchmark::capture(&candidates);
         let candidates = pareto_candidates(candidates);
         self.check_deadline()?;
         self.stats.final_candidates = candidates.len();

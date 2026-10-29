@@ -3740,3 +3740,123 @@ async fn outcome_cleanup_multimodal_benchmark() {
 
 #[path = "parallel_tests.rs"]
 mod parallel_tests;
+
+#[test]
+fn final_pareto_matches_original_for_ties_evidence_and_surface_paths() {
+    use crate::domain::realtime::{
+        ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue,
+    };
+
+    let start = datetime!(2026-09-21 10:00 UTC);
+    let make = |movement: JourneyMovement| {
+        let metrics =
+            PathMetrics::from_movements(std::slice::from_ref(&movement), movement.arrival_at);
+        let journey = RealizedJourney::from_movements(
+            vec![
+                JourneyAnchor {
+                    kind: JourneyAnchorKind::Origin,
+                    reached_at: start,
+                },
+                JourneyAnchor {
+                    kind: JourneyAnchorKind::Destination,
+                    reached_at: movement.arrival_at,
+                },
+            ],
+            vec![movement],
+            start,
+        )
+        .unwrap();
+        EvaluatedCandidate { metrics, journey }
+    };
+    let transit = make(realized_ride(
+        0,
+        trip("a", "bus", &["origin", "destination"], &[1, 5]),
+    ));
+    let mut tied = make(realized_ride(
+        0,
+        trip("b", "bus", &["origin", "destination"], &[1, 5]),
+    ));
+    let mut later = make(realized_ride(
+        0,
+        trip("c", "bus", &["origin", "destination"], &[1, 7]),
+    ));
+    let mut fallback = make(realized_ride(
+        0,
+        trip("d", "bus", &["origin", "destination"], &[1, 8]),
+    ));
+    fallback.metrics.timing_reliability = TimingReliability::Fallback;
+    tied.metrics.evidence.push(NormalizedRealtimeValue {
+        freshness: FreshnessState::Fresh,
+        value: ArrivalEstimate {
+            transit_pattern_id: TransitPatternId::new("bus"),
+            boarding_point_id: BoardingPointId::new("origin"),
+            predicted_arrival_at: None,
+            state: ArrivalState::Unknown,
+            transmitted_at: start,
+        },
+    });
+    later.metrics.walking_seconds = 30;
+    let walk = make(JourneyMovement {
+        from_anchor: 0,
+        to_anchor: 1,
+        departure_at: start,
+        arrival_at: start + Duration::minutes(6),
+        kind: JourneyMovementKind::Walking {
+            kind: WalkingMovementKind::Direct,
+            duration_seconds: 360,
+            distance_metres: 300,
+        },
+    });
+    let bike = make(JourneyMovement {
+        from_anchor: 0,
+        to_anchor: 1,
+        departure_at: start,
+        arrival_at: start + Duration::minutes(4),
+        kind: JourneyMovementKind::BikeShare {
+            movement: bike_movement(0, 1, 240),
+        },
+    });
+    let pool = vec![later, transit.clone(), tied, fallback, walk, bike, transit];
+    for rotation in 0..pool.len() {
+        let mut input = pool.clone();
+        input.rotate_left(rotation);
+        let (expected, _) = super::pareto_benchmark::reference(input.clone());
+        let actual = pareto_candidates(input);
+        super::pareto_benchmark::assert_equal(&expected, &actual);
+    }
+}
+
+#[test]
+fn final_pareto_removes_dominated_frontier_and_keeps_first_equal_identity() {
+    let start = datetime!(2026-09-21 10:00 UTC);
+    let make = |id| {
+        let movement = realized_ride(0, trip(id, "bus", &["origin", "destination"], &[1, 5]));
+        let metrics =
+            PathMetrics::from_movements(std::slice::from_ref(&movement), movement.arrival_at);
+        let journey = RealizedJourney::from_movements(
+            vec![
+                JourneyAnchor {
+                    kind: JourneyAnchorKind::Origin,
+                    reached_at: start,
+                },
+                JourneyAnchor {
+                    kind: JourneyAnchorKind::Destination,
+                    reached_at: movement.arrival_at,
+                },
+            ],
+            vec![movement],
+            start,
+        )
+        .unwrap();
+        EvaluatedCandidate { metrics, journey }
+    };
+    let mut dominated = make("a");
+    dominated.metrics.bicycle_seconds = 10;
+    let winner = make("z");
+    let mut duplicate = winner.clone();
+    duplicate.metrics.timing_reliability = TimingReliability::Fallback;
+    let result = pareto_candidates(vec![dominated, winner.clone(), duplicate]);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].journey, winner.journey);
+    assert_eq!(result[0].metrics, winner.metrics);
+}

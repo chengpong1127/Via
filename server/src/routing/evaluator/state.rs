@@ -42,6 +42,7 @@ impl EvaluationState {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub(super) struct PathMetrics {
     pub arrival_time: OffsetDateTime,
     pub walking_seconds: u32,

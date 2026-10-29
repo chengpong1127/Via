@@ -13,38 +13,66 @@ pub(super) fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> 
     unique(left) == unique(right)
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub(super) struct EvaluatedCandidate {
     pub metrics: PathMetrics,
     pub journey: RealizedJourney,
 }
 
-pub(super) fn pareto_candidates(
-    mut candidates: Vec<EvaluatedCandidate>,
-) -> Vec<EvaluatedCandidate> {
-    candidates.sort_by_cached_key(|candidate| {
+struct CandidateMetadata<I> {
+    candidate: EvaluatedCandidate,
+    identity: I,
+    signature: String,
+    needs_hydration: bool,
+}
+
+pub(super) fn pareto_candidates(candidates: Vec<EvaluatedCandidate>) -> Vec<EvaluatedCandidate> {
+    let mut candidates = candidates
+        .into_iter()
+        .map(|candidate| {
+            let identity = candidate.journey.identity();
+            let signature = identity.canonical_signature();
+            let needs_hydration = candidate.journey.movements().iter().any(needs_hydration);
+            CandidateMetadata {
+                candidate,
+                identity,
+                signature,
+                needs_hydration,
+            }
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        let left_metrics = &left.candidate.metrics;
+        let right_metrics = &right.candidate.metrics;
         (
-            candidate.metrics.arrival_time,
-            candidate.metrics.transfer_count,
-            candidate.metrics.walking_seconds,
-            candidate.journey.identity().canonical_signature(),
+            left_metrics.arrival_time,
+            left_metrics.transfer_count,
+            left_metrics.walking_seconds,
+            &left.signature,
         )
+            .cmp(&(
+                right_metrics.arrival_time,
+                right_metrics.transfer_count,
+                right_metrics.walking_seconds,
+                &right.signature,
+            ))
     });
-    let mut pareto = Vec::<EvaluatedCandidate>::new();
+    let mut pareto: Vec<CandidateMetadata<_>> = Vec::new();
     for candidate in candidates {
-        if pareto.iter().any(|known| {
-            known.journey.identity() == candidate.journey.identity()
-                || can_dominate(known, &candidate)
-        }) {
+        if pareto
+            .iter()
+            .any(|known| known.identity == candidate.identity || can_dominate(known, &candidate))
+        {
             continue;
         }
         pareto.retain(|known| !can_dominate(&candidate, known));
         pareto.push(candidate);
     }
-    pareto
+    pareto.into_iter().map(|entry| entry.candidate).collect()
 }
 
-fn can_dominate(left: &EvaluatedCandidate, right: &EvaluatedCandidate) -> bool {
-    !left.journey.movements().iter().any(needs_hydration) && left.metrics.dominates(&right.metrics)
+fn can_dominate<I>(left: &CandidateMetadata<I>, right: &CandidateMetadata<I>) -> bool {
+    !left.needs_hydration && left.candidate.metrics.dominates(&right.candidate.metrics)
 }
 
 fn needs_hydration(movement: &JourneyMovement) -> bool {
