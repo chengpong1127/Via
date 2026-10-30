@@ -480,14 +480,14 @@ fn reference_pruning_preserves_complete_journeys_and_ranked_journey_options() {
     let departure_at = datetime!(2026-09-21 10:00 UTC);
     let request = crate::api::PlanningRequest {
         origin: crate::api::SelectedPlace {
-            coordinate: crate::api::GeoCoordinate {
+            coordinate: crate::domain::location::GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },
             display_text: "Origin".into(),
         },
         destination: crate::api::SelectedPlace {
-            coordinate: crate::api::GeoCoordinate {
+            coordinate: crate::domain::location::GeoCoordinate {
                 latitude: 25.0,
                 longitude: 121.5,
             },
@@ -496,6 +496,7 @@ fn reference_pruning_preserves_complete_journeys_and_ranked_journey_options() {
         selected_modes: vec![crate::api::PlanningMode::Bus],
         departure_setting: crate::api::DepartureSetting::DepartAt { time: departure_at },
     };
+    let request: crate::domain::planning::PlanningInput = request.into();
     let context = super::super::super::model::JourneyPlanningContext::new(
         &request,
         departure_at,

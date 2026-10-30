@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let result = runtime
         .routing
-        .plan(request)
+        .plan(request.into())
         .await
         .map_err(|error| format!("routing failed: {error:?}"))?;
     if cli.trace {

@@ -226,7 +226,7 @@ async fn surface_realization_completes_alongside_transit() {
         })),
         bike_share: None,
     };
-    let mut evaluator = FixedCorridorEvaluator::new(
+    let evaluator = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -234,10 +234,10 @@ async fn surface_realization_completes_alongside_transit() {
         &planners.walking,
         planners.bike_share.as_ref(),
     );
-    let result = evaluator.evaluate(&[corridor]).await;
-    assert!(!result.unwrap().journeys.is_empty());
+    let report = evaluator.evaluate(&[corridor]).await;
+    assert!(!report.outcome.unwrap().is_empty());
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(evaluator.stats.corridors_completed, 1);
+    assert_eq!(report.stats.corridors_completed, 1);
 }
 
 #[tokio::test]
@@ -275,7 +275,7 @@ async fn direct_corridor_has_observable_constant_work() {
                 EvaluationCorridor::direct_walking(query.origin, query.destination),
             );
         }
-        let result = FixedCorridorEvaluator::new(
+        let result = CorridorScheduler::new(
             &network,
             &retained,
             &snapshot,
@@ -284,17 +284,25 @@ async fn direct_corridor_has_observable_constant_work() {
             planners.bike_share.as_ref(),
         )
         .evaluate(&corridors)
-        .await
-        .unwrap();
+        .await;
         assert_eq!(
             calls.load(std::sync::atomic::Ordering::SeqCst),
             if include_direct { 2 } else { 1 }
         );
         if include_direct {
-            assert!(result.journeys.iter().any(|j| j.anchors().len() == 2));
             assert!(
                 result
-                    .journeys
+                    .outcome
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(|j| j.anchors().len() == 2)
+            );
+            assert!(
+                result
+                    .outcome
+                    .as_ref()
+                    .unwrap()
                     .iter()
                     .any(|j| !j.transit_pattern_sequence().is_empty())
             );
@@ -331,7 +339,7 @@ async fn deadline_remains_a_hard_failure_after_a_completed_corridor() {
         })),
         bike_share: None,
     };
-    let mut evaluator = FixedCorridorEvaluator::new(
+    let evaluator = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -339,11 +347,12 @@ async fn deadline_remains_a_hard_failure_after_a_completed_corridor() {
         &planners.walking,
         planners.bike_share.as_ref(),
     );
+    let report = evaluator.evaluate(&corridors).await;
     assert!(matches!(
-        evaluator.evaluate(&corridors).await,
+        report.outcome,
         Err(RoutingError::DeadlineExceeded)
     ));
-    assert_eq!(evaluator.stats.corridors_completed, 1);
+    assert_eq!(report.stats.corridors_completed, 1);
 }
 
 #[tokio::test]
@@ -362,7 +371,7 @@ async fn direct_corridor_returns_both_resolved_surface_successors() {
             movement: bike_movement(0, 1, 240),
         }))),
     };
-    let mut evaluator = FixedCorridorEvaluator::new(
+    let evaluator = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -370,14 +379,14 @@ async fn direct_corridor_returns_both_resolved_surface_successors() {
         &planners.walking,
         planners.bike_share.as_ref(),
     );
-    let result = evaluator.evaluate(&[corridor]).await.unwrap();
-    assert_eq!(result.journeys.len(), 2);
-    assert_eq!(result.stats.states_expanded, 1);
-    assert_eq!(result.stats.successors_generated, 2);
-    assert_eq!(result.stats.walking_operations_attempted, 1);
-    assert_eq!(result.stats.bike_operations_attempted, 1);
-    assert_eq!(result.stats.corridors_completed, 1);
-    assert_eq!(result.stats.walking_matrix_requests, 1);
+    let report = evaluator.evaluate(&[corridor]).await;
+    assert_eq!(report.outcome.as_ref().unwrap().len(), 2);
+    assert_eq!(report.stats.states_expanded, 1);
+    assert_eq!(report.stats.successors_generated, 2);
+    assert_eq!(report.stats.walking_operations_attempted, 1);
+    assert_eq!(report.stats.bike_operations_attempted, 1);
+    assert_eq!(report.stats.corridors_completed, 1);
+    assert_eq!(report.stats.walking_matrix_requests, 1);
 }
 
 #[tokio::test]
@@ -396,11 +405,10 @@ async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
         .collect::<Vec<_>>();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None)
+        CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None)
             .evaluate(&corridors),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(result.stats.corridors_attempted, 2400);
     assert_eq!(result.stats.corridors_completed, 2400);
@@ -409,7 +417,7 @@ async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
     assert_eq!(result.stats.successors_generated, 2400);
     assert_eq!(result.stats.walking_matrix_requests, 1);
     assert_eq!(result.stats.walking_cache_hits, 2399);
-    assert_eq!(result.journeys.len(), 1);
+    assert_eq!(result.outcome.as_ref().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -773,16 +781,16 @@ async fn evaluator_aggregates_outcomes_before_propagating_a_fatal_walking_error(
         ],
     );
     let walking = WalkingCache::new(Arc::new(DeadlineWalkingRouter));
-    let mut evaluator =
-        FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None);
+    let evaluator = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
+    let report = evaluator.evaluate(&[corridor]).await;
     assert!(matches!(
-        evaluator.evaluate(&[corridor]).await,
+        report.outcome,
         Err(RoutingError::DeadlineExceeded)
     ));
-    assert_eq!(evaluator.stats.states_expanded, 2);
-    assert_eq!(evaluator.stats.walking_operations_attempted, 2);
-    assert_eq!(evaluator.stats.transit_operations_attempted, 1);
-    assert_eq!(evaluator.stats.transit_departure_lookups, 1);
-    assert_eq!(evaluator.stats.successors_generated, 3);
-    assert_eq!(evaluator.stats.corridors_completed, 0);
+    assert_eq!(report.stats.states_expanded, 2);
+    assert_eq!(report.stats.walking_operations_attempted, 2);
+    assert_eq!(report.stats.transit_operations_attempted, 1);
+    assert_eq!(report.stats.transit_departure_lookups, 1);
+    assert_eq!(report.stats.successors_generated, 3);
+    assert_eq!(report.stats.corridors_completed, 0);
 }

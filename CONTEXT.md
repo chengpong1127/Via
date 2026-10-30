@@ -3,21 +3,37 @@
 Via plans multimodal journeys using a GTFS-built static transit network, TDX
 realtime timing and BikeShare availability, and Valhalla street routing.
 
-`RoutingService → MultimodalPlanner.prepare → PlanningSession.evaluate →
-RealizedJourney → reconstruction → ranking` is the canonical server flow.
+API and CLI requests convert into domain-owned `PlanningInput` before entering
+routing. `RoutingService → MultimodalPlanner discovery/preparation →
+PlanningSession.evaluate → RealizedJourney → ReconstructionSession → ranking`
+is the canonical server flow. Routing depends on domain interfaces, including
+`BikeAvailabilitySource`; providers supply their implementations.
 Phase 1 finds a bounded global Top-K of static transit corridors. Phase 2
 loads request-local snapshots and evaluates fixed corridors plus the direct
-walking corridor, which runs first. Walking is always enabled; selected modes
+walking corridor, which starts first and may overlap transit evaluation within
+the configured concurrency limit. Walking is always enabled; selected modes
 are optional transit and BikeShare modes. With no transit mode, Phase 1 is skipped.
 
-`FixedCorridorEvaluator` expands Transit, Walking, then BikeShare along fixed
+`CorridorScheduler` coordinates bounded concurrent corridor work and returns a
+single report containing the outcome, statistics and observed failures, including
+partial accounting on errors. `PlanningSession` consumes its request-local state
+and merges snapshot failures into that report. `FixedCorridorEvaluator` expands
+Transit, Walking, then BikeShare along fixed
 anchors and prunes feasible successors. It cannot add anchors, combine corridors,
 or make TDX calls. States and transit corridors can run concurrently within
 configured limits; outcomes retain deterministic ordering. Walking and cycling
 Matrix and reconstruction Route requests are time-independent, so conditional
 road restrictions can differ from a time-specific route. Reconstruction hydrates
 street geometry, rechecks timing and ranks usable journeys. `RealizedJourney`
-owns movement continuity, timing and identity.
+owns movement continuity, timing and identity. `ReconstructionSession` owns
+bounded reconstruction scheduling, ordered candidates and reconstruction failures.
+
+Routing implementation modules are private; supported entry types are exported
+at the routing module root. `multimodal` owns access/egress discovery, static
+preparation, snapshots and evaluation sessions. BikeShare separates candidate
+selection, Matrix realization and request-session caching; its Matrix resolver
+is supplied explicitly. The private `cache` module groups request, Matrix and
+Route caches while retaining their separate keys and failure/retry policies.
 
 `via-data build` consumes local GTFS and optional TDX station snapshots; it does
 not download them. `via-data fetch` can create source snapshots. Sparse Bus stop

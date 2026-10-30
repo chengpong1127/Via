@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use via_server::domain::bikeshare::BikeAvailabilitySource;
 
 use axum::Router;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
@@ -7,10 +8,7 @@ use via_server::{
     app::build_router,
     domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
     health::DependencyHealth,
-    providers::{
-        BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
-        tdx_bindings::TdxProviderBindings,
-    },
+    providers::{UnavailableBikeAvailabilitySource, tdx_bindings::TdxProviderBindings},
     routing::JourneyPlanningLimits,
     runtime::{ViaRuntime, ViaRuntimeDependencies},
     street::{StreetRouter, StreetRoutingError},

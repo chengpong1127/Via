@@ -6,6 +6,7 @@ use std::{
     },
     time::Duration,
 };
+use via_server::domain::bikeshare::{BikeAvailabilityError, BikeAvailabilitySource};
 
 use crate::support::tdx::spawn_tdx_fixture;
 use axum::{
@@ -25,7 +26,7 @@ use via_server::{
         ids::{BikeStationId, BoardingPointId},
         location::GeoCoordinate,
     },
-    providers::{BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource},
+    providers::TdxBikeAvailabilitySource,
 };
 
 fn station(id: &str) -> BikeStation {

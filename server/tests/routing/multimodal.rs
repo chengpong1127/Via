@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use via_server::domain::bikeshare::{BikeAvailabilityError, BikeAvailabilitySource};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -19,7 +20,7 @@ use via_server::{
         transit_runtime::TransitRuntime,
         transit_timing::{EffectiveTrip, TimingSnapshot},
     },
-    providers::{BikeAvailabilityError, BikeAvailabilitySource, UnavailableBikeAvailabilitySource},
+    providers::UnavailableBikeAvailabilitySource,
     street::{FakeStreetRouter, StreetTravelMode},
 };
 
@@ -743,9 +744,13 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
             limits,
             false,
         );
-        let request =
-            serde_json::from_value(request(origin, destination, &["metro", "bike_share"])).unwrap();
-        let body = serde_json::to_value(service.plan(request).await.unwrap()).unwrap();
+        let request = serde_json::from_value::<via_server::api::PlanningRequest>(request(
+            origin,
+            destination,
+            &["metro", "bike_share"],
+        ))
+        .unwrap();
+        let body = serde_json::to_value(service.plan(request.into()).await.unwrap()).unwrap();
 
         assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
         assert_eq!(availability_calls.load(Ordering::Relaxed), 1);
@@ -922,7 +927,15 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
         let started = std::time::Instant::now();
         let body = serde_json::to_value(
             service
-                .plan(serde_json::from_value(request(origin, destination, &["metro"])).unwrap())
+                .plan(
+                    serde_json::from_value::<via_server::api::PlanningRequest>(request(
+                        origin,
+                        destination,
+                        &["metro"],
+                    ))
+                    .unwrap()
+                    .into(),
+                )
                 .await
                 .unwrap(),
         )

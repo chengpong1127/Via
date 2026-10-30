@@ -1,3 +1,6 @@
+mod scheduler;
+use super::failures::FailureSummary;
+pub(super) use scheduler::CorridorScheduler;
 mod candidate;
 mod expansion;
 mod pareto;
@@ -75,23 +78,10 @@ impl Phase2EvaluationStats {
     }
 }
 
-#[derive(Default, Clone, Copy)]
-pub(crate) struct EvaluationFailures {
-    pub transient: bool,
-    pub internal: bool,
-}
-
-impl EvaluationFailures {
-    fn merge(&mut self, other: Self) {
-        self.transient |= other.transient;
-        self.internal |= other.internal;
-    }
-}
-
-pub(super) struct EvaluationResult {
-    pub journeys: Vec<RealizedJourney>,
+pub(super) struct EvaluationReport {
+    pub outcome: Result<Vec<RealizedJourney>, RoutingError>,
     pub stats: Phase2EvaluationStats,
-    pub failures: EvaluationFailures,
+    pub failures: FailureSummary,
 }
 
 pub(super) struct FixedCorridorEvaluator<'a> {
@@ -104,7 +94,7 @@ pub(super) struct FixedCorridorEvaluator<'a> {
     #[cfg(test)]
     state_pruner: StatePruner,
     pub(super) stats: Phase2EvaluationStats,
-    pub(super) failures: EvaluationFailures,
+    pub(super) failures: FailureSummary,
 }
 
 #[cfg(test)]
@@ -129,129 +119,11 @@ impl<'a> FixedCorridorEvaluator<'a> {
             #[cfg(test)]
             state_pruner: prune_states,
             stats: Phase2EvaluationStats::default(),
-            failures: EvaluationFailures::default(),
+            failures: FailureSummary::default(),
         }
     }
-    #[tracing::instrument(target = "via_profile", name = "Corridor Evaluation", skip_all, fields(corridor_count = corridors.len(), states_expanded = tracing::field::Empty, candidate_count = tracing::field::Empty, walking_cache_hits = tracing::field::Empty, bike_cache_hits = tracing::field::Empty))]
-    pub async fn evaluate(
-        &mut self,
-        corridors: &[EvaluationCorridor],
-    ) -> Result<EvaluationResult, RoutingError> {
-        let started = Instant::now();
-        let result = self.evaluate_inner(corridors).await;
-        self.stats.phase2_latency_us +=
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        self.stats.matrix = self.walking.matrix_stats();
-        self.stats.walking_matrix_requests = self.walking.requests();
-        self.stats.walking_cache_hits = self.walking.cache_hits();
-        let bike = self
-            .bike_share
-            .map(BikeShareSession::realization_stats)
-            .unwrap_or_default();
-        self.stats.bike_exact_candidates_requested = bike.exact_requests;
-        self.stats.bike_exact_cache_hits = bike.cache_hits;
-        self.stats.bike_matrix_requests = bike.matrix_requests;
-        tracing::Span::current()
-            .record("states_expanded", self.stats.states_expanded)
-            .record("candidate_count", self.stats.final_candidates)
-            .record("walking_cache_hits", self.stats.walking_cache_hits)
-            .record("bike_cache_hits", self.stats.bike_exact_cache_hits);
-        tracing::debug!(
-            target: "via_server::routing",
-            states_expanded = self.stats.states_expanded,
-            transit_operations_attempted = self.stats.transit_operations_attempted,
-            walking_operations_attempted = self.stats.walking_operations_attempted,
-            bike_operations_attempted = self.stats.bike_operations_attempted,
-            successors_generated = self.stats.successors_generated,
-            corridors_attempted = self.stats.corridors_attempted,
-            departure_lookups = self.stats.transit_departure_lookups,
-            bike_exact_requests = self.stats.bike_exact_candidates_requested,
-            bike_cache_hits = self.stats.bike_exact_cache_hits,
-            bike_matrix_requests = self.stats.bike_matrix_requests,
-            final_candidates = self.stats.final_candidates,
-            corridors_completed = self.stats.corridors_completed,
-            walking_matrix_requests = self.stats.walking_matrix_requests,
-            walking_cache_hits = self.stats.walking_cache_hits,
-            latency_us = self.stats.phase2_latency_us,
-            "Phase 2 corridor evaluation"
-        );
-        result.map(|mut result| {
-            result.stats = self.stats;
-            result
-        })
-    }
-
-    async fn evaluate_inner(
-        &mut self,
-        corridors: &[EvaluationCorridor],
-    ) -> Result<EvaluationResult, RoutingError> {
-        self.check_deadline()?;
-        use futures_util::{StreamExt, TryStreamExt, stream};
-        use tracing::Instrument;
-        let concurrency = self
-            .query
-            .limits
-            .max_concurrent_phase2_corridors
-            .clamp(1, 8);
-        let network = self.network;
-        let retained = self.corridor;
-        let snapshot = self.snapshot;
-        let query = self.query;
-        let walking = self.walking;
-        let bike_share = self.bike_share;
-        #[cfg(test)]
-        let state_pruner = self.state_pruner;
-        let mut attempted = 0;
-        let results = stream::iter(0..corridors.len())
-            .map(|index| {
-                attempted += 1;
-                async move {
-                    let mut evaluator = FixedCorridorEvaluator::new(
-                        network, retained, snapshot, query, walking, bike_share,
-                    );
-                    #[cfg(test)]
-                    {
-                        evaluator.state_pruner = state_pruner;
-                    }
-                    let span = tracing::info_span!(target: "via_profile", "Phase 2 Corridor", corridor_index = index);
-                    let result = evaluator.evaluate_corridor(&corridors[index]).instrument(span).await;
-                    (index, result, evaluator.stats, evaluator.failures)
-                }
-            })
-            .buffer_unordered(concurrency)
-            .map(|(index, result, stats, failures)| {
-                self.stats.merge_corridor(stats);
-                self.failures.merge(failures);
-                if result.is_ok() {
-                    self.stats.corridors_completed += 1;
-                }
-                result.map(|candidates| (index, candidates))
-            });
-        let results = query.deadline.run(results.try_collect::<Vec<_>>()).await;
-        self.stats.corridors_attempted += attempted;
-        let mut results = results??;
-        results.sort_unstable_by_key(|(index, _)| *index);
-        let candidates: Vec<_> = results
-            .into_iter()
-            .flat_map(|(_, candidates)| candidates)
-            .collect();
-        self.check_deadline()?;
-        let candidates = pareto_candidates(candidates);
-        self.check_deadline()?;
-        self.stats.final_candidates = candidates.len();
-        Ok(EvaluationResult {
-            journeys: candidates.into_iter().map(|c| c.journey).collect(),
-            stats: self.stats,
-            failures: self.failures,
-        })
-    }
-
     fn check_deadline(&self) -> Result<(), RoutingError> {
-        if self.query.deadline.is_elapsed() {
-            Err(RoutingError::DeadlineExceeded)
-        } else {
-            Ok(())
-        }
+        check_deadline(self.query)
     }
     async fn evaluate_corridor(
         &mut self,
@@ -284,6 +156,14 @@ impl<'a> FixedCorridorEvaluator<'a> {
             }
         }
         self.finalize_states(corridor, states)
+    }
+}
+
+fn check_deadline(query: &PlanningQuery) -> Result<(), RoutingError> {
+    if query.deadline.is_elapsed() {
+        Err(RoutingError::DeadlineExceeded)
+    } else {
+        Ok(())
     }
 }
 
@@ -453,7 +333,7 @@ fn run_test_evaluation(
                     hits: Default::default(),
                 }))
             });
-            let mut evaluator = FixedCorridorEvaluator::new(
+            let mut evaluator = CorridorScheduler::new(
                 network,
                 corridor,
                 snapshot,
@@ -462,8 +342,8 @@ fn run_test_evaluation(
                 dependencies.bike_share.as_ref(),
             );
             evaluator.state_pruner = state_pruner;
-            let result = evaluator.evaluate(&evaluation_corridors).await?;
-            Ok((result.journeys, result.stats))
+            let report = evaluator.evaluate(&evaluation_corridors).await;
+            Ok((report.outcome?, report.stats))
         })
 }
 

@@ -4,10 +4,7 @@ pub mod timing;
 
 pub mod valhalla;
 
-pub use bikeshare::{
-    BikeAvailabilityError, BikeAvailabilitySource, TdxBikeAvailabilitySource,
-    UnavailableBikeAvailabilitySource,
-};
+pub use bikeshare::{TdxBikeAvailabilitySource, UnavailableBikeAvailabilitySource};
 pub use timing::{
     BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
     TraDepartureSource, TransitDepartureSource,

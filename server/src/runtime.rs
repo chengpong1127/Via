@@ -1,3 +1,4 @@
+use crate::domain::bikeshare::BikeAvailabilitySource;
 use std::{error::Error, sync::Arc, time::Duration};
 
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxBikeAvailabilitySource,
         ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
-        TransitDepartureSource, ValhallaProvider, bikeshare::BikeAvailabilitySource,
+        TransitDepartureSource, ValhallaProvider,
     },
     routing::{JourneyPlanningLimits, RoutingService},
     street::StreetRouter,
@@ -213,7 +214,7 @@ mod tests {
     async fn development_planning_waits_past_request_and_phase2_timeouts() {
         let runtime = runtime(Environment::Development);
         let started = tokio::time::Instant::now();
-        let result = runtime.routing.plan(request()).await.unwrap();
+        let result = runtime.routing.plan(request().into()).await.unwrap();
         assert!(matches!(result, PlanningOutcome::Options(_)));
         assert!(started.elapsed() >= Duration::from_secs(11));
     }
@@ -223,7 +224,7 @@ mod tests {
         let runtime = runtime(Environment::Production);
         let started = tokio::time::Instant::now();
         assert!(matches!(
-            runtime.routing.plan(request()).await,
+            runtime.routing.plan(request().into()).await,
             Err(PlanningError::TemporarilyUnavailable)
         ));
         assert_eq!(started.elapsed(), Duration::from_secs(5));

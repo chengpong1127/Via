@@ -4,7 +4,7 @@ use time::{Time, Weekday, macros::datetime};
 
 use super::*;
 use crate::{
-    api::GeoCoordinate,
+    domain::location::GeoCoordinate,
     domain::{
         ids::{BoardingPointId, TransitPatternId, TransitTripId},
         transit::{

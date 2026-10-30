@@ -22,7 +22,7 @@ use crate::{
     },
 };
 
-use super::{BikeAvailabilityError, BikeAvailabilitySource};
+use crate::domain::bikeshare::{BikeAvailabilityError, BikeAvailabilitySource};
 
 #[derive(Clone)]
 pub struct TdxBikeAvailabilitySource {

@@ -4,6 +4,7 @@ pub mod bikeshare;
 pub mod ids;
 pub mod journey;
 pub mod location;
+pub mod planning;
 pub mod ranking;
 pub mod realtime;
 pub(crate) mod spatial;

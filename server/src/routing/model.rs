@@ -2,7 +2,7 @@ use time::{Duration, OffsetDateTime};
 use tokio::time::Instant;
 
 use crate::{
-    api::PlanningRequest,
+    domain::planning::PlanningInput,
     domain::{journey::PlanningError, normalize_to_taipei, transit::TransitMode},
     street::{RoutingConstraints, RoutingTime, RoutingTimeKind},
 };
@@ -152,7 +152,7 @@ impl JourneyPlanningLimits {
 
 #[derive(Clone)]
 pub(crate) struct JourneyPlanningContext<'a> {
-    pub(crate) request: &'a PlanningRequest,
+    pub(crate) request: &'a PlanningInput,
     pub(crate) search_start: OffsetDateTime,
     pub(crate) max_journey_duration_seconds: u32,
     pub(crate) latest_arrival: Option<OffsetDateTime>,
@@ -161,22 +161,14 @@ pub(crate) struct JourneyPlanningContext<'a> {
 
 impl<'a> JourneyPlanningContext<'a> {
     pub(crate) fn new(
-        request: &'a PlanningRequest,
+        request: &'a PlanningInput,
         request_started_at: OffsetDateTime,
         max_journey_duration_seconds: u32,
         deadline: PlanningDeadline,
     ) -> Result<Self, PlanningError> {
-        let effective_search_time = request
-            .departure_setting
-            .effective_search_time(request_started_at);
-        let (search_start, latest_arrival) = match request.departure_setting {
-            crate::api::DepartureSetting::ArriveBy { .. } => (
-                effective_search_time - Duration::seconds(i64::from(max_journey_duration_seconds)),
-                Some(effective_search_time),
-            ),
-            crate::api::DepartureSetting::DepartNow
-            | crate::api::DepartureSetting::DepartAt { .. } => (effective_search_time, None),
-        };
+        let (search_start, latest_arrival) = request
+            .departure
+            .search_window(request_started_at, max_journey_duration_seconds);
         Ok(Self {
             request,
             search_start,

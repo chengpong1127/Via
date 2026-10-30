@@ -1,27 +1,24 @@
-pub(crate) mod access;
+mod access;
 mod bike;
+mod cache;
 mod corridor;
 mod evaluator;
-mod matrix;
-#[cfg(test)]
-mod matrix_tests;
-pub mod model;
-pub mod planner;
+mod failures;
+mod model;
+mod multimodal;
 mod realized;
 mod reconstruct;
-mod request_cache;
-mod route_cache;
-pub mod static_search;
-pub mod topology;
-pub mod transfers;
+mod static_search;
+mod topology;
+mod transfers;
 
-pub(crate) mod service;
+mod service;
 pub use evaluator::Phase2EvaluationStats;
 pub use model::JourneyPlanningLimits;
 pub use model::{
     AccessPoint, EgressPoint, PlannerLimits, PlanningDeadline, PlanningQuery, RoutingError,
 };
-pub use planner::{MultimodalPlanner, MultimodalPlannerStats};
+pub use multimodal::{MultimodalPlanner, MultimodalPlannerStats};
 pub use realized::{
     BikeRide, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
     JourneyMovementKind, WalkingMovementKind,
@@ -31,4 +28,11 @@ pub use service::RoutingService;
 
 pub use bike::BikeMovementPolicy;
 
-pub use matrix::MatrixResolverStats;
+pub use cache::MatrixResolverStats;
+
+pub use static_search::{
+    RetainedCorridorSet, StaticCorridor, StaticCorridorStep, StaticCostSource, StaticSearchStats,
+    StaticTransitLeg, generate as generate_static_corridors,
+};
+pub use topology::{PatternPosition, TransitTopologyIndex};
+pub use transfers::{TransferShortcut, TransferShortcutIndex};

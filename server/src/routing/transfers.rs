@@ -96,7 +96,7 @@ impl TransferShortcutIndex {
 mod tests {
     use super::*;
     use crate::{
-        api::GeoCoordinate,
+        domain::location::GeoCoordinate,
         domain::transit::{TransferEdge, TransitNetwork, TransitStop},
     };
 

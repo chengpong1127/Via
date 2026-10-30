@@ -4,8 +4,8 @@ use sha2::{Digest, Sha256};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
-    api::GeoCoordinate,
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
+    domain::location::GeoCoordinate,
     street::{Coordinate, Maneuver, ManeuverKind},
 };
 

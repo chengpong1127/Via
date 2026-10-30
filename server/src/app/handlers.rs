@@ -145,7 +145,7 @@ pub(super) async fn journey_plan(
         return error_response(StatusCode::BAD_REQUEST, error.code(), Some(error.field()));
     }
     record_request_fields(&request);
-    let outcome = state.routing.plan(request).await;
+    let outcome = state.routing.plan(request.into()).await;
     ::metrics::counter!("via_planning_requests_total").increment(1);
     match outcome {
         Ok(outcome) => {

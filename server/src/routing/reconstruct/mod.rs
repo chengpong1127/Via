@@ -1,3 +1,6 @@
+mod session;
+#[cfg(test)]
+pub(in crate::routing) use session::ordered_reconstruction;
 mod assembler;
 mod bike;
 mod evidence;
@@ -8,7 +11,7 @@ mod transit;
 use std::sync::Arc;
 
 use crate::{
-    api::PlanningRequest,
+    domain::planning::PlanningInput,
     domain::{
         bikeshare::BikeShareNetwork,
         ids::BikeStationId,
@@ -51,11 +54,13 @@ impl JourneyReconstructor {
         }
     }
 
+    pub(super) fn session(&self) -> session::ReconstructionSession {
+        session::ReconstructionSession::new(self.request_local())
+    }
+
     pub(super) fn request_local(&self) -> Self {
         Self {
-            street_routing: Arc::new(super::route_cache::RouteCache::new(
-                self.street_routing.clone(),
-            )),
+            street_routing: Arc::new(super::cache::RouteCache::new(self.street_routing.clone())),
             transit_runtime: self.transit_runtime.clone(),
             bike_share_network: self.bike_share_network.clone(),
         }
@@ -122,7 +127,7 @@ impl JourneyReconstructor {
         }))
     }
 
-    pub(super) fn origin_place(&self, request: &PlanningRequest) -> Place {
+    pub(super) fn origin_place(&self, request: &PlanningInput) -> Place {
         Place {
             display_name: request.origin.display_text.clone(),
             coordinate: request.origin.coordinate,
@@ -130,7 +135,7 @@ impl JourneyReconstructor {
         }
     }
 
-    pub(super) fn destination_place(&self, request: &PlanningRequest) -> Place {
+    pub(super) fn destination_place(&self, request: &PlanningInput) -> Place {
         Place {
             display_name: request.destination.display_text.clone(),
             coordinate: request.destination.coordinate,
@@ -231,7 +236,8 @@ mod tests {
             latitude: p.latitude(),
             longitude: p.longitude(),
         };
-        let request = serde_json::from_value(serde_json::json!({"origin":{"coordinate":geo(origin),"display_text":"origin"},"destination":{"coordinate":geo(destination),"display_text":"destination"},"selected_modes":[],"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":geo(origin),"display_text":"origin"},"destination":{"coordinate":geo(destination),"display_text":"destination"},"selected_modes":[],"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request: crate::domain::planning::PlanningInput = request.into();
         let context =
             JourneyPlanningContext::new(&request, start, 14400, PlanningDeadline::disabled())
                 .unwrap();

@@ -1,7 +1,7 @@
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    api::PlanningRequest,
+    domain::planning::PlanningInput,
     domain::{
         ids::BoardingPointId,
         journey::{Geometry, Leg, LegDetails, LegMode, Place, PlanningError},
@@ -79,7 +79,7 @@ pub(super) fn anchor_boarding_point(
 
 pub(super) fn anchor_place(
     reconstructor: &JourneyReconstructor,
-    request: &PlanningRequest,
+    request: &PlanningInput,
     journey: &RealizedJourney,
     anchor: usize,
 ) -> Result<Place, PlanningError> {
@@ -200,12 +200,13 @@ mod tests {
             Vec::new(),
             Vec::new(),
         ))));
-        let request = serde_json::from_value(serde_json::json!({
+        let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({
             "origin": {"coordinate": geo(0), "display_text": "origin"},
             "destination": {"coordinate": geo(3), "display_text": "destination"},
             "selected_modes": [], "departure_setting": {"type": "depart_now"}
         }))
         .unwrap();
+        let request: crate::domain::planning::PlanningInput = request.into();
         let context =
             JourneyPlanningContext::new(&request, departure, 14400, PlanningDeadline::disabled())
                 .unwrap();

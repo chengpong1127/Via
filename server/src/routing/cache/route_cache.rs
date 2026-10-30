@@ -40,7 +40,7 @@ impl RouteKey {
 
 type Entry = OnceCell<Result<StreetPath, StreetRoutingError>>;
 
-pub(super) struct RouteCache {
+pub(crate) struct RouteCache {
     provider: Arc<dyn StreetRouter>,
     entries: Mutex<HashMap<RouteKey, Arc<Entry>>>,
     logical: AtomicUsize,
@@ -50,7 +50,7 @@ pub(super) struct RouteCache {
 }
 
 impl RouteCache {
-    pub(super) fn new(provider: Arc<dyn StreetRouter>) -> Self {
+    pub(crate) fn new(provider: Arc<dyn StreetRouter>) -> Self {
         Self {
             provider,
             entries: Mutex::new(HashMap::new()),
@@ -61,7 +61,7 @@ impl RouteCache {
         }
     }
     #[cfg(test)]
-    pub(super) fn stats(&self) -> (usize, usize, usize, usize, usize) {
+    pub(crate) fn stats(&self) -> (usize, usize, usize, usize, usize) {
         (
             self.logical.load(Ordering::Relaxed),
             self.ready.load(Ordering::Relaxed),

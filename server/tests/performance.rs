@@ -12,7 +12,7 @@ use via_server::{
     },
     routing::{
         AccessPoint, EgressPoint, MultimodalPlanner, PlanningDeadline, PlanningQuery,
-        static_search, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
+        TransferShortcutIndex, TransitTopologyIndex, generate_static_corridors,
     },
 };
 
@@ -118,7 +118,7 @@ async fn deterministic_routing_benchmark() {
         for iteration in 0..WARMUP + ITERATIONS {
             let started = Instant::now();
             let (corridors, static_stats) =
-                static_search::generate(&runtime, &topology, &transfers, black_box(&query));
+                generate_static_corridors(&runtime, &topology, &transfers, black_box(&query));
             let static_ns = started.elapsed().as_nanos();
             let started = Instant::now();
             let (realized_journeys, planner_stats) = planner

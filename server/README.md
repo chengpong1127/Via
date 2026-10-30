@@ -60,12 +60,22 @@ Configuration:
 
 ## Current routing boundary
 
-`ViaRuntime` assembles the HTTP server and `via-route`. `RoutingService` discovers
-transit access and egress when needed, then `MultimodalPlanner` prepares static
-transit corridors and request-local snapshots. `PlanningSession.evaluate()`
-evaluates the direct walking corridor and retained transit corridors in one pass.
+`ViaRuntime` assembles the HTTP server and `via-route`. Both entry points convert
+validated API requests into domain-owned `PlanningInput`. `RoutingService`
+coordinates admission, deadlines, planning, reconstruction and final ranking.
+`MultimodalPlanner` owns transit access/egress discovery, static corridor
+preparation and request-local snapshots. `PlanningSession.evaluate()` consumes
+the session and returns one report with journeys or an error, statistics and
+observed failures. It evaluates the direct walking corridor and retained transit
+corridors in one pass, starting direct walking first while allowing bounded overlap.
 Walking is always available; `selected_modes` lists optional transit and BikeShare
-modes. Reconstruction hydrates and ranks the resulting journeys.
+modes. A request-local `ReconstructionSession` hydrates geometry concurrently,
+restores candidate ordering and collects failures before final ranking.
+
+Rust callers use the exports at `routing` rather than implementation submodules.
+Provider implementations satisfy domain-facing interfaces; routing does not
+depend on API request types or concrete providers. HTTP schemas, CLI inputs,
+matching keys and result-local identifiers remain unchanged by this organization.
 
 See [CONTEXT.md](../CONTEXT.md) for the current architecture and
 [configuration.md](docs/configuration.md) for runtime settings.

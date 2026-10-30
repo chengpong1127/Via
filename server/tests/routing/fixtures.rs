@@ -2,6 +2,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use via_server::domain::bikeshare::BikeAvailabilitySource;
 
 use async_trait::async_trait;
 
@@ -20,13 +21,13 @@ use via_server::{
         transit_timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
     },
     providers::{
-        BikeAvailabilitySource, UnavailableBikeAvailabilitySource,
+        UnavailableBikeAvailabilitySource,
         timing::{
             BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxProviderBindings,
             ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{JourneyPlanningLimits, RoutingService, transfers::TransferShortcutIndex},
+    routing::{JourneyPlanningLimits, RoutingService, TransferShortcutIndex},
     street::{
         Coordinate, FakeStreetRouter, MatrixQuery, MatrixResult, RouteQuery, StreetPath,
         StreetRouter, StreetRoutingError,
@@ -101,7 +102,7 @@ pub(crate) async fn route_body_with_sources(
         JourneyPlanningLimits::default(),
         false,
     );
-    serde_json::to_value(service.plan(request).await.unwrap()).unwrap()
+    serde_json::to_value(service.plan(request.into()).await.unwrap()).unwrap()
 }
 
 fn bus_tdx_payload(updated_at: OffsetDateTime) -> Value {
@@ -289,7 +290,7 @@ pub(crate) async fn route_body_inner(
         limits,
         false,
     );
-    Ok(serde_json::to_value(service.plan(request).await?).unwrap())
+    Ok(serde_json::to_value(service.plan(request.into()).await?).unwrap())
 }
 
 pub(crate) fn option_for_patterns<'a>(body: &'a Value, services: &[&str]) -> &'a Value {

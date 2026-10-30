@@ -1,5 +1,5 @@
 use crate::{
-    api::GeoCoordinate,
+    domain::location::GeoCoordinate,
     domain::{transit::TransitMode, transit_runtime::TransitRuntime},
     street::{Coordinate, MatrixCell},
 };
@@ -186,7 +186,7 @@ mod tests {
     use super::{JourneyPlanningLimits, nearby_stops, stop_coverage_dominates};
     use crate::routing::topology::TransitTopologyIndex;
     use crate::{
-        api::GeoCoordinate,
+        domain::location::GeoCoordinate,
         domain::{
             ids::BoardingPointId,
             transit::{TransitMode, TransitNetwork, TransitPattern, TransitStop},

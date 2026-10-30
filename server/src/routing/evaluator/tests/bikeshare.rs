@@ -761,7 +761,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
 async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, false, true).await;
     assert_eq!(calls, 1);
-    assert!(result.journeys.iter().any(|v| {
+    assert!(result.outcome.as_ref().unwrap().iter().any(|v| {
         v.movements().iter().any(|m| {
             matches!(
                 m.kind,
@@ -775,7 +775,9 @@ async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
     }));
     assert!(
         result
-            .journeys
+            .outcome
+            .as_ref()
+            .unwrap()
             .iter()
             .any(|v| v.movements().iter().any(|s| matches!(
                 s.kind,
@@ -835,7 +837,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
     let corridor =
         EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
     let snapshot = TimingSnapshot::default();
-    let result = FixedCorridorEvaluator::new(
+    let result = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -844,10 +846,9 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         dependencies.bike_share.as_ref(),
     )
     .evaluate(&[corridor])
-    .await
-    .unwrap();
+    .await;
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert!(result.journeys.iter().any(|journey| {
+    assert!(result.outcome.as_ref().unwrap().iter().any(|journey| {
         journey
             .movements()
             .iter()
@@ -884,7 +885,7 @@ async fn bike_actual_realization_enforces_query_time_limits() {
             }))),
             ..test_dependencies()
         };
-        let result = FixedCorridorEvaluator::new(
+        let result = CorridorScheduler::new(
             &network,
             &retained,
             &snapshot,
@@ -893,9 +894,8 @@ async fn bike_actual_realization_enforces_query_time_limits() {
             planners.bike_share.as_ref(),
         )
         .evaluate(&[corridor])
-        .await
-        .unwrap();
-        assert!(result.journeys.is_empty());
+        .await;
+        assert!(result.outcome.as_ref().unwrap().is_empty());
         assert_eq!(result.stats.bike_exact_candidates_requested, 1);
         assert_eq!(result.stats.walking_matrix_requests, 1);
         assert_eq!(
@@ -932,7 +932,7 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
         }))),
     };
     let snapshot = TimingSnapshot::default();
-    let result = FixedCorridorEvaluator::new(
+    let result = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -941,26 +941,41 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
         planners.bike_share.as_ref(),
     )
     .evaluate(&[direct, transit])
-    .await
-    .unwrap();
+    .await;
     assert_eq!(result.stats.corridors_completed, 2);
-    assert_eq!(result.journeys.len(), 3);
+    assert_eq!(result.outcome.as_ref().unwrap().len(), 3);
     assert!(
         result
-            .journeys
+            .outcome
+            .as_ref()
+            .unwrap()
             .iter()
             .filter(|journey| journey.anchors().len() == 2 && journey.movements().len() == 1)
             .count()
             == 2
     );
-    assert!(result.journeys.iter().any(|journey| matches!(
-        journey.movements()[0].kind,
-        JourneyMovementKind::BikeShare { .. }
-    )));
-    assert!(result.journeys.iter().any(|journey| matches!(
-        journey.movements()[0].kind,
-        JourneyMovementKind::Walking { .. }
-    )));
+    assert!(
+        result
+            .outcome
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|journey| matches!(
+                journey.movements()[0].kind,
+                JourneyMovementKind::BikeShare { .. }
+            ))
+    );
+    assert!(
+        result
+            .outcome
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|journey| matches!(
+                journey.movements()[0].kind,
+                JourneyMovementKind::Walking { .. }
+            ))
+    );
 }
 
 #[tokio::test]

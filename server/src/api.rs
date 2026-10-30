@@ -25,6 +25,30 @@ pub struct PlanningRequest {
     pub departure_setting: DepartureSetting,
 }
 
+impl From<PlanningRequest> for crate::domain::planning::PlanningInput {
+    fn from(request: PlanningRequest) -> Self {
+        use crate::domain::planning::{DepartureIntent, PlanningEndpoint};
+
+        let transit_modes = request.allowed_transit_modes();
+        let bike_share = request.allows_bike_share();
+        let endpoint = |place: SelectedPlace| PlanningEndpoint {
+            coordinate: place.coordinate,
+            display_text: place.display_text,
+        };
+        Self {
+            origin: endpoint(request.origin),
+            destination: endpoint(request.destination),
+            transit_modes,
+            bike_share,
+            departure: match request.departure_setting {
+                DepartureSetting::DepartNow => DepartureIntent::Now,
+                DepartureSetting::DepartAt { time } => DepartureIntent::DepartAt(time),
+                DepartureSetting::ArriveBy { time } => DepartureIntent::ArriveBy(time),
+            },
+        }
+    }
+}
+
 impl PlanningRequest {
     pub fn validate(&self) -> Result<(), RequestValidationError> {
         self.origin.validate("/origin")?;

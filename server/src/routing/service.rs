@@ -1,15 +1,22 @@
+use super::failures::FailureSummary;
+#[cfg(test)]
+use super::{
+    model::PlanningQuery,
+    reconstruct::{ordered_reconstruction, to_street_coordinate},
+};
+#[cfg(test)]
+use crate::street::StreetRoutingError;
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     sync::Arc,
     time::Instant,
 };
 
-use futures_util::{StreamExt, stream};
 use time::OffsetDateTime;
 
 use crate::{
-    api::PlanningRequest,
+    domain::bikeshare::BikeAvailabilitySource,
+    domain::planning::PlanningInput,
     domain::{
         bikeshare::BikeShareNetwork,
         journey::{EmptyReason, EmptyResult, OptionsResult, PlanningError, PlanningOutcome},
@@ -17,17 +24,16 @@ use crate::{
         transit_runtime::TransitRuntime,
         transit_timing::TimingSnapshotLoader,
     },
-    providers::BikeAvailabilitySource,
-    street::{ProviderFailureClass, StreetRouter, StreetRoutingError},
+    street::StreetRouter,
 };
 
 use super::{
-    model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline, PlanningQuery},
-    planner::MultimodalPlanner,
+    model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline},
+    multimodal::MultimodalPlanner,
     realized::RealizedJourney,
     reconstruct::{
         JourneyCandidate, JourneyReconstructor, apply_ranked_journey, assign_result_local_ids,
-        taipei_now, to_street_coordinate,
+        taipei_now,
     },
 };
 
@@ -81,7 +87,7 @@ impl RoutingService {
 
 impl RoutingService {
     #[tracing::instrument(target = "via_profile", name = "Routing Request", skip_all)]
-    pub async fn plan(&self, request: PlanningRequest) -> Result<PlanningOutcome, PlanningError> {
+    pub async fn plan(&self, request: PlanningInput) -> Result<PlanningOutcome, PlanningError> {
         let deadline = self
             .request_timeout
             .map_or_else(PlanningDeadline::disabled, PlanningDeadline::after);
@@ -97,7 +103,7 @@ impl RoutingService {
                         return Err(PlanningError::TemporarilyUnavailable);
                     }
                 };
-                self.plan_multimodal_inner(request, deadline).await
+                self.plan_inner(request, deadline).await
             })
             .await
         {
@@ -113,9 +119,9 @@ impl RoutingService {
         }
     }
 
-    async fn plan_multimodal_inner(
+    async fn plan_inner(
         &self,
-        request: PlanningRequest,
+        request: PlanningInput,
         deadline: PlanningDeadline,
     ) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
@@ -140,109 +146,17 @@ impl RoutingService {
         &self,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<PlanningAttempt, PlanningError> {
-        let request = context.request;
-        let allowed_transit_modes = request.allowed_transit_modes();
-        let mut attempt = PlanningAttempt::default();
-
-        let (origin, destination) = (
-            to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?,
-            to_street_coordinate(request.destination.coordinate)
-                .map_err(|_| PlanningError::Internal)?,
-        );
-        use tracing::Instrument;
-        let query = async {
-            Ok::<_, PlanningError>(if allowed_transit_modes.is_empty() {
-                PlanningQuery::new(
-                    origin,
-                    destination,
-                    context.deadline,
-                    Vec::new(),
-                    Vec::new(),
-                    context.search_start,
-                    self.limits.planner,
-                )
-                .with_allowed_transit_modes([])
-            } else {
-                let access_started = Instant::now();
-                let access = self
-                    .planner
-                    .discover_access_points(
-                        request.origin.coordinate,
-                        context.search_start,
-                        context.access_constraints(),
-                        &allowed_transit_modes,
-                        &self.limits,
-                    )
-                    .await;
-                context.ensure_before_deadline()?;
-                let egress = self
-                    .planner
-                    .discover_egress_points(
-                        request.destination.coordinate,
-                        context.direct_constraints(),
-                        &allowed_transit_modes,
-                        &self.limits,
-                    )
-                    .await;
-                context.ensure_before_deadline()?;
-                let (access, egress) = match (access, egress) {
-                    (Ok(access), Ok(egress)) => (access, egress),
-                    (Err(error), _) | (_, Err(error)) => {
-                        attempt.failures.record_provider(&error);
-                        (Vec::new(), Vec::new())
-                    }
-                };
-                let candidate_stops = access.len() + egress.len();
-                let discovery_duration = access_started.elapsed();
-                ::metrics::counter!("via_planner_transit_candidate_stops_total")
-                    .increment(candidate_stops as u64);
-                ::metrics::histogram!("via_planner_candidate_discovery_duration_seconds")
-                    .record(discovery_duration.as_secs_f64());
-                tracing::debug!(
-                    target: "via_server::routing",
-                    candidate_discovery_ms = discovery_duration.as_millis() as u64,
-                    transit_candidate_stops = candidate_stops,
-                    "transit candidate discovery completed"
-                );
-                tracing::debug!(
-                    target: "via_server::routing",
-                    access = ?access.iter().map(|point| (
-                        point.stop_id.as_str(),
-                        self.planner.modes_at_stop(&point.stop_id),
-                        point.walking_seconds,
-                    )).collect::<Vec<_>>(),
-                    egress = ?egress.iter().map(|point| (
-                        point.stop_id.as_str(),
-                        self.planner.modes_at_stop(&point.stop_id),
-                        point.walking_seconds,
-                    )).collect::<Vec<_>>(),
-                    "discovered transit access and egress"
-                );
-
-                PlanningQuery::new(
-                    origin,
-                    destination,
-                    context.deadline,
-                    access,
-                    egress,
-                    context.search_start,
-                    self.limits.planner,
-                )
-                .with_allowed_transit_modes(allowed_transit_modes)
-            })
-        }
-        .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
-        .await?;
-        let mut query = query
-            .with_bike_share(request.allows_bike_share())
-            .with_limits(self.limits.planner);
-        query.latest_arrival = context.latest_arrival;
+        let (query, failures) = self.planner.discover_query(context, &self.limits).await?;
+        let mut attempt = PlanningAttempt {
+            candidates: Vec::new(),
+            failures,
+        };
 
         {
             let search_started = Instant::now();
             let planning_result = async {
-                let mut session = self.planner.prepare(query).await?;
-                let journeys = session.evaluate().await?;
+                let report = self.planner.prepare(query).await?.evaluate().await;
+                let journeys = report.outcome?;
                 context
                     .ensure_before_deadline()
                     .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
@@ -252,38 +166,18 @@ impl RoutingService {
                     .sum();
                 ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
                     .increment(realtime_evidence_values as u64);
-                let reconstruction_attempts = journeys.len();
-                let reconstruction_span = tracing::info_span!(target: "via_profile", "Reconstruction", candidate_count = reconstruction_attempts);
-                let journeys = &journeys;
-                let reconstructor = self.reconstructor.request_local();
-                let reconstructor = &reconstructor;
-                let futures = (0..journeys.len()).map(|index| async move {
-                    reconstructor.reconstruct(&journeys[index], context).await
-                });
-                async {
-                    let results = ordered_reconstruction(
-                        futures,
+                let reconstructed = self
+                    .reconstructor
+                    .session()
+                    .reconstruct_all(
+                        &journeys,
+                        context,
                         self.limits.max_concurrent_reconstruction_candidates,
                     )
                     .await;
-                    for result in results {
-                        match result {
-                            Ok(Some(candidate)) => attempt.candidates.push(candidate),
-                            Ok(None) => {}
-                            Err(error) => attempt.failures.record_planning(&error),
-                        }
-                    }
-                }
-                .instrument(reconstruction_span)
-                .await;
-                tracing::debug!(
-                    target: "via_server::routing",
-                    reconstruction_attempts,
-                    reconstructed_candidates = attempt.candidates.len(),
-                    "bounded Phase 2 candidates reconstructed"
-                );
-                attempt.failures.transient |= session.failures().transient;
-                attempt.failures.internal |= session.failures().internal;
+                attempt.candidates = reconstructed.candidates;
+                attempt.failures.merge(reconstructed.failures);
+                attempt.failures.merge(report.failures);
                 Ok::<_, super::model::RoutingError>(())
             }
             .await;
@@ -329,7 +223,7 @@ impl RoutingService {
         generated_at: OffsetDateTime,
         context: &JourneyPlanningContext<'_>,
         candidates: Vec<JourneyCandidate>,
-        failures: PlanningFailures,
+        failures: FailureSummary,
     ) -> Result<PlanningOutcome, PlanningError> {
         tracing::debug!(
             target: "via_server::routing",
@@ -411,58 +305,10 @@ impl RoutingService {
     }
 }
 
-async fn ordered_reconstruction<F: Future>(
-    futures: impl IntoIterator<Item = F>,
-    concurrency: usize,
-) -> Vec<F::Output> {
-    let indexed = futures
-        .into_iter()
-        .enumerate()
-        .map(index_reconstruction::<F>)
-        .collect::<Vec<_>>();
-    let mut results = stream::iter(indexed)
-        .buffer_unordered(concurrency)
-        .collect::<Vec<_>>()
-        .await;
-    results.sort_unstable_by_key(|(index, _)| *index);
-    results.into_iter().map(|(_, result)| result).collect()
-}
-
-async fn index_reconstruction<F: Future>((index, future): (usize, F)) -> (usize, F::Output) {
-    (index, future.await)
-}
-
 #[derive(Default)]
 struct PlanningAttempt {
     candidates: Vec<JourneyCandidate>,
-    failures: PlanningFailures,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlanningFailures {
-    pub(crate) transient: bool,
-    pub(crate) internal: bool,
-}
-
-impl PlanningFailures {
-    fn record_provider(&mut self, error: &StreetRoutingError) {
-        match error.failure_class() {
-            ProviderFailureClass::Unreachable => {}
-            ProviderFailureClass::Transient => self.transient = true,
-            ProviderFailureClass::Internal => self.internal = true,
-        }
-    }
-
-    fn record_planning(&mut self, error: &PlanningError) {
-        self.transient |= *error == PlanningError::TemporarilyUnavailable;
-        self.internal |= *error == PlanningError::Internal;
-    }
-
-    #[cfg(test)]
-    fn merge(&mut self, other: Self) {
-        self.transient |= other.transient;
-        self.internal |= other.internal;
-    }
+    failures: FailureSummary,
 }
 
 #[cfg(test)]
@@ -526,161 +372,27 @@ mod limits_tests {
     }
     #[test]
     fn planning_failures_accumulate_without_treating_unreachable_as_failure() {
-        let mut failures = PlanningFailures::default();
+        let mut failures = FailureSummary::default();
         failures.record_provider(&StreetRoutingError::Unreachable);
-        assert_eq!(failures, PlanningFailures::default());
+        assert_eq!(failures, FailureSummary::default());
         failures.record_provider(&StreetRoutingError::Timeout);
         assert_eq!(
             failures,
-            PlanningFailures {
+            FailureSummary {
                 transient: true,
                 internal: false
             }
         );
-        let mut internal = PlanningFailures::default();
+        let mut internal = FailureSummary::default();
         internal.record_planning(&PlanningError::Internal);
         failures.merge(internal);
         assert_eq!(
             failures,
-            PlanningFailures {
+            FailureSummary {
                 transient: true,
                 internal: true
             }
         );
-    }
-}
-
-#[cfg(test)]
-mod reconstruction_concurrency_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::sync::{Semaphore, mpsc, oneshot};
-
-    struct Active(Arc<AtomicUsize>);
-
-    impl Drop for Active {
-        fn drop(&mut self) {
-            self.0.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-
-    #[tokio::test]
-    async fn bounded_futures_overlap_and_keep_input_order() {
-        for limit in [1, 2, 4, 8] {
-            let active = Arc::new(AtomicUsize::new(0));
-            let maximum = Arc::new(AtomicUsize::new(0));
-            let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-            let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
-            let mut releases = Vec::new();
-            let futures = (0..8)
-                .map(|id| {
-                    let (tx, rx) = oneshot::channel();
-                    releases.push(Some(tx));
-                    let active = active.clone();
-                    let maximum = maximum.clone();
-                    let started = started_tx.clone();
-                    let finished = finished_tx.clone();
-                    async move {
-                        let count = active.fetch_add(1, Ordering::SeqCst) + 1;
-                        maximum.fetch_max(count, Ordering::SeqCst);
-                        let _active = Active(active);
-                        started.send(id).unwrap();
-                        rx.await.unwrap();
-                        finished.send(id).unwrap();
-                        id
-                    }
-                })
-                .collect::<Vec<_>>();
-            let task =
-                tokio::spawn(
-                    async move { ordered_reconstruction(futures.into_iter(), limit).await },
-                );
-            for batch in (0..8).step_by(limit) {
-                let size = limit.min(8 - batch);
-                for _ in 0..size {
-                    started_rx.recv().await.unwrap();
-                }
-                assert_eq!(active.load(Ordering::SeqCst), size);
-                for id in (batch..batch + size).rev() {
-                    releases[id].take().unwrap().send(()).unwrap();
-                    assert_eq!(finished_rx.recv().await.unwrap(), id);
-                }
-            }
-            assert_eq!(task.await.unwrap(), (0..8).collect::<Vec<_>>());
-            assert_eq!(maximum.load(Ordering::SeqCst), limit);
-            assert_eq!(active.load(Ordering::SeqCst), 0);
-        }
-    }
-
-    #[tokio::test]
-    async fn dropping_reconstruction_releases_active_futures_and_permits() {
-        let active = Arc::new(AtomicUsize::new(0));
-        let permits = Arc::new(Semaphore::new(4));
-        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-        let futures = (0..4)
-            .map(|_| {
-                let active = active.clone();
-                let permits = permits.clone();
-                let started = started_tx.clone();
-                async move {
-                    let _permit = permits.acquire().await.unwrap();
-                    active.fetch_add(1, Ordering::SeqCst);
-                    let _active = Active(active);
-                    started.send(()).unwrap();
-                    std::future::pending::<()>().await;
-                }
-            })
-            .collect::<Vec<_>>();
-        let task =
-            tokio::spawn(async move { ordered_reconstruction(futures.into_iter(), 4).await });
-        for _ in 0..4 {
-            started_rx.recv().await.unwrap();
-        }
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        assert_eq!(active.load(Ordering::SeqCst), 0);
-        assert_eq!(permits.available_permits(), 4);
-    }
-
-    #[tokio::test]
-    async fn completion_admits_new_work_and_preserves_results_and_errors() {
-        for limit in [2, 4, 8] {
-            let (started_tx, mut started_rx) = mpsc::unbounded_channel();
-            let (release_tx, release_rx) = oneshot::channel();
-            let mut release_rx = Some(release_rx);
-            let futures = (0..=limit).map(move |index| {
-                let release = if index == 0 { release_rx.take() } else { None };
-                let started = started_tx.clone();
-                async move {
-                    started.send(index).unwrap();
-                    if let Some(release) = release {
-                        release.await.unwrap();
-                    }
-                    match index {
-                        1 => Ok(None),
-                        2 => Err("failure"),
-                        _ => Ok(Some(index)),
-                    }
-                }
-            });
-            let task = tokio::spawn(async move { ordered_reconstruction(futures, limit).await });
-            for index in 0..=limit {
-                assert_eq!(started_rx.recv().await.unwrap(), index);
-            }
-            release_tx.send(()).unwrap();
-            let results = task.await.unwrap();
-            assert_eq!(results[0], Ok(Some(0)));
-            assert_eq!(results[1], Ok(None));
-            assert_eq!(results[2], Err("failure"));
-            assert_eq!(
-                results[limit],
-                if limit == 2 {
-                    Err("failure")
-                } else {
-                    Ok(Some(limit))
-                }
-            );
-        }
     }
 }
 

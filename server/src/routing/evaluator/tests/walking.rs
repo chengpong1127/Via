@@ -4,7 +4,7 @@ use super::*;
 async fn competitive_walking_replaces_transit_with_matrix_metrics() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, false, false).await;
     assert_eq!(calls, 1);
-    assert!(result.journeys.iter().any(|v| {
+    assert!(result.outcome.as_ref().unwrap().iter().any(|v| {
         v.transit_pattern_sequence().is_empty()
             && v.movements().iter().any(|m| {
                 matches!(
@@ -23,10 +23,14 @@ async fn competitive_walking_replaces_transit_with_matrix_metrics() {
 async fn slower_walking_survives_until_transit_geometry_is_validated() {
     let (result, calls) = evaluate_walking_replacement(1, None, None, false, false).await;
     assert_eq!(calls, 1);
-    assert_eq!(result.journeys.len(), 2);
-    assert!(result.journeys[1].transit_pattern_sequence().is_empty());
+    assert_eq!(result.outcome.as_ref().unwrap().len(), 2);
+    assert!(
+        result.outcome.as_ref().unwrap()[1]
+            .transit_pattern_sequence()
+            .is_empty()
+    );
     assert_eq!(
-        result.journeys[0].transit_pattern_sequence(),
+        result.outcome.as_ref().unwrap()[0].transit_pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -42,10 +46,10 @@ async fn optional_walking_dependency_failure_preserves_transit() {
     )
     .await;
     assert_eq!(calls, 1);
-    assert_eq!(result.journeys.len(), 1);
+    assert_eq!(result.outcome.as_ref().unwrap().len(), 1);
     assert!(result.failures.transient);
     assert_eq!(
-        result.journeys[0].transit_pattern_sequence(),
+        result.outcome.as_ref().unwrap()[0].transit_pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -54,13 +58,13 @@ async fn optional_walking_dependency_failure_preserves_transit() {
 async fn repeated_corridor_pairs_reuse_exact_walking_routes() {
     let (result, calls) = evaluate_walking_replacement(20, None, None, true, false).await;
     assert_eq!(calls, 1);
-    assert!(!result.journeys.is_empty());
+    assert!(!result.outcome.as_ref().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn walking_replacement_respects_latest_arrival() {
     let (result, calls) = evaluate_walking_replacement(20, None, Some(299), false, false).await;
-    assert!(result.journeys.is_empty());
+    assert!(result.outcome.as_ref().unwrap().is_empty());
     assert_eq!(calls, 1);
     assert_eq!(result.stats.walking_matrix_requests, 1);
     assert_eq!(
@@ -120,7 +124,7 @@ async fn faster_walking_makes_downstream_transit_catchable() {
         })),
         bike_share: None,
     };
-    let result = FixedCorridorEvaluator::new(
+    let result = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -129,10 +133,11 @@ async fn faster_walking_makes_downstream_transit_catchable() {
         planners.bike_share.as_ref(),
     )
     .evaluate(&[corridor])
-    .await
-    .unwrap();
+    .await;
     let caught = result
-        .journeys
+        .outcome
+        .as_ref()
+        .unwrap()
         .iter()
         .find(|journey| journey.transit_pattern_sequence() == vec![TransitPatternId::new("second")])
         .unwrap();
@@ -141,7 +146,9 @@ async fn faster_walking_makes_downstream_transit_catchable() {
     assert_eq!(timing.walking_seconds, 300);
     assert!(
         result
-            .journeys
+            .outcome
+            .as_ref()
+            .unwrap()
             .iter()
             .any(|journey| journey.transit_pattern_sequence().is_empty()
                 && journey.evaluate_timing().unwrap().walking_seconds == 600)
@@ -193,7 +200,7 @@ async fn unreachable_walking_matrix_has_no_successor_or_provider_failure() {
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let dependencies = test_dependencies();
-    let result = FixedCorridorEvaluator::new(
+    let result = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -205,9 +212,8 @@ async fn unreachable_walking_matrix_has_no_successor_or_provider_failure() {
         query.origin,
         query.destination,
     )])
-    .await
-    .unwrap();
-    assert!(result.journeys.is_empty());
+    .await;
+    assert!(result.outcome.as_ref().unwrap().is_empty());
     assert!(!result.failures.internal && !result.failures.transient);
     assert_eq!(result.stats.walking_matrix_requests, 1);
     assert_eq!(
@@ -254,11 +260,13 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
                     .build(),
             ));
             let result =
-                FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None)
+                CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None)
                     .evaluate(std::slice::from_ref(&corridor))
-                    .await
-                    .unwrap();
-            assert_eq!(result.journeys.len(), usize::from(actual_seconds <= 30));
+                    .await;
+            assert_eq!(
+                result.outcome.as_ref().unwrap().len(),
+                usize::from(actual_seconds <= 30)
+            );
             assert_eq!(result.stats.walking_matrix_requests, 1);
             assert_eq!(
                 (result.stats.transit_operations_attempted

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::bikeshare::{BikeAvailabilityError, BikeAvailabilitySource};
 use crate::{
     domain::{
         bikeshare::{BikeAvailabilitySnapshot, BikeStationAvailability},
@@ -8,14 +9,12 @@ use crate::{
             TimingSnapshotLoader,
         },
     },
-    providers::{
-        BikeAvailabilityError, BikeAvailabilitySource,
-        valhalla::{
-            OperationOutcome, OperationalEvent, OperationalEventObserver, ValhallaConfig,
-            ValhallaProvider, measurement::RouteMeasurement,
-        },
+    providers::valhalla::{
+        OperationOutcome, OperationalEvent, OperationalEventObserver, ValhallaConfig,
+        ValhallaProvider, measurement::RouteMeasurement,
     },
 };
+use futures_util::{StreamExt, stream};
 
 struct StaticTiming(ScheduleTiming);
 #[async_trait::async_trait]
@@ -117,7 +116,8 @@ async fn capture_representative_pools() {
         } else {
             serde_json::json!(["bus", "metro"])
         };
-        let request: PlanningRequest = serde_json::from_value(serde_json::json!({"origin":{"coordinate":{"latitude":25.0478,"longitude":121.5170},"display_text":"Taipei Main Station"},"destination":{"coordinate":{"latitude":25.0338,"longitude":121.5645},"display_text":"Xinyi"},"selected_modes":modes,"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":{"latitude":25.0478,"longitude":121.5170},"display_text":"Taipei Main Station"},"destination":{"coordinate":{"latitude":25.0338,"longitude":121.5645},"display_text":"Xinyi"},"selected_modes":modes,"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request: crate::domain::planning::PlanningInput = request.into();
         let context = JourneyPlanningContext::new(
             &request,
             departure,
@@ -125,7 +125,7 @@ async fn capture_representative_pools() {
             PlanningDeadline::disabled(),
         )
         .unwrap();
-        let allowed = request.allowed_transit_modes();
+        let allowed = request.transit_modes.clone();
         let access = planner
             .discover_access_points(
                 request.origin.coordinate,
@@ -162,8 +162,9 @@ async fn capture_representative_pools() {
         .with_allowed_transit_modes(allowed)
         .with_bike_share(bike)
         .with_limits(limits.planner);
-        let mut session = planner.prepare(query).await.unwrap();
-        let journeys = session.evaluate().await.unwrap();
+        let session = planner.prepare(query).await.unwrap();
+        let report = session.evaluate().await;
+        let journeys = report.outcome.unwrap();
         let transit = journeys
             .iter()
             .filter(|j| !j.transit_pattern_sequence().is_empty())
@@ -172,9 +173,8 @@ async fn capture_representative_pools() {
         println!(
             "CAPTURE bike={bike} total={} transit={transit} bike_candidates={bikes} stats={:?}",
             journeys.len(),
-            session.stats()
+            report.stats
         );
-        drop(session);
         let reconstructor =
             JourneyReconstructor::new(street.clone(), runtime.clone(), network.clone());
         let service = RoutingService {
@@ -202,7 +202,7 @@ async fn capture_representative_pools() {
         }
         if std::env::var_os("VIA_ROUTE_CACHE_COMPARE").is_some() {
             for cached in [false, true] {
-                let cache = Arc::new(crate::routing::route_cache::RouteCache::new(street.clone()));
+                let cache = Arc::new(crate::routing::cache::RouteCache::new(street.clone()));
                 let router: Arc<dyn StreetRouter> = if cached {
                     cache.clone()
                 } else {
@@ -317,7 +317,7 @@ async fn compare_schedulers(
             let cell = (offset + round * 3) % 8;
             let concurrency = [1, 2, 4, 8][cell / 2];
             let unordered = cell % 2 == 1;
-            let cache = Arc::new(crate::routing::route_cache::RouteCache::new(street.clone()));
+            let cache = Arc::new(crate::routing::cache::RouteCache::new(street.clone()));
             let reconstructor =
                 JourneyReconstructor::new(cache.clone(), runtime.clone(), network.clone());
             metrics.reset();
@@ -600,7 +600,8 @@ async fn phase2_corridor_representative_benchmark() {
         } else {
             serde_json::json!(["bus", "metro"])
         };
-        let request: PlanningRequest = serde_json::from_value(serde_json::json!({"origin":{"coordinate":{"latitude":25.0478,"longitude":121.5170},"display_text":"Taipei Main Station"},"destination":{"coordinate":{"latitude":25.0338,"longitude":121.5645},"display_text":"Xinyi"},"selected_modes":modes,"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":{"latitude":25.0478,"longitude":121.5170},"display_text":"Taipei Main Station"},"destination":{"coordinate":{"latitude":25.0338,"longitude":121.5645},"display_text":"Xinyi"},"selected_modes":modes,"departure_setting":{"type":"depart_now"}})).unwrap();
+        let request: crate::domain::planning::PlanningInput = request.into();
         let context = JourneyPlanningContext::new(
             &request,
             departure,
@@ -608,7 +609,7 @@ async fn phase2_corridor_representative_benchmark() {
             PlanningDeadline::disabled(),
         )
         .unwrap();
-        let allowed = request.allowed_transit_modes();
+        let allowed = request.transit_modes.clone();
         let access = planner
             .discover_access_points(
                 request.origin.coordinate,
@@ -653,13 +654,14 @@ async fn phase2_corridor_representative_benchmark() {
                 let mut sample_query = query.clone();
                 sample_query.limits.max_concurrent_phase2_states = 4;
                 sample_query.limits.max_concurrent_phase2_corridors = concurrency;
-                let mut session = planner.prepare(sample_query).await.unwrap();
+                let session = planner.prepare(sample_query).await.unwrap();
                 metrics.reset();
                 observer.0.lock().unwrap().clear();
                 let started = Instant::now();
-                let journeys = session.evaluate().await.unwrap();
+                let report = session.evaluate().await;
+                let journeys = report.outcome.unwrap();
                 let wall_us = started.elapsed().as_micros();
-                let stats = session.stats().phase2_evaluation;
+                let stats = report.stats.phase2_evaluation;
                 let signature = journeys
                     .iter()
                     .map(|j| j.identity().canonical_signature())

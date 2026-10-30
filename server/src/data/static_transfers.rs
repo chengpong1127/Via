@@ -290,7 +290,7 @@ mod tests {
             location::GeoCoordinate,
             transit::{TransitPattern, TransitStop, default_service_day_boundary},
         },
-        routing::transfers::TransferShortcutIndex,
+        routing::TransferShortcutIndex,
         street::{FakeStreetRouter, Seconds},
     };
 

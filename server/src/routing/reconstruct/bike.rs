@@ -244,13 +244,14 @@ mod tests {
             Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
             Arc::new(BikeShareNetwork::new(stations.to_vec())),
         );
-        let request = serde_json::from_value(serde_json::json!({
+        let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({
             "origin": {"coordinate": place(0).coordinate, "display_text": "origin"},
             "destination": {"coordinate": place(6).coordinate, "display_text": "destination"},
             "selected_modes": ["bike_share"],
             "departure_setting": {"type": "depart_now"}
         }))
         .unwrap();
+        let request: crate::domain::planning::PlanningInput = request.into();
         let context =
             JourneyPlanningContext::new(&request, departure, 14400, PlanningDeadline::disabled())
                 .unwrap();

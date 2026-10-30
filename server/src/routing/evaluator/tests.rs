@@ -9,7 +9,7 @@ mod pruning;
 mod transit;
 mod walking;
 use crate::{
-    api::GeoCoordinate,
+    domain::location::GeoCoordinate,
     domain::{
         bikeshare::BikeWalkingAccess,
         ids::{BikeStationId, EffectiveTripId, TransitPatternId},
@@ -216,7 +216,7 @@ async fn evaluate_walking_replacement(
     latest_seconds: Option<i64>,
     duplicate: bool,
     with_bike: bool,
-) -> (EvaluationResult, usize) {
+) -> (EvaluationReport, usize) {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -269,7 +269,7 @@ async fn evaluate_walking_replacement(
     } else {
         vec![make_corridor()]
     };
-    let result = FixedCorridorEvaluator::new(
+    let result = CorridorScheduler::new(
         &network,
         &retained,
         &snapshot,
@@ -278,8 +278,7 @@ async fn evaluate_walking_replacement(
         dependencies.bike_share.as_ref(),
     )
     .evaluate(&corridors)
-    .await
-    .unwrap();
+    .await;
     (result, calls.load(std::sync::atomic::Ordering::SeqCst))
 }
 
@@ -348,12 +347,13 @@ async fn phase_a_deterministic_benchmark() {
                 error: None,
             }));
             let result =
-                FixedCorridorEvaluator::new(&network, &retained, &snapshot, &query, &walking, None)
+                CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None)
                     .evaluate(&corridors)
-                    .await
-                    .unwrap();
+                    .await;
             let fingerprints = result
-                .journeys
+                .outcome
+                .as_ref()
+                .unwrap()
                 .iter()
                 .map(|j| j.identity().canonical_signature())
                 .collect::<Vec<_>>();
@@ -487,7 +487,7 @@ async fn outcome_cleanup_multimodal_benchmark() {
             cache: Default::default(),
             hits: Default::default(),
         }));
-        let result = FixedCorridorEvaluator::new(
+        let result = CorridorScheduler::new(
             &network,
             &retained,
             &snapshot,
@@ -496,10 +496,11 @@ async fn outcome_cleanup_multimodal_benchmark() {
             Some(&bike),
         )
         .evaluate(&corridors)
-        .await
-        .unwrap();
+        .await;
         let fingerprints = result
-            .journeys
+            .outcome
+            .as_ref()
+            .unwrap()
             .iter()
             .map(|j| {
                 format!(

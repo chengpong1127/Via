@@ -59,7 +59,8 @@ async fn reconstruction_concurrency_measurement() {
         latitude: 25.0,
         longitude,
     };
-    let request: PlanningRequest = serde_json::from_value(serde_json::json!({"origin":{"coordinate":geo(121.5),"display_text":"origin"},"destination":{"coordinate":geo(121.51),"display_text":"destination"},"selected_modes":["bus","metro","bike_share"],"departure_setting":{"type":"depart_now"}})).unwrap();
+    let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":geo(121.5),"display_text":"origin"},"destination":{"coordinate":geo(121.51),"display_text":"destination"},"selected_modes":["bus","metro","bike_share"],"departure_setting":{"type":"depart_now"}})).unwrap();
+    let request: crate::domain::planning::PlanningInput = request.into();
     let context =
         JourneyPlanningContext::new(&request, departure, 14400, PlanningDeadline::disabled())
             .unwrap();
@@ -214,7 +215,8 @@ async fn reconstruction_valhalla_pilot() {
         latitude: 25.0,
         longitude,
     };
-    let request: PlanningRequest = serde_json::from_value(serde_json::json!({"origin":{"coordinate":geo(121.5),"display_text":"origin"},"destination":{"coordinate":geo(121.51),"display_text":"destination"},"selected_modes":["bus","metro","bike_share"],"departure_setting":{"type":"depart_now"}})).unwrap();
+    let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":geo(121.5),"display_text":"origin"},"destination":{"coordinate":geo(121.51),"display_text":"destination"},"selected_modes":["bus","metro","bike_share"],"departure_setting":{"type":"depart_now"}})).unwrap();
+    let request: crate::domain::planning::PlanningInput = request.into();
     let context =
         JourneyPlanningContext::new(&request, departure, 14400, PlanningDeadline::disabled())
             .unwrap();

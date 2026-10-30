@@ -1,5 +1,5 @@
 use super::*;
-use crate::routing::request_cache::RequestCache;
+use crate::routing::cache::RequestCache;
 use crate::{
     routing::corridor::CorridorAnchorKey,
     street::{
@@ -9,7 +9,7 @@ use crate::{
 };
 
 pub(crate) struct WalkingCache {
-    street: Arc<crate::routing::matrix::SharedMatrixResolver>,
+    street: Arc<crate::routing::cache::SharedMatrixResolver>,
     cache: RequestCache<
         (CorridorAnchorKey, CorridorAnchorKey),
         Result<MatrixCell, StreetRoutingError>,
@@ -19,12 +19,12 @@ pub(crate) struct WalkingCache {
 impl WalkingCache {
     #[cfg(test)]
     pub fn new(street: Arc<dyn StreetRouter>) -> Self {
-        Self::with_resolver(Arc::new(crate::routing::matrix::SharedMatrixResolver::new(
+        Self::with_resolver(Arc::new(crate::routing::cache::SharedMatrixResolver::new(
             street,
         )))
     }
 
-    pub fn with_resolver(street: Arc<crate::routing::matrix::SharedMatrixResolver>) -> Self {
+    pub fn with_resolver(street: Arc<crate::routing::cache::SharedMatrixResolver>) -> Self {
         Self {
             street,
             cache: RequestCache::default(),
@@ -97,7 +97,7 @@ pub(super) struct ExpansionStats {
 pub(super) struct ExpansionOutcome {
     pub successors: Result<Vec<EvaluationState>, RoutingError>,
     pub stats: ExpansionStats,
-    pub failures: EvaluationFailures,
+    pub failures: FailureSummary,
 }
 
 impl ExpansionStats {
@@ -180,7 +180,7 @@ impl ExpansionInputs<'_> {
         ExpansionOutcome {
             successors,
             stats,
-            failures: EvaluationFailures::default(),
+            failures: FailureSummary::default(),
         }
     }
 }
@@ -227,7 +227,7 @@ impl ExpansionResolver<'_> {
         let mut result = ExpansionOutcome {
             successors: Ok(Vec::new()),
             stats: ExpansionStats::default(),
-            failures: EvaluationFailures::default(),
+            failures: FailureSummary::default(),
         };
         for outcome in observed.into_values() {
             result.append(outcome);
@@ -249,7 +249,7 @@ impl ExpansionResolver<'_> {
             return ExpansionOutcome {
                 successors: Err(error),
                 stats: ExpansionStats::default(),
-                failures: EvaluationFailures::default(),
+                failures: FailureSummary::default(),
             };
         }
         let mut outcome = self.inputs.resolve_transit(state, edge, index);
@@ -273,7 +273,7 @@ impl ExpansionResolver<'_> {
         index: usize,
     ) -> ExpansionOutcome {
         let mut stats = ExpansionStats::default();
-        let mut failures = EvaluationFailures::default();
+        let mut failures = FailureSummary::default();
         let successors = async {
             self.inputs.check_deadline()?;
             stats.walking_operations_attempted += 1;
@@ -348,7 +348,7 @@ impl ExpansionResolver<'_> {
         index: usize,
     ) -> ExpansionOutcome {
         let mut stats = ExpansionStats::default();
-        let mut failures = EvaluationFailures::default();
+        let mut failures = FailureSummary::default();
         let successors = async {
             self.inputs.check_deadline()?;
             let (start_anchor, _) = state.bike_departure(index);
@@ -389,8 +389,8 @@ impl ExpansionResolver<'_> {
     }
 }
 
-fn resolved_data<T>(result: Result<T, StreetRoutingError>) -> (Option<T>, EvaluationFailures) {
-    let mut failures = EvaluationFailures::default();
+fn resolved_data<T>(result: Result<T, StreetRoutingError>) -> (Option<T>, FailureSummary) {
+    let mut failures = FailureSummary::default();
     let data = match result {
         Ok(items) => Some(items),
         Err(error) => {

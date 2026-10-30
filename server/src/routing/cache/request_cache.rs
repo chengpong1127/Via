@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::sync::OnceCell;
 
-pub(super) struct RequestCache<K, V> {
+pub(in crate::routing) struct RequestCache<K, V> {
     entries: Mutex<HashMap<K, Arc<OnceCell<V>>>>,
     ready_hits: AtomicUsize,
     inflight_hits: AtomicUsize,
@@ -19,7 +19,7 @@ pub(super) struct RequestCache<K, V> {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct CacheStats {
+pub(in crate::routing) struct CacheStats {
     pub ready_hits: usize,
     pub inflight_hits: usize,
     pub misses: usize,
