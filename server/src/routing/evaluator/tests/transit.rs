@@ -597,7 +597,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
     );
     assert_eq!(corridor.edges().len(), corridor.anchors().len() - 1);
     assert!(matches!(
-        corridor.edges()[0].planned_movement,
+        corridor.edges()[0],
         PlannedMovement::RetainedWalking {
             kind: WalkingMovementKind::Access,
             duration_seconds: 0,
@@ -606,10 +606,10 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         }
     ));
     assert!(
-        matches!(&corridor.edges()[1].planned_movement, PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("bus"))
+        matches!(&corridor.edges()[1], PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("bus"))
     );
     assert!(matches!(
-        corridor.edges()[2].planned_movement,
+        corridor.edges()[2],
         PlannedMovement::RetainedWalking {
             kind: WalkingMovementKind::Transfer,
             duration_seconds: 60,
@@ -618,10 +618,10 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         }
     ));
     assert!(
-        matches!(&corridor.edges()[3].planned_movement, PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("metro"))
+        matches!(&corridor.edges()[3], PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("metro"))
     );
     assert!(matches!(
-        corridor.edges()[4].planned_movement,
+        corridor.edges()[4],
         PlannedMovement::RetainedWalking {
             kind: WalkingMovementKind::Egress,
             duration_seconds: 0,
@@ -643,29 +643,20 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     let leg = retained.retained()[0].transit_legs().next().unwrap();
     let state = EvaluationState::initial(&query);
     let ride = trip("ride", "bus", &["origin", "destination"], &[1, 5]);
-    let next =
-        expansion::transit_next_state(&network, &query, &state, &ride, leg, 1, state.ready_at)
-            .unwrap();
+    let next = transit_successor(&network, &query, &state, &ride, leg, 1, state.ready_at).unwrap();
     assert_eq!(next.ready_at, query.departure_time + Duration::minutes(5));
     assert!(next.last_was_transit);
     assert_eq!(
-        expansion::transit_ready_at(&next, 120),
+        transit_ready_at(&next, 120),
         next.ready_at + Duration::seconds(120)
     );
-    assert!(
-        expansion::transit_next_state(&network, &query, &next, &ride, leg, 1, next.ready_at)
-            .is_none()
-    );
+    assert!(transit_successor(&network, &query, &next, &ride, leg, 1, next.ready_at).is_none());
     let invalid = trip("invalid", "bus", &["origin", "destination"], &[5, 1]);
     assert!(
-        expansion::transit_next_state(&network, &query, &state, &invalid, leg, 1, state.ready_at)
-            .is_none()
+        transit_successor(&network, &query, &state, &invalid, leg, 1, state.ready_at).is_none()
     );
     let mut limited = query.clone();
     limited.limits.max_journey_duration_seconds = 299;
-    assert!(
-        expansion::transit_next_state(&network, &limited, &state, &ride, leg, 1, state.ready_at)
-            .is_none()
-    );
+    assert!(transit_successor(&network, &limited, &state, &ride, leg, 1, state.ready_at).is_none());
     assert!(state.movements.is_empty());
 }

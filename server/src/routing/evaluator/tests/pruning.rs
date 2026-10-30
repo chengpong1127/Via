@@ -382,9 +382,9 @@ fn final_pareto_matches_original_for_ties_evidence_and_surface_paths() {
     for rotation in 0..pool.len() {
         let mut input = pool.clone();
         input.rotate_left(rotation);
-        let expected = super::super::pareto_reference::reference(input.clone());
+        let expected = pareto_reference::reference(input.clone());
         let actual = pareto_candidates(input);
-        super::super::pareto_reference::assert_equal(&expected, &actual);
+        pareto_reference::assert_equal(&expected, &actual);
     }
 }
 
@@ -433,7 +433,7 @@ fn intermediate_state_pruning_matches_reference_for_capabilities_ties_and_permut
     let mut interleaved = states.clone();
     interleaved.sort_by_key(|state| state.ready_at.unix_timestamp_nanos() % 2);
 
-    let unbounded = super::super::pareto::prune_states_reference(states.clone(), usize::MAX);
+    let unbounded = prune_states_reference(states.clone(), usize::MAX);
     assert!(unbounded.len() < states.len());
     assert_eq!(
         unbounded
@@ -445,15 +445,15 @@ fn intermediate_state_pruning_matches_reference_for_capabilities_ties_and_permut
 
     for permutation in [states, reversed, rotated, interleaved] {
         for limit in [0, 1, 2, 4, 16] {
-            let expected = super::super::pareto::prune_states_reference(permutation.clone(), limit);
-            let actual = super::super::pareto::prune_states(permutation.clone(), limit);
+            let expected = prune_states_reference(permutation.clone(), limit);
+            let actual = prune_states(permutation.clone(), limit);
             assert_eq!(actual, expected, "limit={limit}");
         }
     }
 }
 
 #[test]
-fn reference_pruning_preserves_complete_journeys_and_ranked_journey_options() {
+fn frontier_cap_preserves_complete_journeys_and_ranked_journey_options() {
     let runtime = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -471,10 +471,10 @@ fn reference_pruning_preserves_complete_journeys_and_ranked_journey_options() {
     departures[2].timing_reliability = TimingReliability::Fallback;
     snapshot.insert(TransitPatternId::new("bus"), 0, departures);
 
-    let reference =
-        evaluate_with_reference_state_pruning(&runtime, &corridor, &snapshot, query.clone())
-            .unwrap();
-    let optimized = evaluate(&runtime, &corridor, &snapshot, query).unwrap();
+    let optimized = evaluate(&runtime, &corridor, &snapshot, query.clone()).unwrap();
+    let mut unpruned_query = query;
+    unpruned_query.limits.max_candidates = usize::MAX;
+    let reference = evaluate(&runtime, &corridor, &snapshot, unpruned_query).unwrap();
     assert_eq!(optimized, reference);
 
     let departure_at = datetime!(2026-09-21 10:00 UTC);

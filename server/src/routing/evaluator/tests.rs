@@ -3,8 +3,10 @@ use std::{collections::HashMap, sync::Arc};
 use time::{Duration, Time, macros::datetime};
 
 use super::*;
+use crate::{domain::ids::BoardingPointId, street::FakeStreetRouter};
 mod bikeshare;
 mod evaluation;
+mod pareto_reference;
 mod pruning;
 mod transit;
 mod walking;
@@ -146,6 +148,16 @@ fn static_leg(pattern_id: &str, board: &str, alight: &str) -> StaticCorridorStep
     })
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct CorridorMovement {
+    from_anchor: usize,
+    to_anchor: usize,
+    from: BoardingPointId,
+    to: BoardingPointId,
+}
+
+type TestBikeRoutes = HashMap<CorridorMovement, Vec<BikeShareMovement>>;
+
 fn corridor_movement(
     from_anchor: usize,
     to_anchor: usize,
@@ -158,6 +170,217 @@ fn corridor_movement(
         from: BoardingPointId::new(from),
         to: BoardingPointId::new(to),
     }
+}
+
+#[derive(Default)]
+struct TestBikeSource {
+    routes: TestBikeRoutes,
+    calls: std::sync::atomic::AtomicUsize,
+    realizations: std::sync::atomic::AtomicUsize,
+    realized: std::sync::Mutex<std::collections::HashSet<(BoardingPointId, BoardingPointId)>>,
+}
+
+impl TestBikeSource {
+    fn new(routes: TestBikeRoutes) -> Self {
+        Self {
+            routes,
+            ..Self::default()
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn record_stats(&self, stats: &mut Phase2EvaluationStats) {
+        let realizations = self.realizations.load(std::sync::atomic::Ordering::SeqCst);
+        stats.bike_requests = self.realized.lock().unwrap().len();
+        stats.bike_cache_hits = realizations - stats.bike_requests;
+    }
+}
+
+#[async_trait::async_trait]
+impl BikeMovementSource for TestBikeSource {
+    async fn movements(
+        &self,
+        from: &CorridorAnchor,
+        to: &CorridorAnchor,
+        from_anchor: usize,
+        to_anchor: usize,
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let (Some(from), Some(to), Some(corridor_from), Some(corridor_to)) = (
+            from.boarding_point(),
+            to.boarding_point(),
+            from_anchor.checked_sub(1),
+            to_anchor.checked_sub(1),
+        ) else {
+            return Ok(Vec::new());
+        };
+        let movement = CorridorMovement {
+            from_anchor: corridor_from,
+            to_anchor: corridor_to,
+            from: from.clone(),
+            to: to.clone(),
+        };
+        let Some(options) = self.routes.get(&movement).filter(|items| !items.is_empty()) else {
+            return Ok(Vec::new());
+        };
+        self.realizations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.realized
+            .lock()
+            .unwrap()
+            .insert((from.clone(), to.clone()));
+        Ok(options
+            .iter()
+            .cloned()
+            .map(|mut movement| {
+                movement.from_anchor = from_anchor;
+                movement.to_anchor = to_anchor;
+                movement
+            })
+            .collect())
+    }
+}
+
+fn test_evaluator<'a>(
+    network: &'a TransitRuntime,
+    retained: &'a RetainedCorridorSet,
+    snapshot: &'a TimingSnapshot,
+    query: &'a PlanningQuery,
+    street: &'a MatrixCache,
+    bike: Option<&'a dyn BikeMovementSource>,
+) -> CorridorEvaluator<'a> {
+    CorridorEvaluator {
+        network,
+        retained,
+        timing: snapshot,
+        query,
+        street,
+        bike,
+    }
+}
+
+fn fake_street() -> MatrixCache {
+    MatrixCache::new(Arc::new(FakeStreetRouter::builder().build()))
+}
+
+async fn evaluate_corridors(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: &PlanningQuery,
+    street: &MatrixCache,
+    bike: Option<&dyn BikeMovementSource>,
+    corridors: &[EvaluationCorridor],
+) -> Result<Evaluation, RoutingError> {
+    CorridorEvaluator {
+        network,
+        retained,
+        timing: snapshot,
+        query,
+        street,
+        bike,
+    }
+    .evaluate(corridors)
+    .await
+}
+
+fn transit_corridors(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    query: &PlanningQuery,
+) -> Result<Vec<EvaluationCorridor>, RoutingError> {
+    retained
+        .retained()
+        .iter()
+        .map(|corridor| EvaluationCorridor::from_transit(network, corridor, query))
+        .collect()
+}
+
+fn run_test_evaluation(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: PlanningQuery,
+    bike: Option<&dyn BikeMovementSource>,
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime")
+        .block_on(async {
+            if query.origin_access.is_empty() || query.destination_egress.is_empty() {
+                return Err(RoutingError::InvalidQuery);
+            }
+            let corridors = transit_corridors(network, retained, &query)?;
+            let street = fake_street();
+            let evaluation = evaluate_corridors(
+                network, retained, snapshot, &query, &street, bike, &corridors,
+            )
+            .await?;
+            Ok((evaluation.journeys, evaluation.stats))
+        })
+}
+
+fn evaluate(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: PlanningQuery,
+) -> Result<Vec<RealizedJourney>, RoutingError> {
+    evaluate_with_stats(network, retained, snapshot, query).map(|(journeys, _)| journeys)
+}
+
+fn evaluate_with_stats(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: PlanningQuery,
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+    run_test_evaluation(network, retained, snapshot, query, None)
+}
+
+fn evaluate_with_test_bike_routes(
+    network: &TransitRuntime,
+    retained: &RetainedCorridorSet,
+    snapshot: &TimingSnapshot,
+    query: PlanningQuery,
+    routes: &TestBikeRoutes,
+) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+    let bike = TestBikeSource::new(routes.clone());
+    let (journeys, mut stats) =
+        run_test_evaluation(network, retained, snapshot, query, Some(&bike))?;
+    bike.record_stats(&mut stats);
+    Ok((journeys, stats))
+}
+
+fn prune_states_reference(mut states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
+    states.sort_by_cached_key(|state| {
+        let metrics = state.metrics();
+        (
+            state.ready_at,
+            metrics.walking_seconds,
+            metrics.transfer_count,
+        )
+    });
+    let mut frontier = Vec::<EvaluationState>::new();
+    for state in states {
+        let metrics = state.metrics();
+        if frontier.iter().any(|known| {
+            pareto::same_capability(known, &state) && pareto::no_worse(&known.metrics(), &metrics)
+        }) {
+            continue;
+        }
+        frontier.retain(|known| {
+            !(pareto::same_capability(&state, known)
+                && pareto::no_worse(&metrics, &known.metrics()))
+        });
+        frontier.push(state);
+    }
+    frontier.truncate(limit.max(1));
+    frontier
 }
 
 fn bike_movement(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShareMovement {
@@ -216,7 +439,7 @@ async fn evaluate_walking_replacement(
     latest_seconds: Option<i64>,
     duplicate: bool,
     with_bike: bool,
-) -> (EvaluationReport, usize) {
+) -> (Result<Evaluation, RoutingError>, usize) {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -244,24 +467,16 @@ async fn evaluate_walking_replacement(
         )],
     );
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let street = Arc::new(CountingWalkingRouter {
+    let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: calls.clone(),
         error,
+    }));
+    let bike = with_bike.then(|| {
+        TestBikeSource::new(HashMap::from([(
+            corridor_movement(0, 1, "origin", "destination"),
+            vec![bike_movement(0, 1, 240)],
+        )]))
     });
-    let mut dependencies = TestDependencies {
-        walking: WalkingCache::new(street),
-        bike_share: None,
-    };
-    if with_bike {
-        dependencies.bike_share = Some(BikeShareSession::for_test(Box::new(TestBikePlanner {
-            routes: HashMap::from([(
-                corridor_movement(0, 1, "origin", "destination"),
-                vec![bike_movement(0, 1, 240)],
-            )]),
-            cache: Default::default(),
-            hits: Default::default(),
-        })));
-    }
     let make_corridor =
         || EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
     let corridors = if duplicate {
@@ -269,15 +484,15 @@ async fn evaluate_walking_replacement(
     } else {
         vec![make_corridor()]
     };
-    let result = CorridorScheduler::new(
+    let result = evaluate_corridors(
         &network,
         &retained,
         &snapshot,
         &query,
-        &dependencies.walking,
-        dependencies.bike_share.as_ref(),
+        &street,
+        bike.as_ref().map(|bike| bike as &dyn BikeMovementSource),
+        &corridors,
     )
-    .evaluate(&corridors)
     .await;
     (result, calls.load(std::sync::atomic::Ordering::SeqCst))
 }
@@ -287,16 +502,19 @@ struct DirectBikePlanner {
 }
 
 #[async_trait::async_trait]
-impl TestBikeProvider for DirectBikePlanner {
-    fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool {
-        matches!(request.from.kind, JourneyAnchorKind::Origin)
-            && matches!(request.to.kind, JourneyAnchorKind::Destination)
-    }
-    async fn realize(
+impl BikeMovementSource for DirectBikePlanner {
+    async fn movements(
         &self,
-        _: &BikeMovementRequest<'_>,
-    ) -> Result<Vec<BikeShareMovement>, crate::street::StreetRoutingError> {
-        Ok(vec![self.movement.clone()])
+        from: &CorridorAnchor,
+        to: &CorridorAnchor,
+        _: usize,
+        _: usize,
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
+        Ok((matches!(from.kind, JourneyAnchorKind::Origin)
+            && matches!(to.kind, JourneyAnchorKind::Destination))
+        .then(|| self.movement.clone())
+        .into_iter()
+        .collect())
     }
 }
 
@@ -328,72 +546,6 @@ impl crate::street::StreetRouter for SlowSecondWalkingRouter {
     }
 }
 
-#[tokio::test]
-#[ignore = "deterministic Phase A comparison"]
-async fn phase_a_deterministic_benchmark() {
-    let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
-    let snapshot = TimingSnapshot::default();
-    for count in [32, 2400] {
-        let query = query(&[], 0, 1);
-        let corridors = (0..count)
-            .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
-            .collect::<Vec<_>>();
-        let mut samples = Vec::new();
-        let mut expected = None;
-        for iteration in 0..25 {
-            let walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
-                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                error: None,
-            }));
-            let result =
-                CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None)
-                    .evaluate(&corridors)
-                    .await;
-            let fingerprints = result
-                .outcome
-                .as_ref()
-                .unwrap()
-                .iter()
-                .map(|j| j.identity().canonical_signature())
-                .collect::<Vec<_>>();
-            if let Some(expected) = &expected {
-                assert_eq!(&fingerprints, expected);
-            } else {
-                expected = Some(fingerprints);
-            }
-            if iteration >= 5 {
-                samples.push(result.stats.phase2_latency_us);
-            }
-            if iteration == 24 {
-                eprintln!(
-                    "phase_a count={count} stats={:?} fingerprints={expected:?}",
-                    result.stats
-                );
-            }
-        }
-        samples.sort_unstable();
-        eprintln!(
-            "phase_a count={count} median_us={} p95_us={}",
-            samples[10], samples[19]
-        );
-    }
-}
-
-fn expansion_inputs<'a>(
-    network: &'a TransitRuntime,
-    retained: &'a RetainedCorridorSet,
-    snapshot: &'a TimingSnapshot,
-    query: &'a PlanningQuery,
-) -> expansion::ExpansionInputs<'a> {
-    expansion::ExpansionInputs {
-        network,
-        corridor: retained,
-        snapshot,
-        query,
-    }
-}
-
 struct OutcomeBikeProvider {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     error: Option<crate::street::StreetRoutingError>,
@@ -401,14 +553,14 @@ struct OutcomeBikeProvider {
 }
 
 #[async_trait::async_trait]
-impl TestBikeProvider for OutcomeBikeProvider {
-    fn has_candidate(&self, _: &BikeMovementRequest<'_>) -> bool {
-        true
-    }
-    async fn realize(
+impl BikeMovementSource for OutcomeBikeProvider {
+    async fn movements(
         &self,
-        request: &BikeMovementRequest<'_>,
-    ) -> Result<Vec<BikeShareMovement>, crate::street::StreetRoutingError> {
+        _: &CorridorAnchor,
+        _: &CorridorAnchor,
+        from_anchor: usize,
+        to_anchor: usize,
+    ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.expire_deadline {
             tokio::time::advance(std::time::Duration::from_secs(2)).await;
@@ -416,11 +568,7 @@ impl TestBikeProvider for OutcomeBikeProvider {
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
-        Ok(vec![bike_movement(
-            request.from_anchor,
-            request.to_anchor,
-            60,
-        )])
+        Ok(vec![bike_movement(from_anchor, to_anchor, 60)])
     }
 }
 
@@ -446,98 +594,6 @@ impl crate::street::StreetRouter for DeadlineWalkingRouter {
     ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
         unreachable!()
     }
-}
-
-#[tokio::test]
-#[ignore = "deterministic outcome cleanup comparison"]
-async fn outcome_cleanup_multimodal_benchmark() {
-    let network = network(
-        vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
-        &["origin", "destination"],
-        Vec::new(),
-    );
-    let query = query(&[TransitMode::Bus], 0, 1);
-    let retained = candidate_corridor(&network, &query);
-    let mut snapshot = TimingSnapshot::default();
-    snapshot.insert(
-        TransitPatternId::new("bus"),
-        0,
-        vec![
-            trip("early", "bus", &["origin", "destination"], &[1, 2]),
-            trip("later", "bus", &["origin", "destination"], &[2, 3]),
-        ],
-    );
-    let corridors = vec![
-        EvaluationCorridor::direct_walking(query.origin, query.destination),
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
-    ];
-    let mut samples = Vec::new();
-    let mut expected = None;
-    for iteration in 0..25 {
-        let walking = WalkingCache::new(Arc::new(CountingWalkingRouter {
-            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            error: None,
-        }));
-        let bike = BikeShareSession::for_test(Box::new(TestBikePlanner {
-            routes: HashMap::from([(
-                corridor_movement(0, 1, "origin", "destination"),
-                vec![bike_movement(0, 1, 60), bike_movement(0, 1, 240)],
-            )]),
-            cache: Default::default(),
-            hits: Default::default(),
-        }));
-        let result = CorridorScheduler::new(
-            &network,
-            &retained,
-            &snapshot,
-            &query,
-            &walking,
-            Some(&bike),
-        )
-        .evaluate(&corridors)
-        .await;
-        let fingerprints = result
-            .outcome
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|j| {
-                format!(
-                    "{}@{:?}",
-                    j.identity().canonical_signature(),
-                    j.movements()
-                        .iter()
-                        .map(|m| (
-                            m.departure_at.unix_timestamp_nanos(),
-                            m.arrival_at.unix_timestamp_nanos()
-                        ))
-                        .collect::<Vec<_>>()
-                )
-            })
-            .collect::<Vec<_>>();
-        let mut work = result.stats;
-        work.phase2_latency_us = 0;
-        if let Some(expected) = &expected {
-            assert_eq!(&(work, fingerprints.clone()), expected);
-        } else {
-            expected = Some((work, fingerprints.clone()));
-        }
-        if iteration >= 5 {
-            samples.push(result.stats.phase2_latency_us);
-        }
-        if iteration == 24 {
-            eprintln!(
-                "cleanup_multimodal stats={:?} fingerprints={fingerprints:?}",
-                result.stats
-            );
-        }
-    }
-    samples.sort_unstable();
-    eprintln!(
-        "cleanup_multimodal median_us={} p95_us={}",
-        samples[10], samples[19]
-    );
 }
 
 #[path = "parallel_tests.rs"]

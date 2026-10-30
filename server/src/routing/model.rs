@@ -4,7 +4,9 @@ use tokio::time::Instant;
 use crate::{
     domain::planning::PlanningInput,
     domain::{journey::PlanningError, normalize_to_taipei, transit::TransitMode},
-    street::{RoutingConstraints, RoutingTime, RoutingTimeKind},
+    street::{
+        ProviderFailureClass, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetRoutingError,
+    },
 };
 
 use crate::domain::{ids::BoardingPointId, transit_timing::DepartureError};
@@ -324,6 +326,40 @@ pub enum RoutingError {
     Internal(String),
     #[error("timing snapshot could not be loaded: {0}")]
     Timing(#[from] DepartureError),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FailureSummary {
+    pub(crate) transient: bool,
+    pub(crate) internal: bool,
+}
+
+impl FailureSummary {
+    pub(crate) fn record_provider(&mut self, error: &StreetRoutingError) {
+        match error.failure_class() {
+            ProviderFailureClass::Unreachable => {}
+            ProviderFailureClass::Transient => self.transient = true,
+            ProviderFailureClass::Internal => self.internal = true,
+        }
+    }
+
+    pub(crate) fn record_planning(&mut self, error: &PlanningError) {
+        self.transient |= *error == PlanningError::TemporarilyUnavailable;
+        self.internal |= *error == PlanningError::Internal;
+    }
+
+    pub(crate) fn record_routing(&mut self, error: &RoutingError) {
+        match error {
+            RoutingError::Timing(timing) => self.transient |= timing.is_transient(),
+            RoutingError::StaticSearchLimit | RoutingError::Internal(_) => self.internal = true,
+            RoutingError::InvalidQuery | RoutingError::DeadlineExceeded => {}
+        }
+    }
+
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.transient |= other.transient;
+        self.internal |= other.internal;
+    }
 }
 
 #[cfg(test)]

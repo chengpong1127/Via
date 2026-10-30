@@ -77,7 +77,7 @@ fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
     assert_eq!(journey.movements()[1].from_anchor, 1);
     assert_eq!(journey.movements()[1].to_anchor, 3);
     assert_eq!(
-        journey.identity().canonical_signature(),
+        journey.signature(),
         "path:v2:baseline:walking:Access:origin:boarding_point:a:0:0|bike:boarding_point:a:boarding_point:c:pickup:dropoff:0:0:30:100:0:0:0:30|baseline:walking:Egress:boarding_point:c:destination:0:0"
     );
     let timing = journey.evaluate_timing().unwrap();

@@ -5,16 +5,10 @@ mod session;
 mod tests;
 
 use candidates::StationChoice;
-use realization::BikeMovementRealizer;
-#[cfg(test)]
-use realization::walking_access;
 pub(crate) use session::BikeShareSession;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
 };
 use time::OffsetDateTime;
 
@@ -51,36 +45,15 @@ pub struct BikeMovementPolicy {
     pub availability_max_clock_skew_seconds: u32,
 }
 
-pub(crate) struct BikeMovementRequest<'a> {
-    pub from: &'a CorridorAnchor,
-    pub to: &'a CorridorAnchor,
-    pub from_anchor: usize,
-    pub to_anchor: usize,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(crate) struct BikeSessionStats {
-    pub exact_requests: usize,
-    pub cache_hits: usize,
-    pub matrix_requests: usize,
-}
-
-#[cfg(test)]
 #[async_trait::async_trait]
-pub(crate) trait TestBikePlanner: Send + Sync {
-    fn realization_stats(&self) -> BikeSessionStats {
-        BikeSessionStats::default()
-    }
-    fn has_candidate(&self, request: &BikeMovementRequest<'_>) -> bool;
-    async fn realize(
+pub(crate) trait BikeMovementSource: Send + Sync {
+    async fn movements(
         &self,
-        request: &BikeMovementRequest<'_>,
+        from: &CorridorAnchor,
+        to: &CorridorAnchor,
+        from_anchor: usize,
+        to_anchor: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BikePlanningStats {
-    pub matrix_requests: usize,
 }
 
 #[derive(Clone)]

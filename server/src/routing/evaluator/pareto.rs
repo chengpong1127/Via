@@ -1,14 +1,13 @@
 use super::*;
 
-#[cfg_attr(test, derive(Clone))]
+#[derive(Clone)]
 pub(super) struct EvaluatedCandidate {
     pub metrics: PathMetrics,
     pub journey: RealizedJourney,
 }
 
-struct CandidateMetadata<I> {
+struct SignedCandidate {
     candidate: EvaluatedCandidate,
-    identity: I,
     signature: String,
     needs_hydration: bool,
 }
@@ -16,16 +15,10 @@ struct CandidateMetadata<I> {
 pub(super) fn pareto_candidates(candidates: Vec<EvaluatedCandidate>) -> Vec<EvaluatedCandidate> {
     let mut candidates = candidates
         .into_iter()
-        .map(|candidate| {
-            let identity = candidate.journey.identity();
-            let signature = identity.canonical_signature();
-            let needs_hydration = candidate.journey.movements().iter().any(needs_hydration);
-            CandidateMetadata {
-                candidate,
-                identity,
-                signature,
-                needs_hydration,
-            }
+        .map(|candidate| SignedCandidate {
+            signature: candidate.journey.signature(),
+            needs_hydration: candidate.journey.movements().iter().any(needs_hydration),
+            candidate,
         })
         .collect::<Vec<_>>();
     candidates.sort_by(|left, right| {
@@ -44,11 +37,11 @@ pub(super) fn pareto_candidates(candidates: Vec<EvaluatedCandidate>) -> Vec<Eval
                 &right.signature,
             ))
     });
-    let mut pareto: Vec<CandidateMetadata<_>> = Vec::new();
+    let mut pareto: Vec<SignedCandidate> = Vec::new();
     for candidate in candidates {
         if pareto
             .iter()
-            .any(|known| known.identity == candidate.identity || can_dominate(known, &candidate))
+            .any(|known| known.signature == candidate.signature || can_dominate(known, &candidate))
         {
             continue;
         }
@@ -58,7 +51,7 @@ pub(super) fn pareto_candidates(candidates: Vec<EvaluatedCandidate>) -> Vec<Eval
     pareto.into_iter().map(|entry| entry.candidate).collect()
 }
 
-fn can_dominate<I>(left: &CandidateMetadata<I>, right: &CandidateMetadata<I>) -> bool {
+fn can_dominate(left: &SignedCandidate, right: &SignedCandidate) -> bool {
     !left.needs_hydration && left.candidate.metrics.dominates(&right.candidate.metrics)
 }
 
@@ -108,7 +101,7 @@ struct ScoredState {
     state: EvaluationState,
     metrics: PathMetrics,
 }
-fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
+pub(super) fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
     left.same_timing_quality(right)
         && left.arrival_time <= right.arrival_time
         && left.walking_seconds <= right.walking_seconds
@@ -116,7 +109,7 @@ fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
         && left.bike_share_uses <= right.bike_share_uses
         && left.transfer_count <= right.transfer_count
 }
-fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
+pub(super) fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
     (!(left.movements.iter().any(needs_hydration) || right.movements.iter().any(needs_hydration))
         || left.movements == right.movements)
         && left.last_was_transit == right.last_was_transit
@@ -131,35 +124,4 @@ fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
             }
             _ => false,
         }
-}
-
-#[cfg(test)]
-pub(super) fn prune_states_reference(
-    mut states: Vec<EvaluationState>,
-    limit: usize,
-) -> Vec<EvaluationState> {
-    states.sort_by_cached_key(|state| {
-        let metrics = state.metrics();
-        (
-            state.ready_at,
-            metrics.walking_seconds,
-            metrics.transfer_count,
-        )
-    });
-    let mut frontier = Vec::<EvaluationState>::new();
-    for state in states {
-        let metrics = state.metrics();
-        if frontier
-            .iter()
-            .any(|known| same_capability(known, &state) && no_worse(&known.metrics(), &metrics))
-        {
-            continue;
-        }
-        frontier.retain(|known| {
-            !(same_capability(&state, known) && no_worse(&metrics, &known.metrics()))
-        });
-        frontier.push(state);
-    }
-    frontier.truncate(limit.max(1));
-    frontier
 }

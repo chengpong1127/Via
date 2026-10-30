@@ -26,10 +26,6 @@ use crate::{
     },
 };
 
-#[cfg(test)]
-#[path = "../../tests/support/valhalla_measurement.rs"]
-pub(crate) mod measurement;
-
 const OSM_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
 const ODBL_URL: &str = "https://opendatacommons.org/licenses/odbl/1-0/";
 
@@ -164,8 +160,6 @@ pub struct ValhallaProvider {
     client: Client,
     concurrency: Arc<Semaphore>,
     observer: Arc<dyn OperationalEventObserver>,
-    #[cfg(test)]
-    measurement: Option<Arc<measurement::RouteMeasurement>>,
 }
 
 impl ValhallaProvider {
@@ -190,18 +184,7 @@ impl ValhallaProvider {
             config,
             client,
             observer,
-            #[cfg(test)]
-            measurement: None,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_measurement(
-        mut self,
-        measurement: Arc<measurement::RouteMeasurement>,
-    ) -> Self {
-        self.measurement = Some(measurement);
-        self
     }
 
     #[tracing::instrument(target = "via_profile", name = "Valhalla Semaphore Wait", skip_all)]
@@ -356,19 +339,7 @@ impl ValhallaProvider {
             date_time: wire_time(query.constraints)?,
             expansion_max_distance: query.constraints.max_distance.map(|value| value.0),
         };
-        #[cfg(test)]
-        let wait = self
-            .measurement
-            .as_ref()
-            .map(|measurement| measurement.wait());
         let _permit = self.permit().await?;
-        #[cfg(test)]
-        drop(wait);
-        #[cfg(test)]
-        let mut http = self
-            .measurement
-            .as_ref()
-            .map(|measurement| measurement.http());
         let response = self
             .client
             .post(self.endpoint("sources_to_targets")?)
@@ -377,15 +348,7 @@ impl ValhallaProvider {
             .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
-        #[cfg(test)]
-        let status_success = response.status().is_success();
         let wire = self.parse_response(response).await;
-        #[cfg(test)]
-        if let Some(http) = http.as_mut() {
-            http.finish(status_success);
-        }
-        #[cfg(test)]
-        drop(http);
         let wire: MatrixResponse = wire?;
         if wire.sources_to_targets.len() != query.sources.len()
             || wire
@@ -416,19 +379,7 @@ impl ValhallaProvider {
             shape_format: "polyline6",
             date_time: wire_time(query.constraints)?,
         };
-        #[cfg(test)]
-        let wait = self
-            .measurement
-            .as_ref()
-            .map(|measurement| measurement.wait());
         let _permit = self.permit().await?;
-        #[cfg(test)]
-        drop(wait);
-        #[cfg(test)]
-        let mut http = self
-            .measurement
-            .as_ref()
-            .map(|measurement| measurement.http());
         let response = self
             .client
             .post(self.endpoint("route")?)
@@ -437,15 +388,7 @@ impl ValhallaProvider {
             .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
             .await
             .map_err(map_transport_error)?;
-        #[cfg(test)]
-        let status_success = response.status().is_success();
         let wire = self.parse_response(response).await;
-        #[cfg(test)]
-        if let Some(http) = http.as_mut() {
-            http.finish(status_success);
-        }
-        #[cfg(test)]
-        drop(http);
         let wire: RouteResponse = wire?;
         let leg = wire
             .trip

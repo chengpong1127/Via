@@ -1,6 +1,3 @@
-mod session;
-#[cfg(test)]
-pub(in crate::routing) use session::ordered_reconstruction;
 mod assembler;
 mod bike;
 mod evidence;
@@ -9,6 +6,8 @@ mod street;
 mod transit;
 
 use std::sync::Arc;
+
+use futures_util::{StreamExt, stream};
 
 use crate::{
     domain::planning::PlanningInput,
@@ -22,7 +21,11 @@ use crate::{
     street::StreetRouter,
 };
 
-use super::{model::JourneyPlanningContext, realized::RealizedJourney};
+use super::{
+    cache::RouteCache,
+    model::{FailureSummary, JourneyPlanningContext},
+    realized::RealizedJourney,
+};
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
 const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
@@ -54,13 +57,47 @@ impl JourneyReconstructor {
         }
     }
 
-    pub(super) fn session(&self) -> session::ReconstructionSession {
-        session::ReconstructionSession::new(self.request_local())
+    #[tracing::instrument(target = "via_profile", name = "Reconstruction", skip_all, fields(candidate_count = journeys.len()))]
+    pub(super) async fn reconstruct_all(
+        &self,
+        journeys: &[RealizedJourney],
+        context: &JourneyPlanningContext<'_>,
+        concurrency: usize,
+    ) -> (Vec<JourneyCandidate>, FailureSummary) {
+        let request_local = self.request_local();
+        let request_local = &request_local;
+        let mut results = stream::iter(0..journeys.len())
+            .map(|index| async move {
+                (
+                    index,
+                    request_local.reconstruct(&journeys[index], context).await,
+                )
+            })
+            .buffer_unordered(concurrency.max(1))
+            .collect::<Vec<_>>()
+            .await;
+        results.sort_unstable_by_key(|(index, _)| *index);
+        let mut candidates = Vec::new();
+        let mut failures = FailureSummary::default();
+        for (_, result) in results {
+            match result {
+                Ok(Some(candidate)) => candidates.push(candidate),
+                Ok(None) => {}
+                Err(error) => failures.record_planning(&error),
+            }
+        }
+        tracing::debug!(
+            target: "via_server::routing",
+            reconstruction_attempts = journeys.len(),
+            reconstructed_candidates = candidates.len(),
+            "Phase 2 candidates reconstructed"
+        );
+        (candidates, failures)
     }
 
     pub(super) fn request_local(&self) -> Self {
         Self {
-            street_routing: Arc::new(super::cache::RouteCache::new(self.street_routing.clone())),
+            street_routing: Arc::new(RouteCache::new(self.street_routing.clone())),
             transit_runtime: self.transit_runtime.clone(),
             bike_share_network: self.bike_share_network.clone(),
         }
@@ -174,10 +211,7 @@ fn journey_matching_key(journey: &RealizedJourney) -> String {
     } else {
         BIKE_MATCHING_KEY_VERSION
     };
-    geometry::short_digest(&format!(
-        "{version}:{}",
-        journey.identity().canonical_signature()
-    ))
+    geometry::short_digest(&format!("{version}:{}", journey.signature()))
 }
 
 pub(super) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {

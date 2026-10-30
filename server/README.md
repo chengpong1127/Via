@@ -64,13 +64,13 @@ Configuration:
 validated API requests into domain-owned `PlanningInput`. `RoutingService`
 coordinates admission, deadlines, planning, reconstruction and final ranking.
 `MultimodalPlanner` owns transit access/egress discovery, static corridor
-preparation and request-local snapshots. `PlanningSession.evaluate()` consumes
-the session and returns one report with journeys or an error, statistics and
-observed failures. It evaluates the direct walking corridor and retained transit
+search and request-local snapshots, and `CorridorEvaluator` returns journeys,
+statistics and observed failures or a single routing error. It evaluates the direct walking corridor and retained transit
 corridors in one pass, starting direct walking first while allowing bounded overlap.
 Walking is always available; `selected_modes` lists optional transit and BikeShare
-modes. A request-local `ReconstructionSession` hydrates geometry concurrently,
-restores candidate ordering and collects failures before final ranking.
+modes. `JourneyReconstructor::reconstruct_all` hydrates geometry concurrently with a
+request-local Route cache, restores candidate ordering and collects failures
+before final ranking.
 
 Rust callers use the exports at `routing` rather than implementation submodules.
 Provider implementations satisfy domain-facing interfaces; routing does not

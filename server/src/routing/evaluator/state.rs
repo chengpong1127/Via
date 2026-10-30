@@ -1,7 +1,6 @@
 use super::*;
 
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct EvaluationState {
     pub ready_at: OffsetDateTime,
     pub last_was_transit: bool,
@@ -42,8 +41,7 @@ impl EvaluationState {
     }
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct PathMetrics {
     pub arrival_time: OffsetDateTime,
     pub walking_seconds: u32,
@@ -150,8 +148,7 @@ fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> bool {
     unique(left) == unique(right)
 }
 
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct ActiveBikeRental {
     pub start_anchor: usize,
     pub started_at: OffsetDateTime,

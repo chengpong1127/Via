@@ -10,10 +10,9 @@ use time::{Time, Weekday, macros::datetime};
 
 use super::*;
 use crate::{
-    domain::location::GeoCoordinate,
     domain::{
-        bikeshare::{BikeAvailabilitySnapshot, BikeShareNetwork},
-        ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
+        bikeshare::{BikeAvailabilityError, BikeAvailabilitySnapshot, BikeShareNetwork},
+        ids::{BikeStationId, BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
         transit::{
             ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
             TransitTrip,
@@ -328,7 +327,7 @@ async fn disabled_deadline_awaits_slow_snapshot_loading() {
     let mut query = query(1);
     query.deadline = crate::routing::PlanningDeadline::disabled();
     let started = tokio::time::Instant::now();
-    assert!(planner.prepare(query).await.is_ok());
+    assert!(planner.plan(query).await.is_ok());
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(11));
 }
 
@@ -339,8 +338,8 @@ async fn enabled_deadline_cancels_slow_snapshot_loading() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(5));
     let started = tokio::time::Instant::now();
     assert!(matches!(
-        planner.prepare(query).await,
-        Err(RoutingError::DeadlineExceeded)
+        planner.plan(query).await.err(),
+        Some(RoutingError::DeadlineExceeded)
     ));
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(5));
 }
@@ -407,10 +406,9 @@ async fn operational_metrics_count_completed_stages_once() {
     let mut planning_query = query(1);
     planning_query.origin = origin;
     planning_query.destination = destination;
-    let session = planner.prepare(planning_query).await.unwrap();
-    let report = session.evaluate().await;
-    assert!(!report.outcome.unwrap().is_empty());
-    let lookups = report.stats.phase2_evaluation.transit_departure_lookups;
+    let report = planner.plan(planning_query).await.unwrap();
+    assert!(!report.journeys.is_empty());
+    let lookups = report.stats.phase2.transit_departure_lookups;
     assert!(lookups > 0);
     let rendered = handle.render();
     assert!(rendered.contains(&format!(
@@ -595,11 +593,8 @@ async fn direct_walking_is_evaluated_once_without_transit() {
         crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes([]);
-    let session = planner.prepare(query).await.unwrap();
+    let report = planner.plan(query).await.unwrap();
 
-    let report = session.evaluate().await;
-    let primary = report.outcome.unwrap();
-
-    assert_eq!(primary.len(), 1);
-    assert_eq!(report.stats.phase2_evaluation.states_expanded, 1);
+    assert_eq!(report.journeys.len(), 1);
+    assert_eq!(report.stats.phase2.states_expanded, 1);
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::street::*;
+use crate::{routing::bike::BikeShareSession, street::*};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct DelayedMatrix {
@@ -88,20 +88,20 @@ impl StreetRouter for DelayedMatrix {
     }
 }
 
+struct Measured {
+    calls: usize,
+    peak: usize,
+    journeys: Vec<String>,
+    stats: Phase2EvaluationStats,
+    bicycle_calls: usize,
+}
+
 async fn measured_case(
     delay: u64,
     error: Option<StreetRoutingError>,
     concurrency: usize,
     variant: &str,
-) -> (
-    u64,
-    usize,
-    usize,
-    Vec<String>,
-    Phase2EvaluationStats,
-    u64,
-    usize,
-) {
+) -> Measured {
     measured_corridors_case(delay, error, concurrency, 1, 1, variant).await
 }
 
@@ -112,15 +112,7 @@ async fn measured_corridors_case(
     corridor_concurrency: usize,
     corridor_count: usize,
     variant: &str,
-) -> (
-    u64,
-    usize,
-    usize,
-    Vec<String>,
-    Phase2EvaluationStats,
-    u64,
-    usize,
-) {
+) -> Measured {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -137,26 +129,20 @@ async fn measured_corridors_case(
             EvaluationCorridor::new(
                 original.anchors().to_vec(),
                 vec![
-                    CorridorEdge {
-                        planned_movement: PlannedMovement::RetainedWalking {
-                            kind: WalkingMovementKind::Access,
-                            duration_seconds: 0,
-                            distance_metres: 0,
-                            access_available_at: Some(query.departure_time),
-                        },
+                    PlannedMovement::RetainedWalking {
+                        kind: WalkingMovementKind::Access,
+                        duration_seconds: 0,
+                        distance_metres: 0,
+                        access_available_at: Some(query.departure_time),
                     },
-                    CorridorEdge {
-                        planned_movement: PlannedMovement::Transit(
-                            retained.retained()[0]
-                                .transit_legs()
-                                .next()
-                                .unwrap()
-                                .clone(),
-                        ),
-                    },
-                    CorridorEdge {
-                        planned_movement: PlannedMovement::WalkingToResolve,
-                    },
+                    PlannedMovement::Transit(
+                        retained.retained()[0]
+                            .transit_legs()
+                            .next()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    PlannedMovement::WalkingToResolve,
                 ],
             )
             .unwrap()
@@ -178,94 +164,29 @@ async fn measured_corridors_case(
             .collect(),
     );
     let provider = Arc::new(DelayedMatrix::new(delay, error));
-    let matrix = Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-        provider.clone(),
-    ));
-    let walking = WalkingCache::with_resolver(matrix.clone());
-    let bike = (variant != "walking").then(|| real_bike_session(matrix, query.departure_time));
+    let matrix = Arc::new(MatrixCache::new(provider.clone()));
+    let bike =
+        (variant != "walking").then(|| real_bike_session(matrix.clone(), query.departure_time));
     if variant == "bike" {
         snapshot = TimingSnapshot::default();
     }
-    let result = CorridorScheduler::new(
+    let result = evaluate_corridors(
         &network,
         &retained,
         &snapshot,
         &query,
-        &walking,
-        bike.as_ref(),
+        &matrix,
+        bike.as_ref().map(|bike| bike as &dyn BikeMovementSource),
+        &corridors,
     )
-    .evaluate(&corridors)
-    .await;
-    (
-        result.stats.phase2_latency_us,
-        provider.calls.load(Ordering::Relaxed),
-        provider.peak.load(Ordering::Relaxed),
-        result
-            .outcome
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|j| format!("{:?}", j))
-            .collect(),
-        result.stats,
-        provider.waiting_us.load(Ordering::Relaxed),
-        provider.bicycle_calls.load(Ordering::Relaxed),
-    )
-}
-
-#[tokio::test]
-#[ignore = "Phase B controlled asynchronous provider comparison"]
-async fn phase_b_io_benchmark() {
-    let concurrency = std::env::var("VIA_PHASE_B_CONCURRENCY")
-        .ok()
-        .map(|v| v.parse().unwrap())
-        .unwrap_or(4);
-    let variant = std::env::var("VIA_PHASE_B_VARIANT").unwrap_or_else(|_| "walking".into());
-    let variant = variant.as_str();
-    for delay in [0, 10, 50, 100] {
-        for (label, error) in [
-            ("success", None),
-            ("unreachable", Some(StreetRoutingError::Unreachable)),
-            ("timeout", Some(StreetRoutingError::Timeout)),
-        ] {
-            let mut samples = Vec::new();
-            let mut expected = None;
-            let mut last = None;
-            for iteration in 0..22 {
-                let result = measured_case(delay, error.clone(), concurrency, variant).await;
-                if let Some(expected) = &expected {
-                    assert_eq!(&result.3, expected);
-                } else {
-                    expected = Some(result.3.clone());
-                }
-                if iteration >= 2 {
-                    samples.push(result.0);
-                }
-                last = Some(result);
-            }
-            samples.sort_unstable();
-            let last = last.unwrap();
-            println!(
-                "phase_b variant={variant} concurrency={concurrency} delay={delay} case={label} p50_us={} p95_us={} worst_us={} physical={} peak={} successors={} candidates={} logical={} completed_hits={} inflight_hits={} misses={} walking_requests={} walking_hits={} bike_hits={} wait_us={} bicycle_calls={} fingerprints={}",
-                samples[10],
-                samples[18],
-                samples[19],
-                last.1,
-                last.2,
-                last.4.successors_generated,
-                last.4.final_candidates,
-                last.4.matrix.logical_requests,
-                last.4.matrix.completed_hits,
-                last.4.matrix.inflight_hits,
-                last.4.matrix.misses,
-                last.4.walking_matrix_requests,
-                last.4.walking_cache_hits,
-                last.4.bike_exact_cache_hits,
-                last.5,
-                last.6,
-                fingerprint(&expected)
-            );
-        }
+    .await
+    .unwrap();
+    Measured {
+        calls: provider.calls.load(Ordering::Relaxed),
+        peak: provider.peak.load(Ordering::Relaxed),
+        journeys: result.journeys.iter().map(|j| format!("{j:?}")).collect(),
+        stats: result.stats,
+        bicycle_calls: provider.bicycle_calls.load(Ordering::Relaxed),
     }
 }
 
@@ -274,21 +195,27 @@ async fn successful_evaluations_preserve_ordered_journeys_and_work_at_all_limits
     let reference = measured_case(1, None, 1, "walking").await;
     for concurrency in [2, 4, 8] {
         let actual = measured_case(1, None, concurrency, "walking").await;
-        assert_eq!(actual.3, reference.3);
-        assert_eq!(actual.4.states_expanded, reference.4.states_expanded);
+        assert_eq!(actual.journeys, reference.journeys);
         assert_eq!(
-            actual.4.successors_generated,
-            reference.4.successors_generated
+            actual.stats.states_expanded,
+            reference.stats.states_expanded
         );
         assert_eq!(
-            actual.4.corridors_completed,
-            reference.4.corridors_completed
+            actual.stats.successors_generated,
+            reference.stats.successors_generated
         );
-        assert_eq!(actual.4.final_candidates, reference.4.final_candidates);
-        assert_eq!(actual.1, reference.1);
-        assert!(actual.2 >= 1);
-        assert!(actual.2 <= concurrency);
-        assert_eq!(actual.4.matrix.physical_requests, actual.1);
+        assert_eq!(
+            actual.stats.corridors_evaluated,
+            reference.stats.corridors_evaluated
+        );
+        assert_eq!(
+            actual.stats.final_candidates,
+            reference.stats.final_candidates
+        );
+        assert_eq!(actual.calls, reference.calls);
+        assert!(actual.peak >= 1);
+        assert!(actual.peak <= concurrency);
+        assert_eq!(actual.stats.matrix_requests, actual.calls);
     }
 }
 
@@ -303,12 +230,9 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
         query.limits.max_concurrent_phase2_states = concurrency;
         let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
         let provider = Arc::new(DelayedMatrix::new(1, None));
-        let walking = WalkingCache::new(provider.clone());
-        let resolver = expansion::ExpansionResolver {
-            inputs: expansion_inputs(&network, &retained, &snapshot, &query),
-            walking: &walking,
-            bike_share: None,
-        };
+        let street = MatrixCache::new(provider.clone());
+        let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+        let run = Run::new(&evaluator);
         let states = (0..10)
             .map(|i| {
                 let mut state = EvaluationState::initial(&query);
@@ -316,11 +240,8 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
                 state
             })
             .collect::<Vec<_>>();
-        let outcome = resolver
-            .expand_edge(&states, &corridor, &corridor.edges()[0], 0)
-            .await;
-        assert_eq!(outcome.stats.states_expanded, 10);
-        let successors = outcome.successors.unwrap();
+        let successors = run.expand_edge(&states, &corridor, 0).await.unwrap();
+        assert_eq!(run.counters.states.load(Ordering::Relaxed), 10);
         let ordered = successors
             .iter()
             .map(|s| s.movements.clone())
@@ -335,14 +256,13 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
             expected = Some((ordered, pruned));
         }
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(walking.requests(), 1);
-        assert_eq!(walking.cache_hits(), 9);
+        assert_eq!((street.requests(), street.hits()), (1, 9));
         assert_eq!(provider.peak.load(Ordering::Relaxed), 1);
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn fatal_deadline_drops_outstanding_states_and_keeps_observed_outcomes() {
+async fn fatal_deadline_drops_outstanding_states() {
     let network = network(Vec::new(), &[], Vec::new());
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
@@ -351,7 +271,7 @@ async fn fatal_deadline_drops_outstanding_states_and_keeps_observed_outcomes() {
     query.limits.max_concurrent_phase2_states = 4;
     let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
     let provider = Arc::new(DelayedMatrix::new(2000, None));
-    let walking = WalkingCache::new(provider.clone());
+    let street = MatrixCache::new(provider.clone());
     let states = (0..10)
         .map(|i| {
             let mut s = EvaluationState::initial(&query);
@@ -359,25 +279,16 @@ async fn fatal_deadline_drops_outstanding_states_and_keeps_observed_outcomes() {
             s
         })
         .collect::<Vec<_>>();
-    let resolver = expansion::ExpansionResolver {
-        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
-        walking: &walking,
-        bike_share: None,
-    };
-    let outcome = resolver
-        .expand_edge(&states, &corridor, &corridor.edges()[0], 0)
-        .await;
-    assert!(matches!(
-        outcome.successors,
-        Err(RoutingError::DeadlineExceeded)
-    ));
-    assert_eq!(outcome.stats.states_expanded, 0);
-    assert_eq!(outcome.stats.successors_generated, 0);
+    let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+    let run = Run::new(&evaluator);
+    let outcome = run.expand_edge(&states, &corridor, 0).await;
+    assert!(matches!(outcome, Err(RoutingError::DeadlineExceeded)));
+    assert_eq!(run.counters.successors.load(Ordering::Relaxed), 0);
     assert_eq!(provider.active.load(Ordering::Relaxed), 0);
-    assert_eq!(walking.matrix_stats().canceled_requests, 1);
+    assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
 }
 
-fn real_bike_session(street: Arc<dyn StreetRouter>, now: time::OffsetDateTime) -> BikeShareSession {
+fn real_bike_session(street: Arc<MatrixCache>, now: time::OffsetDateTime) -> BikeShareSession {
     use crate::domain::bikeshare::{
         BikeAvailabilitySnapshot, BikeShareNetwork, BikeStation, BikeStationAccess,
         BikeStationAvailability,
@@ -444,14 +355,20 @@ fn real_bike_session(street: Arc<dyn StreetRouter>, now: time::OffsetDateTime) -
     )
 }
 
+fn boarding_anchor(id: &str) -> CorridorAnchor {
+    CorridorAnchor {
+        kind: JourneyAnchorKind::BoardingPoint {
+            id: BoardingPointId::new(id),
+        },
+        coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
+    }
+}
+
 #[tokio::test]
 async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
-    use crate::routing::corridor::CorridorAnchor;
     use futures_util::{StreamExt, stream};
     let provider = Arc::new(DelayedMatrix::new(1, None));
-    let matrix = Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-        provider.clone(),
-    ));
+    let matrix = Arc::new(MatrixCache::new(provider.clone()));
     let session = real_bike_session(matrix.clone(), datetime!(2026-09-21 10:00 UTC));
     let from = CorridorAnchor {
         kind: JourneyAnchorKind::Origin,
@@ -466,23 +383,12 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
             let session = &session;
             let from = &from;
             let to = &to;
-            async move {
-                let request = BikeMovementRequest {
-                    from,
-                    to,
-                    from_anchor: i,
-                    to_anchor: i + 1,
-                };
-                let candidate = session.candidate(&request).unwrap();
-                session.realize(&request, &candidate).await.unwrap()
-            }
+            async move { session.movements(from, to, i, i + 1).await.unwrap() }
         })
         .buffer_unordered(10)
         .collect::<Vec<_>>()
         .await;
-    assert_eq!(session.realization_stats().exact_requests, 1);
-    assert_eq!(session.realization_stats().cache_hits, 9);
-    assert_eq!(session.realization_stats().matrix_requests, 3);
+    assert_eq!((session.requests(), session.hits()), (1, 9));
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
     let mut anchors = results
         .iter()
@@ -494,33 +400,23 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
         .collect::<Vec<_>>();
     anchors.sort_unstable();
     assert_eq!(anchors, (0..10).map(|i| (i, i + 1)).collect::<Vec<_>>());
+    let hits_before = matrix.hits();
     for ids in [("origin", "destination"), ("a", "b")] {
         let from = CorridorAnchor {
-            kind: JourneyAnchorKind::BoardingPoint {
-                id: BoardingPointId::new(ids.0),
-            },
-            ..from.clone()
+            coordinate: from.coordinate,
+            ..boarding_anchor(ids.0)
         };
         let to = CorridorAnchor {
-            kind: JourneyAnchorKind::BoardingPoint {
-                id: BoardingPointId::new(ids.1),
-            },
-            ..to.clone()
+            coordinate: to.coordinate,
+            ..boarding_anchor(ids.1)
         };
-        let request = BikeMovementRequest {
-            from: &from,
-            to: &to,
-            from_anchor: 0,
-            to_anchor: 1,
-        };
-        let candidate = session.candidate(&request).unwrap();
         assert_eq!(
-            session.realize(&request, &candidate).await.unwrap()[0].total_seconds,
+            session.movements(&from, &to, 0, 1).await.unwrap()[0].total_seconds,
             140
         );
     }
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
-    assert_eq!(matrix.stats().completed_hits, 2);
+    assert_eq!(matrix.hits() - hits_before, 2);
 }
 
 #[tokio::test]
@@ -531,54 +427,44 @@ async fn real_bike_failures_are_cached_with_their_classification() {
         StreetRoutingError::Unreachable,
     ] {
         let provider = Arc::new(DelayedMatrix::new(1, Some(error.clone())));
-        let matrix = Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-            provider.clone(),
-        ));
+        let matrix = Arc::new(MatrixCache::new(provider.clone()));
         let session = real_bike_session(matrix, datetime!(2026-09-21 10:00 UTC));
         let corridor = EvaluationCorridor::direct_walking(
             Coordinate::try_new(25.0, 121.5).unwrap(),
             Coordinate::try_new(25.002, 121.5).unwrap(),
         );
-        let request = BikeMovementRequest {
-            from: &corridor.anchors()[0],
-            to: &corridor.anchors()[1],
-            from_anchor: 0,
-            to_anchor: 1,
-        };
-        let candidate = session.candidate(&request).unwrap();
+        let (from, to) = (&corridor.anchors()[0], &corridor.anchors()[1]);
         let (first, second) = tokio::join!(
-            session.realize(&request, &candidate),
-            session.realize(&request, &candidate)
+            session.movements(from, to, 0, 1),
+            session.movements(from, to, 0, 1)
         );
         assert_eq!(first, Err(error.clone()));
         assert_eq!(second, Err(error.clone()));
-        assert_eq!(session.realize(&request, &candidate).await, Err(error));
+        assert_eq!(session.movements(from, to, 0, 1).await, Err(error));
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(session.realization_stats().cache_hits, 2);
+        assert_eq!(session.hits(), 2);
     }
-}
-
-fn fingerprint(value: &impl std::fmt::Debug) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(format!("{value:?}").as_bytes()))
 }
 
 #[tokio::test]
 async fn mixed_and_bike_heavy_evaluations_keep_journeys_and_rental_continuations() {
     for variant in ["mixed", "bike"] {
         let reference = measured_case(1, None, 1, variant).await;
-        assert!(reference.6 > 0);
+        assert!(reference.bicycle_calls > 0);
         for concurrency in [2, 4, 8] {
             let actual = measured_case(1, None, concurrency, variant).await;
-            assert_eq!(actual.3, reference.3);
-            assert_eq!(actual.4.states_expanded, reference.4.states_expanded);
+            assert_eq!(actual.journeys, reference.journeys);
             assert_eq!(
-                actual.4.successors_generated,
-                reference.4.successors_generated
+                actual.stats.states_expanded,
+                reference.stats.states_expanded
             );
-            assert_eq!(actual.1, reference.1);
-            assert_eq!(actual.6, reference.6);
-            assert!(actual.2 <= 8);
+            assert_eq!(
+                actual.stats.successors_generated,
+                reference.stats.successors_generated
+            );
+            assert_eq!(actual.calls, reference.calls);
+            assert_eq!(actual.bicycle_calls, reference.bicycle_calls);
+            assert!(actual.peak <= 8);
         }
     }
 }
@@ -593,107 +479,15 @@ async fn simultaneous_planning_requests_have_independent_caches() {
         .collect::<Vec<_>>()
         .await;
     for result in results {
-        assert_eq!(result.3, reference.3);
-        assert_eq!(result.1, reference.1);
-        assert_eq!(result.4.matrix, reference.4.matrix);
-    }
-}
-
-#[tokio::test]
-#[ignore = "Phase B exact-query reuse and provider semaphore comparison"]
-async fn phase_b_matrix_benchmark() {
-    use futures_util::{StreamExt, stream};
-    let concurrency: usize = std::env::var("VIA_PHASE_B_CONCURRENCY")
-        .ok()
-        .map(|v| v.parse().unwrap())
-        .unwrap_or(4);
-    let raw = std::env::var_os("VIA_PHASE_B_RAW_MATRIX").is_some();
-    for delay in [0, 10, 50, 100] {
-        for identical in [false, true] {
-            for requests in [1, 4] {
-                let mut samples = Vec::new();
-                let mut last = (0, 0, 0, 0, 0);
-                for iteration in 0..22 {
-                    let provider = Arc::new(DelayedMatrix::new(delay, None));
-                    let started = std::time::Instant::now();
-                    let totals = stream::iter(0..requests)
-                        .map(|_| {
-                            let provider = provider.clone();
-                            async move {
-                                let matrix =
-                                    Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-                                        provider.clone(),
-                                    ));
-                                let router: Arc<dyn StreetRouter> =
-                                    if raw { provider } else { matrix.clone() };
-                                let results = stream::iter(0..10)
-                                    .map(|index| {
-                                        let router = router.clone();
-                                        async move {
-                                            router
-                                                .matrix(MatrixQuery {
-                                                    orientation: MatrixOrientation::OneToMany,
-                                                    travel_mode: StreetTravelMode::Walking,
-                                                    sources: vec![
-                                                        Coordinate::try_new(25.0, 121.5).unwrap(),
-                                                    ],
-                                                    targets: vec![
-                                                        Coordinate::try_new(
-                                                            25.001
-                                                                + if identical {
-                                                                    0.0
-                                                                } else {
-                                                                    f64::from(index) / 1000.0
-                                                                },
-                                                            121.5,
-                                                        )
-                                                        .unwrap(),
-                                                    ],
-                                                    constraints: RoutingConstraints::default(),
-                                                })
-                                                .await
-                                                .unwrap()
-                                        }
-                                    })
-                                    .buffer_unordered(concurrency)
-                                    .collect::<Vec<_>>()
-                                    .await;
-                                assert_eq!(results.len(), 10);
-                                matrix.stats()
-                            }
-                        })
-                        .buffer_unordered(requests)
-                        .collect::<Vec<_>>()
-                        .await;
-                    let elapsed = started.elapsed().as_micros();
-                    if iteration >= 2 {
-                        samples.push(elapsed);
-                    }
-                    last = (
-                        provider.calls.load(Ordering::Relaxed),
-                        provider.peak.load(Ordering::Relaxed),
-                        totals.iter().map(|s| s.completed_hits).sum(),
-                        totals.iter().map(|s| s.inflight_hits).sum(),
-                        provider.waiting_us.load(Ordering::Relaxed),
-                    );
-                    assert!(last.1 <= 8);
-                    assert_eq!(last.0, requests * if identical && !raw { 1 } else { 10 });
-                }
-                samples.sort_unstable();
-                println!(
-                    "matrix raw={raw} concurrency={concurrency} delay={delay} identical={identical} requests={requests} p50_us={} p95_us={} worst_us={} logical={} physical={} peak={} completed_hits={} inflight_hits={} wait_us={}",
-                    samples[10],
-                    samples[18],
-                    samples[19],
-                    requests * 10,
-                    last.0,
-                    last.1,
-                    last.2,
-                    last.3,
-                    last.4
-                );
-            }
-        }
+        assert_eq!(result.journeys, reference.journeys);
+        assert_eq!(result.calls, reference.calls);
+        assert_eq!(
+            (result.stats.matrix_requests, result.stats.matrix_cache_hits),
+            (
+                reference.stats.matrix_requests,
+                reference.stats.matrix_cache_hits
+            )
+        );
     }
 }
 
@@ -704,21 +498,16 @@ struct ReverseBikePlanner {
 }
 
 #[async_trait::async_trait]
-impl TestBikeProvider for ReverseBikePlanner {
-    fn has_candidate(&self, _: &BikeMovementRequest<'_>) -> bool {
-        true
-    }
-
-    async fn realize(
+impl BikeMovementSource for ReverseBikePlanner {
+    async fn movements(
         &self,
-        request: &BikeMovementRequest<'_>,
+        _: &CorridorAnchor,
+        _: &CorridorAnchor,
+        from_anchor: usize,
+        _: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         self.started.add_permits(1);
-        self.gates[request.from_anchor]
-            .acquire()
-            .await
-            .unwrap()
-            .forget();
+        self.gates[from_anchor].acquire().await.unwrap().forget();
         self.completed.add_permits(1);
         Ok(Vec::new())
     }
@@ -735,13 +524,9 @@ async fn forced_reverse_completion_preserves_successor_order() {
         query.limits.max_concurrent_phase2_states = concurrency;
         let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
         let anchors = vec![direct.anchors()[0].clone(); 6];
-        let edges = (0..5)
-            .map(|_| CorridorEdge {
-                planned_movement: PlannedMovement::WalkingToResolve,
-            })
-            .collect();
+        let edges = (0..5).map(|_| PlannedMovement::WalkingToResolve).collect();
         let corridor = EvaluationCorridor::new(anchors, edges).unwrap();
-        let walking = WalkingCache::new(Arc::new(DelayedMatrix::new(0, None)));
+        let street = MatrixCache::new(Arc::new(DelayedMatrix::new(0, None)));
         let started = Arc::new(tokio::sync::Semaphore::new(0));
         let completed = Arc::new(tokio::sync::Semaphore::new(0));
         let gates = Arc::new(
@@ -749,16 +534,14 @@ async fn forced_reverse_completion_preserves_successor_order() {
                 .map(|_| tokio::sync::Semaphore::new(usize::from(concurrency == 1)))
                 .collect::<Vec<_>>(),
         );
-        let bike = BikeShareSession::for_test(Box::new(ReverseBikePlanner {
+        let bike = ReverseBikePlanner {
             started: started.clone(),
             completed: completed.clone(),
             gates: gates.clone(),
-        }));
-        let resolver = expansion::ExpansionResolver {
-            inputs: expansion_inputs(&network, &retained, &snapshot, &query),
-            walking: &walking,
-            bike_share: Some(&bike),
         };
+        let evaluator =
+            test_evaluator(&network, &retained, &snapshot, &query, &street, Some(&bike));
+        let run = Run::new(&evaluator);
         let states = (0..4)
             .map(|index| {
                 let mut state = EvaluationState::initial(&query);
@@ -781,11 +564,8 @@ async fn forced_reverse_completion_preserves_successor_order() {
                 }
             }
         };
-        let (outcome, ()) = tokio::join!(
-            resolver.expand_edge(&states, &corridor, &corridor.edges()[4], 4),
-            control
-        );
-        let successors = outcome.successors.unwrap();
+        let (outcome, ()) = tokio::join!(run.expand_edge(&states, &corridor, 4), control);
+        let successors = outcome.unwrap();
         let ordered = successors
             .iter()
             .map(|state| state.movements.clone())
@@ -816,12 +596,9 @@ async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
     provider.gate = Some(gate.clone());
     provider.started = Some(started.clone());
     let provider = Arc::new(provider);
-    let walking = WalkingCache::new(provider.clone());
-    let resolver = expansion::ExpansionResolver {
-        inputs: expansion_inputs(&network, &retained, &snapshot, &query),
-        walking: &walking,
-        bike_share: None,
-    };
+    let street = MatrixCache::new(provider.clone());
+    let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+    let run = Run::new(&evaluator);
     let states = [0, 1, 180, 3600].map(|seconds| {
         let mut state = EvaluationState::initial(&query);
         state.ready_at += Duration::seconds(seconds);
@@ -832,65 +609,39 @@ async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
         tokio::task::yield_now().await;
         gate.add_permits(1);
     };
-    let (outcome, ()) = tokio::join!(
-        resolver.expand_edge(&states, &corridor, &corridor.edges()[0], 0),
-        control
-    );
-    let successors = outcome.successors.unwrap();
+    let (outcome, ()) = tokio::join!(run.expand_edge(&states, &corridor, 0), control);
+    let successors = outcome.unwrap();
     assert_eq!(successors.len(), states.len());
     for (state, successor) in states.iter().zip(successors) {
         assert_eq!(successor.ready_at, state.ready_at + Duration::seconds(300));
     }
     assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
-    assert_eq!((walking.requests(), walking.cache_hits()), (1, 3));
+    assert_eq!((street.requests(), street.hits()), (1, 3));
 }
 
 #[tokio::test]
 async fn distinct_bike_movement_keys_share_one_inflight_bicycle_query() {
-    use crate::routing::corridor::CorridorAnchor;
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let started = Arc::new(tokio::sync::Semaphore::new(0));
     let mut controlled = DelayedMatrix::new(0, None);
     controlled.gate = Some(gate.clone());
     controlled.started = Some(started.clone());
     let provider = Arc::new(controlled);
-    let matrix = Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-        provider.clone(),
-    ));
+    let matrix = Arc::new(MatrixCache::new(provider.clone()));
     let session = real_bike_session(matrix.clone(), datetime!(2026-09-21 10:00 UTC));
-    let anchor = |id: &str| CorridorAnchor {
-        kind: JourneyAnchorKind::BoardingPoint {
-            id: BoardingPointId::new(id),
-        },
-        coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
-    };
     let (from1, to1, from2, to2) = (
-        anchor("origin"),
-        anchor("destination"),
-        anchor("a"),
-        anchor("b"),
+        boarding_anchor("origin"),
+        boarding_anchor("destination"),
+        boarding_anchor("a"),
+        boarding_anchor("b"),
     );
-    let first = BikeMovementRequest {
-        from: &from1,
-        to: &to1,
-        from_anchor: 1,
-        to_anchor: 2,
-    };
-    let second = BikeMovementRequest {
-        from: &from2,
-        to: &to2,
-        from_anchor: 3,
-        to_anchor: 4,
-    };
-    let a = session.candidate(&first).unwrap();
-    let b = session.candidate(&second).unwrap();
     let work = async {
         tokio::join!(
-            session.realize(&first, &a),
-            session.realize(&second, &b),
+            session.movements(&from1, &to1, 1, 2),
+            session.movements(&from2, &to2, 3, 4),
             async {
                 started.acquire().await.unwrap().forget();
-                assert_eq!(matrix.stats().inflight_hits, 1);
+                tokio::task::yield_now().await;
                 gate.add_permits(1);
             }
         )
@@ -900,10 +651,9 @@ async fn distinct_bike_movement_keys_share_one_inflight_bicycle_query() {
         .unwrap();
     assert_eq!(a.unwrap()[0].from_anchor, 1);
     assert_eq!(b.unwrap()[0].from_anchor, 3);
-    assert_eq!(session.realization_stats().exact_requests, 2);
-    assert_eq!(session.realization_stats().matrix_requests, 2);
+    assert_eq!(session.requests(), 2);
     assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(matrix.stats().inflight_hits, 1);
+    assert_eq!((matrix.requests(), matrix.hits()), (1, 1));
 }
 
 struct FailOnceMatrix(AtomicUsize);
@@ -933,79 +683,57 @@ impl StreetRouter for FailOnceMatrix {
 
 #[tokio::test]
 async fn cross_anchor_transient_retry_is_suppressed_only_within_the_shared_request() {
-    use crate::routing::corridor::CorridorAnchor;
-    for shared in [false, true] {
-        let provider = Arc::new(FailOnceMatrix(AtomicUsize::new(0)));
-        let router: Arc<dyn StreetRouter> = if shared {
-            Arc::new(crate::routing::cache::SharedMatrixResolver::new(
-                provider.clone(),
-            ))
-        } else {
-            provider.clone()
-        };
-        let session = real_bike_session(router, datetime!(2026-09-21 10:00 UTC));
-        for (index, (from, to)) in [("origin", "destination"), ("a", "b")]
-            .into_iter()
-            .enumerate()
-        {
-            let anchor = |id: &str| CorridorAnchor {
-                kind: JourneyAnchorKind::BoardingPoint {
-                    id: BoardingPointId::new(id),
-                },
-                coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
-            };
-            let (from, to) = (anchor(from), anchor(to));
-            let request = BikeMovementRequest {
-                from: &from,
-                to: &to,
-                from_anchor: 0,
-                to_anchor: 1,
-            };
-            let candidate = session.candidate(&request).unwrap();
-            let result = session.realize(&request, &candidate).await;
-            if index == 0 || shared {
-                assert_eq!(result, Err(StreetRoutingError::Timeout));
-            } else {
-                assert!(!result.unwrap().is_empty());
-            }
-        }
-        assert_eq!(
-            provider.0.load(Ordering::Relaxed),
-            if shared { 1 } else { 2 }
-        );
-        let fresh = crate::routing::cache::SharedMatrixResolver::new(provider);
-        assert!(
-            fresh
-                .matrix(MatrixQuery {
-                    orientation: MatrixOrientation::ManyToMany,
-                    travel_mode: StreetTravelMode::Bicycle,
-                    sources: vec![Coordinate::try_new(25.0001, 121.5).unwrap()],
-                    targets: vec![Coordinate::try_new(25.001, 121.5).unwrap()],
-                    constraints: RoutingConstraints::default(),
-                })
-                .await
-                .is_ok()
-        );
+    let provider = Arc::new(FailOnceMatrix(AtomicUsize::new(0)));
+    let session = real_bike_session(
+        Arc::new(MatrixCache::new(provider.clone())),
+        datetime!(2026-09-21 10:00 UTC),
+    );
+    for (from, to) in [("origin", "destination"), ("a", "b")] {
+        let result = session
+            .movements(&boarding_anchor(from), &boarding_anchor(to), 0, 1)
+            .await;
+        assert_eq!(result, Err(StreetRoutingError::Timeout));
     }
+    assert_eq!(provider.0.load(Ordering::Relaxed), 1);
+    let fresh = real_bike_session(
+        Arc::new(MatrixCache::new(provider.clone())),
+        datetime!(2026-09-21 10:00 UTC),
+    );
+    assert!(
+        !fresh
+            .movements(
+                &boarding_anchor("origin"),
+                &boarding_anchor("destination"),
+                0,
+                1
+            )
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(provider.0.load(Ordering::Relaxed), 2);
 }
 
 #[tokio::test]
 async fn corridor_concurrency_preserves_transit_and_mixed_results_and_shares_caches() {
     for variant in ["walking", "mixed"] {
         let reference = measured_corridors_case(5, None, 4, 1, 8, variant).await;
-        assert!(!reference.3.is_empty());
+        assert!(!reference.journeys.is_empty());
         for concurrency in [2, 4, 8] {
             let actual = measured_corridors_case(5, None, 4, concurrency, 8, variant).await;
-            assert_eq!(actual.3, reference.3);
-            assert_eq!(actual.4.states_expanded, reference.4.states_expanded);
+            assert_eq!(actual.journeys, reference.journeys);
             assert_eq!(
-                actual.4.successors_generated,
-                reference.4.successors_generated
+                actual.stats.states_expanded,
+                reference.stats.states_expanded
             );
-            assert_eq!(actual.4.corridors_completed, 8);
-            assert_eq!(actual.1, reference.1);
-            assert!(actual.4.walking_cache_hits > 0);
-            assert!(actual.2 <= 8);
+            assert_eq!(
+                actual.stats.successors_generated,
+                reference.stats.successors_generated
+            );
+            assert_eq!(actual.stats.corridors_evaluated, 8);
+            assert_eq!(actual.calls, reference.calls);
+            assert!(actual.stats.matrix_cache_hits > 0);
+            assert!(actual.peak <= 8);
         }
     }
 }
@@ -1019,7 +747,7 @@ async fn corridor_deadline_cancels_pending_provider_operations() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     query.limits.max_concurrent_phase2_corridors = 4;
     let provider = Arc::new(DelayedMatrix::new(2000, None));
-    let walking = WalkingCache::new(provider.clone());
+    let street = MatrixCache::new(provider.clone());
     let corridors = (0..8)
         .map(|i| {
             EvaluationCorridor::direct_walking(
@@ -1028,14 +756,13 @@ async fn corridor_deadline_cancels_pending_provider_operations() {
             )
         })
         .collect::<Vec<_>>();
-    let evaluator = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
-    let report = evaluator.evaluate(&corridors).await;
-    assert!(matches!(
-        report.outcome,
-        Err(RoutingError::DeadlineExceeded)
-    ));
+    let report = evaluate_corridors(
+        &network, &retained, &snapshot, &query, &street, None, &corridors,
+    )
+    .await;
+    assert!(matches!(report, Err(RoutingError::DeadlineExceeded)));
     assert_eq!(provider.active.load(Ordering::Relaxed), 0);
-    assert_eq!(report.stats.corridors_attempted, 4);
+    assert_eq!(provider.calls.load(Ordering::Relaxed), 4);
 }
 
 struct OutOfOrderMatrix {
@@ -1083,21 +810,21 @@ async fn corridors_start_in_order_and_overlap_without_reordering_journeys() {
             started: std::sync::Mutex::new(Vec::new()),
             completed: std::sync::Mutex::new(Vec::new()),
         });
-        let walking = WalkingCache::new(provider.clone());
-        let result = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None)
-            .evaluate(&corridors)
-            .await;
-        let identities = result
-            .outcome
-            .as_ref()
-            .unwrap()
+        let street = MatrixCache::new(provider.clone());
+        let result = evaluate_corridors(
+            &network, &retained, &snapshot, &query, &street, None, &corridors,
+        )
+        .await
+        .unwrap();
+        let signatures = result
+            .journeys
             .iter()
-            .map(|j| j.identity().canonical_signature())
+            .map(|j| j.signature())
             .collect::<Vec<_>>();
         if let Some(expected) = &reference {
-            assert_eq!(&identities, expected);
+            assert_eq!(&signatures, expected);
         } else {
-            reference = Some(identities);
+            reference = Some(signatures);
         }
         assert_eq!(
             *provider.started.lock().unwrap(),
@@ -1110,7 +837,7 @@ async fn corridors_start_in_order_and_overlap_without_reordering_journeys() {
                 (0..8).collect::<Vec<_>>()
             );
         }
-        assert_eq!(result.stats.corridors_completed, 8);
+        assert_eq!(result.stats.corridors_evaluated, 8);
         assert_eq!(result.stats.states_expanded, 8);
     }
 }
@@ -1128,20 +855,22 @@ async fn corridor_provider_failures_keep_classification_and_reuse_cache() {
         let mut query = query(&[], 0, 1);
         query.limits.max_concurrent_phase2_corridors = 8;
         let provider = Arc::new(DelayedMatrix::new(5, Some(error)));
-        let walking = WalkingCache::new(provider.clone());
+        let street = MatrixCache::new(provider.clone());
         let corridors = (0..8)
             .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
             .collect::<Vec<_>>();
-        let evaluator =
-            CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
-        let report = evaluator.evaluate(&corridors).await;
-        assert!(report.outcome.as_ref().unwrap().is_empty());
+        let report = evaluate_corridors(
+            &network, &retained, &snapshot, &query, &street, None, &corridors,
+        )
+        .await
+        .unwrap();
+        assert!(report.journeys.is_empty());
         assert_eq!(
             (report.failures.transient, report.failures.internal),
             (transient, internal)
         );
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(report.stats.corridors_completed, 8);
+        assert_eq!(report.stats.corridors_evaluated, 8);
     }
 }
 
@@ -1204,12 +933,8 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
                 direct.anchors()[1].clone(),
             ],
             vec![
-                CorridorEdge {
-                    planned_movement: PlannedMovement::WalkingToResolve,
-                },
-                CorridorEdge {
-                    planned_movement: PlannedMovement::Transit(bad_leg),
-                },
+                PlannedMovement::WalkingToResolve,
+                PlannedMovement::Transit(bad_leg),
             ],
         )
         .unwrap()
@@ -1225,94 +950,14 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
         calls: AtomicUsize::new(0),
         active: AtomicUsize::new(0),
     });
-    let walking = WalkingCache::new(provider.clone());
-    let evaluator = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
-    let report = evaluator.evaluate(&corridors).await;
+    let street = MatrixCache::new(provider.clone());
+    let report = evaluate_corridors(
+        &network, &retained, &snapshot, &query, &street, None, &corridors,
+    )
+    .await;
     assert!(
-        matches!(report.outcome, Err(RoutingError::Internal(message)) if message.contains("invalid alighting index"))
+        matches!(report, Err(RoutingError::Internal(message)) if message.contains("invalid alighting index"))
     );
-    assert_eq!(report.stats.corridors_attempted, 3);
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
-    assert_eq!(provider.active.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn corridor_deadline_preserves_received_corridor_statistics() {
-    let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
-    let snapshot = TimingSnapshot::default();
-    let mut query = query(&[], 0, 1);
-    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
-    let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
-    let corridor = EvaluationCorridor::new(
-        vec![
-            direct.anchors()[0].clone(),
-            direct.anchors()[1].clone(),
-            direct.anchors()[1].clone(),
-        ],
-        vec![
-            CorridorEdge {
-                planned_movement: PlannedMovement::RetainedWalking {
-                    kind: WalkingMovementKind::Access,
-                    duration_seconds: 1,
-                    distance_metres: 1,
-                    access_available_at: None,
-                },
-            },
-            CorridorEdge {
-                planned_movement: PlannedMovement::WalkingToResolve,
-            },
-        ],
-    )
-    .unwrap();
-    let provider = Arc::new(DelayedMatrix::new(2000, None));
-    let walking = WalkingCache::new(provider.clone());
-    let evaluator = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
-    let report = evaluator.evaluate(&[corridor]).await;
-    assert!(matches!(
-        report.outcome,
-        Err(RoutingError::DeadlineExceeded)
-    ));
-    assert_eq!(report.stats.corridors_attempted, 1);
-    assert_eq!(report.stats.corridors_completed, 0);
-    assert_eq!(report.stats.states_expanded, 1);
-    assert_eq!(report.stats.successors_generated, 1);
-    assert_eq!(provider.active.load(Ordering::Relaxed), 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn corridor_deadline_keeps_completed_corridor_statistics() {
-    let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
-    let snapshot = TimingSnapshot::default();
-    let mut query = query(&[], 0, 1);
-    query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
-    query.limits.max_concurrent_phase2_corridors = 2;
-    let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
-    let completed = EvaluationCorridor::new(
-        direct.anchors().to_vec(),
-        vec![CorridorEdge {
-            planned_movement: PlannedMovement::RetainedWalking {
-                kind: WalkingMovementKind::Direct,
-                duration_seconds: 1,
-                distance_metres: 1,
-                access_available_at: None,
-            },
-        }],
-    )
-    .unwrap();
-    let pending = EvaluationCorridor::direct_walking(query.origin, query.destination);
-    let provider = Arc::new(DelayedMatrix::new(2000, None));
-    let walking = WalkingCache::new(provider.clone());
-    let evaluator = CorridorScheduler::new(&network, &retained, &snapshot, &query, &walking, None);
-    let report = evaluator.evaluate(&[completed, pending]).await;
-    assert!(matches!(
-        report.outcome,
-        Err(RoutingError::DeadlineExceeded)
-    ));
-    assert_eq!(report.stats.corridors_attempted, 2);
-    assert_eq!(report.stats.corridors_completed, 1);
-    assert_eq!(report.stats.states_expanded, 1);
-    assert_eq!(report.stats.successors_generated, 1);
     assert_eq!(provider.active.load(Ordering::Relaxed), 0);
 }

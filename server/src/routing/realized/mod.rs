@@ -1,5 +1,5 @@
-mod identity;
 mod movement;
+mod signature;
 #[cfg(test)]
 mod tests;
 

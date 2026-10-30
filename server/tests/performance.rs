@@ -126,12 +126,12 @@ async fn deterministic_routing_benchmark() {
                 .await
                 .unwrap();
             let planner_ns = started.elapsed().as_nanos();
-            last_phase2 = Some(planner_stats.phase2_evaluation);
+            last_phase2 = Some(planner_stats.phase2);
             let counters = (
                 corridors.retained().len(),
                 static_stats.states_expanded,
                 realized_journeys.len(),
-                planner_stats.phase2_evaluation.transit_departure_lookups,
+                planner_stats.phase2.transit_departure_lookups,
             );
             if let Some(expected) = expected {
                 assert_eq!(counters, expected);
@@ -156,13 +156,12 @@ async fn deterministic_routing_benchmark() {
         );
         let last_phase2 = last_phase2.unwrap();
         println!(
-            "{label}: p2_states_expanded={} walking_matrix_requests={} walking_cache_hits={} bike_requests={} bike_cache_hits={} bike_matrices={}",
+            "{label}: p2_states_expanded={} matrix_requests={} matrix_cache_hits={} bike_requests={} bike_cache_hits={}",
             last_phase2.states_expanded,
-            last_phase2.walking_matrix_requests,
-            last_phase2.walking_cache_hits,
-            last_phase2.bike_exact_candidates_requested,
-            last_phase2.bike_exact_cache_hits,
-            last_phase2.bike_matrix_requests
+            last_phase2.matrix_requests,
+            last_phase2.matrix_cache_hits,
+            last_phase2.bike_requests,
+            last_phase2.bike_cache_hits
         );
         println!(
             "{label}: iterations={ITERATIONS} static_median_us={:.3} planner_median_us={:.3} corridors={corridors} expansions={expansions} realized_journeys={realized_journeys} departure_lookups={lookups}",

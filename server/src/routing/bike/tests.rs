@@ -11,6 +11,7 @@ use crate::{
         },
         ids::{BikeStationId, BoardingPointId},
     },
+    routing::cache::MatrixCache,
     street::FakeStreetRouter,
 };
 
@@ -409,14 +410,9 @@ async fn cached_bike_availability_is_checked_at_the_request_time() {
         candidate.pickups[0].station_id,
         candidate.dropoffs[0].station_id
     );
-    let (_, exact_stats) = BikeMovementRealizer::new(
-        planner.clone(),
-        Arc::new(FakeStreetRouter::builder().build()),
-    )
-    .realize_candidate(&candidate, 0, 1)
-    .await
-    .unwrap();
-    assert_eq!(exact_stats.matrix_requests, 1);
+    let street = MatrixCache::new(Arc::new(FakeStreetRouter::builder().build()));
+    planner.realize(&street, &candidate).await.unwrap();
+    assert_eq!(street.requests(), 1);
     assert!(
         planner
             .movement_candidate(
@@ -478,7 +474,7 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
             ),
         ]),
     );
-    let street: Arc<dyn StreetRouter> = Arc::new(
+    let street = Arc::new(MatrixCache::new(Arc::new(
         FakeStreetRouter::builder()
             .matrix_leg(
                 StreetTravelMode::Walking,
@@ -495,7 +491,7 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
                 Metres(1000),
             )
             .build(),
-    );
+    )));
     let planner =
         BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy());
     let from = CorridorAnchor {
@@ -512,50 +508,36 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
         now,
         street.clone(),
     );
-    let request = BikeMovementRequest {
-        from: &from,
-        to: &to,
-        from_anchor: 3,
-        to_anchor: 4,
-    };
-    let candidate = session.candidate(&request).unwrap();
-    assert!(session.candidate(&request).is_some());
-    assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
-    let movements = session.realize(&request, &candidate).await.unwrap();
+    let movements = session.movements(&from, &to, 3, 4).await.unwrap();
     let bike_movement = &movements[0];
     assert_eq!(bike_movement.total_seconds, 130);
     assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
-    assert_eq!(session.realization_stats().matrix_requests, 2);
-    let remapped = session
-        .realize(
-            &BikeMovementRequest {
-                from_anchor: 0,
-                to_anchor: 1,
-                ..request
-            },
-            &candidate,
-        )
-        .await
-        .unwrap();
+    assert_eq!(street.requests(), 2);
+    let remapped = session.movements(&from, &to, 0, 1).await.unwrap();
     let bike_movement = &remapped[0];
     assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
-    assert_eq!(session.realization_stats().cache_hits, 1);
-    assert_eq!(session.realization_stats().matrix_requests, 2);
-    assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
+    assert_eq!((session.requests(), session.hits()), (1, 1));
+    assert_eq!(street.requests(), 2);
     let unavailable = BikeShareSession::new(
         planner,
         Arc::new(BikeAvailabilitySnapshot::new(now, HashMap::new())),
         now,
         street.clone(),
     );
-    assert!(unavailable.candidate(&request).is_none());
+    assert!(
+        unavailable
+            .movements(&from, &to, 3, 4)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
 fn station_walks_over_fifteen_minutes_are_unavailable() {
     use crate::street::{Metres, Seconds};
     assert!(
-        walking_access(
+        super::realization::walking_access(
             &MatrixCell::Reachable {
                 duration: Seconds(901),
                 distance: Metres(1)
@@ -565,7 +547,7 @@ fn station_walks_over_fifteen_minutes_are_unavailable() {
         .is_none()
     );
     assert!(
-        walking_access(
+        super::realization::walking_access(
             &MatrixCell::Reachable {
                 duration: Seconds(900),
                 distance: Metres(1)
@@ -598,19 +580,16 @@ async fn concurrent_candidate_discovery_caches_none_once() {
                     Coordinate::try_new(25.01, 121.5).unwrap(),
                 );
                 barrier.wait().await;
-                let request = BikeMovementRequest {
-                    from: &corridor.anchors()[0],
-                    to: &corridor.anchors()[1],
-                    from_anchor: 0,
-                    to_anchor: 1,
-                };
-                assert!(session.candidate(&request).is_none());
+                let movements = session
+                    .movements(&corridor.anchors()[0], &corridor.anchors()[1], 0, 1)
+                    .await
+                    .unwrap();
+                assert!(movements.is_empty());
             })
         })
         .collect::<Vec<_>>();
     for task in tasks {
         task.await.unwrap();
     }
-    assert_eq!(session.candidate_discoveries.load(Ordering::Relaxed), 1);
-    assert_eq!(session.realization_stats().exact_requests, 0);
+    assert_eq!((session.requests(), session.hits()), (1, 9));
 }

@@ -6,13 +6,13 @@ pub(super) fn reference(mut candidates: Vec<EvaluatedCandidate>) -> Vec<Evaluate
             candidate.metrics.arrival_time,
             candidate.metrics.transfer_count,
             candidate.metrics.walking_seconds,
-            candidate.journey.identity().canonical_signature(),
+            candidate.journey.signature(),
         )
     });
     let mut frontier: Vec<EvaluatedCandidate> = Vec::new();
     for candidate in candidates {
         if frontier.iter().any(|known| {
-            known.journey.identity() == candidate.journey.identity()
+            known.journey.signature() == candidate.journey.signature()
                 || can_dominate(known, &candidate)
         }) {
             continue;
@@ -35,7 +35,7 @@ fn can_dominate(left: &EvaluatedCandidate, right: &EvaluatedCandidate) -> bool {
 pub(super) fn assert_equal(left: &[EvaluatedCandidate], right: &[EvaluatedCandidate]) {
     assert_eq!(left.len(), right.len());
     for (left, right) in left.iter().zip(right) {
-        assert_eq!(left.journey.identity(), right.journey.identity());
+        assert_eq!(left.journey.signature(), right.journey.signature());
         assert_eq!(left.journey, right.journey);
         assert_eq!(left.metrics, right.metrics);
     }

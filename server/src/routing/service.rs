@@ -1,11 +1,3 @@
-use super::failures::FailureSummary;
-#[cfg(test)]
-use super::{
-    model::PlanningQuery,
-    reconstruct::{ordered_reconstruction, to_street_coordinate},
-};
-#[cfg(test)]
-use crate::street::StreetRoutingError;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -15,11 +7,10 @@ use std::{
 use time::OffsetDateTime;
 
 use crate::{
-    domain::bikeshare::BikeAvailabilitySource,
-    domain::planning::PlanningInput,
     domain::{
-        bikeshare::BikeShareNetwork,
+        bikeshare::{BikeAvailabilitySource, BikeShareNetwork},
         journey::{EmptyReason, EmptyResult, OptionsResult, PlanningError, PlanningOutcome},
+        planning::PlanningInput,
         ranking::RankingPolicy,
         transit_runtime::TransitRuntime,
         transit_timing::TimingSnapshotLoader,
@@ -28,7 +19,10 @@ use crate::{
 };
 
 use super::{
-    model::{JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline},
+    model::{
+        FailureSummary, JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline,
+        PlanningQuery, RoutingError,
+    },
     multimodal::MultimodalPlanner,
     realized::RealizedJourney,
     reconstruct::{
@@ -132,89 +126,61 @@ impl RoutingService {
             deadline,
         )?;
         context.ensure_before_deadline()?;
-
-        let attempt = self.plan_candidates(&context).await?;
-        self.finalize_plan(
-            request_started_at,
-            &context,
-            attempt.candidates,
-            attempt.failures,
-        )
+        let (query, mut failures) = self.planner.discover_query(&context, &self.limits).await?;
+        let search_started = Instant::now();
+        let candidates = match self.search(query, &context).await {
+            Ok((candidates, search_failures)) => {
+                failures.merge(search_failures);
+                let duration = search_started.elapsed();
+                ::metrics::histogram!("via_planner_multimodal_search_duration_seconds")
+                    .record(duration.as_secs_f64());
+                tracing::debug!(
+                    target: "via_server::routing",
+                    multimodal_search_ms = duration.as_millis() as u64,
+                    journey_candidates = candidates.len(),
+                    "multimodal planning completed"
+                );
+                candidates
+            }
+            Err(RoutingError::DeadlineExceeded) => {
+                return Err(PlanningError::TemporarilyUnavailable);
+            }
+            Err(error) => {
+                failures.record_routing(&error);
+                tracing::error!(error = %error, "transit planning failed");
+                Vec::new()
+            }
+        };
+        self.finalize_plan(request_started_at, &context, candidates, failures)
     }
 
-    async fn plan_candidates(
+    async fn search(
         &self,
+        query: PlanningQuery,
         context: &JourneyPlanningContext<'_>,
-    ) -> Result<PlanningAttempt, PlanningError> {
-        let (query, failures) = self.planner.discover_query(context, &self.limits).await?;
-        let mut attempt = PlanningAttempt {
-            candidates: Vec::new(),
-            failures,
-        };
-
-        {
-            let search_started = Instant::now();
-            let planning_result = async {
-                let report = self.planner.prepare(query).await?.evaluate().await;
-                let journeys = report.outcome?;
-                context
-                    .ensure_before_deadline()
-                    .map_err(|_| super::model::RoutingError::DeadlineExceeded)?;
-                let realtime_evidence_values: usize = journeys
-                    .iter()
-                    .map(RealizedJourney::realtime_evidence_count)
-                    .sum();
-                ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
-                    .increment(realtime_evidence_values as u64);
-                let reconstructed = self
-                    .reconstructor
-                    .session()
-                    .reconstruct_all(
-                        &journeys,
-                        context,
-                        self.limits.max_concurrent_reconstruction_candidates,
-                    )
-                    .await;
-                attempt.candidates = reconstructed.candidates;
-                attempt.failures.merge(reconstructed.failures);
-                attempt.failures.merge(report.failures);
-                Ok::<_, super::model::RoutingError>(())
-            }
+    ) -> Result<(Vec<JourneyCandidate>, FailureSummary), RoutingError> {
+        let planned = self.planner.plan(query).await?;
+        context
+            .ensure_before_deadline()
+            .map_err(|_| RoutingError::DeadlineExceeded)?;
+        let realtime_evidence_values: usize = planned
+            .journeys
+            .iter()
+            .map(RealizedJourney::realtime_evidence_count)
+            .sum();
+        ::metrics::counter!("via_planner_transit_realtime_evidence_values_total")
+            .increment(realtime_evidence_values as u64);
+        let (candidates, reconstruction_failures) = self
+            .reconstructor
+            .reconstruct_all(
+                &planned.journeys,
+                context,
+                self.limits.max_concurrent_reconstruction_candidates,
+            )
             .await;
-            match planning_result {
-                Ok(()) => {
-                    let duration = search_started.elapsed();
-                    ::metrics::histogram!("via_planner_multimodal_search_duration_seconds")
-                        .record(duration.as_secs_f64());
-                    tracing::debug!(
-                        target: "via_server::routing",
-                        multimodal_search_ms = duration.as_millis() as u64,
-                        journey_candidates = attempt.candidates.len(),
-                        "multimodal planning completed"
-                    );
-                }
-                Err(error) => {
-                    match &error {
-                        super::model::RoutingError::Timing(timing) => {
-                            attempt.failures.transient |= timing.is_transient();
-                        }
-                        super::model::RoutingError::StaticSearchLimit => {
-                            attempt.failures.internal = true;
-                        }
-                        super::model::RoutingError::DeadlineExceeded => {
-                            return Err(PlanningError::TemporarilyUnavailable);
-                        }
-                        super::model::RoutingError::InvalidQuery => {}
-                        super::model::RoutingError::Internal(_) => {
-                            attempt.failures.internal = true;
-                        }
-                    }
-                    tracing::error!(error = %error, "transit planning failed");
-                }
-            }
-        }
-
-        Ok(attempt)
+        let mut failures = planned.failures;
+        failures.merge(reconstruction_failures);
+        Ok((candidates, failures))
     }
 
     #[tracing::instrument(target = "via_profile", name = "Final Ranking", skip_all, fields(candidate_count = candidates.len()))]
@@ -305,16 +271,10 @@ impl RoutingService {
     }
 }
 
-#[derive(Default)]
-struct PlanningAttempt {
-    candidates: Vec<JourneyCandidate>,
-    failures: FailureSummary,
-}
-
 #[cfg(test)]
 mod limits_tests {
     use super::*;
-    use crate::routing::model::PlannerLimits;
+    use crate::{routing::model::PlannerLimits, street::StreetRoutingError};
 
     #[test]
     fn routing_configuration_preserves_zero_transfers() {
@@ -395,11 +355,3 @@ mod limits_tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "../../benchmarks/reconstruction.rs"]
-mod reconstruction_benchmark;
-
-#[cfg(test)]
-#[path = "../../benchmarks/representative.rs"]
-mod reconstruction_representative;

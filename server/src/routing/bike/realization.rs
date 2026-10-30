@@ -1,47 +1,12 @@
 use super::*;
 
-pub(super) struct BikeMovementRealizer {
-    planner: BikeShareMovementPlanner,
-    street_router: Arc<dyn StreetRouter>,
-}
-
-impl BikeMovementRealizer {
-    pub(super) fn new(
-        planner: BikeShareMovementPlanner,
-        street_router: Arc<dyn StreetRouter>,
-    ) -> Self {
-        Self {
-            planner,
-            street_router,
-        }
-    }
-
-    pub(super) fn planner(&self) -> &BikeShareMovementPlanner {
-        &self.planner
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn realize_candidate(
+impl BikeShareMovementPlanner {
+    pub(super) async fn realize(
         &self,
+        street: &dyn StreetRouter,
         candidate: &BikeMovementCandidate,
-        from_anchor: usize,
-        to_anchor: usize,
-    ) -> Result<(Vec<BikeShareMovement>, BikePlanningStats), StreetRoutingError> {
-        let mut stats = BikePlanningStats::default();
-        let bike_movements = self
-            .realize_with_stats(candidate, from_anchor, to_anchor, &mut stats)
-            .await?;
-        Ok((bike_movements, stats))
-    }
-
-    pub(super) async fn realize_with_stats(
-        &self,
-        candidate: &BikeMovementCandidate,
-        from_anchor: usize,
-        to_anchor: usize,
-        stats: &mut BikePlanningStats,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
-        let limits = self.street_router.matrix_limits();
+        let limits = street.matrix_limits();
         if limits.max_sources == 0 || limits.max_targets == 0 {
             return Ok(Vec::new());
         }
@@ -49,7 +14,7 @@ impl BikeMovementRealizer {
         let mut candidate = candidate.clone();
         if let Some(endpoint) = candidate.pickup_endpoint {
             candidate.pickups = self
-                .exact_station_walks(endpoint, &candidate.pickups, true, limits, stats)
+                .exact_station_walks(street, endpoint, &candidate.pickups, true, limits)
                 .await?;
             if candidate.pickups.is_empty() {
                 return Ok(Vec::new());
@@ -57,25 +22,23 @@ impl BikeMovementRealizer {
         }
         if let Some(endpoint) = candidate.dropoff_endpoint {
             candidate.dropoffs = self
-                .exact_station_walks(endpoint, &candidate.dropoffs, false, limits, stats)
+                .exact_station_walks(street, endpoint, &candidate.dropoffs, false, limits)
                 .await?;
             if candidate.dropoffs.is_empty() {
                 return Ok(Vec::new());
             }
         }
         let bike_movements = self
-            .realize_candidate_matrices(&candidate, from_anchor, to_anchor, limits, stats)
+            .realize_candidate_matrices(street, &candidate, limits)
             .await?;
         Ok(finalize_bike_movements(bike_movements))
     }
 
     async fn realize_candidate_matrices(
         &self,
+        street: &dyn StreetRouter,
         candidate: &BikeMovementCandidate,
-        from_anchor: usize,
-        to_anchor: usize,
         limits: MatrixLimits,
-        stats: &mut BikePlanningStats,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         let mut bike_movements = Vec::new();
         let mut failure = None;
@@ -83,15 +46,13 @@ impl BikeMovementRealizer {
             for dropoff_chunk in candidate.dropoffs.chunks(limits.max_targets) {
                 let sources = pickup_chunk
                     .iter()
-                    .map(|choice| station_coordinate(&self.planner.network, &choice.station_id))
+                    .map(|choice| station_coordinate(&self.network, &choice.station_id))
                     .collect::<Vec<_>>();
                 let targets = dropoff_chunk
                     .iter()
-                    .map(|choice| station_coordinate(&self.planner.network, &choice.station_id))
+                    .map(|choice| station_coordinate(&self.network, &choice.station_id))
                     .collect::<Vec<_>>();
-                stats.matrix_requests += 1;
-                let result = self
-                    .street_router
+                let result = street
                     .matrix(MatrixQuery {
                         orientation: MatrixOrientation::ManyToMany,
                         travel_mode: StreetTravelMode::Bicycle,
@@ -118,13 +79,13 @@ impl BikeMovementRealizer {
                             continue;
                         }
                         if let Some(bike_movement) = bike_movement_from_cell(
-                            (from_anchor, to_anchor),
+                            (0, 1),
                             &pickup_chunk[pickup_index].station_id,
                             &dropoff_chunk[dropoff_index].station_id,
                             pickup_chunk[pickup_index].walking,
                             cell,
                             dropoff_chunk[dropoff_index].walking,
-                            &self.planner.settings,
+                            &self.settings,
                         ) {
                             bike_movements.push(bike_movement);
                         }
@@ -142,11 +103,11 @@ impl BikeMovementRealizer {
 
     async fn exact_station_walks(
         &self,
+        street: &dyn StreetRouter,
         endpoint: Coordinate,
         choices: &[StationChoice],
         pickup: bool,
         limits: MatrixLimits,
-        stats: &mut BikePlanningStats,
     ) -> Result<Vec<StationChoice>, StreetRoutingError> {
         let mut exact = Vec::new();
         let mut failure = None;
@@ -157,11 +118,9 @@ impl BikeMovementRealizer {
         }) {
             let coordinates = chunk
                 .iter()
-                .map(|choice| station_coordinate(&self.planner.network, &choice.station_id))
+                .map(|choice| station_coordinate(&self.network, &choice.station_id))
                 .collect::<Vec<_>>();
-            stats.matrix_requests += 1;
-            let result = self
-                .street_router
+            let result = street
                 .matrix(MatrixQuery {
                     orientation: if pickup {
                         MatrixOrientation::OneToMany
@@ -198,8 +157,7 @@ impl BikeMovementRealizer {
                 } else {
                     &result.cells[index][0]
                 };
-                if let Some(walking) =
-                    walking_access(cell, self.planner.settings.max_endpoint_walk_seconds)
+                if let Some(walking) = walking_access(cell, self.settings.max_endpoint_walk_seconds)
                 {
                     exact.push(StationChoice {
                         station_id: choice.station_id.clone(),
