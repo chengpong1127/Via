@@ -66,7 +66,6 @@ pub(crate) struct PlannedJourneys {
 struct RequestSnapshots {
     timing: TimingSnapshot,
     bike: Option<Arc<BikeAvailabilitySnapshot>>,
-    failures: FailureSummary,
 }
 
 impl MultimodalPlanner {
@@ -124,7 +123,7 @@ impl MultimodalPlanner {
                 &query,
             )?);
         }
-        let snapshots = query
+        let (snapshots, mut failures) = query
             .deadline
             .run(self.load_snapshots(&query, &retained, &phase1, &corridors))
             .await??;
@@ -160,8 +159,7 @@ impl MultimodalPlanner {
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
             .increment(phase2.transit_departure_lookups as u64);
         tracing::debug!(target: "via_server::routing", stats = ?phase2, "Phase 2 corridor evaluation");
-        let mut failures = evaluation.failures;
-        failures.merge(snapshots.failures);
+        failures.merge(evaluation.failures);
         Ok(PlannedJourneys {
             journeys: evaluation.journeys,
             stats: MultimodalPlannerStats { phase1, phase2 },
@@ -227,7 +225,7 @@ impl MultimodalPlanner {
         retained: &RetainedCorridorSet,
         phase1: &StaticSearchStats,
         corridors: &[EvaluationCorridor],
-    ) -> Result<RequestSnapshots, RoutingError> {
+    ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
         let window_end = query.departure_time
             + Duration::seconds(i64::from(query.limits.max_journey_duration_seconds));
         let departures_per_position = usize::try_from(query.limits.max_journey_duration_seconds)
@@ -290,8 +288,7 @@ impl MultimodalPlanner {
             None => None,
             Some(Ok(snapshot)) => Some(snapshot),
             Some(Err(error)) => {
-                failures.transient |= error.is_transient();
-                failures.internal |= !error.is_transient();
+                failures.record_bike_availability(&error);
                 tracing::debug!(
                     target: "via_server::routing",
                     error = %error,
@@ -316,13 +313,8 @@ impl MultimodalPlanner {
         if timing.all_positions_failed()
             && let Some(error) = timing.first_failure()
         {
-            failures.transient |= error.is_transient();
-            failures.internal |= !error.is_transient();
+            failures.record_departure(error);
         }
-        Ok(RequestSnapshots {
-            timing,
-            bike,
-            failures,
-        })
+        Ok((RequestSnapshots { timing, bike }, failures))
     }
 }

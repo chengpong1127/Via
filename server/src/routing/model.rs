@@ -9,7 +9,9 @@ use crate::{
     },
 };
 
-use crate::domain::{ids::BoardingPointId, transit_timing::DepartureError};
+use crate::domain::{
+    bikeshare::BikeAvailabilityError, ids::BoardingPointId, transit_timing::DepartureError,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlanningDeadline {
@@ -354,6 +356,19 @@ impl FailureSummary {
             RoutingError::StaticSearchLimit | RoutingError::Internal(_) => self.internal = true,
             RoutingError::InvalidQuery | RoutingError::DeadlineExceeded => {}
         }
+    }
+
+    pub(crate) fn record_departure(&mut self, error: &DepartureError) {
+        self.record_transience(error.is_transient());
+    }
+
+    pub(crate) fn record_bike_availability(&mut self, error: &BikeAvailabilityError) {
+        self.record_transience(error.is_transient());
+    }
+
+    fn record_transience(&mut self, transient: bool) {
+        self.transient |= transient;
+        self.internal |= !transient;
     }
 
     pub(crate) fn merge(&mut self, other: Self) {
