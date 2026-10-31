@@ -35,7 +35,7 @@ pub struct ServerSettings {
 }
 
 fn default_phase2_corridors() -> usize {
-    1
+    8
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
