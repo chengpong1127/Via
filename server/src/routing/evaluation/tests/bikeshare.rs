@@ -21,7 +21,7 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "transfer-from"),
                 StaticCorridorStep::SurfaceTransfer {
@@ -89,11 +89,11 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         .movements()
         .iter()
         .find_map(|step| match &step.kind {
-            super::super::super::realized::JourneyMovementKind::BikeShare {
+            super::super::super::journey::JourneyMovementKind::BikeShare {
                 movement: bike_movement,
             } => Some(bike_movement),
-            super::super::super::realized::JourneyMovementKind::Walking { .. }
-            | super::super::super::realized::JourneyMovementKind::Transit { .. } => None,
+            super::super::super::journey::JourneyMovementKind::Walking { .. }
+            | super::super::super::journey::JourneyMovementKind::Transit { .. } => None,
         })
         .unwrap();
     assert_eq!(bike_movement.walk_to_pickup.duration_seconds, 60);
@@ -104,23 +104,23 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         .find(|step| {
             matches!(
                 step.kind,
-                super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                super::super::super::journey::JourneyMovementKind::BikeShare { .. }
             )
         })
         .unwrap();
     assert!(matches!(
         &realized_journeys[0].anchors()[bike_step.from_anchor].kind,
-        super::super::super::realized::JourneyAnchorKind::BoardingPoint { id }
+        super::super::super::journey::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-from")
     ));
     assert!(matches!(
         &realized_journeys[0].anchors()[bike_step.to_anchor].kind,
-        super::super::super::realized::JourneyAnchorKind::BoardingPoint { id }
+        super::super::super::journey::JourneyAnchorKind::BoardingPoint { id }
             if id == &BoardingPointId::new("transfer-to")
     ));
     assert!(realized_journeys[0].movements().iter().any(|step| matches!(
         step.kind,
-        super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+        super::super::super::journey::JourneyMovementKind::BikeShare { .. }
     )));
 }
 
@@ -141,7 +141,7 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "middle"),
                 static_leg("second", "middle", "destination"),
@@ -175,7 +175,7 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
             journey.movements().iter().any(|step| {
                 matches!(
                     step.kind,
-                    super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                    super::super::super::journey::JourneyMovementKind::BikeShare { .. }
                 )
             })
         })
@@ -191,7 +191,7 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
     assert!(bike_journey.movements().iter().any(|movement| {
         matches!(
             &movement.kind,
-            super::super::super::realized::JourneyMovementKind::Transit { trip, .. }
+            super::super::super::journey::JourneyMovementKind::Transit { trip, .. }
                 if trip.id == EffectiveTripId::new("second-17")
         )
     }));
@@ -214,7 +214,7 @@ fn one_bike_movement_can_skip_multiple_transit_anchors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "origin", "middle"),
                 static_leg("second", "middle", "destination"),
@@ -259,7 +259,7 @@ fn one_bike_movement_can_skip_multiple_transit_anchors() {
                 && journey.movements().iter().any(|step| {
                     matches!(
                         step.kind,
-                        super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                        super::super::super::journey::JourneyMovementKind::BikeShare { .. }
                     )
                 })
         })
@@ -294,7 +294,7 @@ fn bike_can_replace_a_surface_walking_edge() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 600,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -322,7 +322,7 @@ fn bike_can_replace_a_surface_walking_edge() {
         journey.movements().iter().any(|step| {
             matches!(
                 step.kind,
-                super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                super::super::super::journey::JourneyMovementKind::BikeShare { .. }
             )
         })
     }));
@@ -352,7 +352,7 @@ fn slower_bike_preserves_a_less_walking_tradeoff() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 300,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -405,7 +405,7 @@ fn transit_waiting_time_preserves_a_feasible_bike_alternative() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 4 * 60,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![static_leg("bus", "origin", "destination")],
         }],
     );
@@ -460,7 +460,7 @@ fn slower_exact_bike_survives_with_less_walking() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 12 * 60,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -523,7 +523,7 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 10 * 60,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -597,7 +597,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("d"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("first", "a", "b"),
                 static_leg("second", "b", "c"),
@@ -653,7 +653,7 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
                 .filter(|step| {
                     matches!(
                         step.kind,
-                        super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                        super::super::super::journey::JourneyMovementKind::BikeShare { .. }
                     )
                 })
                 .count()
@@ -679,13 +679,13 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         .find(|step| {
             matches!(
                 step.kind,
-                super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                super::super::super::journey::JourneyMovementKind::BikeShare { .. }
             )
         })
         .unwrap();
     assert!(matches!(
         &last_bike.kind,
-        super::super::super::realized::JourneyMovementKind::BikeShare { movement: bike_movement }
+        super::super::super::journey::JourneyMovementKind::BikeShare { movement: bike_movement }
             if bike_movement.rental_wait_seconds == 5 * 60
     ));
 }
@@ -719,7 +719,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 0,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![static_leg("bus", "a", "b")],
         }],
     );
@@ -752,7 +752,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
             .iter()
             .all(|step| !matches!(
                 step.kind,
-                super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                super::super::super::journey::JourneyMovementKind::BikeShare { .. }
             ))
     );
 }
@@ -779,7 +779,7 @@ async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
             .iter()
             .any(|v| v.movements().iter().any(|s| matches!(
                 s.kind,
-                super::super::super::realized::JourneyMovementKind::BikeShare { .. }
+                super::super::super::journey::JourneyMovementKind::BikeShare { .. }
             )))
     );
 }
@@ -808,7 +808,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 600,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -969,7 +969,7 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
         state.movements[0].kind,
         JourneyMovementKind::BikeShare { .. }
     )));
-    let mut stats = Phase2EvaluationStats::default();
+    let mut stats = CorridorEvaluationStats::default();
     bike.record_stats(&mut stats);
     assert_eq!((bike.calls(), stats.bike_requests), (1, 0));
 }

@@ -13,6 +13,7 @@ use crate::{
     domain::{
         bikeshare::{BikeAvailabilityError, BikeAvailabilitySnapshot, BikeShareNetwork},
         ids::{BikeStationId, BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
+        location::GeoCoordinate,
         transit::{
             ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
             TransitTrip,
@@ -23,7 +24,7 @@ use crate::{
         },
     },
     routing::{AccessPoint, EgressPoint},
-    street::FakeStreetRouter,
+    street::{Coordinate, FakeStreetRouter},
 };
 
 #[derive(Default)]
@@ -307,8 +308,8 @@ async fn timing_queries_include_all_patterns_in_a_retained_pattern_family() {
             .iter()
             .any(|query| query.pattern_id == TransitPatternId::new("realtime-fast"))
     );
-    assert_eq!(stats.phase1.corridor_positions, 2);
-    assert_eq!(stats.phase1.corridors_retained, 1);
+    assert_eq!(stats.search.corridor_positions, 2);
+    assert_eq!(stats.search.corridors_retained, 1);
 }
 
 struct SlowTimingLoader;
@@ -358,7 +359,7 @@ async fn expired_deadline_stops_before_loading_timing_snapshot() {
 }
 
 #[tokio::test]
-async fn phase2_chooses_actual_best_journey_within_retained_corridors() {
+async fn evaluation_chooses_actual_best_journey_within_retained_corridors() {
     let loader = Arc::new(RecordingTimingLoader {
         trips: HashMap::from([
             (
@@ -376,7 +377,7 @@ async fn phase2_chooses_actual_best_journey_within_retained_corridors() {
 
     let (candidates, stats) = planner.plan_with_stats(query(2)).await.unwrap();
 
-    assert_eq!(stats.phase1.corridors_retained, 1);
+    assert_eq!(stats.search.corridors_retained, 1);
     assert_eq!(candidates.len(), 2);
     assert_eq!(
         candidates[1].transit_pattern_sequence(),
@@ -408,7 +409,7 @@ async fn operational_metrics_count_completed_stages_once() {
     planning_query.destination = destination;
     let report = planner.plan(planning_query).await.unwrap();
     assert!(!report.journeys.is_empty());
-    let lookups = report.stats.phase2.transit_departure_lookups;
+    let lookups = report.stats.evaluation.transit_departure_lookups;
     assert!(lookups > 0);
     let rendered = handle.render();
     assert!(rendered.contains(&format!(
@@ -496,7 +497,7 @@ async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
     bike_query.destination = Coordinate::try_new(25.1, 121.5).unwrap();
     let (_, stats) = planner.plan_with_stats(bike_query).await.unwrap();
 
-    assert_eq!(stats.phase1.corridors_retained, 2);
+    assert_eq!(stats.search.corridors_retained, 2);
     let loaded = requested.lock().unwrap().clone();
     assert_eq!(loaded.len(), 8);
     for name in stop_names {
@@ -550,7 +551,7 @@ async fn walking_is_configured_independently_of_bike_share() {
     .with_allowed_transit_modes([]);
     let (journeys, stats) = planner.plan_with_stats(query).await.unwrap();
     assert_eq!(journeys.len(), 1);
-    assert_eq!(stats.phase1.states_expanded, 0);
+    assert_eq!(stats.search.states_expanded, 0);
     assert_eq!(timing.calls.load(Ordering::SeqCst), 0);
 }
 
@@ -596,5 +597,5 @@ async fn direct_walking_is_evaluated_once_without_transit() {
     let report = planner.plan(query).await.unwrap();
 
     assert_eq!(report.journeys.len(), 1);
-    assert_eq!(report.stats.phase2.states_expanded, 1);
+    assert_eq!(report.stats.evaluation.states_expanded, 1);
 }

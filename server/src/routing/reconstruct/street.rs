@@ -7,8 +7,8 @@ use crate::{
         journey::{Geometry, Leg, LegDetails, LegMode, Place, PlanningError},
     },
     routing::{
+        journey::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
         model::JourneyPlanningContext,
-        realized::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
     },
     street::{
         Coordinate, ManeuverKind, Metres, ProviderFailureClass, RouteQuery, RoutingConstraints,

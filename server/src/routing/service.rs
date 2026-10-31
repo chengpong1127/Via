@@ -19,12 +19,12 @@ use crate::{
 };
 
 use super::{
+    journey::RealizedJourney,
     model::{
         FailureSummary, JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline,
         PlanningQuery, RoutingError,
     },
-    multimodal::MultimodalPlanner,
-    realized::RealizedJourney,
+    planner::MultimodalPlanner,
     reconstruct::{
         JourneyCandidate, JourneyReconstructor, apply_ranked_journey, assign_result_local_ids,
         taipei_now,

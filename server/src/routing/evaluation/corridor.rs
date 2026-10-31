@@ -1,10 +1,9 @@
-use super::model::RoutingError;
-use super::{
-    model::PlanningQuery,
-    realized::{JourneyAnchorKind, WalkingMovementKind},
-    static_search::{StaticCorridor, StaticCorridorStep, StaticTransitLeg},
-};
 use crate::domain::ids::BoardingPointId;
+use crate::routing::{
+    corridors::{StaticCorridor, StaticCorridorStep, StaticTransitLeg},
+    journey::{JourneyAnchorKind, WalkingMovementKind},
+    model::{PlanningQuery, RoutingError},
+};
 use crate::{domain::transit_runtime::TransitRuntime, street::Coordinate};
 
 pub(crate) struct EvaluationCorridor {

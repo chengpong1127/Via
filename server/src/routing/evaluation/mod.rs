@@ -1,3 +1,5 @@
+pub(crate) mod bike;
+mod corridor;
 mod pareto;
 mod state;
 #[cfg(test)]
@@ -12,16 +14,16 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use time::{Duration, OffsetDateTime};
 use tracing::Instrument;
 
+pub(crate) use corridor::EvaluationCorridor;
+
 use super::{
-    bike::BikeMovementSource,
     cache::MatrixCache,
-    corridor::{CorridorAnchor, EvaluationCorridor, PlannedMovement},
-    model::{FailureSummary, PlanningQuery, RoutingError},
-    realized::{
+    corridors::{RetainedCorridorSet, StaticTransitLeg},
+    journey::{
         BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
         RealizedJourney, WalkingMovementKind,
     },
-    static_search::{RetainedCorridorSet, StaticTransitLeg},
+    model::{FailureSummary, PlanningQuery, RoutingError},
 };
 use crate::{
     domain::{
@@ -34,11 +36,13 @@ use crate::{
         StreetRoutingError, StreetTravelMode,
     },
 };
+use bike::BikeMovementSource;
+use corridor::{CorridorAnchor, PlannedMovement};
 use pareto::{EvaluatedCandidate, pareto_candidates, prune_states};
 use state::{EvaluationState, PathMetrics};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Phase2EvaluationStats {
+pub struct CorridorEvaluationStats {
     pub corridors_evaluated: usize,
     pub states_expanded: usize,
     pub successors_generated: usize,
@@ -53,7 +57,7 @@ pub struct Phase2EvaluationStats {
 
 pub(super) struct Evaluation {
     pub journeys: Vec<RealizedJourney>,
-    pub stats: Phase2EvaluationStats,
+    pub stats: CorridorEvaluationStats,
     pub failures: FailureSummary,
 }
 
@@ -90,7 +94,7 @@ impl CorridorEvaluator<'_> {
         let journeys = run.evaluate(corridors).await?;
         let counters = &run.counters;
         Ok(Evaluation {
-            stats: Phase2EvaluationStats {
+            stats: CorridorEvaluationStats {
                 corridors_evaluated: counters.corridors.load(Ordering::Relaxed),
                 states_expanded: counters.states.load(Ordering::Relaxed),
                 successors_generated: counters.successors.load(Ordering::Relaxed),
@@ -99,7 +103,7 @@ impl CorridorEvaluator<'_> {
                 matrix_requests: self.street.requests(),
                 matrix_cache_hits: self.street.hits(),
                 latency_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
-                ..Phase2EvaluationStats::default()
+                ..CorridorEvaluationStats::default()
             },
             failures: *run.failures.lock().unwrap_or_else(|e| e.into_inner()),
             journeys,
@@ -149,7 +153,7 @@ impl<'e, 'a> Run<'e, 'a> {
             .map(|index| async move {
                 let span = tracing::info_span!(
                     target: "via_profile",
-                    "Phase 2 Corridor",
+                    "Evaluate Corridor",
                     corridor_index = index
                 );
                 let candidates = self

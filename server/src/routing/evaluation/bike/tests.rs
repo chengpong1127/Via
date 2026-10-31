@@ -52,20 +52,21 @@ fn configured_endpoint_radius_controls_snapshot_and_candidate_selection() {
             .collect(),
     );
     let from = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::Origin,
+        kind: crate::routing::journey::JourneyAnchorKind::Origin,
         coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
     };
     let to = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::Destination,
+        kind: crate::routing::journey::JourneyAnchorKind::Destination,
         coordinate: Coordinate::try_new(25.005, 121.5).unwrap(),
     };
     for (radius, expected) in [(100, 0), (300, 2)] {
-        let config =
-            crate::config::ViaConfig::from_toml(&include_str!("../../../config/via.toml").replace(
+        let config = crate::config::ViaConfig::from_toml(
+            &include_str!("../../../../config/via.toml").replace(
                 "endpoint_radius_metres = 1500",
                 &format!("endpoint_radius_metres = {radius}"),
-            ))
-            .unwrap();
+            ),
+        )
+        .unwrap();
         let planner = BikeShareMovementPlanner::new(network.clone(), config.bike_policy());
         assert_eq!(planner.required_station_ids([&from, &to]).len(), expected);
         assert_eq!(
@@ -99,11 +100,11 @@ fn candidate_discovery_rejects_missing_or_same_station_pairs() {
     let planner =
         BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy());
     let from = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::Origin,
+        kind: crate::routing::journey::JourneyAnchorKind::Origin,
         coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
     };
     let near = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::Destination,
+        kind: crate::routing::journey::JourneyAnchorKind::Destination,
         coordinate: Coordinate::try_new(25.001, 121.5).unwrap(),
     };
     let far = CorridorAnchor {
@@ -129,7 +130,7 @@ fn candidate_discovery_rejects_missing_or_same_station_pairs() {
 
 #[test]
 fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
-    use super::super::realized::JourneyAnchorKind;
+    use crate::routing::journey::JourneyAnchorKind;
     let origin = Coordinate::try_new(25.0, 121.5).unwrap();
     let destination = Coordinate::try_new(25.1, 121.5).unwrap();
     let mut stations = (0..4)
@@ -394,11 +395,11 @@ async fn cached_bike_availability_is_checked_at_the_request_time() {
     );
 
     let from_endpoint = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::BoardingPoint { id: from.clone() },
+        kind: crate::routing::journey::JourneyAnchorKind::BoardingPoint { id: from.clone() },
         coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
     };
     let to_endpoint = CorridorAnchor {
-        kind: super::super::realized::JourneyAnchorKind::BoardingPoint { id: to.clone() },
+        kind: crate::routing::journey::JourneyAnchorKind::BoardingPoint { id: to.clone() },
         coordinate: Coordinate::try_new(25.001, 121.501).unwrap(),
     };
     let candidate = planner
@@ -426,7 +427,7 @@ async fn cached_bike_availability_is_checked_at_the_request_time() {
 }
 #[tokio::test]
 async fn generic_endpoints_share_bicycle_realization_and_cache() {
-    use super::super::realized::JourneyAnchorKind;
+    use crate::routing::journey::JourneyAnchorKind;
     use crate::street::{Metres, Seconds};
     let now = datetime!(2026-09-21 10:00 UTC);
     let origin = Coordinate::try_new(25.0, 121.5).unwrap();
@@ -575,7 +576,7 @@ async fn concurrent_candidate_discovery_caches_none_once() {
             let session = session.clone();
             let barrier = barrier.clone();
             tokio::spawn(async move {
-                let corridor = crate::routing::corridor::EvaluationCorridor::direct_walking(
+                let corridor = crate::routing::evaluation::EvaluationCorridor::direct_walking(
                     Coordinate::try_new(25.0, 121.5).unwrap(),
                     Coordinate::try_new(25.01, 121.5).unwrap(),
                 );

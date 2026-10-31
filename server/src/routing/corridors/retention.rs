@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::routing::topology::PatternPosition;
+use super::topology::PatternPosition;
 
 use crate::domain::{transit::TransitMode, transit_runtime::TransitRuntime};
 
@@ -138,7 +138,7 @@ mod tests {
         ids::TransitPatternId,
         transit::{TransitNetwork, TransitPattern},
     };
-    use crate::routing::static_search::types::{StaticCorridorStep, StaticCostSource};
+    use crate::routing::corridors::types::{StaticCorridorStep, StaticCostSource};
 
     #[test]
     fn finalized_equivalent_leg_storage_preserves_lookup_and_timing() {

@@ -10,16 +10,16 @@ use crate::domain::{
     transit_runtime::TransitRuntime,
 };
 
-use crate::routing::{
-    model::PlanningQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
-};
+use crate::routing::model::PlanningQuery;
 
 use super::{
-    pattern_index::StaticPhase1PatternIndex,
+    pattern_index::CorridorPatternIndex,
     retention::RetainedCorridorSet,
+    topology::TransitTopologyIndex,
+    transfers::TransferShortcutIndex,
     types::{
-        EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor, StaticCorridorStep,
-        StaticCostSource, StaticSearchStats, StaticTransitLeg, equivalent_leg_key,
+        CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
+        StaticCorridorStep, StaticCostSource, StaticTransitLeg, equivalent_leg_key,
         equivalent_steps,
     },
 };
@@ -71,7 +71,7 @@ struct Search<'a> {
     target_seconds: u32,
     metro_transfer_penalty_seconds: u32,
     bus_transfer_penalty_seconds: u32,
-    stats: StaticSearchStats,
+    stats: CorridorSearchStats,
 }
 
 type RoundLabels = HashMap<BoardingPointId, Vec<Label>>;
@@ -88,10 +88,10 @@ pub fn generate(
     topology: &TransitTopologyIndex,
     transfers: &TransferShortcutIndex,
     query: &PlanningQuery,
-) -> (RetainedCorridorSet, StaticSearchStats) {
+) -> (RetainedCorridorSet, CorridorSearchStats) {
     let started = Instant::now();
-    let mut stats = StaticSearchStats::default();
-    let patterns = StaticPhase1PatternIndex::new(
+    let mut stats = CorridorSearchStats::default();
+    let patterns = CorridorPatternIndex::new(
         network,
         &query.allowed_transit_modes,
         &mut stats,
@@ -229,7 +229,7 @@ pub fn generate(
 impl Search<'_> {
     fn scan_route(
         &mut self,
-        patterns: &StaticPhase1PatternIndex,
+        patterns: &CorridorPatternIndex,
         group_index: usize,
         first_index: usize,
         current: &RoundLabels,
@@ -486,7 +486,7 @@ fn select(
     network: &TransitRuntime,
     candidates: Vec<Candidate>,
     limit: usize,
-    stats: &mut StaticSearchStats,
+    stats: &mut CorridorSearchStats,
 ) -> Vec<StaticCorridor> {
     let mut unique = HashMap::<EquivalentCorridorSignature, Candidate>::new();
     for candidate in candidates {
@@ -548,7 +548,7 @@ fn select(
 fn equivalent_legs_for(
     network: &TransitRuntime,
     topology: &TransitTopologyIndex,
-    patterns: &StaticPhase1PatternIndex,
+    patterns: &CorridorPatternIndex,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();

@@ -21,9 +21,8 @@ use crate::{
     },
     routing::{
         AccessPoint, EgressPoint,
-        static_search::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
-        topology::TransitTopologyIndex,
-        transfers::TransferShortcutIndex,
+        corridors::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
+        corridors::{TransferShortcutIndex, TransitTopologyIndex},
     },
 };
 
@@ -144,7 +143,7 @@ fn static_leg(pattern_id: &str, board: &str, alight: &str) -> StaticCorridorStep
         board_index: 0,
         alight_stop_id: BoardingPointId::new(alight),
         alight_index: 1,
-        cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+        cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
     })
 }
 
@@ -192,7 +191,7 @@ impl TestBikeSource {
         self.calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn record_stats(&self, stats: &mut Phase2EvaluationStats) {
+    fn record_stats(&self, stats: &mut CorridorEvaluationStats) {
         let realizations = self.realizations.load(std::sync::atomic::Ordering::SeqCst);
         stats.bike_requests = self.realized.lock().unwrap().len();
         stats.bike_cache_hits = realizations - stats.bike_requests;
@@ -305,7 +304,7 @@ fn run_test_evaluation(
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
     bike: Option<&dyn BikeMovementSource>,
-) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+) -> Result<(Vec<RealizedJourney>, CorridorEvaluationStats), RoutingError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
@@ -338,7 +337,7 @@ fn evaluate_with_stats(
     retained: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
-) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+) -> Result<(Vec<RealizedJourney>, CorridorEvaluationStats), RoutingError> {
     run_test_evaluation(network, retained, snapshot, query, None)
 }
 
@@ -348,7 +347,7 @@ fn evaluate_with_test_bike_routes(
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
     routes: &TestBikeRoutes,
-) -> Result<(Vec<RealizedJourney>, Phase2EvaluationStats), RoutingError> {
+) -> Result<(Vec<RealizedJourney>, CorridorEvaluationStats), RoutingError> {
     let bike = TestBikeSource::new(routes.clone());
     let (journeys, mut stats) =
         run_test_evaluation(network, retained, snapshot, query, Some(&bike))?;

@@ -1,33 +1,27 @@
 mod access;
-mod bike;
 mod cache;
-mod corridor;
-mod evaluator;
+mod corridors;
+mod evaluation;
+mod journey;
 mod model;
-mod multimodal;
-mod realized;
+mod planner;
 mod reconstruct;
 mod service;
-mod static_search;
-mod topology;
-mod transfers;
 
-pub use bike::BikeMovementPolicy;
-pub use evaluator::Phase2EvaluationStats;
-pub use model::{
-    AccessPoint, EgressPoint, JourneyPlanningLimits, PlannerLimits, PlanningDeadline,
-    PlanningQuery, RoutingError,
+pub use corridors::{
+    CorridorSearchStats, PatternPosition, RetainedCorridorSet, StaticCorridor, StaticCorridorStep,
+    StaticCostSource, StaticTransitLeg, TransferShortcut, TransferShortcutIndex,
+    TransitTopologyIndex, generate as generate_static_corridors,
 };
-pub use multimodal::{MultimodalPlanner, MultimodalPlannerStats};
-pub use realized::{
+pub use evaluation::{CorridorEvaluationStats, bike::BikeMovementPolicy};
+pub use journey::{
     BikeRide, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
     JourneyMovementKind, JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJourneyError,
     WalkingMovementKind,
 };
-pub use service::RoutingService;
-pub use static_search::{
-    RetainedCorridorSet, StaticCorridor, StaticCorridorStep, StaticCostSource, StaticSearchStats,
-    StaticTransitLeg, generate as generate_static_corridors,
+pub use model::{
+    AccessPoint, EgressPoint, JourneyPlanningLimits, PlannerLimits, PlanningDeadline,
+    PlanningQuery, RoutingError,
 };
-pub use topology::{PatternPosition, TransitTopologyIndex};
-pub use transfers::{TransferShortcut, TransferShortcutIndex};
+pub use planner::{MultimodalPlanner, MultimodalPlannerStats};
+pub use service::RoutingService;

@@ -14,8 +14,7 @@ use crate::{
         transit_runtime::TransitRuntime,
     },
     routing::{
-        AccessPoint, EgressPoint, model::PlanningQuery, topology::TransitTopologyIndex,
-        transfers::TransferShortcutIndex,
+        AccessPoint, EgressPoint, TransferShortcutIndex, TransitTopologyIndex, model::PlanningQuery,
     },
 };
 

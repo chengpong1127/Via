@@ -48,6 +48,24 @@ fn source_tree_with_test_files(path: &str, include_test_files: bool) -> String {
     )
 }
 
+fn module_files(path: &str) -> String {
+    let mut paths = fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path))
+        .unwrap_or_else(|error| panic!("failed to read {path}: {error}"))
+        .map(|entry| entry.expect("source entry").path())
+        .filter(|path| {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            path.extension().is_some_and(|extension| extension == "rs")
+                && name != "tests.rs"
+                && !name.ends_with("_tests.rs")
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| production_source(&fs::read_to_string(path).expect("source file")))
+        .collect()
+}
+
 fn production_source(text: &str) -> String {
     let mut output = String::new();
     let mut test_indent = None;
@@ -110,7 +128,7 @@ fn reconstruction_does_not_depend_on_the_routing_service() {
 }
 
 #[test]
-fn routing_does_not_access_multimodal_planner_topology() {
+fn routing_service_does_not_access_planner_topology() {
     let routing = source("src/routing/service.rs");
     for forbidden in ["TransitTopologyIndex", ".topology()", "AccessNetwork"] {
         assert!(
@@ -121,8 +139,8 @@ fn routing_does_not_access_multimodal_planner_topology() {
 }
 
 #[test]
-fn phase1_does_not_depend_on_realtime_or_bikeshare() {
-    let static_search = source_tree("src/routing/static_search");
+fn corridor_search_does_not_depend_on_realtime_or_bikeshare() {
+    let corridors = source_tree("src/routing/corridors");
     for forbidden in [
         "DepartureQuery",
         "EffectiveTrip",
@@ -139,15 +157,15 @@ fn phase1_does_not_depend_on_realtime_or_bikeshare() {
         "reqwest",
     ] {
         assert!(
-            !static_search.contains(forbidden),
-            "Phase 1 static search contains realtime or BikeShare detail: {forbidden}"
+            !corridors.contains(forbidden),
+            "corridor search contains realtime or BikeShare detail: {forbidden}"
         );
     }
 }
 
 #[test]
-fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
-    let evaluator = source_tree_with_test_files("src/routing/evaluator", false);
+fn corridor_evaluation_uses_snapshots_and_surface_capabilities() {
+    let evaluation = module_files("src/routing/evaluation");
     for forbidden in [
         "TDX",
         "TdxClient",
@@ -159,12 +177,12 @@ fn phase2_evaluator_uses_snapshots_and_surface_capabilities() {
         "usable_pickups",
         "usable_dropoffs",
         "select_station",
-        "static_search::generate",
+        "corridors::generate",
         "best_baseline_arrival",
     ] {
         assert!(
-            !evaluator.contains(forbidden),
-            "Phase 2 evaluator bypasses its request snapshot or fixed-corridor boundary: {forbidden}"
+            !evaluation.contains(forbidden),
+            "corridor evaluation bypasses its request snapshot or fixed-corridor boundary: {forbidden}"
         );
     }
 }
@@ -192,7 +210,7 @@ fn tdx_client_remains_transport_agnostic() {
 
 #[test]
 fn realized_journey_is_the_only_realized_path_representation() {
-    let realized = source_tree("src/routing/realized");
+    let realized = source_tree("src/routing/journey");
     assert!(realized.contains("pub struct RealizedJourney {"));
     for legacy_declaration in [
         "pub struct JourneyVariant {",

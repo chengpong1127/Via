@@ -8,7 +8,7 @@ use crate::domain::{
 
 use crate::routing::model::PlanningDeadline;
 
-use super::types::StaticSearchStats;
+use super::types::CorridorSearchStats;
 
 #[derive(Clone, Debug)]
 pub(super) struct PatternRideCache {
@@ -19,16 +19,16 @@ pub(super) struct PatternRideCache {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct StaticPhase1PatternIndex {
+pub(super) struct CorridorPatternIndex {
     pub(super) groups: Vec<PatternRideCache>,
     pub(super) group_index_by_pattern: HashMap<TransitPatternId, usize>,
 }
 
-impl StaticPhase1PatternIndex {
+impl CorridorPatternIndex {
     pub(super) fn new(
         network: &TransitRuntime,
         allowed_modes: &[TransitMode],
-        stats: &mut StaticSearchStats,
+        stats: &mut CorridorSearchStats,
         deadline: PlanningDeadline,
     ) -> Self {
         let mut index = Self::default();

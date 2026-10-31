@@ -33,7 +33,7 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
             access_stop_id: BoardingPointId::new(&stop_names[0]),
             egress_stop_id: BoardingPointId::new(stop_names.last().unwrap()),
             theoretical_duration_seconds: 12 * 60,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: stop_names
                 .windows(2)
                 .map(|pair| StaticCorridorStep::SurfaceTransfer {

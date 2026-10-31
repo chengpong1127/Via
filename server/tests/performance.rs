@@ -114,7 +114,7 @@ async fn deterministic_routing_benchmark() {
         let mut static_samples = Vec::with_capacity(ITERATIONS);
         let mut planner_samples = Vec::with_capacity(ITERATIONS);
         let mut expected = None;
-        let mut last_phase2 = None;
+        let mut last_evaluation = None;
         for iteration in 0..WARMUP + ITERATIONS {
             let started = Instant::now();
             let (corridors, static_stats) =
@@ -126,12 +126,12 @@ async fn deterministic_routing_benchmark() {
                 .await
                 .unwrap();
             let planner_ns = started.elapsed().as_nanos();
-            last_phase2 = Some(planner_stats.phase2);
+            last_evaluation = Some(planner_stats.evaluation);
             let counters = (
                 corridors.retained().len(),
                 static_stats.states_expanded,
                 realized_journeys.len(),
-                planner_stats.phase2.transit_departure_lookups,
+                planner_stats.evaluation.transit_departure_lookups,
             );
             if let Some(expected) = expected {
                 assert_eq!(counters, expected);
@@ -154,14 +154,14 @@ async fn deterministic_routing_benchmark() {
             realized_journeys > 0,
             "benchmark must realize journeys: {label}"
         );
-        let last_phase2 = last_phase2.unwrap();
+        let last_evaluation = last_evaluation.unwrap();
         println!(
             "{label}: p2_states_expanded={} matrix_requests={} matrix_cache_hits={} bike_requests={} bike_cache_hits={}",
-            last_phase2.states_expanded,
-            last_phase2.matrix_requests,
-            last_phase2.matrix_cache_hits,
-            last_phase2.bike_requests,
-            last_phase2.bike_cache_hits
+            last_evaluation.states_expanded,
+            last_evaluation.matrix_requests,
+            last_evaluation.matrix_cache_hits,
+            last_evaluation.bike_requests,
+            last_evaluation.bike_cache_hits
         );
         println!(
             "{label}: iterations={ITERATIONS} static_median_us={:.3} planner_median_us={:.3} corridors={corridors} expansions={expansions} realized_journeys={realized_journeys} departure_lookups={lookups}",

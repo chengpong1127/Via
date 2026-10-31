@@ -24,11 +24,10 @@ use crate::{
     },
 };
 
-use super::cache::RequestCache;
-
-use super::{
-    corridor::{CorridorAnchor, CorridorAnchorKey},
-    realized::{BikeRide, BikeShareMovement},
+use super::corridor::{CorridorAnchor, CorridorAnchorKey};
+use crate::routing::{
+    cache::RequestCache,
+    journey::{BikeRide, BikeShareMovement},
 };
 
 #[derive(Clone, Debug)]

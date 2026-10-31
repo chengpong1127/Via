@@ -4,9 +4,9 @@ use crate::{
     street::{Coordinate, MatrixCell},
 };
 
-use super::{
+use crate::routing::{
+    corridors::TransitTopologyIndex,
     model::{AccessPoint, EgressPoint, JourneyPlanningLimits},
-    topology::TransitTopologyIndex,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,7 +184,7 @@ pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
 #[cfg(test)]
 mod tests {
     use super::{JourneyPlanningLimits, nearby_stops, stop_coverage_dominates};
-    use crate::routing::topology::TransitTopologyIndex;
+    use crate::routing::corridors::TransitTopologyIndex;
     use crate::{
         domain::location::GeoCoordinate,
         domain::{

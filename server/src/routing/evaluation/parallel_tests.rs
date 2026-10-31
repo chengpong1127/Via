@@ -1,5 +1,5 @@
 use super::*;
-use crate::{routing::bike::BikeShareSession, street::*};
+use crate::{routing::evaluation::bike::BikeShareSession, street::*};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct DelayedMatrix {
@@ -92,7 +92,7 @@ struct Measured {
     calls: usize,
     peak: usize,
     journeys: Vec<String>,
-    stats: Phase2EvaluationStats,
+    stats: CorridorEvaluationStats,
     bicycle_calls: usize,
 }
 
@@ -293,7 +293,7 @@ fn real_bike_session(street: Arc<MatrixCache>, now: time::OffsetDateTime) -> Bik
         BikeAvailabilitySnapshot, BikeShareNetwork, BikeStation, BikeStationAccess,
         BikeStationAvailability,
     };
-    use crate::routing::bike::BikeShareMovementPlanner;
+    use crate::routing::evaluation::bike::BikeShareMovementPlanner;
     let pickup = BikeStationId::new("pickup");
     let dropoff = BikeStationId::new("dropoff");
     let stations = vec![

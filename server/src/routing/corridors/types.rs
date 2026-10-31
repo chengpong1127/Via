@@ -158,7 +158,7 @@ pub(super) fn equivalent_leg_key(
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct StaticSearchStats {
+pub struct CorridorSearchStats {
     pub states_expanded: usize,
     pub unique_corridors_found: usize,
     pub corridors_retained: usize,

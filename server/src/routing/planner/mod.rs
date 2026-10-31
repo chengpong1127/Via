@@ -1,4 +1,3 @@
-mod discovery;
 #[cfg(test)]
 mod tests;
 
@@ -10,40 +9,37 @@ use tracing::Instrument;
 use crate::{
     domain::{
         bikeshare::{BikeAvailabilitySnapshot, BikeAvailabilitySource, BikeShareNetwork},
-        ids::BoardingPointId,
         journey::PlanningError,
-        location::GeoCoordinate,
-        transit::TransitMode,
         transit_runtime::TransitRuntime,
         transit_timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
     },
-    street::{
-        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+    street::StreetRouter,
 };
 
 use super::{
-    access,
-    bike::{BikeMovementPolicy, BikeMovementSource, BikeShareMovementPlanner, BikeShareSession},
+    access::AccessDiscovery,
     cache::MatrixCache,
-    corridor::EvaluationCorridor,
-    evaluator::{CorridorEvaluator, Phase2EvaluationStats},
-    model::{
-        AccessPoint, EgressPoint, FailureSummary, JourneyPlanningContext, JourneyPlanningLimits,
-        PlanningQuery, RoutingError,
+    corridors::{
+        self, CorridorSearchStats, RetainedCorridorSet, TransferShortcutIndex, TransitTopologyIndex,
     },
-    realized::RealizedJourney,
+    evaluation::{
+        CorridorEvaluationStats, CorridorEvaluator, EvaluationCorridor,
+        bike::{
+            BikeMovementPolicy, BikeMovementSource, BikeShareMovementPlanner, BikeShareSession,
+        },
+    },
+    journey::RealizedJourney,
+    model::{
+        FailureSummary, JourneyPlanningContext, JourneyPlanningLimits, PlanningQuery, RoutingError,
+    },
     reconstruct::to_street_coordinate,
-    static_search::{self, RetainedCorridorSet, StaticSearchStats},
-    topology::TransitTopologyIndex,
-    transfers::TransferShortcutIndex,
 };
 
 #[derive(Clone)]
 pub struct MultimodalPlanner {
     network: Arc<TransitRuntime>,
     topology: Arc<TransitTopologyIndex>,
+    access: AccessDiscovery,
     transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
     bike: BikeShareMovementPlanner,
@@ -53,8 +49,8 @@ pub struct MultimodalPlanner {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MultimodalPlannerStats {
-    pub phase1: StaticSearchStats,
-    pub phase2: Phase2EvaluationStats,
+    pub search: CorridorSearchStats,
+    pub evaluation: CorridorEvaluationStats,
 }
 
 pub(crate) struct PlannedJourneys {
@@ -77,8 +73,10 @@ impl MultimodalPlanner {
         bike_availability: Arc<dyn BikeAvailabilitySource>,
         bike: BikeMovementPolicy,
     ) -> Self {
+        let topology = Arc::new(TransitTopologyIndex::new(network.network()));
         Self {
-            topology: Arc::new(TransitTopologyIndex::new(network.network())),
+            access: AccessDiscovery::new(network.clone(), topology.clone(), street.clone()),
+            topology,
             transfers: Arc::new(TransferShortcutIndex::from_network(network.network())),
             network,
             timing,
@@ -88,6 +86,41 @@ impl MultimodalPlanner {
         }
     }
 
+    pub(crate) async fn discover_query(
+        &self,
+        context: &JourneyPlanningContext<'_>,
+        limits: &JourneyPlanningLimits,
+    ) -> Result<(PlanningQuery, FailureSummary), PlanningError> {
+        let request = context.request;
+        let modes = request.transit_modes.clone();
+        let origin =
+            to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?;
+        let destination = to_street_coordinate(request.destination.coordinate)
+            .map_err(|_| PlanningError::Internal)?;
+        let mut failures = FailureSummary::default();
+        let (access, egress) = if modes.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            self.access
+                .discover(context, limits, &modes, &mut failures)
+                .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
+                .await?
+        };
+        let mut query = PlanningQuery::new(
+            origin,
+            destination,
+            context.deadline,
+            access,
+            egress,
+            context.search_start,
+            limits.planner,
+        )
+        .with_allowed_transit_modes(modes)
+        .with_bike_share(request.bike_share);
+        query.latest_arrival = context.latest_arrival;
+        Ok((query, failures))
+    }
+
     pub async fn plan_with_stats(
         &self,
         query: PlanningQuery,
@@ -95,7 +128,7 @@ impl MultimodalPlanner {
         let limit = query.limits.max_candidates.max(1);
         let mut planned = self.plan(query).await?;
         planned.journeys.truncate(limit);
-        planned.stats.phase2.final_candidates = planned.journeys.len();
+        planned.stats.evaluation.final_candidates = planned.journeys.len();
         Ok((planned.journeys, planned.stats))
     }
 
@@ -104,11 +137,14 @@ impl MultimodalPlanner {
             return Err(RoutingError::DeadlineExceeded);
         }
         query.validate_access_egress()?;
-        let (retained, phase1) = if query.allowed_transit_modes.is_empty()
+        let (retained, search) = if query.allowed_transit_modes.is_empty()
             || query.origin_access.is_empty()
             || query.destination_egress.is_empty()
         {
-            (RetainedCorridorSet::default(), StaticSearchStats::default())
+            (
+                RetainedCorridorSet::default(),
+                CorridorSearchStats::default(),
+            )
         } else {
             self.search_static_corridors(&query)?
         };
@@ -125,7 +161,7 @@ impl MultimodalPlanner {
         }
         let (snapshots, mut failures) = query
             .deadline
-            .run(self.load_snapshots(&query, &retained, &phase1, &corridors))
+            .run(self.load_snapshots(&query, &retained, &search, &corridors))
             .await??;
         let street = Arc::new(MatrixCache::new(self.street.clone()));
         let bike = snapshots.bike.map(|snapshot| {
@@ -147,33 +183,36 @@ impl MultimodalPlanner {
         .evaluate(&corridors)
         .instrument(tracing::info_span!(
             target: "via_profile",
-            "Phase 2",
+            "Corridor Evaluation",
             corridor_count = corridors.len()
         ))
         .await?;
-        let mut phase2 = evaluation.stats;
+        let mut stats = evaluation.stats;
         if let Some(bike) = &bike {
-            phase2.bike_requests = bike.requests();
-            phase2.bike_cache_hits = bike.hits();
+            stats.bike_requests = bike.requests();
+            stats.bike_cache_hits = bike.hits();
         }
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
-            .increment(phase2.transit_departure_lookups as u64);
-        tracing::debug!(target: "via_server::routing", stats = ?phase2, "Phase 2 corridor evaluation");
+            .increment(stats.transit_departure_lookups as u64);
+        tracing::debug!(target: "via_server::routing", stats = ?stats, "corridor evaluation");
         failures.merge(evaluation.failures);
         Ok(PlannedJourneys {
             journeys: evaluation.journeys,
-            stats: MultimodalPlannerStats { phase1, phase2 },
+            stats: MultimodalPlannerStats {
+                search,
+                evaluation: stats,
+            },
             failures,
         })
     }
 
-    #[tracing::instrument(target = "via_profile", name = "Phase 1", skip_all, fields(states_expanded = tracing::field::Empty, corridor_count = tracing::field::Empty))]
+    #[tracing::instrument(target = "via_profile", name = "Corridor Search", skip_all, fields(states_expanded = tracing::field::Empty, corridor_count = tracing::field::Empty))]
     fn search_static_corridors(
         &self,
         query: &PlanningQuery,
-    ) -> Result<(RetainedCorridorSet, StaticSearchStats), RoutingError> {
+    ) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
         let (retained, stats) =
-            static_search::generate(&self.network, &self.topology, &self.transfers, query);
+            corridors::generate(&self.network, &self.topology, &self.transfers, query);
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
@@ -213,7 +252,7 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
         retained: &RetainedCorridorSet,
-        phase1: &StaticSearchStats,
+        search: &CorridorSearchStats,
         corridors: &[EvaluationCorridor],
     ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
         let window_end = query.departure_time
@@ -294,7 +333,7 @@ impl MultimodalPlanner {
             target: "via_server::routing",
             positions_requested,
             snapshot_summary = ?timing.trace_summary(),
-            relevant_bus_stops = phase1.corridor_bus_stops,
+            relevant_bus_stops = search.corridor_bus_stops,
             bike_share_enabled = query.allow_bike_share,
             bike_station_count = bike_station_ids.len(),
             latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,

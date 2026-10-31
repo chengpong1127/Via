@@ -23,8 +23,8 @@ use crate::{
 
 use super::{
     cache::RouteCache,
+    journey::RealizedJourney,
     model::{FailureSummary, JourneyPlanningContext},
-    realized::RealizedJourney,
 };
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
@@ -90,7 +90,7 @@ impl JourneyReconstructor {
             target: "via_server::routing",
             reconstruction_attempts = journeys.len(),
             reconstructed_candidates = candidates.len(),
-            "Phase 2 candidates reconstructed"
+            "evaluated candidates reconstructed"
         );
         (candidates, failures)
     }

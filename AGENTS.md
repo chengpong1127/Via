@@ -12,9 +12,12 @@ Do not add comments to code in `src` directories.
 
 Consult [CONTEXT.md](CONTEXT.md) for the current architecture. Keep the dependency
 direction `domain ← routing ← app/api`, with providers implementing domain-facing
-interfaces. Do not reintroduce `planner`, `normalization`, or `routing/engine`
-modules, a generic routing-algorithm boundary, Trip-Based routing, async transfer
-resolvers, or a `JourneyPlanningService` wrapper.
+interfaces. Do not reintroduce a top-level `planner` module, `normalization`, or
+`routing/engine` modules, a generic routing-algorithm boundary, Trip-Based routing,
+async transfer resolvers, or a `JourneyPlanningService` wrapper. Keep routing
+modules organized by pipeline step (`access`, `corridors`, `planner`, `evaluation`,
+`journey`, `reconstruct`); `routing/planner` only coordinates the steps and loads
+request snapshots.
 
 `MultimodalPlanner` owns static round-based (RAPTOR-style) transit corridor
 discovery and fixed-corridor evaluation. Each round adds one ride; keep the best

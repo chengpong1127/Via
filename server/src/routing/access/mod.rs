@@ -1,7 +1,48 @@
-use super::*;
+mod nearby;
 
-impl MultimodalPlanner {
-    pub(crate) async fn discover_access_points(
+use std::{sync::Arc, time::Instant};
+
+use time::{Duration, OffsetDateTime};
+
+use crate::{
+    domain::{
+        ids::BoardingPointId, journey::PlanningError, location::GeoCoordinate,
+        transit::TransitMode, transit_runtime::TransitRuntime,
+    },
+    street::{
+        Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
+    },
+};
+
+use super::{
+    corridors::TransitTopologyIndex,
+    model::{
+        AccessPoint, EgressPoint, FailureSummary, JourneyPlanningContext, JourneyPlanningLimits,
+    },
+};
+
+#[derive(Clone)]
+pub(crate) struct AccessDiscovery {
+    network: Arc<TransitRuntime>,
+    topology: Arc<TransitTopologyIndex>,
+    street: Arc<dyn StreetRouter>,
+}
+
+impl AccessDiscovery {
+    pub(crate) fn new(
+        network: Arc<TransitRuntime>,
+        topology: Arc<TransitTopologyIndex>,
+        street: Arc<dyn StreetRouter>,
+    ) -> Self {
+        Self {
+            network,
+            topology,
+            street,
+        }
+    }
+
+    async fn discover_access_points(
         &self,
         origin: GeoCoordinate,
         departure_time: OffsetDateTime,
@@ -31,14 +72,14 @@ impl MultimodalPlanner {
                 )
             })
             .collect();
-        Ok(access::prune_access_coverage(
+        Ok(nearby::prune_access_coverage(
             &self.topology,
             points,
             limits.max_transit_access_stops,
         ))
     }
 
-    pub(crate) async fn discover_egress_points(
+    async fn discover_egress_points(
         &self,
         destination: GeoCoordinate,
         constraints: RoutingConstraints,
@@ -61,7 +102,7 @@ impl MultimodalPlanner {
                 EgressPoint::new(stop_id, metric.duration_seconds, metric.distance_metres)
             })
             .collect();
-        Ok(access::prune_egress_coverage(
+        Ok(nearby::prune_egress_coverage(
             &self.topology,
             points,
             limits.max_transit_egress_stops,
@@ -76,9 +117,9 @@ impl MultimodalPlanner {
         allowed_transit_modes: &[TransitMode],
         stop_limit: usize,
         limits: &JourneyPlanningLimits,
-    ) -> Result<Vec<(BoardingPointId, access::StreetMetric)>, StreetRoutingError> {
+    ) -> Result<Vec<(BoardingPointId, nearby::StreetMetric)>, StreetRoutingError> {
         let endpoint = Coordinate::try_new(endpoint.latitude, endpoint.longitude)?;
-        let stops = access::nearby_stops(
+        let stops = nearby::nearby_stops(
             &self.network,
             &self.topology,
             endpoint,
@@ -125,7 +166,7 @@ impl MultimodalPlanner {
             .into_iter()
             .zip(&stops)
             .filter_map(|(cell, (stop_id, _))| {
-                let metric = access::street_metric(cell?)?;
+                let metric = nearby::street_metric(cell?)?;
                 (metric.duration_seconds <= limits.max_walking_seconds)
                     .then(|| (stop_id.clone(), metric))
             })
@@ -139,41 +180,7 @@ impl MultimodalPlanner {
         Ok(walks)
     }
 
-    pub(crate) async fn discover_query(
-        &self,
-        context: &JourneyPlanningContext<'_>,
-        limits: &JourneyPlanningLimits,
-    ) -> Result<(PlanningQuery, FailureSummary), PlanningError> {
-        let request = context.request;
-        let modes = request.transit_modes.clone();
-        let origin =
-            to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?;
-        let destination = to_street_coordinate(request.destination.coordinate)
-            .map_err(|_| PlanningError::Internal)?;
-        let mut failures = FailureSummary::default();
-        let (access, egress) = if modes.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            self.discover_transit_endpoints(context, limits, &modes, &mut failures)
-                .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
-                .await?
-        };
-        let mut query = PlanningQuery::new(
-            origin,
-            destination,
-            context.deadline,
-            access,
-            egress,
-            context.search_start,
-            limits.planner,
-        )
-        .with_allowed_transit_modes(modes)
-        .with_bike_share(request.bike_share);
-        query.latest_arrival = context.latest_arrival;
-        Ok((query, failures))
-    }
-
-    async fn discover_transit_endpoints(
+    pub(crate) async fn discover(
         &self,
         context: &JourneyPlanningContext<'_>,
         limits: &JourneyPlanningLimits,
@@ -217,7 +224,7 @@ impl MultimodalPlanner {
         let describe = |stop_id: &BoardingPointId, walking_seconds: u32| {
             (
                 stop_id.as_str().to_owned(),
-                access::modes_at_stop(&self.network, &self.topology, stop_id),
+                nearby::modes_at_stop(&self.network, &self.topology, stop_id),
                 walking_seconds,
             )
         };

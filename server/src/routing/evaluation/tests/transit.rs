@@ -182,12 +182,10 @@ fn phase2_multi_leg_route_keeps_explicit_surface_transfer() {
             .movements()
             .get(2)
             .map(|movement| &movement.kind),
-        Some(
-            super::super::super::realized::JourneyMovementKind::Walking {
-                kind: super::super::super::realized::WalkingMovementKind::Transfer,
-                ..
-            }
-        )
+        Some(super::super::super::journey::JourneyMovementKind::Walking {
+            kind: super::super::super::journey::WalkingMovementKind::Transfer,
+            ..
+        })
     ));
 }
 
@@ -276,7 +274,7 @@ fn phase2_later_departure_can_have_earlier_arrival() {
             .movements()
             .get(1)
             .map(|movement| &movement.kind),
-        Some(super::super::super::realized::JourneyMovementKind::Transit { .. })
+        Some(super::super::super::journey::JourneyMovementKind::Transit { .. })
     ));
 }
 
@@ -470,7 +468,7 @@ fn phase2_never_combines_different_retained_corridors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 1,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("a-bus-prefix", "origin", "middle"),
                 static_leg("b-bus-suffix", "middle", "destination"),
@@ -480,7 +478,7 @@ fn phase2_never_combines_different_retained_corridors() {
             access_stop_id: BoardingPointId::new("origin"),
             egress_stop_id: BoardingPointId::new("destination"),
             theoretical_duration_seconds: 2,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![
                 static_leg("c-metro-prefix", "origin", "middle"),
                 static_leg("d-metro-suffix", "middle", "destination"),

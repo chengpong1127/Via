@@ -24,7 +24,7 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
             access_stop_id: BoardingPointId::new("a"),
             egress_stop_id: BoardingPointId::new("b"),
             theoretical_duration_seconds: 60,
-            cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
             steps: vec![StaticCorridorStep::SurfaceTransfer {
                 from: BoardingPointId::new("a"),
                 to: BoardingPointId::new("b"),
@@ -113,14 +113,14 @@ fn pareto_keeps_a_later_route_with_less_walking() {
                 access_stop_id: BoardingPointId::new("a"),
                 egress_stop_id: BoardingPointId::new("destination"),
                 theoretical_duration_seconds: 300,
-                cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+                cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
                 steps: vec![static_leg("walky", "a", "destination")],
             },
             StaticCorridor {
                 access_stop_id: BoardingPointId::new("x"),
                 egress_stop_id: BoardingPointId::new("destination"),
                 theoretical_duration_seconds: 480,
-                cost_source: crate::routing::static_search::StaticCostSource::OptimisticEstimate,
+                cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
                 steps: vec![static_leg("lowwalk", "x", "destination")],
             },
         ],
@@ -189,7 +189,7 @@ fn phase2_keeps_reliable_candidate_when_fallback_arrives_earlier() {
         candidate.movements().iter().any(|movement| {
             matches!(
                 &movement.kind,
-                super::super::super::realized::JourneyMovementKind::Transit { trip, .. }
+                super::super::super::journey::JourneyMovementKind::Transit { trip, .. }
                     if trip.timing_reliability == TimingReliability::Reliable
             )
         })
@@ -227,7 +227,7 @@ fn phase2_state_pruning_keeps_reliability_tradeoffs_for_later_legs() {
         candidate.movements().iter().any(|movement| {
             matches!(
                 &movement.kind,
-                super::super::super::realized::JourneyMovementKind::Transit { trip, .. }
+                super::super::super::journey::JourneyMovementKind::Transit { trip, .. }
                     if trip.id == EffectiveTripId::new("z-reliable")
             )
         })
