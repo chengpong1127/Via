@@ -12,6 +12,7 @@ use crate::{
     routing::{
         JourneyMovement, JourneyMovementKind, RealizedJourney, model::JourneyPlanningContext,
     },
+    street::StreetPath,
 };
 
 use super::{JourneyReconstructor, transit::PreviousTransit};
@@ -30,10 +31,10 @@ pub(super) struct JourneyAssembly {
     pub(super) bike_reuse_available_at: Option<OffsetDateTime>,
     pub(super) timing_bases: Vec<TimingBasis>,
     pub(super) timing_reliability: TimingReliability,
+    pub(super) walking_tail: Option<(usize, StreetPath)>,
 }
 
 pub(super) struct PendingTransfer {
-    pub(super) from_leg_id: String,
     pub(super) from_arrival: OffsetDateTime,
     pub(super) duration_seconds: u32,
     pub(super) from_mode: Option<TransitMode>,
@@ -83,6 +84,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
                 bike_reuse_available_at: None,
                 timing_bases: Vec::new(),
                 timing_reliability: TimingReliability::Reliable,
+                walking_tail: None,
             },
             pending_transfer: None,
             previous_transit: None,

@@ -48,7 +48,6 @@ impl ReconstructionState<'_, '_> {
             self.journey,
             movement.to_anchor,
         )?;
-        let connector_start = self.assembly.legs.len();
         if !append_bike_share(
             self.reconstructor,
             self.context,
@@ -61,7 +60,7 @@ impl ReconstructionState<'_, '_> {
         {
             return Ok(false);
         }
-        register_pending_transfer(&self.assembly, &mut self.pending_transfer, connector_start);
+        register_pending_transfer(&self.assembly, &mut self.pending_transfer);
         if let Some(to_stop) = anchor_boarding_point(self.journey, movement.to_anchor) {
             self.current_stop = Some(to_stop);
         }
@@ -269,6 +268,7 @@ mod tests {
             bike_reuse_available_at: None,
             timing_bases: Vec::new(),
             timing_reliability: TimingReliability::Reliable,
+            walking_tail: None,
         };
         let movement = |from, to, pickup: &str, dropoff: &str| {
             BikeShareMovement::new(

@@ -11,8 +11,8 @@ use crate::{
         realized::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
     },
     street::{
-        Coordinate, ProviderFailureClass, RouteQuery, RoutingConstraints, StreetPath,
-        StreetTravelMode,
+        Coordinate, ManeuverKind, Metres, ProviderFailureClass, RouteQuery, RoutingConstraints,
+        Seconds, StreetPath, StreetTravelMode,
     },
 };
 
@@ -51,7 +51,6 @@ impl ReconstructionState<'_, '_> {
         else {
             return Ok(false);
         };
-        let connector_start = self.assembly.legs.len();
         append_routed_walking(&from, &to, path, &mut self.assembly);
         if matches!(
             movement.kind,
@@ -60,7 +59,7 @@ impl ReconstructionState<'_, '_> {
                 ..
             }
         ) {
-            register_pending_transfer(&self.assembly, &mut self.pending_transfer, connector_start);
+            register_pending_transfer(&self.assembly, &mut self.pending_transfer);
         }
         self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
         Ok(true)
@@ -94,6 +93,47 @@ pub(super) fn anchor_place(
     }
 }
 
+fn join_paths(paths: Vec<StreetPath>) -> StreetPath {
+    let count = paths.len();
+    let mut joined = StreetPath {
+        duration: Seconds(0),
+        distance: Metres(0),
+        geometry: Vec::new(),
+        maneuvers: Vec::new(),
+        attribution: Vec::new(),
+    };
+    for (index, path) in paths.into_iter().enumerate() {
+        let skip = usize::from(
+            joined.geometry.last().is_some() && joined.geometry.last() == path.geometry.first(),
+        );
+        let offset = joined.geometry.len() - skip;
+        joined.duration = Seconds(joined.duration.0.saturating_add(path.duration.0));
+        joined.distance = Metres(joined.distance.0.saturating_add(path.distance.0));
+        joined.geometry.extend(path.geometry.into_iter().skip(skip));
+        joined.maneuvers.extend(
+            path.maneuvers
+                .into_iter()
+                .filter(|maneuver| match maneuver.kind {
+                    ManeuverKind::Depart => index == 0,
+                    ManeuverKind::Arrive => index + 1 == count,
+                    _ => true,
+                })
+                .map(|mut maneuver| {
+                    maneuver.begin_geometry_index += offset;
+                    maneuver.end_geometry_index =
+                        maneuver.end_geometry_index.map(|end| end + offset);
+                    maneuver
+                }),
+        );
+        for attribution in path.attribution {
+            if !joined.attribution.contains(&attribution) {
+                joined.attribution.push(attribution);
+            }
+        }
+    }
+    joined
+}
+
 pub(super) fn append_routed_walking(
     from: &Place,
     to: &Place,
@@ -102,13 +142,34 @@ pub(super) fn append_routed_walking(
 ) {
     let departure = assembly.arrival_time;
     let arrival = departure + Duration::seconds(i64::from(path.duration.0));
+    assembly.walking_seconds = assembly.walking_seconds.saturating_add(path.duration.0);
+    assembly.arrival_time = arrival;
+    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Walking);
+    let previous = assembly.walking_tail.take().filter(|(index, _)| {
+        *index + 1 == assembly.legs.len()
+            && assembly.legs[*index].arrival_time == departure
+            && assembly.legs[*index].to.coordinate == from.coordinate
+    });
+    if let Some((index, previous_path)) = previous {
+        let joined = join_paths(vec![previous_path, path]);
+        let previous_leg = &assembly.legs[index];
+        let leg = walking_leg(
+            previous_leg.id.clone(),
+            &previous_leg.from.clone(),
+            to,
+            previous_leg.departure_time,
+            arrival,
+            &joined,
+        );
+        assembly.legs[index] = leg;
+        assembly.walking_tail = Some((index, joined));
+        return;
+    }
     let leg_id = format!("candidate_leg_{}", assembly.legs.len());
     assembly
         .legs
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
-    assembly.walking_seconds = assembly.walking_seconds.saturating_add(path.duration.0);
-    assembly.arrival_time = arrival;
-    evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Walking);
+    assembly.walking_tail = Some((assembly.legs.len() - 1, path));
 }
 
 pub(super) async fn hydrate_path(
@@ -184,7 +245,8 @@ mod tests {
     use time::macros::datetime;
 
     #[tokio::test]
-    async fn transfer_then_egress_preserves_geometry_and_actual_timing_without_shortcuts() {
+    async fn consecutive_walks_join_into_one_leg_preserving_geometry_and_timing_without_shortcuts()
+    {
         let departure = datetime!(2026-08-31 10:00 +08:00);
         let points = [121.5, 121.501, 121.502, 121.503]
             .map(|longitude| Coordinate::try_new(25.0, longitude).unwrap());
@@ -295,26 +357,15 @@ mod tests {
             }
             let candidate = candidate.unwrap();
             let option = &candidate.option;
-            assert_eq!(option.legs.len(), 3);
-            assert_eq!(option.legs[1].from.via_id.as_deref(), Some("a"));
-            assert_eq!(option.legs[1].to.via_id.as_deref(), Some("b"));
-            assert_eq!(
-                option.legs[1].geometry.points,
-                geometry::encode_polyline6(&[points[1], points[2]])
-            );
-            assert_eq!(
-                option.legs[2].geometry.points,
-                geometry::encode_polyline6(&[points[2], points[3]])
-            );
-            assert_eq!(
-                option
-                    .legs
-                    .iter()
-                    .map(|leg| leg.duration_seconds)
-                    .collect::<Vec<_>>(),
-                vec![30, 45, 90]
-            );
-            assert_eq!(option.legs[1].arrival_time, option.legs[2].departure_time);
+            assert_eq!(option.legs.len(), 1);
+            let leg = &option.legs[0];
+            assert_eq!(leg.mode, LegMode::Walking);
+            assert_eq!(leg.from.display_name, "origin");
+            assert_eq!(leg.to.display_name, "destination");
+            assert_eq!(leg.geometry.points, geometry::encode_polyline6(&points));
+            assert_eq!(leg.duration_seconds, 165);
+            assert_eq!(leg.departure_time, departure);
+            assert_eq!(leg.arrival_time, departure + Duration::seconds(165));
             assert_eq!(option.duration_seconds, 165);
             assert_eq!(option.walking_seconds, 165);
             assert_eq!(candidate.ranking.walking_seconds, 165);
@@ -323,5 +374,114 @@ mod tests {
                 (departure + Duration::seconds(165)).unix_timestamp()
             );
         }
+    }
+
+    #[test]
+    fn joined_paths_drop_junction_maneuvers_and_shift_geometry_indexes() {
+        let point = |longitude| Coordinate::try_new(25.0, longitude).unwrap();
+        let attribution = crate::domain::journey::Attribution {
+            text: "osm".into(),
+            url: "https://www.openstreetmap.org/copyright".into(),
+            licence: "ODbL".into(),
+        };
+        let path = |points: Vec<Coordinate>, duration| StreetPath {
+            duration: Seconds(duration),
+            distance: Metres(duration * 2),
+            maneuvers: vec![
+                crate::street::Maneuver::depart(0),
+                crate::street::Maneuver::new(ManeuverKind::TurnLeft, 1),
+                crate::street::Maneuver::arrive(points.len() - 1),
+            ],
+            geometry: points,
+            attribution: vec![attribution.clone()],
+        };
+
+        let joined = join_paths(vec![
+            path(vec![point(121.5), point(121.501), point(121.502)], 30),
+            path(vec![point(121.502), point(121.503), point(121.504)], 45),
+        ]);
+
+        assert_eq!(joined.duration, Seconds(75));
+        assert_eq!(joined.distance, Metres(150));
+        assert_eq!(
+            joined.geometry,
+            [121.5, 121.501, 121.502, 121.503, 121.504].map(point)
+        );
+        assert_eq!(
+            joined
+                .maneuvers
+                .iter()
+                .map(|maneuver| (maneuver.kind, maneuver.begin_geometry_index))
+                .collect::<Vec<_>>(),
+            vec![
+                (ManeuverKind::Depart, 0),
+                (ManeuverKind::TurnLeft, 1),
+                (ManeuverKind::TurnLeft, 3),
+                (ManeuverKind::Arrive, 4),
+            ]
+        );
+        assert_eq!(joined.attribution, vec![attribution]);
+    }
+
+    #[test]
+    fn adjoining_walks_extend_the_previous_leg_only_when_place_and_time_match() {
+        let departure = datetime!(2026-08-31 10:00 +08:00);
+        let point = |longitude| Coordinate::try_new(25.0, longitude).unwrap();
+        let place = |name: &str, longitude| Place {
+            display_name: name.into(),
+            coordinate: GeoCoordinate {
+                latitude: 25.0,
+                longitude,
+            },
+            via_id: None,
+        };
+        let path = |from, to, duration| StreetPath {
+            duration: Seconds(duration),
+            distance: Metres(duration),
+            geometry: vec![point(from), point(to)],
+            maneuvers: Vec::new(),
+            attribution: Vec::new(),
+        };
+        let assembly = || JourneyAssembly {
+            legs: Vec::new(),
+            arrival_time: departure,
+            live_evidence: Vec::new(),
+            required_states: Vec::new(),
+            travel_modes: Vec::new(),
+            main_pattern_sequence: Vec::new(),
+            transfer_evidence: Vec::new(),
+            walking_seconds: 0,
+            bicycle_seconds: 0,
+            bike_share_uses: 0,
+            bike_reuse_available_at: None,
+            timing_bases: Vec::new(),
+            timing_reliability: crate::domain::transit_timing::TimingReliability::Reliable,
+            walking_tail: None,
+        };
+        let (a, b, c) = (place("a", 121.5), place("b", 121.501), place("c", 121.502));
+
+        let mut joined = assembly();
+        append_routed_walking(&a, &b, path(121.5, 121.501, 30), &mut joined);
+        append_routed_walking(&b, &c, path(121.501, 121.502, 45), &mut joined);
+        assert_eq!(joined.legs.len(), 1);
+        assert_eq!(joined.legs[0].from.display_name, "a");
+        assert_eq!(joined.legs[0].to.display_name, "c");
+        assert_eq!(joined.legs[0].duration_seconds, 75);
+        assert_eq!(
+            joined.legs[0].arrival_time,
+            departure + Duration::seconds(75)
+        );
+        assert_eq!(joined.walking_seconds, 75);
+
+        let mut waited = assembly();
+        append_routed_walking(&a, &b, path(121.5, 121.501, 30), &mut waited);
+        waited.arrival_time += Duration::minutes(5);
+        append_routed_walking(&b, &c, path(121.501, 121.502, 45), &mut waited);
+        assert_eq!(waited.legs.len(), 2);
+
+        let mut elsewhere = assembly();
+        append_routed_walking(&a, &b, path(121.5, 121.501, 30), &mut elsewhere);
+        append_routed_walking(&a, &c, path(121.5, 121.502, 45), &mut elsewhere);
+        assert_eq!(elsewhere.legs.len(), 2);
     }
 }

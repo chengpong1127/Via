@@ -14,7 +14,6 @@ use super::{
 };
 
 pub(super) struct PreviousTransit {
-    leg_id: String,
     trip_id: EffectiveTripId,
     arrival: OffsetDateTime,
     mode: TransitMode,
@@ -87,7 +86,6 @@ impl ReconstructionState<'_, '_> {
             record_transfer(
                 &mut self.assembly,
                 PendingTransfer {
-                    from_leg_id: previous.leg_id.clone(),
                     from_arrival: previous.arrival,
                     duration_seconds: self
                         .reconstructor
@@ -100,7 +98,6 @@ impl ReconstructionState<'_, '_> {
             )?;
         }
         self.previous_transit = Some(PreviousTransit {
-            leg_id,
             trip_id: trip.id.clone(),
             arrival: alight.arrival_at,
             mode: route_data.mode,
@@ -123,36 +120,27 @@ impl ReconstructionState<'_, '_> {
 pub(super) fn register_pending_transfer(
     assembly: &JourneyAssembly,
     pending_transfer: &mut Option<PendingTransfer>,
-    connector_start: usize,
 ) {
-    let Some(from_leg) = assembly
+    let Some(from_index) = assembly
         .legs
         .iter()
-        .rev()
-        .find(|leg| leg.mode == LegMode::Transit)
+        .rposition(|leg| leg.mode == LegMode::Transit)
     else {
         return;
     };
-    let connector_legs = assembly.legs[connector_start..].iter();
+    let from_leg = &assembly.legs[from_index];
     let from_mode = match &from_leg.details {
         LegDetails::Transit { transit_mode, .. } => Some(*transit_mode),
         LegDetails::Walking | LegDetails::BikeShare { .. } => None,
     };
-    let from_leg_id = from_leg.id.clone();
-    let connector_duration = connector_legs.map(|leg| leg.duration_seconds).sum();
-    if let Some(pending) = pending_transfer
-        .as_mut()
-        .filter(|pending| pending.from_leg_id == from_leg_id)
-    {
-        pending.duration_seconds = pending.duration_seconds.saturating_add(connector_duration);
-    } else {
-        *pending_transfer = Some(PendingTransfer {
-            from_leg_id,
-            from_arrival: from_leg.arrival_time,
-            duration_seconds: connector_duration,
-            from_mode,
-        });
-    }
+    *pending_transfer = Some(PendingTransfer {
+        from_arrival: from_leg.arrival_time,
+        duration_seconds: assembly.legs[from_index + 1..]
+            .iter()
+            .map(|leg| leg.duration_seconds)
+            .sum(),
+        from_mode,
+    });
 }
 
 fn record_transfer(

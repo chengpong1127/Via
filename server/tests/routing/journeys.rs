@@ -851,9 +851,9 @@ async fn arrive_by_walking_replacement_is_checked_after_the_previous_transit_arr
             assert!(option["arrival_time"].as_str().unwrap() <= latest);
             assert!(option["legs"].as_array().unwrap().iter().any(|leg| {
                 leg["mode"] == "walking"
-                    && leg["from"]["via_id"] == "F-M2-BLUE"
-                    && leg["to"]["via_id"] == "F-M3-BLUE"
-                    && leg["duration_seconds"] == 180
+                    && leg["from"]["via_id"] == "F-M2-RED"
+                    && leg["to"]["via_id"].is_null()
+                    && leg["duration_seconds"] == 270
             }));
         } else {
             assert_eq!(result["empty"]["code"], "no_feasible_journey_option");
