@@ -305,7 +305,7 @@ mod limits_tests {
     #[test]
     fn direct_query_limits_preserve_explicit_zero_safety_bounds() {
         let limits = PlannerLimits {
-            max_phase1_expansions: 0,
+            max_static_corridors: 0,
             ..PlannerLimits::default()
         };
         let query = PlanningQuery::new(
@@ -318,7 +318,7 @@ mod limits_tests {
             crate::config::ViaConfig::default().planner_limits(),
         )
         .with_limits(limits);
-        assert_eq!(query.limits.max_phase1_expansions, 0);
+        assert_eq!(query.limits.max_static_corridors, 0);
         assert_eq!(
             JourneyPlanningLimits {
                 planner: limits,
@@ -326,7 +326,7 @@ mod limits_tests {
             }
             .normalized()
             .planner
-            .max_phase1_expansions,
+            .max_static_corridors,
             1
         );
     }

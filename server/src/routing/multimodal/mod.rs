@@ -172,11 +172,8 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
     ) -> Result<(RetainedCorridorSet, StaticSearchStats), RoutingError> {
-        let (retained, stats) = if std::env::var_os("VIA_PHASE1_RAPTOR").is_some() {
-            static_search::generate_rounds(&self.network, &self.topology, &self.transfers, query)
-        } else {
-            static_search::generate(&self.network, &self.topology, &self.transfers, query)
-        };
+        let (retained, stats) =
+            static_search::generate(&self.network, &self.topology, &self.transfers, query);
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
@@ -188,10 +185,8 @@ impl MultimodalPlanner {
             states_expanded = stats.states_expanded,
             corridors_found = stats.unique_corridors_found,
             corridors_retained = stats.corridors_retained,
-            kth_duration_seconds = ?stats.kth_duration_seconds,
             latency_ms = stats.search_latency_ms,
-            early_terminated = stats.top_k_early_terminated,
-            "static Top-K corridor search"
+            "static round-based corridor search"
         );
         for (index, corridor) in retained.retained().iter().enumerate() {
             tracing::debug!(
@@ -203,14 +198,6 @@ impl MultimodalPlanner {
                 cost_source = corridor.cost_source.as_str(),
                 "retained static corridor"
             );
-        }
-        if stats.search_limit_reached {
-            tracing::warn!(
-                target: "via_server::routing",
-                max_static_search_expansions = query.limits.max_phase1_expansions,
-                "static Top-K search hit its safety bound; rejecting the partial corridor set"
-            );
-            return Err(RoutingError::StaticSearchLimit);
         }
         ::metrics::counter!("via_planner_transit_reachable_boardings_total")
             .increment(stats.corridor_positions as u64);

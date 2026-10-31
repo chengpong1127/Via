@@ -98,12 +98,13 @@ impl EgressPoint {
 pub struct PlannerLimits {
     pub max_transfers: usize,
     pub max_static_corridors: usize,
-    pub max_phase1_expansions: usize,
     pub max_concurrent_phase2_states: usize,
     pub max_concurrent_phase2_corridors: usize,
     pub max_candidates: usize,
     pub max_departures_per_query: usize,
     pub max_journey_duration_seconds: u32,
+    pub metro_transfer_penalty_seconds: u32,
+    pub bus_transfer_penalty_seconds: u32,
 }
 
 impl PlannerLimits {
@@ -111,12 +112,13 @@ impl PlannerLimits {
         Self {
             max_transfers: self.max_transfers,
             max_static_corridors: self.max_static_corridors.max(1),
-            max_phase1_expansions: self.max_phase1_expansions.max(1),
             max_concurrent_phase2_states: self.max_concurrent_phase2_states.clamp(1, 32),
             max_concurrent_phase2_corridors: self.max_concurrent_phase2_corridors.clamp(1, 8),
             max_candidates: self.max_candidates.max(1),
             max_departures_per_query: self.max_departures_per_query.max(1),
             max_journey_duration_seconds: self.max_journey_duration_seconds.max(1),
+            metro_transfer_penalty_seconds: self.metro_transfer_penalty_seconds,
+            bus_transfer_penalty_seconds: self.bus_transfer_penalty_seconds,
         }
     }
 }
@@ -320,8 +322,6 @@ impl PlanningQuery {
 pub enum RoutingError {
     #[error("routing query has invalid access or egress")]
     InvalidQuery,
-    #[error("static corridor search exceeded its safety expansion bound")]
-    StaticSearchLimit,
     #[error("routing request deadline elapsed")]
     DeadlineExceeded,
     #[error("routing invariant failed: {0}")]
@@ -353,7 +353,7 @@ impl FailureSummary {
     pub(crate) fn record_routing(&mut self, error: &RoutingError) {
         match error {
             RoutingError::Timing(timing) => self.transient |= timing.is_transient(),
-            RoutingError::StaticSearchLimit | RoutingError::Internal(_) => self.internal = true,
+            RoutingError::Internal(_) => self.internal = true,
             RoutingError::InvalidQuery | RoutingError::DeadlineExceeded => {}
         }
     }

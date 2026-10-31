@@ -43,7 +43,6 @@ fn default_phase2_corridors() -> usize {
 pub struct RoutingSettings {
     pub max_transfers: usize,
     pub max_static_corridors: usize,
-    pub max_phase1_expansions: usize,
     pub max_concurrent_phase2_states: usize,
     #[serde(default = "default_phase2_corridors")]
     pub max_concurrent_phase2_corridors: usize,
@@ -193,10 +192,6 @@ impl ViaConfig {
             (
                 "routing.max_static_corridors",
                 self.routing.max_static_corridors as u64,
-            ),
-            (
-                "routing.max_phase1_expansions",
-                self.routing.max_phase1_expansions as u64,
             ),
             ("routing.max_candidates", self.routing.max_candidates as u64),
             (
@@ -562,12 +557,13 @@ impl ViaConfig {
         PlannerLimits {
             max_transfers: self.routing.max_transfers,
             max_static_corridors: self.routing.max_static_corridors,
-            max_phase1_expansions: self.routing.max_phase1_expansions,
             max_concurrent_phase2_states: self.routing.max_concurrent_phase2_states,
             max_concurrent_phase2_corridors: self.routing.max_concurrent_phase2_corridors,
             max_candidates: self.routing.max_candidates,
             max_departures_per_query: self.routing.max_departures_per_query,
             max_journey_duration_seconds: self.routing.max_journey_duration_seconds,
+            metro_transfer_penalty_seconds: self.routing.ranking.metro_transfer_buffer_seconds,
+            bus_transfer_penalty_seconds: self.routing.ranking.bus_transfer_buffer_seconds,
         }
     }
 }

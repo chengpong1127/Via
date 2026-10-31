@@ -92,42 +92,6 @@ impl StaticCorridor {
             .map(|leg| leg.pattern_id.clone())
             .collect()
     }
-
-    pub(super) fn signature(&self) -> CorridorSignature {
-        CorridorSignature {
-            access_stop_id: self.access_stop_id.clone(),
-            steps: structural_steps(&self.steps),
-            egress_stop_id: self.egress_stop_id.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct CorridorSignature {
-    pub(super) access_stop_id: BoardingPointId,
-    pub(super) steps: Vec<StructuralStep>,
-    pub(super) egress_stop_id: BoardingPointId,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct PartialSignature {
-    pub(super) access_stop_id: BoardingPointId,
-    pub(super) steps: Vec<StructuralStep>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum StructuralStep {
-    Transit {
-        pattern_id: TransitPatternId,
-        board_stop_id: BoardingPointId,
-        board_index: usize,
-        alight_stop_id: BoardingPointId,
-        alight_index: usize,
-    },
-    SurfaceTransfer {
-        from: BoardingPointId,
-        to: BoardingPointId,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -135,12 +99,6 @@ pub(super) struct EquivalentCorridorSignature {
     pub(super) access_stop_id: BoardingPointId,
     pub(super) steps: Vec<EquivalentStep>,
     pub(super) egress_stop_id: BoardingPointId,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct ContinuationSignature {
-    pub(super) access_stop_id: BoardingPointId,
-    pub(super) mode_transition_sequence: Vec<TransitMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -199,27 +157,6 @@ pub(super) fn equivalent_leg_key(
     }
 }
 
-pub(super) fn structural_steps(steps: &[StaticCorridorStep]) -> Vec<StructuralStep> {
-    steps
-        .iter()
-        .map(|step| match step {
-            StaticCorridorStep::Transit(leg) => StructuralStep::Transit {
-                pattern_id: leg.pattern_id.clone(),
-                board_stop_id: leg.board_stop_id.clone(),
-                board_index: leg.board_index,
-                alight_stop_id: leg.alight_stop_id.clone(),
-                alight_index: leg.alight_index,
-            },
-            StaticCorridorStep::SurfaceTransfer { from, to, .. } => {
-                StructuralStep::SurfaceTransfer {
-                    from: from.clone(),
-                    to: to.clone(),
-                }
-            }
-        })
-        .collect()
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StaticSearchStats {
     pub states_expanded: usize,
@@ -229,8 +166,5 @@ pub struct StaticSearchStats {
     pub corridor_positions: usize,
     pub corridor_bus_stops: usize,
     pub search_latency_ms: u64,
-    pub kth_duration_seconds: Option<u32>,
-    pub search_limit_reached: bool,
-    pub top_k_early_terminated: bool,
     pub deadline_exceeded: bool,
 }

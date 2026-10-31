@@ -1,19 +1,10 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-};
+use std::collections::{HashMap, HashSet};
 
 use crate::routing::topology::PatternPosition;
 
-use crate::domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime};
+use crate::domain::{transit::TransitMode, transit_runtime::TransitRuntime};
 
-use super::{
-    frontier::StaticState,
-    types::{
-        CorridorSignature, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
-        StaticSearchStats, StaticTransitLeg, equivalent_leg_key, equivalent_steps,
-    },
-};
+use super::types::{EquivalentLegKey, StaticCorridor, StaticTransitLeg, equivalent_leg_key};
 
 #[derive(Clone, Debug, Default)]
 pub struct RetainedCorridorSet {
@@ -139,160 +130,10 @@ impl RetainedCorridorSet {
     }
 }
 
-pub(super) struct CorridorRetention {
-    retained: HashMap<CorridorSignature, StaticCorridor>,
-    best_by_mode_transition_sequence: HashMap<Vec<TransitMode>, StaticCorridor>,
-    all_unique: HashSet<CorridorSignature>,
-    limit: usize,
-}
-
-impl CorridorRetention {
-    pub(super) fn new(limit: usize) -> Self {
-        Self {
-            retained: HashMap::new(),
-            best_by_mode_transition_sequence: HashMap::new(),
-            all_unique: HashSet::new(),
-            limit,
-        }
-    }
-
-    pub(super) fn record_complete(
-        &mut self,
-        state: &StaticState,
-        egress_by_stop: &HashMap<BoardingPointId, Vec<u32>>,
-        max_journey_duration_seconds: u32,
-        stats: &mut StaticSearchStats,
-        network: &TransitRuntime,
-    ) {
-        for egress_seconds in egress_by_stop.get(&state.stop_id).into_iter().flatten() {
-            let duration = state.elapsed_seconds.saturating_add(*egress_seconds);
-            if duration > max_journey_duration_seconds {
-                continue;
-            }
-
-            let corridor = StaticCorridor {
-                access_stop_id: state.access_stop_id.clone(),
-                egress_stop_id: state.stop_id.clone(),
-                theoretical_duration_seconds: duration,
-                cost_source: state.cost_source(),
-                steps: state.steps.clone(),
-            };
-            let signature = corridor.signature();
-            if self.all_unique.insert(signature.clone()) {
-                stats.unique_corridors_found += 1;
-            }
-            let modes = corridor
-                .transit_legs()
-                .map(|leg| {
-                    network
-                        .route_of(network.required_pattern(&leg.pattern_id))
-                        .mode
-                })
-                .collect::<Vec<_>>();
-            let mut transition_sequence = Vec::new();
-            for mode in modes {
-                if transition_sequence.last() != Some(&mode) {
-                    transition_sequence.push(mode);
-                }
-            }
-            let replace_mode_sequence_corridor = self
-                .best_by_mode_transition_sequence
-                .get(&transition_sequence)
-                .is_none_or(|known| corridor_order(&corridor, known).is_lt());
-            if replace_mode_sequence_corridor {
-                self.best_by_mode_transition_sequence
-                    .insert(transition_sequence, corridor.clone());
-            }
-            let replace = self.retained.get(&signature).is_none_or(|known| {
-                corridor.theoretical_duration_seconds < known.theoretical_duration_seconds
-            });
-            if replace {
-                self.retained.insert(signature, corridor);
-                self.trim();
-            }
-        }
-    }
-
-    pub(super) fn kth_duration(&self) -> Option<u32> {
-        if self.retained.len() < self.limit {
-            return None;
-        }
-        self.retained
-            .values()
-            .map(|corridor| corridor.theoretical_duration_seconds)
-            .max()
-    }
-
-    fn trim(&mut self) {
-        if self.retained.len() <= self.limit {
-            return;
-        }
-        let worst = self
-            .retained
-            .iter()
-            .max_by(|(_, left), (_, right)| corridor_order(left, right))
-            .map(|(signature, _)| signature.clone());
-        if let Some(worst) = worst {
-            self.retained.remove(&worst);
-        }
-    }
-
-    pub(super) fn finish(
-        self,
-        network: &TransitRuntime,
-        equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-        stats: &mut StaticSearchStats,
-    ) -> RetainedCorridorSet {
-        let mut global_corridors = self.retained.into_values().collect::<Vec<_>>();
-        global_corridors.sort_by(corridor_order);
-        let mut best_mode_sequence_corridors = self
-            .best_by_mode_transition_sequence
-            .into_values()
-            .collect::<Vec<_>>();
-        best_mode_sequence_corridors.sort_by(corridor_order);
-        let mut selected_structures = HashSet::new();
-        let mut selected = Vec::new();
-        for corridor in best_mode_sequence_corridors
-            .into_iter()
-            .chain(global_corridors)
-        {
-            if selected.len() >= self.limit {
-                break;
-            }
-            let steps = equivalent_steps(network, &corridor.steps);
-            let structure = EquivalentCorridorSignature {
-                access_stop_id: corridor.access_stop_id.clone(),
-                steps,
-                egress_stop_id: corridor.egress_stop_id.clone(),
-            };
-            if selected_structures.insert(structure) {
-                selected.push(corridor);
-            }
-        }
-        selected.sort_by(corridor_order);
-        let (retained_corridors, pattern_count, bus_stop_count) =
-            RetainedCorridorSet::from_retained(network, equivalent_legs, selected);
-        stats.corridors_retained = retained_corridors.retained().len();
-        stats.corridor_patterns = pattern_count;
-        stats.corridor_positions = retained_corridors.timing_positions().count();
-        stats.corridor_bus_stops = bus_stop_count;
-        stats.kth_duration_seconds = retained_corridors
-            .retained()
-            .get(self.limit.saturating_sub(1))
-            .map(|corridor| corridor.theoretical_duration_seconds);
-        retained_corridors
-    }
-}
-
-pub(super) fn corridor_order(left: &StaticCorridor, right: &StaticCorridor) -> Ordering {
-    left.theoretical_duration_seconds
-        .cmp(&right.theoretical_duration_seconds)
-        .then_with(|| format!("{:?}", left.signature()).cmp(&format!("{:?}", right.signature())))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::ids::BoardingPointId;
     use crate::domain::{
         ids::TransitPatternId,
         transit::{TransitNetwork, TransitPattern},

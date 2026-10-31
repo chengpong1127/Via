@@ -8,7 +8,9 @@ routing. `RoutingService → MultimodalPlanner discovery and planning →
 CorridorEvaluator → RealizedJourney → JourneyReconstructor → ranking`
 is the canonical server flow. Routing depends on domain interfaces, including
 `BikeAvailabilitySource`; providers supply their implementations.
-Phase 1 finds a bounded global Top-K of static transit corridors. Phase 2
+Phase 1 runs a static round-based (RAPTOR-style) search in which each round adds
+one ride; it keeps the best corridor for each ride count plus near-best corridors
+up to the configured cap, with transfers weighted by the ranking buffers. Phase 2
 loads request-local snapshots and evaluates fixed corridors plus the direct
 walking corridor, which starts first and may overlap transit evaluation within
 the configured concurrency limit. Walking is always enabled; selected modes

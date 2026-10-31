@@ -9,7 +9,6 @@ max_body_bytes = 65536
 [routing]
 max_transfers = 4
 max_static_corridors = 24
-max_phase1_expansions = 20000
 max_concurrent_phase2_states = 4
 max_concurrent_phase2_corridors = 8
 max_concurrent_reconstruction_candidates = 4

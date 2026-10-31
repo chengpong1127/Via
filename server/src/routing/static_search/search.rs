@@ -1,32 +1,86 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    time::Instant,
+};
 
-use crate::domain::{ids::BoardingPointId, transit_runtime::TransitRuntime};
+use crate::domain::{
+    ids::{BoardingPointId, TransitRouteId},
+    transit::{SegmentTimeSource, TransitMode},
+    transit_runtime::TransitRuntime,
+};
 
 use crate::routing::{
-    model::PlanningQuery,
-    topology::{PatternPosition, TransitTopologyIndex},
-    transfers::TransferShortcutIndex,
+    model::PlanningQuery, topology::TransitTopologyIndex, transfers::TransferShortcutIndex,
 };
 
 use super::{
-    frontier::{SearchFrontier, StaticState},
-    heuristic::destination_lower_bounds,
     pattern_index::StaticPhase1PatternIndex,
-    retention::{CorridorRetention, RetainedCorridorSet},
+    retention::RetainedCorridorSet,
     types::{
-        EquivalentLegKey, StaticCorridorStep, StaticCostSource, StaticSearchStats, StaticTransitLeg,
+        EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor, StaticCorridorStep,
+        StaticCostSource, StaticSearchStats, StaticTransitLeg, equivalent_leg_key,
+        equivalent_steps,
     },
 };
 
-struct PreparedSearch<'a> {
+const LABELS_PER_STOP: usize = 4;
+const ROUTE_VARIANTS_PER_STRUCTURE: usize = 2;
+const TARGET_SLACK_PERCENT: u32 = 50;
+const TARGET_SLACK_SECONDS: u32 = 600;
+
+#[derive(Clone)]
+struct Label {
+    cost_seconds: u32,
+    penalty_seconds: u32,
+    last_mode: Option<TransitMode>,
+    node: usize,
+    structure: u64,
+    last_route_id: Option<TransitRouteId>,
+    after_ride: bool,
+}
+
+struct Node {
+    parent: Option<usize>,
+    access_stop_id: BoardingPointId,
+    step: Option<StaticCorridorStep>,
+}
+
+struct Boarded {
+    label: Label,
+    board_index: usize,
+    board_cost_seconds: u32,
+    penalty_seconds: u32,
+    ride_seconds: u32,
+    first_source: Option<SegmentTimeSource>,
+    mixed_source: bool,
+}
+
+struct Candidate {
+    rides: usize,
+    search_cost_seconds: u32,
+    corridor: StaticCorridor,
+}
+
+struct Search<'a> {
     network: &'a TransitRuntime,
-    topology: &'a TransitTopologyIndex,
     transfers: &'a TransferShortcutIndex,
-    query: &'a PlanningQuery,
-    patterns: StaticPhase1PatternIndex,
-    egress_by_stop: HashMap<BoardingPointId, Vec<u32>>,
-    destination_lower_bounds: HashMap<BoardingPointId, u32>,
-    max_legs: usize,
+    nodes: Vec<Node>,
+    best: HashMap<BoardingPointId, Vec<BagEntry>>,
+    max_seconds: u32,
+    target_seconds: u32,
+    metro_transfer_penalty_seconds: u32,
+    bus_transfer_penalty_seconds: u32,
+    stats: StaticSearchStats,
+}
+
+type RoundLabels = HashMap<BoardingPointId, Vec<Label>>;
+
+#[derive(Clone, PartialEq, Eq)]
+struct BagEntry {
+    cost_seconds: u32,
+    structure: u64,
+    last_route_id: Option<TransitRouteId>,
 }
 
 pub fn generate(
@@ -36,323 +90,531 @@ pub fn generate(
     query: &PlanningQuery,
 ) -> (RetainedCorridorSet, StaticSearchStats) {
     let started = Instant::now();
-    let limit = query.limits.max_static_corridors.max(1);
     let mut stats = StaticSearchStats::default();
-    let Some(mut search) = prepare_search(network, topology, transfers, query, &mut stats) else {
-        return finish_deadline(started, stats);
-    };
-    let mut frontier = seed_frontier(&search, limit);
-    let mut retention = CorridorRetention::new(limit);
-    let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
-    run_forward_search(
-        &mut search,
-        &mut frontier,
-        &mut retention,
-        &mut equivalent_legs,
-        &mut stats,
-    );
-
-    if stats.deadline_exceeded || query.deadline.is_elapsed() {
-        return finish_deadline(started, stats);
-    }
-
-    let retained_corridors = retention.finish(network, &equivalent_legs, &mut stats);
-    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    (retained_corridors, stats)
-}
-
-fn prepare_search<'a>(
-    network: &'a TransitRuntime,
-    topology: &'a TransitTopologyIndex,
-    transfers: &'a TransferShortcutIndex,
-    query: &'a PlanningQuery,
-    stats: &mut StaticSearchStats,
-) -> Option<PreparedSearch<'a>> {
-    if deadline_exceeded(query) {
-        stats.deadline_exceeded = true;
-        return None;
-    }
-
-    let patterns =
-        StaticPhase1PatternIndex::new(network, &query.allowed_transit_modes, stats, query.deadline);
-    if stats.deadline_exceeded || deadline_exceeded(query) {
-        stats.deadline_exceeded = true;
-        return None;
-    }
-
-    let egress_by_stop = build_egress_index(query);
-    let destination_lower_bounds =
-        destination_lower_bounds(&patterns, topology, transfers, query, stats);
-
-    if stats.deadline_exceeded || deadline_exceeded(query) {
-        stats.deadline_exceeded = true;
-        return None;
-    }
-
-    Some(PreparedSearch {
+    let patterns = StaticPhase1PatternIndex::new(
         network,
-        topology,
-        transfers,
-        query,
-        patterns,
-        egress_by_stop,
-        destination_lower_bounds,
-        max_legs: query.limits.max_transfers.saturating_add(1),
-    })
-}
-
-fn build_egress_index(query: &PlanningQuery) -> HashMap<BoardingPointId, Vec<u32>> {
-    query.destination_egress.iter().fold(
-        HashMap::<BoardingPointId, Vec<u32>>::new(),
+        &query.allowed_transit_modes,
+        &mut stats,
+        query.deadline,
+    );
+    let egress_by_stop = query.destination_egress.iter().fold(
+        HashMap::<BoardingPointId, u32>::new(),
         |mut by_stop, egress| {
-            by_stop
-                .entry(egress.stop_id.clone())
-                .or_default()
-                .push(egress.walking_seconds);
+            let walking = by_stop.entry(egress.stop_id.clone()).or_insert(u32::MAX);
+            *walking = (*walking).min(egress.walking_seconds);
             by_stop
         },
-    )
+    );
+    let mut search = Search {
+        network,
+        transfers,
+        nodes: Vec::new(),
+        best: HashMap::new(),
+        max_seconds: query.limits.max_journey_duration_seconds,
+        target_seconds: query.limits.max_journey_duration_seconds,
+        metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
+        bus_transfer_penalty_seconds: query.limits.bus_transfer_penalty_seconds,
+        stats,
+    };
+    let mut current = RoundLabels::new();
+    for access in &query.origin_access {
+        let node = search.nodes.len();
+        search.nodes.push(Node {
+            parent: None,
+            access_stop_id: access.stop_id.clone(),
+            step: None,
+        });
+        let label = Label {
+            cost_seconds: access.walking_seconds,
+            penalty_seconds: 0,
+            last_mode: None,
+            node,
+            structure: fingerprint(0, &access.stop_id),
+            last_route_id: None,
+            after_ride: false,
+        };
+        if search.insert(&access.stop_id, &label) {
+            current
+                .entry(access.stop_id.clone())
+                .or_default()
+                .push(label);
+        }
+    }
+    search.relax_transfers(&mut current);
+
+    let mut candidates = Vec::new();
+    let max_rides = query.limits.max_transfers.saturating_add(1);
+    for rides in 1..=max_rides {
+        search.retain_current(&mut current);
+        if current.is_empty() {
+            break;
+        }
+        if query.deadline.is_elapsed() {
+            search.stats.deadline_exceeded = true;
+            return (RetainedCorridorSet::default(), search.stats);
+        }
+        let mut routes = HashMap::<usize, usize>::new();
+        for stop_id in current.keys() {
+            for position in topology.occurrences_at(stop_id) {
+                if let Some(group_index) = patterns.group_index(&position.pattern_id) {
+                    let first = routes.entry(group_index).or_insert(position.stop_index);
+                    *first = (*first).min(position.stop_index);
+                }
+            }
+        }
+        let mut routes = routes.into_iter().collect::<Vec<_>>();
+        routes.sort_unstable();
+        let mut next = RoundLabels::new();
+        for (group_index, first_index) in routes {
+            search.scan_route(&patterns, group_index, first_index, &current, &mut next);
+        }
+        for (stop_id, labels) in &next {
+            let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
+                continue;
+            };
+            for label in labels {
+                let duration = label
+                    .cost_seconds
+                    .saturating_sub(label.penalty_seconds)
+                    .saturating_add(*egress_seconds);
+                if duration > search.max_seconds {
+                    continue;
+                }
+                let search_cost_seconds = label.cost_seconds.saturating_add(*egress_seconds);
+                search.target_seconds = search.target_seconds.min(
+                    search_cost_seconds
+                        .saturating_add(
+                            search_cost_seconds.saturating_mul(TARGET_SLACK_PERCENT) / 100,
+                        )
+                        .saturating_add(TARGET_SLACK_SECONDS),
+                );
+                let steps = search.steps(label.node);
+                candidates.push(Candidate {
+                    rides,
+                    search_cost_seconds,
+                    corridor: StaticCorridor {
+                        access_stop_id: search.nodes[label.node].access_stop_id.clone(),
+                        egress_stop_id: stop_id.clone(),
+                        theoretical_duration_seconds: duration,
+                        cost_source: cost_source(&steps),
+                        steps,
+                    },
+                });
+            }
+        }
+        search.relax_transfers(&mut next);
+        current = next;
+    }
+
+    let mut stats = search.stats;
+    let target_seconds = search.target_seconds;
+    candidates.retain(|candidate| candidate.search_cost_seconds <= target_seconds);
+    let selected = select(
+        network,
+        candidates,
+        query.limits.max_static_corridors.max(1),
+        &mut stats,
+    );
+    let equivalent_legs = equivalent_legs_for(network, topology, &patterns, &selected);
+    let (retained, pattern_count, bus_stop_count) =
+        RetainedCorridorSet::from_retained(network, &equivalent_legs, selected);
+    stats.corridors_retained = retained.retained().len();
+    stats.corridor_patterns = pattern_count;
+    stats.corridor_positions = retained.timing_positions().count();
+    stats.corridor_bus_stops = bus_stop_count;
+    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    (retained, stats)
 }
 
-fn seed_frontier(search: &PreparedSearch<'_>, limit: usize) -> SearchFrontier {
-    let mut frontier = SearchFrontier::new(limit);
-    for access in &search.query.origin_access {
-        let Some(remaining_seconds) = search
-            .destination_lower_bounds
-            .get(&access.stop_id)
-            .copied()
-        else {
-            continue;
-        };
-        let elapsed_seconds = access.walking_seconds;
-        frontier.enqueue(StaticState {
-            stop_id: access.stop_id.clone(),
-            elapsed_seconds,
-            lower_bound_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-            priority_seconds: elapsed_seconds.saturating_add(remaining_seconds),
-            access_stop_id: access.stop_id.clone(),
-            transit_legs_used: 0,
-            last_transit_mode: None,
-            last_transit_route_id: None,
-            mode_transition_sequence: Vec::new(),
-            steps: Vec::new(),
-            has_exact_cost: false,
-            has_derived_bus_cost: false,
-            has_estimated_cost: false,
-            transfer_ready: false,
+impl Search<'_> {
+    fn scan_route(
+        &mut self,
+        patterns: &StaticPhase1PatternIndex,
+        group_index: usize,
+        first_index: usize,
+        current: &RoundLabels,
+        next: &mut RoundLabels,
+    ) {
+        let group = patterns.group(group_index);
+        let route_id = &self.network.required_pattern(&group.pattern_id).route_id;
+        let mut boarded = Vec::<Boarded>::new();
+        for stop_index in first_index..group.stops.len() {
+            let stop_id = &group.stops[stop_index];
+            if stop_index > first_index {
+                let segment = &group.segments[stop_index - 1];
+                for entry in &mut boarded {
+                    entry.ride_seconds = entry.ride_seconds.saturating_add(segment.seconds);
+                    entry.mixed_source |= entry
+                        .first_source
+                        .is_some_and(|first| first != segment.source);
+                    entry.first_source.get_or_insert(segment.source);
+                }
+                boarded.retain(|entry| {
+                    entry.board_cost_seconds.saturating_add(entry.ride_seconds)
+                        <= self.target_seconds.min(self.max_seconds)
+                });
+                for entry in &boarded {
+                    let leg = StaticTransitLeg {
+                        pattern_id: group.pattern_id.clone(),
+                        board_stop_id: group.stops[entry.board_index].clone(),
+                        board_index: entry.board_index,
+                        alight_stop_id: stop_id.clone(),
+                        alight_index: stop_index,
+                        cost_source: leg_cost_source(entry.first_source, entry.mixed_source),
+                    };
+                    let structure = fingerprint(
+                        entry.label.structure,
+                        &(group.mode as u8, &leg.board_stop_id, stop_id),
+                    );
+                    let node = self.nodes.len();
+                    let label = Label {
+                        cost_seconds: entry.board_cost_seconds.saturating_add(entry.ride_seconds),
+                        penalty_seconds: entry.penalty_seconds,
+                        last_mode: Some(group.mode),
+                        node,
+                        structure,
+                        last_route_id: Some(route_id.clone()),
+                        after_ride: true,
+                    };
+                    if self.insert(stop_id, &label) {
+                        self.nodes.push(Node {
+                            parent: Some(entry.label.node),
+                            access_stop_id: self.nodes[entry.label.node].access_stop_id.clone(),
+                            step: Some(StaticCorridorStep::Transit(leg)),
+                        });
+                        self.stats.states_expanded += 1;
+                        next.entry(stop_id.clone()).or_default().push(label);
+                    }
+                }
+            }
+            let Some(labels) = current.get(stop_id) else {
+                continue;
+            };
+            if stop_index + 1 >= group.stops.len() {
+                continue;
+            }
+            for label in labels {
+                if label.last_route_id.as_ref() == Some(route_id) {
+                    continue;
+                }
+                let transfer_penalty_seconds = match label.last_mode {
+                    None => 0,
+                    Some(TransitMode::Metro) if group.mode == TransitMode::Metro => {
+                        self.metro_transfer_penalty_seconds
+                    }
+                    Some(_) => self.bus_transfer_penalty_seconds,
+                };
+                let board_cost_seconds = label
+                    .cost_seconds
+                    .saturating_add(if label.after_ride {
+                        self.network.same_stop_transfer_seconds()
+                    } else {
+                        0
+                    })
+                    .saturating_add(transfer_penalty_seconds);
+                boarded.push(Boarded {
+                    label: label.clone(),
+                    board_index: stop_index,
+                    board_cost_seconds,
+                    penalty_seconds: label
+                        .penalty_seconds
+                        .saturating_add(transfer_penalty_seconds),
+                    ride_seconds: 0,
+                    first_source: None,
+                    mixed_source: false,
+                });
+            }
+            boarded
+                .sort_by_key(|entry| entry.board_cost_seconds.saturating_add(entry.ride_seconds));
+            let mut seen = HashSet::new();
+            boarded.retain(|entry| seen.insert(entry.label.structure));
+            boarded.truncate(LABELS_PER_STOP);
+        }
+    }
+
+    fn relax_transfers(&mut self, labels: &mut RoundLabels) {
+        let mut walked = RoundLabels::new();
+        for (stop_id, stop_labels) in labels.iter() {
+            for label in stop_labels {
+                if !label.after_ride && self.nodes[label.node].parent.is_some() {
+                    continue;
+                }
+                for shortcut in self.transfers.transfers_from(stop_id) {
+                    let cost_seconds = label.cost_seconds.saturating_add(shortcut.duration_seconds);
+                    if cost_seconds > self.target_seconds.min(self.max_seconds) {
+                        continue;
+                    }
+                    let node = self.nodes.len();
+                    let transferred = Label {
+                        cost_seconds,
+                        penalty_seconds: label.penalty_seconds,
+                        last_mode: label.last_mode,
+                        node,
+                        structure: fingerprint(label.structure, &(&shortcut.from, &shortcut.to)),
+                        last_route_id: label.last_route_id.clone(),
+                        after_ride: false,
+                    };
+                    if self.insert(&shortcut.to, &transferred) {
+                        self.nodes.push(Node {
+                            parent: Some(label.node),
+                            access_stop_id: self.nodes[label.node].access_stop_id.clone(),
+                            step: Some(StaticCorridorStep::SurfaceTransfer {
+                                from: shortcut.from.clone(),
+                                to: shortcut.to.clone(),
+                                walking_duration_seconds: shortcut.duration_seconds,
+                                walking_distance_metres: shortcut.distance_metres,
+                            }),
+                        });
+                        walked
+                            .entry(shortcut.to.clone())
+                            .or_default()
+                            .push(transferred);
+                    }
+                }
+            }
+        }
+        for (stop_id, stop_labels) in walked {
+            labels.entry(stop_id).or_default().extend(stop_labels);
+        }
+    }
+
+    fn insert(&mut self, stop_id: &BoardingPointId, label: &Label) -> bool {
+        if label.cost_seconds > self.target_seconds.min(self.max_seconds) {
+            return false;
+        }
+        let bag = self.best.entry(stop_id.clone()).or_default();
+        if let Some(index) = bag.iter().position(|known| {
+            known.structure == label.structure && known.last_route_id == label.last_route_id
+        }) {
+            if bag[index].cost_seconds <= label.cost_seconds {
+                return false;
+            }
+            bag.remove(index);
+        }
+        if bag
+            .iter()
+            .filter(|known| {
+                known.structure == label.structure && known.cost_seconds <= label.cost_seconds
+            })
+            .count()
+            >= ROUTE_VARIANTS_PER_STRUCTURE
+        {
+            return false;
+        }
+        let better_structures = bag
+            .iter()
+            .filter(|known| {
+                known.structure != label.structure && known.cost_seconds <= label.cost_seconds
+            })
+            .map(|known| known.structure)
+            .collect::<HashSet<_>>();
+        if better_structures.len() >= LABELS_PER_STOP {
+            return false;
+        }
+        bag.push(BagEntry {
+            cost_seconds: label.cost_seconds,
+            structure: label.structure,
+            last_route_id: label.last_route_id.clone(),
+        });
+        bag.sort_by_key(|known| known.cost_seconds);
+        let mut structures = Vec::new();
+        let mut variants = HashMap::<u64, usize>::new();
+        bag.retain(|known| {
+            let count = variants.entry(known.structure).or_default();
+            *count += 1;
+            if !structures.contains(&known.structure) {
+                structures.push(known.structure);
+            }
+            *count <= ROUTE_VARIANTS_PER_STRUCTURE
+                && structures
+                    .iter()
+                    .position(|structure| *structure == known.structure)
+                    .is_some_and(|rank| rank < LABELS_PER_STOP)
+        });
+        true
+    }
+
+    fn retain_current(&self, current: &mut RoundLabels) {
+        current.retain(|stop_id, labels| {
+            let Some(bag) = self.best.get(stop_id) else {
+                return false;
+            };
+            labels.retain(|label| {
+                bag.iter().any(|known| {
+                    known.cost_seconds == label.cost_seconds
+                        && known.structure == label.structure
+                        && known.last_route_id == label.last_route_id
+                })
+            });
+            !labels.is_empty()
         });
     }
-    frontier
-}
 
-fn run_forward_search(
-    search: &mut PreparedSearch<'_>,
-    frontier: &mut SearchFrontier,
-    retention: &mut CorridorRetention,
-    equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-    stats: &mut StaticSearchStats,
-) {
-    while let Some(entry) = frontier.pop() {
-        if deadline_exceeded(search.query) {
-            stats.deadline_exceeded = true;
-            break;
+    fn steps(&self, node: usize) -> Vec<StaticCorridorStep> {
+        let mut steps = Vec::new();
+        let mut cursor = Some(node);
+        while let Some(index) = cursor {
+            if let Some(step) = &self.nodes[index].step {
+                steps.push(step.clone());
+            }
+            cursor = self.nodes[index].parent;
         }
-        if retention
-            .kth_duration()
-            .is_some_and(|kth| entry.state.priority_seconds > kth)
-        {
-            stats.top_k_early_terminated = true;
-            break;
-        }
-        if !frontier.is_current(&entry.state) {
-            continue;
-        }
-        if stats.states_expanded >= search.query.limits.max_phase1_expansions {
-            stats.search_limit_reached = true;
-            break;
-        }
-        stats.states_expanded += 1;
-        let state = entry.state;
-
-        if !state.transfer_ready && expand_surface_transfers(&state, search, frontier, stats) {
-            break;
-        }
-
-        if state.transit_legs_used >= search.max_legs {
-            continue;
-        }
-
-        if expand_transit_rides(&state, search, frontier, retention, equivalent_legs, stats) {
-            break;
-        }
+        steps.reverse();
+        steps
     }
 }
 
-fn usable_pattern_occurrences(
-    state: &StaticState,
-    search: &PreparedSearch<'_>,
-) -> Vec<PatternPosition> {
-    search
-        .topology
-        .occurrences_at(&state.stop_id)
+fn fingerprint(parent: u64, value: &impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    parent.hash(&mut hasher);
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn leg_cost_source(first: Option<SegmentTimeSource>, mixed: bool) -> StaticCostSource {
+    if mixed {
+        return StaticCostSource::Mixed;
+    }
+    match first {
+        Some(SegmentTimeSource::Schedule) => StaticCostSource::ExactSchedule,
+        Some(SegmentTimeSource::Derived) => StaticCostSource::DerivedBus,
+        Some(SegmentTimeSource::Estimated) | None => StaticCostSource::OptimisticEstimate,
+    }
+}
+
+fn select(
+    network: &TransitRuntime,
+    candidates: Vec<Candidate>,
+    limit: usize,
+    stats: &mut StaticSearchStats,
+) -> Vec<StaticCorridor> {
+    let mut unique = HashMap::<EquivalentCorridorSignature, Candidate>::new();
+    for candidate in candidates {
+        let structure = EquivalentCorridorSignature {
+            access_stop_id: candidate.corridor.access_stop_id.clone(),
+            steps: equivalent_steps(network, &candidate.corridor.steps),
+            egress_stop_id: candidate.corridor.egress_stop_id.clone(),
+        };
+        let replace = unique
+            .get(&structure)
+            .is_none_or(|known| candidate.search_cost_seconds < known.search_cost_seconds);
+        if replace {
+            unique.insert(structure, candidate);
+        }
+    }
+    stats.unique_corridors_found = unique.len();
+    let mut candidates = unique.into_values().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        left.search_cost_seconds
+            .cmp(&right.search_cost_seconds)
+            .then(left.rides.cmp(&right.rides))
+            .then_with(|| {
+                format!("{:?}", left.corridor.steps).cmp(&format!("{:?}", right.corridor.steps))
+            })
+    });
+    let mut chosen = HashSet::new();
+    let mut best_with_fewer_rides = u32::MAX;
+    let max_rides = candidates
         .iter()
-        .filter(|position| search.patterns.group_index(&position.pattern_id).is_some())
-        .cloned()
+        .map(|candidate| candidate.rides)
+        .max()
+        .unwrap_or(0);
+    for rides in 1..=max_rides {
+        if let Some(index) = candidates
+            .iter()
+            .position(|candidate| candidate.rides == rides)
+        {
+            let duration = candidates[index].search_cost_seconds;
+            if duration < best_with_fewer_rides {
+                chosen.insert(index);
+                best_with_fewer_rides = duration;
+            }
+        }
+    }
+    for index in 0..candidates.len() {
+        if chosen.len() >= limit {
+            break;
+        }
+        chosen.insert(index);
+    }
+    candidates
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| chosen.contains(index))
+        .map(|(_, candidate)| candidate.corridor)
         .collect()
 }
 
-fn expand_surface_transfers(
-    state: &StaticState,
-    search: &PreparedSearch<'_>,
-    frontier: &mut SearchFrontier,
-    stats: &mut StaticSearchStats,
-) -> bool {
-    for shortcut in search.transfers.transfers_from(&state.stop_id) {
-        if deadline_exceeded(search.query) {
-            stats.deadline_exceeded = true;
-            return true;
-        }
-
-        let elapsed_seconds = state
-            .elapsed_seconds
-            .saturating_add(shortcut.duration_seconds);
-        if elapsed_seconds > search.query.limits.max_journey_duration_seconds {
+fn equivalent_legs_for(
+    network: &TransitRuntime,
+    topology: &TransitTopologyIndex,
+    patterns: &StaticPhase1PatternIndex,
+    corridors: &[StaticCorridor],
+) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
+    let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
+    for leg in corridors.iter().flat_map(StaticCorridor::transit_legs) {
+        let key = equivalent_leg_key(network, leg);
+        if equivalent_legs.contains_key(&key) {
             continue;
         }
-        let mut next = state.clone();
-        next.stop_id = shortcut.to.clone();
-        next.elapsed_seconds = elapsed_seconds;
-        let Some(remaining_seconds) = search.destination_lower_bounds.get(&shortcut.to).copied()
-        else {
-            continue;
-        };
-        next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
-        next.priority_seconds = next.lower_bound_seconds;
-        next.steps.push(StaticCorridorStep::SurfaceTransfer {
-            from: shortcut.from.clone(),
-            to: shortcut.to.clone(),
-            walking_duration_seconds: shortcut.duration_seconds,
-            walking_distance_metres: shortcut.distance_metres,
-        });
-        next.transfer_ready = true;
-        if next.transit_legs_used < search.max_legs {
-            frontier.enqueue(next);
-        }
-    }
-    false
-}
-
-fn expand_transit_rides(
-    state: &StaticState,
-    search: &mut PreparedSearch<'_>,
-    frontier: &mut SearchFrontier,
-    retention: &mut CorridorRetention,
-    equivalent_legs: &mut HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-    stats: &mut StaticSearchStats,
-) -> bool {
-    for position in usable_pattern_occurrences(state, search) {
-        if deadline_exceeded(search.query) {
-            stats.deadline_exceeded = true;
-            return true;
-        }
-        let group_index = search
-            .patterns
-            .group_index(&position.pattern_id)
-            .expect("indexed pattern");
-        let group = search.patterns.group(group_index);
-        let route_id = &search.network.required_pattern(&group.pattern_id).route_id;
-        if state.last_transit_route_id.as_ref() == Some(route_id) {
-            continue;
-        }
-        let mode = group.mode;
-        if !search.query.allowed_transit_modes.contains(&mode) {
-            continue;
-        }
-
-        search.patterns.ensure_ride_options(
-            group_index,
-            position.stop_index,
-            stats,
-            equivalent_legs,
-            search.query.deadline,
-        );
-        if stats.deadline_exceeded {
-            return true;
-        }
-        let transfer_seconds = if state.transit_legs_used > 0 && !state.transfer_ready {
-            search.network.same_stop_transfer_seconds()
-        } else {
-            0
-        };
-        for ride_option in search
-            .patterns
-            .ride_options(group_index, position.stop_index)
-        {
-            if deadline_exceeded(search.query) {
-                stats.deadline_exceeded = true;
-                return true;
-            }
-
-            let ride_seconds = ride_option.duration_seconds;
-            let source = ride_option.leg.cost_source;
-            let elapsed_seconds = state
-                .elapsed_seconds
-                .saturating_add(transfer_seconds)
-                .saturating_add(ride_seconds);
-            if elapsed_seconds > search.query.limits.max_journey_duration_seconds {
+        let mut legs = Vec::new();
+        for position in topology.occurrences_at(&leg.board_stop_id) {
+            let Some(group_index) = patterns.group_index(&position.pattern_id) else {
+                continue;
+            };
+            let group = patterns.group(group_index);
+            if group.mode != key.mode {
                 continue;
             }
-            let alight_stop_id = ride_option.alight_stop_id.clone();
-            let mut next = state.clone();
-            next.stop_id = alight_stop_id.clone();
-            next.elapsed_seconds = elapsed_seconds;
-            let Some(remaining_seconds) = search
-                .destination_lower_bounds
-                .get(&alight_stop_id)
-                .copied()
+            let Some(offset) = group.stops[position.stop_index + 1..]
+                .iter()
+                .position(|stop_id| *stop_id == leg.alight_stop_id)
             else {
                 continue;
             };
-            next.lower_bound_seconds = elapsed_seconds.saturating_add(remaining_seconds);
-            next.priority_seconds = next.lower_bound_seconds;
-            next.transit_legs_used += 1;
-            if state.last_transit_mode != Some(mode) {
-                next.mode_transition_sequence.push(mode);
+            let alight_index = position.stop_index + 1 + offset;
+            let mut first = None;
+            let mut mixed = false;
+            for segment in &group.segments[position.stop_index..alight_index] {
+                mixed |= first.is_some_and(|known| known != segment.source);
+                first.get_or_insert(segment.source);
             }
-            next.last_transit_mode = Some(mode);
-            next.last_transit_route_id = Some(route_id.clone());
-            next.steps
-                .push(StaticCorridorStep::Transit(ride_option.leg.clone()));
-            next.has_exact_cost |= source == StaticCostSource::ExactSchedule;
-            next.has_derived_bus_cost |= source == StaticCostSource::DerivedBus;
-            next.has_estimated_cost |= source == StaticCostSource::OptimisticEstimate;
-            if source == StaticCostSource::Mixed {
-                next.has_exact_cost = true;
-                next.has_estimated_cost = true;
-            }
-            next.transfer_ready = false;
-            retention.record_complete(
-                &next,
-                &search.egress_by_stop,
-                search.query.limits.max_journey_duration_seconds,
-                stats,
-                search.network,
-            );
-            frontier.enqueue(next);
+            legs.push(StaticTransitLeg {
+                pattern_id: group.pattern_id.clone(),
+                board_stop_id: leg.board_stop_id.clone(),
+                board_index: position.stop_index,
+                alight_stop_id: leg.alight_stop_id.clone(),
+                alight_index,
+                cost_source: leg_cost_source(first, mixed),
+            });
         }
+        if !legs.iter().any(|known| known == leg) {
+            legs.push(leg.clone());
+        }
+        equivalent_legs.insert(key, legs);
     }
-    false
+    equivalent_legs
 }
 
-fn deadline_exceeded(query: &PlanningQuery) -> bool {
-    query.deadline.is_elapsed()
-}
-
-fn finish_deadline(
-    started: Instant,
-    mut stats: StaticSearchStats,
-) -> (RetainedCorridorSet, StaticSearchStats) {
-    stats.deadline_exceeded = true;
-    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    (RetainedCorridorSet::default(), stats)
+fn cost_source(steps: &[StaticCorridorStep]) -> StaticCostSource {
+    let sources = steps
+        .iter()
+        .filter_map(|step| match step {
+            StaticCorridorStep::Transit(leg) => Some(leg.cost_source),
+            StaticCorridorStep::SurfaceTransfer { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if sources.contains(&StaticCostSource::Mixed) {
+        return StaticCostSource::Mixed;
+    }
+    match (
+        sources.contains(&StaticCostSource::ExactSchedule),
+        sources.contains(&StaticCostSource::DerivedBus),
+        sources.contains(&StaticCostSource::OptimisticEstimate),
+    ) {
+        (true, false, false) => StaticCostSource::ExactSchedule,
+        (false, true, false) => StaticCostSource::DerivedBus,
+        (false, false, _) => StaticCostSource::OptimisticEstimate,
+        _ => StaticCostSource::Mixed,
+    }
 }

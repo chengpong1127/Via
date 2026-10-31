@@ -10,7 +10,6 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     let limits = settings.journey_limits();
     assert_eq!(limits.planner.max_transfers, 4);
     assert_eq!(limits.planner.max_static_corridors, 24);
-    assert_eq!(limits.planner.max_phase1_expansions, 20_000);
     assert_eq!(limits.planner.max_concurrent_phase2_states, 4);
     assert_eq!(limits.planner.max_concurrent_phase2_corridors, 8);
     assert_eq!(limits.planner.max_candidates, 16);

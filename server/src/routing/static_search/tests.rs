@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use time::{Time, Weekday, macros::datetime};
 
@@ -272,40 +272,6 @@ fn one_global_k_is_shared_across_bus_and_metro() {
 }
 
 #[test]
-fn top_k_does_not_require_every_endpoint_mode_pair() {
-    let network = network(
-        vec![
-            pattern("bus", TransitMode::Bus, &["o", "d"]),
-            pattern("metro", TransitMode::Metro, &["o", "d"]),
-            pattern("slow-first", TransitMode::Bus, &["o", "slow-hub"]),
-            pattern("slow-last", TransitMode::Bus, &["slow-hub", "d"]),
-        ],
-        vec![
-            trip("bus-trip", "bus", &[0, 100]),
-            trip("metro-trip", "metro", &[0, 200]),
-            trip("slow-first-trip", "slow-first", &[0, 500]),
-            trip("slow-last-trip", "slow-last", &[0, 500]),
-        ],
-    );
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-
-    let (retained_corridors, stats) = generate(
-        &runtime,
-        &TransitTopologyIndex::new(&network),
-        &TransferShortcutIndex::from_network(&network),
-        &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 1),
-    );
-
-    assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(
-        retained_corridors.retained()[0].pattern_sequence(),
-        vec![TransitPatternId::new("bus")]
-    );
-    assert_eq!(stats.states_expanded, 2);
-    assert!(stats.top_k_early_terminated);
-}
-
-#[test]
 fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
     let network = network(
         vec![
@@ -363,67 +329,6 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
 
     assert_eq!(retained_corridors.retained().len(), 2);
     assert_eq!(stats.corridor_patterns, 4);
-}
-
-#[test]
-fn top_k_search_expands_equal_cost_bounds_before_terminating() {
-    let network = network(
-        vec![
-            pattern("direct", TransitMode::Bus, &["o", "d"]),
-            pattern("first", TransitMode::Bus, &["o", "hub-from"]),
-            pattern("second", TransitMode::Bus, &["hub-to", "d"]),
-        ],
-        vec![
-            trip("direct-trip", "direct", &[0, 3]),
-            trip("first-trip", "first", &[0, 1]),
-            trip("second-trip", "second", &[0, 1]),
-        ],
-    )
-    .with_transfer_edges(vec![TransferEdge::new(
-        id("hub-from"),
-        id("hub-to"),
-        1,
-        100,
-    )]);
-
-    let (retained_corridors, stats) = generate(
-        &TransitRuntime::new(std::sync::Arc::new(network.clone())),
-        &TransitTopologyIndex::new(&network),
-        &TransferShortcutIndex::from_network(&network),
-        &query("o", "d", &[TransitMode::Bus], 1, 1),
-    );
-
-    assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.unique_corridors_found, 2);
-}
-
-#[test]
-fn top_k_stops_when_best_frontier_bound_exceeds_kth_duration() {
-    let mut patterns = vec![pattern("direct", TransitMode::Bus, &["o", "d"])];
-    let mut trips = vec![trip("direct-trip", "direct", &[0, 3])];
-    for index in 0..64 {
-        let first_id = format!("first-{index}");
-        let second_id = format!("second-{index}");
-        let feeder_stop = format!("feeder-{index}");
-        patterns.push(pattern(&first_id, TransitMode::Bus, &["o", &feeder_stop]));
-        patterns.push(pattern(&second_id, TransitMode::Bus, &[&feeder_stop, "d"]));
-        trips.push(trip(&format!("{first_id}-trip"), &first_id, &[0, 10]));
-        trips.push(trip(&format!("{second_id}-trip"), &second_id, &[0, 10]));
-    }
-    let network = network(patterns, trips);
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-
-    let (retained_corridors, stats) = generate(
-        &runtime,
-        &TransitTopologyIndex::new(&network),
-        &TransferShortcutIndex::from_network(&network),
-        &query("o", "d", &[TransitMode::Bus], 1, 1),
-    );
-
-    assert_eq!(retained_corridors.retained().len(), 1);
-    assert_eq!(stats.kth_duration_seconds, Some(3));
-    assert_eq!(stats.states_expanded, 2);
-    assert!(stats.top_k_early_terminated);
 }
 
 #[test]
@@ -494,7 +399,7 @@ fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
 }
 
 #[test]
-fn competitive_metro_to_bus_corridor_is_found_in_global_top_k() {
+fn competitive_metro_to_bus_corridor_is_retained() {
     let network = network(
         vec![
             pattern("bus-direct-a", TransitMode::Bus, &["o", "a", "d"]),
@@ -749,30 +654,6 @@ fn static_walking_transfer_can_connect_transit_rides() {
 }
 
 #[test]
-fn expansion_bound_is_reported_instead_of_silently_certifying_partial_top_k() {
-    let network = network(
-        vec![
-            pattern("first", TransitMode::Bus, &["o", "d"]),
-            pattern("second", TransitMode::Bus, &["o", "d"]),
-        ],
-        vec![
-            trip("first-trip", "first", &[0, 100]),
-            trip("second-trip", "second", &[0, 110]),
-        ],
-    );
-    let topology = TransitTopologyIndex::new(&network);
-    let transfers = TransferShortcutIndex::from_network(&network);
-    let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
-    query.deadline = crate::routing::PlanningDeadline::disabled();
-    query.limits.max_phase1_expansions = 1;
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-
-    let (_, stats) = generate(&runtime, &topology, &transfers, &query);
-
-    assert!(stats.search_limit_reached);
-}
-
-#[test]
 fn expired_deadline_stops_phase1_before_expanding_a_state() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["o", "d"])],
@@ -790,72 +671,87 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
     assert_eq!(stats.states_expanded, 0);
     assert!(corridors.is_empty());
 }
-#[test]
-fn pattern_ride_cache_keeps_one_ride_per_position_pair() {
-    use super::pattern_index::StaticPhase1PatternIndex;
 
+#[test]
+fn best_corridor_for_each_ride_count_survives_a_full_cap_of_faster_transfers() {
+    let mut patterns = vec![pattern("direct-rail", TransitMode::Rail, &["o", "d"])];
+    let mut trips = vec![trip("direct-trip", "direct-rail", &[0, 2_400])];
+    for index in 0..4 {
+        let hub = format!("hub-{index}");
+        let first = format!("feeder-{index}");
+        let second = format!("express-{index}");
+        patterns.push(pattern(&first, TransitMode::Bus, &["o", &hub]));
+        patterns.push(pattern(&second, TransitMode::Bus, &[&hub, "d"]));
+        trips.push(trip(&format!("{first}-trip"), &first, &[0, 300]));
+        trips.push(trip(&format!("{second}-trip"), &second, &[0, 900]));
+    }
+    let network = network(patterns, trips);
+
+    let retained_corridors = run(
+        &network,
+        &query("o", "d", &[TransitMode::Bus, TransitMode::Rail], 1, 2),
+    );
+
+    assert_eq!(retained_corridors.retained().len(), 2);
+    assert!(
+        retained_corridors
+            .retained()
+            .iter()
+            .any(|corridor| corridor.pattern_sequence()
+                == vec![TransitPatternId::new("direct-rail")])
+    );
+}
+
+#[test]
+fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
     let network = network(
         vec![
-            pattern("loop-a", TransitMode::Bus, &["o", "mid", "o", "d"]),
-            pattern("loop-b", TransitMode::Bus, &["o", "mid", "o", "d"]),
+            pattern("direct", TransitMode::Bus, &["o", "d"]),
+            pattern("first", TransitMode::Bus, &["o", "hub"]),
+            pattern("second", TransitMode::Bus, &["hub", "d"]),
         ],
         vec![
-            trip("a", "loop-a", &[0, 10, 20, 30]),
-            trip("b", "loop-b", &[0, 15, 30, 45]),
+            trip("direct-trip", "direct", &[0, 500]),
+            trip("first-trip", "first", &[0, 200]),
+            trip("second-trip", "second", &[0, 200]),
         ],
     );
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-    let mut stats = StaticSearchStats::default();
-    let mut index = StaticPhase1PatternIndex::new(
-        &runtime,
-        &[TransitMode::Bus],
-        &mut stats,
-        crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
+
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 1, 1));
+
+    assert_eq!(
+        retained_corridors
+            .retained()
+            .iter()
+            .map(StaticCorridor::pattern_sequence)
+            .collect::<Vec<_>>(),
+        vec![vec![TransitPatternId::new("direct")]]
     );
-    let mut equivalent_legs = HashMap::new();
-    for (pattern_id, segment_seconds) in [("loop-a", 10), ("loop-b", 15)] {
-        let group_index = index
-            .group_index(&TransitPatternId::new(pattern_id))
-            .unwrap();
-        for board_index in 0..4 {
-            assert!(index.ensure_ride_options(
-                group_index,
-                board_index,
-                &mut stats,
-                &mut equivalent_legs,
-                crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(
-                    3600
-                ))
-            ));
-            let rides = index.ride_options(group_index, board_index);
-            assert_eq!(rides.len(), 3 - board_index);
-            for (offset, ride) in rides.iter().enumerate() {
-                let alight_index = board_index + offset + 1;
-                assert_eq!(ride.leg.pattern_id.as_str(), pattern_id);
-                assert_eq!(ride.leg.board_index, board_index);
-                assert_eq!(ride.leg.alight_index, alight_index);
-                assert_eq!(
-                    ride.duration_seconds,
-                    (alight_index - board_index) as u32 * segment_seconds
-                );
-            }
-            assert!(!index.ensure_ride_options(
-                group_index,
-                board_index,
-                &mut stats,
-                &mut equivalent_legs,
-                crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(
-                    3600
-                ))
-            ));
-        }
-    }
-    let legs = equivalent_legs
-        .values()
-        .find(|legs| legs.len() == 4)
-        .unwrap();
-    assert!(
-        legs.iter()
-            .all(|leg| leg.board_stop_id == id("o") && leg.alight_stop_id == id("d"))
+}
+
+#[test]
+fn target_bound_drops_much_slower_corridors_when_the_cap_is_not_full() {
+    let network = network(
+        vec![
+            pattern("direct", TransitMode::Bus, &["o", "d"]),
+            pattern("first", TransitMode::Bus, &["o", "hub"]),
+            pattern("second", TransitMode::Bus, &["hub", "d"]),
+        ],
+        vec![
+            trip("direct-trip", "direct", &[0, 600]),
+            trip("first-trip", "first", &[0, 1_200]),
+            trip("second-trip", "second", &[0, 1_200]),
+        ],
+    );
+
+    let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 1, 24));
+
+    assert_eq!(
+        retained_corridors
+            .retained()
+            .iter()
+            .map(StaticCorridor::pattern_sequence)
+            .collect::<Vec<_>>(),
+        vec![vec![TransitPatternId::new("direct")]]
     );
 }

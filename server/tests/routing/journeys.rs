@@ -8,7 +8,6 @@ use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::
 use via_server::{
     domain::bikeshare::BikeShareNetwork,
     domain::ids::TransitPatternId,
-    domain::journey::PlanningError,
     domain::transit_timing::{DepartureError, SnapshotDepartures, TimingSnapshot},
     domain::{
         ids::BoardingPointId,
@@ -351,30 +350,6 @@ async fn zero_transfer_configuration_excludes_interchange_journeys() {
     .unwrap();
     let option = option_for_patterns(&single_ride_body, &["fixture-mrt-red"]);
     assert_eq!(option["transfer_count"], 0);
-}
-
-#[tokio::test]
-async fn phase1_safety_limit_is_not_reported_as_an_empty_result() {
-    let network = network();
-    let origin = near_stop(&network, "F-M1");
-    let destination = near_stop(&network, "F-M3-BLUE");
-    let limits = JourneyPlanningLimits {
-        planner: via_server::routing::PlannerLimits {
-            max_phase1_expansions: 1,
-            ..via_server::routing::PlannerLimits::default()
-        },
-        ..JourneyPlanningLimits::default()
-    };
-
-    let result = route_body_with_limits(
-        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
-        FixtureRealtime::empty(),
-        request(origin, destination, &["bus", "metro", "tra", "thsr"]),
-        limits,
-    )
-    .await;
-
-    assert_eq!(result.unwrap_err(), PlanningError::Internal);
 }
 
 #[tokio::test]
