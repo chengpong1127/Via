@@ -20,6 +20,7 @@ use via_server::{
         ids::{
             BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
         },
+        realtime::FreshnessState,
         transit::{
             ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
@@ -243,6 +244,20 @@ async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule
         Some(TransitTripId::new("scheduled-100"))
     );
     assert!(trip.observed_at.is_some());
+    assert_eq!(trip.evidence.len(), 1);
+    assert_eq!(trip.evidence[0].freshness, FreshnessState::Fresh);
+    assert_eq!(
+        trip.evidence[0].value.predicted_arrival_at,
+        Some(expected_departure(7))
+    );
+    assert_eq!(
+        trip.evidence[0].value.boarding_point_id,
+        query("100").board_stop_id
+    );
+    assert_eq!(
+        Some(trip.evidence[0].value.transmitted_at),
+        trip.observed_at
+    );
 }
 
 #[tokio::test]
@@ -256,6 +271,7 @@ async fn empty_tra_realtime_falls_back_to_static_schedule() {
     assert_eq!(trip.timing_basis, TimingBasis::Schedule);
     assert_eq!(trip.timing_reliability, TimingReliability::Reliable);
     assert_eq!(trip.stop_times[0].departure_at, expected_departure(0));
+    assert!(trip.evidence.is_empty());
 }
 
 #[tokio::test]

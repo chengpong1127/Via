@@ -17,7 +17,9 @@ use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::FreshnessPolicy,
+        realtime::{
+            ArrivalEstimate, ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue,
+        },
         transit::TransitMode,
         transit_runtime::TransitRuntime,
         transit_timing::{
@@ -153,7 +155,16 @@ impl MetroDepartureSource {
             timing_reliability: TimingReliability::Reliable,
             observed_at: Some(observed_at),
             uncertainty_seconds: None,
-            evidence: Vec::new(),
+            evidence: vec![NormalizedRealtimeValue {
+                freshness: FreshnessState::Fresh,
+                value: ArrivalEstimate {
+                    transit_pattern_id: pattern_id.clone(),
+                    boarding_point_id: board_stop_id.clone(),
+                    predicted_arrival_at: Some(departure_at),
+                    state: ArrivalState::Predicted,
+                    transmitted_at: observed_at,
+                },
+            }],
         })
     }
 

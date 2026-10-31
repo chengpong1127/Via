@@ -9,7 +9,10 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 
 use crate::{
     domain::{
-        realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
+        realtime::{
+            ArrivalEstimate, ArrivalState, FreshnessPolicy, FreshnessState, LiveStatusTimes,
+            NormalizedRealtimeValue,
+        },
         transit::TransitMode,
         transit_runtime::TransitRuntime,
         transit_timing::{
@@ -252,10 +255,9 @@ impl TraDepartureSource {
             stop_time.departure_at = stop_time.departure_at.checked_add(observation.delay)?;
         }
         let board_index = query.resolve_board_index(&self.network).ok()?;
-        if trip.stop_times[board_index].departure_at < query.after
-            || query
-                .before
-                .is_some_and(|before| trip.stop_times[board_index].departure_at > before)
+        let board_departure = trip.stop_times[board_index].departure_at;
+        if board_departure < query.after
+            || query.before.is_some_and(|before| board_departure > before)
         {
             return None;
         }
@@ -270,7 +272,16 @@ impl TraDepartureSource {
         trip.scheduled_trip_id = scheduled_trip_id;
         trip.observed_at = Some(observation.observed_at);
         trip.uncertainty_seconds = None;
-        trip.evidence.clear();
+        trip.evidence = vec![NormalizedRealtimeValue {
+            freshness: FreshnessState::Fresh,
+            value: ArrivalEstimate {
+                transit_pattern_id: trip.pattern_id.clone(),
+                boarding_point_id: query.board_stop_id.clone(),
+                predicted_arrival_at: Some(board_departure),
+                state: ArrivalState::Predicted,
+                transmitted_at: observation.observed_at,
+            },
+        }];
         Some(trip)
     }
 }

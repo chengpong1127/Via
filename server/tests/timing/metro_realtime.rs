@@ -16,6 +16,7 @@ use via_server::{
         ids::{
             BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
         },
+        realtime::FreshnessState,
         transit::{
             ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
@@ -253,6 +254,13 @@ async fn fresh_metro_realtime_overrides_static_and_materializes_downstream_times
         observed_at + Duration::minutes(1) + Duration::seconds(240)
     );
     assert_eq!(departures[0].observed_at, Some(observed_at));
+    assert_eq!(departures[0].evidence.len(), 1);
+    assert_eq!(departures[0].evidence[0].freshness, FreshnessState::Fresh);
+    assert_eq!(
+        departures[0].evidence[0].value.predicted_arrival_at,
+        Some(observed_at + Duration::minutes(1))
+    );
+    assert_eq!(departures[0].evidence[0].value.transmitted_at, observed_at);
 }
 
 #[tokio::test]
