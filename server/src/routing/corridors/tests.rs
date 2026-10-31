@@ -754,3 +754,33 @@ fn target_bound_drops_much_slower_corridors_when_the_cap_is_not_full() {
         vec![vec![TransitPatternId::new("direct")]]
     );
 }
+
+#[test]
+fn equal_cost_walking_transfers_are_kept_in_stop_order() {
+    let mut patterns = vec![pattern("rail", TransitMode::Rail, &["x", "d"])];
+    let mut trips = vec![trip("rail-trip", "rail", &[0, 600])];
+    let mut edges = Vec::new();
+    for index in 0..8 {
+        let hub = format!("hub-{index}");
+        let feeder = format!("feeder-{index}");
+        patterns.push(pattern(&feeder, TransitMode::Bus, &["o", &hub]));
+        trips.push(trip(&format!("{feeder}-trip"), &feeder, &[0, 300]));
+        edges.push(TransferEdge::new(id(&hub), id("x"), 60, 80));
+    }
+    let network = network(patterns, trips).with_transfer_edges(edges);
+    let query = query("o", "d", &[TransitMode::Bus, TransitMode::Rail], 1, 24);
+    let feeders = || {
+        run(&network, &query)
+            .retained()
+            .iter()
+            .map(|corridor| corridor.pattern_sequence()[0].as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let first = feeders();
+
+    assert_eq!(first, ["feeder-0", "feeder-1", "feeder-2", "feeder-3"]);
+    for _ in 0..20 {
+        assert_eq!(feeders(), first);
+    }
+}

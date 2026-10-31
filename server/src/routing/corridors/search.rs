@@ -168,11 +168,11 @@ pub fn generate(
         for (group_index, first_index) in routes {
             search.scan_route(&patterns, group_index, first_index, &current, &mut next);
         }
-        for (stop_id, labels) in &next {
+        for stop_id in sorted_stops(&next) {
             let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
                 continue;
             };
-            for label in labels {
+            for label in &next[stop_id] {
                 let duration = label
                     .cost_seconds
                     .saturating_sub(label.penalty_seconds)
@@ -334,8 +334,8 @@ impl Search<'_> {
 
     fn relax_transfers(&mut self, labels: &mut RoundLabels) {
         let mut walked = RoundLabels::new();
-        for (stop_id, stop_labels) in labels.iter() {
-            for label in stop_labels {
+        for stop_id in sorted_stops(labels) {
+            for label in &labels[stop_id] {
                 if !label.after_ride && self.nodes[label.node].parent.is_some() {
                     continue;
                 }
@@ -464,6 +464,12 @@ impl Search<'_> {
     }
 }
 
+fn sorted_stops(labels: &RoundLabels) -> Vec<&BoardingPointId> {
+    let mut stops = labels.keys().collect::<Vec<_>>();
+    stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    stops
+}
+
 fn fingerprint(parent: u64, value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     parent.hash(&mut hasher);
@@ -495,9 +501,15 @@ fn select(
             steps: equivalent_steps(network, &candidate.corridor.steps),
             egress_stop_id: candidate.corridor.egress_stop_id.clone(),
         };
-        let replace = unique
-            .get(&structure)
-            .is_none_or(|known| candidate.search_cost_seconds < known.search_cost_seconds);
+        let replace = unique.get(&structure).is_none_or(|known| {
+            (
+                candidate.search_cost_seconds,
+                corridor_order_key(&candidate.corridor),
+            ) < (
+                known.search_cost_seconds,
+                corridor_order_key(&known.corridor),
+            )
+        });
         if replace {
             unique.insert(structure, candidate);
         }
@@ -509,7 +521,7 @@ fn select(
             .cmp(&right.search_cost_seconds)
             .then(left.rides.cmp(&right.rides))
             .then_with(|| {
-                format!("{:?}", left.corridor.steps).cmp(&format!("{:?}", right.corridor.steps))
+                corridor_order_key(&left.corridor).cmp(&corridor_order_key(&right.corridor))
             })
     });
     let mut chosen = HashSet::new();
@@ -594,6 +606,14 @@ fn equivalent_legs_for(
         equivalent_legs.insert(key, legs);
     }
     equivalent_legs
+}
+
+fn corridor_order_key(corridor: &StaticCorridor) -> (&str, &str, String) {
+    (
+        corridor.access_stop_id.as_str(),
+        corridor.egress_stop_id.as_str(),
+        format!("{:?}", corridor.steps),
+    )
 }
 
 fn cost_source(steps: &[StaticCorridorStep]) -> StaticCostSource {
