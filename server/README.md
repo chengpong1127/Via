@@ -16,12 +16,16 @@ cp server/.env.example server/.env
 ```
 
 From the repository root, fetch source data and build an artifact with Valhalla
-running. Replace the snapshot placeholder with the path printed by `fetch`:
+running. `fetch` downloads the TDX GTFS feed unless `--gtfs-file` is given, and
+points `server/data/fetch/latest` at the new snapshot; `build` points
+`server/data/build/.via-static-latest.json` at the new artifact. `build` reads
+the latest snapshot and `validate`/`inspect` read the latest artifact unless
+`--input` or `--static` is given:
 
 ```sh
-cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch --gtfs-file /path/to/gtfs.zip
-cargo run --manifest-path server/Cargo.toml --bin via-data -- build --input server/data/fetch/{fetch_datetime}
-cargo run --manifest-path server/Cargo.toml --bin via-data -- validate --static server/data/build/{build_datetime}/.via-static.json
+cargo run --manifest-path server/Cargo.toml --bin via-data -- fetch
+cargo run --manifest-path server/Cargo.toml --bin via-data -- build
+cargo run --manifest-path server/Cargo.toml --bin via-data -- validate
 ```
 
 `fetch` also retrieves TDX station catalogs and needs credentials; `build` reads

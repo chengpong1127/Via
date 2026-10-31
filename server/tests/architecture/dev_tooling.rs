@@ -19,6 +19,7 @@ fn via_data_exposes_fetch_build_validate_and_inspect() {
     assert!(build_help.status.success());
     let build_help = String::from_utf8_lossy(&build_help.stdout);
     assert!(build_help.contains("--input"));
+    assert!(build_help.contains("data/fetch/latest"));
     assert!(!build_help.contains("--output"));
 
     let validate_help = Command::new(env!("CARGO_BIN_EXE_via-data"))
@@ -26,7 +27,9 @@ fn via_data_exposes_fetch_build_validate_and_inspect() {
         .output()
         .unwrap();
     assert!(validate_help.status.success());
-    assert!(String::from_utf8_lossy(&validate_help.stdout).contains("--static"));
+    let validate_help = String::from_utf8_lossy(&validate_help.stdout);
+    assert!(validate_help.contains("--static"));
+    assert!(validate_help.contains("data/build/.via-static-latest.json"));
 }
 
 #[test]

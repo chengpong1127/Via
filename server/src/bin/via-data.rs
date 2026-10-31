@@ -52,13 +52,13 @@ struct FetchArgs {
 
 #[derive(Args, Debug)]
 struct BuildArgs {
-    #[arg(long)]
+    #[arg(long, default_value_os_t = latest_fetch_snapshot())]
     input: PathBuf,
 }
 
 #[derive(Args, Debug)]
 struct ValidateArgs {
-    #[arg(long = "static")]
+    #[arg(long = "static", default_value_os_t = latest_static_artifact())]
     static_path: PathBuf,
 }
 
@@ -70,8 +70,27 @@ struct InspectArgs {
 
 #[derive(Args, Debug)]
 struct StaticArgs {
-    #[arg(long = "static")]
+    #[arg(long = "static", default_value_os_t = latest_static_artifact())]
     static_path: PathBuf,
+}
+
+fn latest_fetch_snapshot() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("data/fetch/latest")
+}
+
+fn latest_static_artifact() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("data/build/.via-static-latest.json")
+}
+
+fn require_existing(path: &Path, flag: &str, producer: &str) -> Result<(), Box<dyn Error>> {
+    if path.exists() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} does not exist; run `via-data {producer}` first or pass {flag}",
+        path.display()
+    )
+    .into())
 }
 
 #[derive(Args, Debug)]
@@ -138,7 +157,9 @@ async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
     let client = TdxClient::new(tdx.credentials, settings.tdx.clone())?;
     let sources = FetchSources::production(tdx.api_base_url.as_str());
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
+    let latest_snapshot = update_latest_fetch_link(&snapshot.path)?;
     println!("fetch snapshot: {}", snapshot.path.display());
+    println!("latest fetch snapshot: {}", latest_snapshot.display());
     println!("fetched at: {}", snapshot.manifest.fetched_at);
     for (name, source) in &snapshot.manifest.sources {
         println!(
@@ -153,6 +174,7 @@ async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
 }
 
 async fn build(args: BuildArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
+    require_existing(&args.input, "--input", "fetch")?;
     let started = Instant::now();
     let street = build_street_router(settings).await?;
     let output = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -180,26 +202,53 @@ async fn build(args: BuildArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
 }
 
 fn update_latest_static_link(output: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let output_directory = output.parent().ok_or_else(|| {
-        std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "build output has no parent directory",
-        )
-    })?;
-    let build_directory_name = output.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            ErrorKind::InvalidInput,
-            "build output has no directory name",
-        )
-    })?;
+    let (output_directory, build_directory_name) = split_output_path(output, "build output")?;
     let latest_link = output_directory.join(".via-static-latest.json");
     let target = PathBuf::from(build_directory_name).join(".via-static.json");
+    replace_latest_link(&latest_link, &target, create_file_symlink)?;
+    Ok(latest_link)
+}
 
-    match fs::symlink_metadata(&latest_link) {
-        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(&latest_link)?,
+fn update_latest_fetch_link(snapshot: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let (fetch_directory, snapshot_directory_name) = split_output_path(snapshot, "fetch snapshot")?;
+    let latest_link = fetch_directory.join("latest");
+    replace_latest_link(
+        &latest_link,
+        Path::new(snapshot_directory_name),
+        create_directory_symlink,
+    )?;
+    Ok(latest_link)
+}
+
+fn split_output_path<'a>(
+    path: &'a Path,
+    description: &str,
+) -> Result<(&'a Path, &'a std::ffi::OsStr), Box<dyn Error>> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{description} has no parent directory"),
+        )
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{description} has no directory name"),
+        )
+    })?;
+    Ok((parent, name))
+}
+
+fn replace_latest_link(
+    latest_link: &Path,
+    target: &Path,
+    create_symlink: fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), Box<dyn Error>> {
+    match fs::symlink_metadata(latest_link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => remove_symlink(latest_link)?,
         Ok(_) => {
             return Err(format!(
-                "refusing to replace non-symlink latest artifact path {}",
+                "refusing to replace non-symlink latest path {}",
                 latest_link.display()
             )
             .into());
@@ -208,8 +257,18 @@ fn update_latest_static_link(output: &Path) -> Result<PathBuf, Box<dyn Error>> {
         Err(error) => return Err(error.into()),
     }
 
-    create_file_symlink(&target, &latest_link)?;
-    Ok(latest_link)
+    create_symlink(target, latest_link)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_symlink(link: &Path) -> std::io::Result<()> {
+    fs::remove_file(link)
+}
+
+#[cfg(windows)]
+fn remove_symlink(link: &Path) -> std::io::Result<()> {
+    fs::remove_file(link).or_else(|_| fs::remove_dir(link))
 }
 
 #[cfg(unix)]
@@ -220,6 +279,16 @@ fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(unix)]
+fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
 }
 
 async fn build_street_router(
@@ -233,8 +302,13 @@ async fn build_street_router(
     Ok(street)
 }
 
+fn load_static(path: &Path) -> Result<via_server::data::ViaStatic, Box<dyn Error>> {
+    require_existing(path, "--static", "build")?;
+    Ok(load_static_artifact(path)?)
+}
+
 fn validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
-    let via_static = load_static_artifact(&args.static_path)?;
+    let via_static = load_static(&args.static_path)?;
     print_static_counts("validated", &via_static);
     Ok(())
 }
@@ -249,7 +323,7 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
-    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let artifact = load_static(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     let data = runtime.network();
     let query = args.query.to_lowercase();
@@ -286,7 +360,7 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
-    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let artifact = load_static(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     let data = runtime.network();
     let query = args.query.to_lowercase();
@@ -343,7 +417,7 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
-    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let artifact = load_static(&args.artifact.static_path)?;
     let runtime = TransitRuntime::new(Arc::new(artifact.transit));
     let coordinate = coordinate(args.lat, args.lon)?;
     let mut stops = runtime
@@ -370,7 +444,7 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
-    let artifact = load_static_artifact(&args.artifact.static_path)?;
+    let artifact = load_static(&args.artifact.static_path)?;
     print_static_counts("static data", &artifact);
     let coverage = measure_mode_coverage(&artifact.transit, &artifact.provider_bindings);
     print_mode_coverage(&coverage);
@@ -579,10 +653,47 @@ fn mode_name(mode: TransitMode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs};
 
-    use super::mode_coverage_lines;
+    use super::{mode_coverage_lines, update_latest_fetch_link};
     use via_server::data::GtfsModeCoverage;
+
+    #[test]
+    fn latest_fetch_link_follows_the_newest_snapshot_and_preserves_real_directories() {
+        let root = std::env::temp_dir().join(format!(
+            "via-data-latest-fetch-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let older = root.join("20260101T000000Z");
+        let newer = root.join("20260201T000000Z");
+        fs::create_dir_all(&older).unwrap();
+        fs::create_dir_all(&newer).unwrap();
+        fs::write(older.join("manifest.json"), "older").unwrap();
+        fs::write(newer.join("manifest.json"), "newer").unwrap();
+
+        let latest = update_latest_fetch_link(&older).unwrap();
+        assert_eq!(latest, root.join("latest"));
+        assert_eq!(
+            fs::read_to_string(latest.join("manifest.json")).unwrap(),
+            "older"
+        );
+        update_latest_fetch_link(&newer).unwrap();
+        assert_eq!(
+            fs::read_link(&latest).unwrap(),
+            std::path::PathBuf::from("20260201T000000Z")
+        );
+        assert_eq!(
+            fs::read_to_string(latest.join("manifest.json")).unwrap(),
+            "newer"
+        );
+
+        fs::remove_file(&latest).unwrap();
+        fs::create_dir(&latest).unwrap();
+        assert!(update_latest_fetch_link(&newer).is_err());
+        assert!(fs::symlink_metadata(&latest).unwrap().is_dir());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn inspect_stats_mode_coverage_reports_counts_and_examples() {
