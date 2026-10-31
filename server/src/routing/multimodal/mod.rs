@@ -172,8 +172,11 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
     ) -> Result<(RetainedCorridorSet, StaticSearchStats), RoutingError> {
-        let (retained, stats) =
-            static_search::generate(&self.network, &self.topology, &self.transfers, query);
+        let (retained, stats) = if std::env::var_os("VIA_PHASE1_RAPTOR").is_some() {
+            static_search::generate_rounds(&self.network, &self.topology, &self.transfers, query)
+        } else {
+            static_search::generate(&self.network, &self.topology, &self.transfers, query)
+        };
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
