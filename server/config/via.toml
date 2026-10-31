@@ -82,6 +82,8 @@ metro_response_limit = 1000
 fresh_seconds = 120
 degraded_seconds = 180
 max_clock_skew_seconds = 300
+cache_ttl_seconds = 30
+cache_max_bytes = 67108864
 
 [tdx.bikeshare]
 cache_ttl_seconds = 45

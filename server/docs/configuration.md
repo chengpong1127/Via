@@ -42,7 +42,7 @@ The tracked file lists every key and its default in one place. Durations use the
 | `preprocessing.transfers` | `radius_metres`, `max_duration_seconds`, `max_distance_metres`, `max_outgoing`, `max_concurrency`, `source_group_size` | Build-time walking transfers and bounded preprocessing work |
 | `tdx` | `api_base_url`, `token_url`, `connect_timeout_ms`, `request_timeout_ms`, `download_timeout_seconds`, `max_response_bytes`, `max_rate_limit_retries`, `minimum_token_lifetime_seconds`, `token_refresh_margin_seconds`, `bike_catalog_page_size` | HTTP/OAuth resources, existing Retry-After behavior and static station catalog fetch pagination |
 | `tdx.batch` | `bike_stations`, `bus_stops`, `metro_pairs`, `metro_response_limit` | City-scoped BikeShare/Bus batches and unique Metro line/station pairs; no TRA batch cap |
-| `tdx.realtime` | `fresh_seconds`, `degraded_seconds`, `max_clock_skew_seconds` | Shared Bus/Metro/TRA timing freshness and future-timestamp tolerance |
+| `tdx.realtime` | `fresh_seconds`, `degraded_seconds`, `max_clock_skew_seconds`, `cache_ttl_seconds`, `cache_max_bytes` | Shared Bus/Metro/TRA timing freshness and future-timestamp tolerance; Bus/Metro/TRA live responses are reused across requests by exact TDX URL for `cache_ttl_seconds` (less than `fresh_seconds`), up to `cache_max_bytes` |
 | `tdx.bikeshare` | `cache_ttl_seconds`, `cache_capacity`, `max_concurrent_cities`, `max_age_seconds`, `max_clock_skew_seconds` | Availability cache, city concurrency and shared provider/planner freshness checks |
 | `valhalla` | `base_url`, `request_timeout_ms`, `build_request_timeout_ms`, `max_concurrency`, `max_sources`, `max_targets`, `max_response_bytes` | Runtime/build provider limits and Matrix capacity |
 

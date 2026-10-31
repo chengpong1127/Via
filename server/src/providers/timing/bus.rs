@@ -398,7 +398,10 @@ impl BusDepartureSource {
         let query = [("$filter", filter.as_str())];
         ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
         results.http_requests += 1;
-        let payload = self.tdx.get_json::<serde_json::Value>(&path, &query).await;
+        let payload = self
+            .tdx
+            .get_realtime_json::<serde_json::Value>(&path, &query)
+            .await;
         let values = match payload {
             Ok(payload) => parse_bus_realtime_payload(
                 &payload,

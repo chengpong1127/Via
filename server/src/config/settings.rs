@@ -368,6 +368,14 @@ impl ViaConfig {
                 self.tdx.realtime.max_clock_skew_seconds as u64,
             ),
             (
+                "tdx.realtime.cache_ttl_seconds",
+                self.tdx.realtime.cache_ttl_seconds,
+            ),
+            (
+                "tdx.realtime.cache_max_bytes",
+                self.tdx.realtime.cache_max_bytes,
+            ),
+            (
                 "tdx.bikeshare.cache_ttl_seconds",
                 self.tdx.bikeshare.cache_ttl_seconds,
             ),
@@ -438,6 +446,11 @@ impl ViaConfig {
         if self.tdx.realtime.degraded_seconds < self.tdx.realtime.fresh_seconds {
             return Err(ConfigError::Invalid(
                 "tdx.realtime.degraded_seconds must be at least fresh_seconds".into(),
+            ));
+        }
+        if self.tdx.realtime.cache_ttl_seconds >= u64::from(self.tdx.realtime.fresh_seconds) {
+            return Err(ConfigError::Invalid(
+                "tdx.realtime.cache_ttl_seconds must be less than fresh_seconds".into(),
             ));
         }
         for (key, value) in [
