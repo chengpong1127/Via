@@ -1,22 +1,22 @@
 import SwiftUI
 
-@MainActor
 @main
 struct ViaApp: App {
-    @State private var session: JourneySession
+    @State private var model: ExploreModel
 
     init() {
-        let locationService = LocationService()
-        _session = State(initialValue: JourneySession(
-            planner: HTTPJourneyPlanner(baseURL: ViaAPIConfiguration.baseURL),
-            locationProvider: locationService
+        let location = LocationService()
+        let planner = HTTPJourneyPlanner(client: APIClient(baseURL: ViaServer.baseURL))
+        _model = State(initialValue: ExploreModel(
+            search: SearchModel(service: PlaceSearchService()),
+            directions: DirectionsModel(planner: planner, location: location),
+            location: location
         ))
     }
 
     var body: some Scene {
         WindowGroup {
-            JourneyMapView()
-                .environment(session)
+            ExploreView(model: model)
         }
     }
 }
