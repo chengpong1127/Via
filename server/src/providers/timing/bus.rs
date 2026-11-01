@@ -396,12 +396,15 @@ impl BusDepartureSource {
             .collect::<Vec<_>>();
         let filter = odata_in_filter("StopUID", &boarding_point_ids);
         let query = [("$filter", filter.as_str())];
-        ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
-        results.http_requests += 1;
         let payload = self
             .tdx
             .get_realtime_json::<serde_json::Value>(&path, &query)
             .await;
+        if !payload.as_ref().is_ok_and(|response| response.cached) {
+            ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
+            results.http_requests += 1;
+        }
+        let payload = payload.map(|response| response.value);
         let values = match payload {
             Ok(payload) => parse_bus_realtime_payload(
                 &payload,

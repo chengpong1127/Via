@@ -357,11 +357,13 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
         })
         .collect::<Vec<_>>();
 
-    let results = resolver.next_departures_batch(needs).await;
+    let results = resolver.next_departures_batch(needs.clone()).await;
+    let repeated = resolver.next_departures_batch(needs).await;
 
     assert!(
         results
             .iter()
+            .chain(&repeated)
             .all(|result| result.as_ref().is_ok_and(|trips| !trips.is_empty()))
     );
     assert_eq!(stats.calls.load(Ordering::Relaxed), 1);
@@ -371,8 +373,8 @@ async fn twenty_logical_bus_needs_use_one_direct_tdx_batch() {
         TimingReliability::Reliable
     );
     let rendered = recorder.handle().render();
-    assert!(rendered.contains("via_bus_timing_logical_departure_needs_total 20"));
-    assert!(rendered.contains("via_bus_timing_realtime_stops_requested_total 1"));
+    assert!(rendered.contains("via_bus_timing_logical_departure_needs_total 40"));
+    assert!(rendered.contains("via_bus_timing_realtime_stops_requested_total 2"));
     assert!(rendered.contains("via_bus_timing_realtime_http_requests_total 1"));
 }
 

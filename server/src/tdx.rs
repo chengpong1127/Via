@@ -146,6 +146,11 @@ pub enum TdxClientError {
     DownloadWrite(#[source] std::io::Error),
 }
 
+pub struct RealtimeResponse<T> {
+    pub value: T,
+    pub cached: bool,
+}
+
 #[derive(Clone)]
 pub struct TdxClient {
     client: Client,
@@ -347,18 +352,19 @@ impl TdxClient {
         &self,
         path: &str,
         query: &[(&str, &str)],
-    ) -> Result<T, TdxClientError> {
+    ) -> Result<RealtimeResponse<T>, TdxClientError> {
         let url = self.api_url(path, query)?;
         let key = url.as_str().to_owned();
-        let body = if let Some(body) = self.realtime_responses.get(&key).await {
+        let (body, cached) = if let Some(body) = self.realtime_responses.get(&key).await {
             ::metrics::counter!("via_tdx_realtime_cache_hits_total").increment(1);
-            body
+            (body, true)
         } else {
             let body = self.get_url_bytes(url).await?;
             self.realtime_responses.insert(key, body.clone()).await;
-            body
+            (body, false)
         };
-        serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
+        let value = serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)?;
+        Ok(RealtimeResponse { value, cached })
     }
 
     pub async fn download_url_to_path(
@@ -626,12 +632,28 @@ mod tests {
         let stop_a = [("$filter", "StopUID in ('A')")];
         let stop_b = [("$filter", "StopUID in ('B')")];
 
-        let first: u32 = client.get_realtime_json("live", &stop_a).await.unwrap();
-        let repeated: u32 = client.get_realtime_json("live", &stop_a).await.unwrap();
-        let other: u32 = client.get_realtime_json("live", &stop_b).await.unwrap();
+        let first = client
+            .get_realtime_json::<u32>("live", &stop_a)
+            .await
+            .unwrap();
+        let repeated = client
+            .get_realtime_json::<u32>("live", &stop_a)
+            .await
+            .unwrap();
+        let other = client
+            .get_realtime_json::<u32>("live", &stop_b)
+            .await
+            .unwrap();
         let uncached: u32 = client.get_json("live", &stop_a).await.unwrap();
 
-        assert_eq!((first, repeated, other, uncached), (1, 1, 2, 3));
+        assert_eq!(
+            (first.value, repeated.value, other.value, uncached),
+            (1, 1, 2, 3)
+        );
+        assert_eq!(
+            (first.cached, repeated.cached, other.cached),
+            (false, true, false)
+        );
         assert_eq!(requests.load(Ordering::SeqCst), 3);
     }
 

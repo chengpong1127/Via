@@ -267,7 +267,8 @@ impl MetroDepartureSource {
             let payload = self
                 .tdx
                 .get_realtime_json::<Vec<TdxMetroLiveBoard>>(&self.realtime_path, &request)
-                .await;
+                .await
+                .map(|response| response.value);
             let parsed = match payload {
                 Ok(payload) if payload.len() < self.response_limit => parse_realtime_payload(
                     payload,

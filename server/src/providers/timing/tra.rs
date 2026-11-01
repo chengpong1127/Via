@@ -151,7 +151,8 @@ impl TraDepartureSource {
         let payload = self
             .tdx
             .get_realtime_json::<TdxTraTrainLiveBoardResponse>(&self.realtime_path, &request)
-            .await;
+            .await
+            .map(|response| response.value);
         let observations = match payload {
             Ok(payload) => parse_realtime_payload(
                 payload,
