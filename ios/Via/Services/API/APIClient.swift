@@ -28,14 +28,32 @@ nonisolated struct APIClient: Sendable {
         body: Body,
         as response: Response.Type
     ) async throws -> Response {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var request = request(for: baseURL.appending(path: path))
         request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        return try await send(request, as: response)
+    }
+
+    func get<Response: Decodable>(
+        _ path: String,
+        query: [URLQueryItem],
+        as response: Response.Type
+    ) async throws -> Response {
+        var request = request(for: baseURL.appending(path: path).appending(queryItems: query))
+        request.httpMethod = "GET"
+        return try await send(request, as: response)
+    }
+
+    private func request(for url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONEncoder().encode(body)
+        return request
+    }
 
+    private func send<Response: Decodable>(_ request: URLRequest, as response: Response.Type) async throws -> Response {
         let data: Data
         let urlResponse: URLResponse
         do {

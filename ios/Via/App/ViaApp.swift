@@ -6,9 +6,10 @@ struct ViaApp: App {
 
     init() {
         let location = LocationService()
-        let planner = HTTPJourneyPlanner(client: APIClient(baseURL: ViaServer.baseURL))
+        let client = APIClient(baseURL: ViaServer.baseURL)
+        let planner = HTTPJourneyPlanner(client: client)
         _model = State(initialValue: ExploreModel(
-            search: SearchModel(service: PlaceSearchService()),
+            search: SearchModel(service: PlaceSearchService(), nearbyStops: HTTPNearbyStopsSource(client: client)),
             directions: DirectionsModel(planner: planner, location: location),
             location: location
         ))

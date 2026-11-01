@@ -44,8 +44,13 @@ The iOS app remains a host process. The API is published at
 `http://127.0.0.1:3000`, and Valhalla is available at
 `http://127.0.0.1:8002` for host-side debugging.
 
-The server exposes `POST /v1/journey-plans`, `GET /openapi.json`, and
-`GET /health/street-routing`. Planning responses are not cached.
+The server exposes `POST /v1/journey-plans`, `GET /v1/nearby-stops`,
+`GET /openapi.json`, and `GET /health/street-routing`. Responses are not cached.
+
+`GET /v1/nearby-stops?latitude=…&longitude=…&radius_metres=…` lists transit stops
+from the static artifact (same-name entries within 50 m are merged, with their
+modes and route labels) and YouBike stations with TDX availability, nearest first.
+The radius defaults to 500 m and is capped at 2 km.
 
 `GET /metrics` serves Prometheus telemetry. See the
 [metric inventory and ownership](https://app.notion.com/p/408aefae2f7481cfb632eb59c2a32b95) for names and completion semantics.

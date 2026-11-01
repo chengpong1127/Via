@@ -94,8 +94,7 @@ struct SearchPanel: View {
                 Section("Find Nearby") {
                     ForEach(QuickSearch.allCases) { item in
                         Button {
-                            search.query = String(localized: item.query)
-                            Task { await submit() }
+                            Task { await findNearby(item) }
                         } label: {
                             PlaceRow(symbol: item.symbol, tint: item.tint, title: String(localized: item.title), subtitle: nil, distance: nil)
                         }
@@ -158,6 +157,22 @@ struct SearchPanel: View {
         focused = false
         let results = await search.submit()
         if purpose == .explore, !results.isEmpty {
+            model.showResults(results)
+        }
+    }
+
+    private func findNearby(_ item: QuickSearch) async {
+        focused = false
+        search.query = String(localized: item.title)
+        let center = model.location.coordinate ?? Coordinate(search.service.region.center)
+        let results = switch item {
+        case .metro: await search.nearbyTransit(.metro, around: center)
+        case .bus: await search.nearbyTransit(.bus, around: center)
+        case .bike: await search.nearbyBikeStations(around: center)
+        case .food: await search.nearby([.restaurant], around: center)
+        case .coffee: await search.nearby([.cafe], around: center)
+        }
+        if !results.isEmpty {
             model.showResults(results)
         }
     }
@@ -236,16 +251,6 @@ private enum QuickSearch: String, CaseIterable, Identifiable {
         case .metro: "Metro Stations"
         case .bus: "Bus Stops"
         case .bike: "YouBike Stations"
-        case .food: "Restaurants"
-        case .coffee: "Coffee"
-        }
-    }
-
-    var query: LocalizedStringResource {
-        switch self {
-        case .metro: "MRT Station"
-        case .bus: "Bus Stop"
-        case .bike: "YouBike"
         case .food: "Restaurants"
         case .coffee: "Coffee"
         }

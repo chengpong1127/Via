@@ -60,6 +60,19 @@ final class PlaceSearchService: NSObject {
         return try await run(request)
     }
 
+    func nearby(
+        _ categories: [MKPointOfInterestCategory],
+        around center: Coordinate,
+        radius: CLLocationDistance
+    ) async throws -> [PlaceResult] {
+        let request = MKLocalPointsOfInterestRequest(center: center.clCoordinate, radius: radius)
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: categories)
+        let response = try await MKLocalSearch(request: request).start()
+        return response.mapItems
+            .map(PlaceResult.init)
+            .sorted { $0.place.coordinate.distance(to: center) < $1.place.coordinate.distance(to: center) }
+    }
+
     func result(for feature: MapFeature) async throws -> PlaceResult {
         PlaceResult(mapItem: try await MKMapItemRequest(feature: feature).mapItem)
     }

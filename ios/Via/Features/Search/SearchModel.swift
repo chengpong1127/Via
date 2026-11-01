@@ -16,9 +16,11 @@ final class SearchModel {
     private(set) var failed = false
 
     let service: PlaceSearchService
+    private let nearbyStops: any NearbyStopsSource
 
-    init(service: PlaceSearchService) {
+    init(service: PlaceSearchService, nearbyStops: any NearbyStopsSource) {
         self.service = service
+        self.nearbyStops = nearbyStops
     }
 
     var completions: [MKLocalSearchCompletion] { service.completions }
@@ -36,6 +38,68 @@ final class SearchModel {
 
     func choose(_ completion: MKLocalSearchCompletion) async -> [PlaceResult] {
         await load { try await service.results(for: completion) }
+    }
+
+    func nearby(_ categories: [MKPointOfInterestCategory], around center: Coordinate) async -> [PlaceResult] {
+        await load { try await service.nearby(categories, around: center, radius: 1_000) }
+    }
+
+    func nearbyTransit(_ mode: TransitMode, around center: Coordinate) async -> [PlaceResult] {
+        await load {
+            try await nearbyStops.nearbyStops(around: center, radiusMetres: 1_000).transitStops
+                .filter { $0.modes.contains(mode) }
+                .map(Self.result)
+        }
+    }
+
+    func nearbyBikeStations(around center: Coordinate) async -> [PlaceResult] {
+        await load {
+            try await nearbyStops.nearbyStops(around: center, radiusMetres: 1_000).bikeStations
+                .map(Self.result)
+        }
+    }
+
+    private static func result(_ stop: NearbyTransitStop) -> PlaceResult {
+        let labels = stop.routeLabels.prefix(6).joined(separator: " · ")
+        let more = stop.routeLabels.count > 6 ? " +\(stop.routeLabels.count - 6)" : ""
+        return result(
+            id: stop.viaIDs.first ?? stop.name,
+            name: stop.name,
+            subtitle: labels.isEmpty ? nil : labels + more,
+            coordinate: stop.coordinate,
+            category: .publicTransport
+        )
+    }
+
+    private static func result(_ station: NearbyBikeStation) -> PlaceResult {
+        let subtitle = station.availability.map { availability in
+            availability.inService
+                ? [
+                    String(localized: "\(availability.availableBikes) bikes"),
+                    String(localized: "\(availability.availableDocks) docks"),
+                ].joined(separator: " · ")
+                : String(localized: "Not in service")
+        }
+        return result(id: station.viaID, name: station.name, subtitle: subtitle, coordinate: station.coordinate, category: nil)
+    }
+
+    private static func result(
+        id: String,
+        name: String,
+        subtitle: String?,
+        coordinate: Coordinate,
+        category: MKPointOfInterestCategory?
+    ) -> PlaceResult {
+        let item = MKMapItem(
+            location: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude),
+            address: nil
+        )
+        item.name = name
+        item.pointOfInterestCategory = category
+        return PlaceResult(
+            mapItem: item,
+            place: Place(id: id, name: name, subtitle: subtitle, coordinate: coordinate)
+        )
     }
 
     private func load(_ operation: () async throws -> [PlaceResult]) async -> [PlaceResult] {

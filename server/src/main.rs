@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = build_router(
         runtime.routing,
         runtime.health,
+        runtime.nearby,
         metrics,
         config.environment,
         &settings.server,

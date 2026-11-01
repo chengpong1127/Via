@@ -23,6 +23,7 @@ fn generated_openapi_covers_the_http_contract() {
         "/metrics",
         "/health/street-routing",
         "/v1/journey-plans",
+        "/v1/nearby-stops",
     ] {
         assert!(openapi["paths"][path].is_object(), "missing route {path}");
     }

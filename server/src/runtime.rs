@@ -8,6 +8,7 @@ use crate::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
     },
     health::{DependencyHealth, Health},
+    nearby::NearbyService,
     providers::tdx_bindings::TdxProviderBindings,
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxBikeAvailabilitySource,
@@ -22,6 +23,7 @@ use crate::{
 pub struct ViaRuntime {
     pub routing: RoutingService,
     pub health: Health,
+    pub nearby: NearbyService,
 }
 
 pub struct ViaRuntimeDependencies {
@@ -68,6 +70,11 @@ impl ViaRuntime {
                 thsr as Arc<dyn TransitDepartureSource>,
             ],
         ));
+        let nearby = NearbyService::new(
+            transit_runtime.clone(),
+            dependencies.bike_share_network.clone(),
+            dependencies.bike_availability.clone(),
+        );
         let routing = RoutingService::new(
             dependencies.street,
             transit_runtime.clone(),
@@ -78,7 +85,11 @@ impl ViaRuntime {
             dependencies.environment.is_production(),
         );
         let health = Health::new(dependencies.street_health, transit_runtime);
-        Self { routing, health }
+        Self {
+            routing,
+            health,
+            nearby,
+        }
     }
 }
 
@@ -236,6 +247,7 @@ mod tests {
         let router = build_router(
             runtime.routing,
             runtime.health,
+            runtime.nearby,
             recorder.handle(),
             environment,
             &crate::config::ViaConfig::default().server,

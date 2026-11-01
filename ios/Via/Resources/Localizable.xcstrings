@@ -7,6 +7,74 @@
     "%@–%@": {
       "shouldTranslate": false
     },
+    "%lld bikes": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld bike"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld bikes"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hant": {
+          "variations": {
+            "plural": {
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld 輛可借"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "%lld docks": {
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld dock"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld docks"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hant": {
+          "variations": {
+            "plural": {
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "%lld 個空位"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Address": {
       "localizations": {
         "zh-Hant": {
@@ -93,16 +161,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "公車"
-          }
-        }
-      }
-    },
-    "Bus Stop": {
-      "localizations": {
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "公車站"
           }
         }
       }
@@ -447,16 +505,6 @@
         }
       }
     },
-    "MRT Station": {
-      "localizations": {
-        "zh-Hant": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "捷運站"
-          }
-        }
-      }
-    },
     "Make a U-turn": {
       "localizations": {
         "zh-Hant": {
@@ -513,6 +561,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "找不到路線"
+          }
+        }
+      }
+    },
+    "Not in service": {
+      "localizations": {
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暫停營運"
           }
         }
       }
