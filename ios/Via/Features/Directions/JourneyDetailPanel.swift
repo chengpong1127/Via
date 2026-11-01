@@ -199,8 +199,10 @@ private struct LegRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     ServiceBadge(ride: ride)
-                    Text(ride.mode.title)
-                        .font(.subheadline.weight(.semibold))
+                    if ride.serviceLabel != String(localized: ride.mode.title) {
+                        Text(ride.mode.title)
+                            .font(.subheadline.weight(.semibold))
+                    }
                 }
                 if !ride.headsign.isEmpty {
                     Text("Toward \(ride.headsign)")

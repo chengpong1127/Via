@@ -10,9 +10,13 @@ struct LegStrip: View {
         }
     }
 
+    private var visibleLegs: [Leg] {
+        legs.filter { $0.kind != .walking || $0.duration >= 60 }
+    }
+
     private func strip(compact: Bool) -> some View {
         HStack(spacing: 4) {
-            ForEach(Array(legs.enumerated()), id: \.element.id) { index, leg in
+            ForEach(Array(visibleLegs.enumerated()), id: \.element.id) { index, leg in
                 if index > 0 {
                     Image(systemName: "chevron.compact.right")
                         .font(.caption2)
