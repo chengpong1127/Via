@@ -1,16 +1,21 @@
 use axum::{
     Json,
-    extract::{State, rejection::JsonRejection},
+    extract::{
+        Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{HeaderValue, StatusCode, header::CACHE_CONTROL},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{Span, field};
 
 use crate::{
     api::PlanningRequest,
     domain::journey::{PlanningError, PlanningOutcome},
+    domain::location::GeoCoordinate,
     health::{DependencyHealthReport, ReadinessReport},
+    nearby::{DEFAULT_RADIUS_METRES, MAX_RADIUS_METRES, NearbyStops},
 };
 
 use super::AppState;
@@ -182,6 +187,63 @@ pub(super) async fn journey_plan(
             error_response(StatusCode::INTERNAL_SERVER_ERROR, "planner_failure", None)
         }
     }
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(super) struct NearbyStopsQuery {
+    #[param(minimum = -90.0, maximum = 90.0)]
+    latitude: f64,
+    #[param(minimum = -180.0, maximum = 180.0)]
+    longitude: f64,
+    #[param(minimum = 1, maximum = 2000)]
+    radius_metres: Option<u32>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/nearby-stops",
+    operation_id = "listNearbyStops",
+    summary = "List nearby stops",
+    description = "Lists transit stops from the static network and YouBike stations with TDX availability near a coordinate, nearest first.",
+    params(NearbyStopsQuery),
+    responses(
+        (status = 200, description = "Nearby transit stops and bike-share stations", body = NearbyStops,
+            headers(("Cache-Control" = String, description = "Always no-store."))),
+        (status = 400, description = "The query is invalid", body = ErrorEnvelope,
+            headers(("Cache-Control" = String, description = "Always no-store.")))
+    )
+)]
+pub(super) async fn nearby_stops(
+    State(state): State<AppState>,
+    query: Result<Query<NearbyStopsQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid_request", Some("/"));
+    };
+    let center = GeoCoordinate {
+        latitude: query.latitude,
+        longitude: query.longitude,
+    };
+    if !center.validate() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_coordinate",
+            Some("/latitude"),
+        );
+    }
+    let radius_metres = query.radius_metres.unwrap_or(DEFAULT_RADIUS_METRES);
+    if radius_metres == 0 || radius_metres > MAX_RADIUS_METRES {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_radius",
+            Some("/radius_metres"),
+        );
+    }
+    no_store((
+        StatusCode::OK,
+        Json(state.nearby.nearby(center, radius_metres).await),
+    ))
 }
 
 fn record_request_fields(request: &PlanningRequest) {

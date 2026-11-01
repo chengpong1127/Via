@@ -1,0 +1,112 @@
+import CoreLocation
+import Observation
+
+enum LocationError: Error, Equatable {
+    case denied
+    case restricted
+    case unavailable
+}
+
+protocol LocationProviding: AnyObject {
+    var coordinate: Coordinate? { get }
+    func requestAuthorizationIfNeeded()
+    func currentCoordinate() async throws -> Coordinate
+}
+
+@Observable
+final class LocationService: NSObject, LocationProviding {
+    private(set) var authorizationStatus: CLAuthorizationStatus
+    private(set) var coordinate: Coordinate?
+
+    @ObservationIgnored private let manager = CLLocationManager()
+    @ObservationIgnored private var waiters: [CheckedContinuation<Coordinate, Error>] = []
+
+    override init() {
+        authorizationStatus = manager.authorizationStatus
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        if isAuthorized { manager.startUpdatingLocation() }
+    }
+
+    var isAuthorized: Bool {
+        authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways
+    }
+
+    func requestAuthorizationIfNeeded() {
+        if authorizationStatus == .notDetermined {
+            manager.requestWhenInUseAuthorization()
+        }
+    }
+
+    func currentCoordinate() async throws -> Coordinate {
+        switch authorizationStatus {
+        case .denied: throw LocationError.denied
+        case .restricted: throw LocationError.restricted
+        default: break
+        }
+        if let coordinate, isAuthorized {
+            return coordinate
+        }
+        requestAuthorizationIfNeeded()
+        let timeout = Task {
+            repeat {
+                try await Task.sleep(for: .seconds(15))
+            } while authorizationStatus == .notDetermined
+            resumeWaiters(with: .failure(LocationError.unavailable))
+        }
+        defer { timeout.cancel() }
+        return try await withCheckedThrowingContinuation { continuation in
+            waiters.append(continuation)
+            if isAuthorized { manager.startUpdatingLocation() }
+        }
+    }
+
+    private func resumeWaiters(with result: Result<Coordinate, Error>) {
+        let pending = waiters
+        waiters = []
+        pending.forEach { $0.resume(with: result) }
+    }
+}
+
+extension LocationService: CLLocationManagerDelegate {
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        MainActor.assumeIsolated {
+            authorizationStatus = status
+            switch status {
+            case .authorizedWhenInUse, .authorizedAlways:
+                self.manager.startUpdatingLocation()
+                if !waiters.isEmpty { self.manager.requestLocation() }
+            case .denied:
+                resumeWaiters(with: .failure(LocationError.denied))
+            case .restricted:
+                resumeWaiters(with: .failure(LocationError.restricted))
+            default:
+                break
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        let coordinate = Coordinate(location.coordinate)
+        MainActor.assumeIsolated {
+            self.coordinate = coordinate
+            resumeWaiters(with: .success(coordinate))
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let code = (error as? CLError)?.code
+        guard code != .locationUnknown else { return }
+        let denied = code == .denied
+        MainActor.assumeIsolated {
+            if let coordinate, !denied {
+                resumeWaiters(with: .success(coordinate))
+            } else if !waiters.isEmpty {
+                resumeWaiters(with: .failure(denied ? LocationError.denied : LocationError.unavailable))
+            }
+        }
+    }
+}

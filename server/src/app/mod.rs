@@ -10,12 +10,13 @@ use tower_http::{
 };
 use utoipa::openapi::OpenApi;
 
-use crate::{config::Environment, health::Health, routing::RoutingService};
+use crate::{config::Environment, health::Health, nearby::NearbyService, routing::RoutingService};
 
 #[derive(Clone)]
 struct AppState {
     routing: RoutingService,
     health: Health,
+    nearby: NearbyService,
     metrics: PrometheusHandle,
     openapi: OpenApi,
 }
@@ -23,6 +24,7 @@ struct AppState {
 pub fn build_router(
     routing: RoutingService,
     health: Health,
+    nearby: NearbyService,
     metrics: PrometheusHandle,
     environment: Environment,
     settings: &crate::config::ServerSettings,
@@ -37,6 +39,7 @@ pub fn build_router(
         .with_state(AppState {
             routing,
             health,
+            nearby,
             metrics,
             openapi,
         })

@@ -1,18 +1,47 @@
 # Via for iOS
 
-Native SwiftUI and MapKit client for Via Journey Planning.
+Native SwiftUI and MapKit client for Via journey planning, modeled on the Apple Maps
+experience: a full-screen map with a persistent bottom sheet for search, place cards
+and transit directions.
 
 ## Requirements
 
-- Xcode 26 or newer
-- iOS 17 or newer
+- Xcode 27 or newer
+- iOS 26 or newer
 
 ## Open and run
 
-Open `Via.xcodeproj`, choose the `Via` scheme, and run on an iPhone simulator.
+Open `Via.xcodeproj`, choose the `Via` scheme, and run on an iPhone simulator. Source
+folders are synchronized groups, so new files under `Via/` and `ViaTests/` are picked
+up without editing the project.
 
-The app uses `HTTPJourneyPlanner` at the app root and calls `POST /v1/journey-plans` through `APIClient`. Debug builds default to `http://127.0.0.1:3000`; Release builds require an explicitly configured HTTPS `VIA_API_BASE_URL` and fail at startup when it is missing or insecure. Responses are server-authoritative, are not cached, and successful empty results are represented as an empty `JourneyResult`.
+Debug builds call `http://127.0.0.1:3000`, which a simulator reaches on the host.
+Release builds require an HTTPS `VIA_API_BASE_URL` build setting and fail at startup
+when it is missing or insecure.
 
-`DemoJourneyPlanner` remains available for previews, offline UI development, and deterministic tests. It is selected explicitly by preview/test code; it is not injected into the real app. Production feature code depends on `JourneyPlanning`, not on a concrete HTTP transport. Future Navigation code belongs under `Features/Navigation` and is intentionally not implemented here.
+## Structure
 
-The demo never persists selected places, coordinates, Journey Options, Legs, or Live Status. The selected transport systems (`bus`, `metro`, `tra`, `thsr`, and `bike_share`) are stored as local preferences; Walking remains implicit.
+| Folder | Contents |
+| --- | --- |
+| `App` | App entry point and dependency wiring |
+| `Domain` | Places, planning requests and journey results; the `JourneyPlanner` interface |
+| `Services/API` | `APIClient`, DTOs matching the server OpenAPI schema, and mapping |
+| `Services/Planning` | `HTTPJourneyPlanner` for production, `DemoJourneyPlanner` for previews and offline tests |
+| `Services/Location`, `Services/Search` | Core Location and MapKit search (`MKLocalSearchCompleter`, `MKLocalSearch`, POI lookup) |
+| `Features/Explore` | Map screen, sheet routing and route overlays |
+| `Features/Search`, `Features/Place`, `Features/Directions` | Sheet panels |
+| `Components` | Shared badges, headers and mode styling |
+
+Production planning flows through `JourneyPlanner → HTTPJourneyPlanner → APIClient`
+and calls `POST /v1/journey-plans`. Responses are not cached; an empty result shows
+"No Routes Found". Navigation is not implemented yet.
+
+Only the selected transport modes (`bus`, `metro`, `tra`, `thsr`, `bike_share`) are
+stored, as a local preference; walking is always implicit. Selected places and
+results are not persisted. Times are shown in Asia/Taipei.
+
+## Tests
+
+```sh
+xcodebuild -project Via.xcodeproj -scheme Via -destination 'platform=iOS Simulator,name=iPhone 17' -parallel-testing-enabled NO test
+```

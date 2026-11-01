@@ -4,207 +4,117 @@ import Testing
 
 @Suite(.serialized)
 struct HTTPJourneyPlannerTests {
-    @Test("Request JSON matches the API")
-    func requestMatchesContract() async throws {
-        StubURLProtocol.reset(statusCode: 200, body: Self.emptyResult)
-        let planner = HTTPJourneyPlanner(
-            baseURL: URL(string: "https://api.example.test")!,
-            urlSession: Self.stubSession()
-        )
+    let request = PlanningRequest(
+        origin: Place(name: "A", coordinate: Coordinate(latitude: 25.04, longitude: 121.51)),
+        destination: Place(name: "B", coordinate: Coordinate(latitude: 25.03, longitude: 121.56)),
+        modes: [.metro],
+        departure: .now
+    )
 
-        let request = PlanningRequest(
-            origin: Place(
-                name: "Origin",
-                coordinate: Coordinate(latitude: 25.04776, longitude: 121.51706)
-            ),
-            destination: Place(
-                name: "Destination",
-                coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447)
-            ),
-            selectedModes: [.metro],
-            departureSetting: .departAt(Date(timeIntervalSince1970: 1_756_600_000))
-        )
-
-        let result = try await planner.plan(request)
-        #expect(result.options.isEmpty)
-        let body = try #require(StubURLProtocol.lastRequest?.httpBody)
-        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(json["selected_modes"] as? [String] == ["metro"])
-        #expect(json["departure_setting"] as? [String: Any] != nil)
-        let origin = try #require(json["origin"] as? [String: Any])
-        let originCoordinate = try #require(origin["coordinate"] as? [String: Any])
-        #expect(originCoordinate["latitude"] as? Double == 25.04776)
-        #expect(originCoordinate["longitude"] as? Double == 121.51706)
-        #expect(StubURLProtocol.lastRequest?.url?.path == "/v1/journey-plans")
+    @Test func postsToJourneyPlansAndMapsOptions() async throws {
+        let planner = makePlanner { urlRequest in
+            #expect(urlRequest.httpMethod == "POST")
+            #expect(urlRequest.url?.absoluteString == "http://via.test/v1/journey-plans")
+            #expect(urlRequest.value(forHTTPHeaderField: "Content-Type") == "application/json")
+            return (200, Fixtures.optionsResponse)
+        }
+        let plan = try await planner.plan(request)
+        #expect(plan.options.map(\.id) == ["opt_1"])
     }
 
-    @Test("HTTP planner decodes and maps the shared server journey fixtures")
-    func decodesSharedResultFixtures() async throws {
-        let planner = HTTPJourneyPlanner(
-            baseURL: URL(string: "https://api.example.test")!,
-            urlSession: Self.stubSession()
-        )
-
-        let walkingResult = try await Self.plan(planner, fixture: "walking-result.json")
-        let walkingOption = try #require(walkingResult.options.first)
-        #expect(walkingOption.id == "option_01_fixture_match")
-        #expect(walkingOption.legs.map(\.mode) == [.walking])
-
-        let transitResult = try await Self.plan(planner, fixture: "transit-result.json")
-        let transitOption = try #require(transitResult.options.first)
-        let transitLeg = try #require(transitOption.legs.first { $0.mode == .transit })
-        let transit = try #require(transitLeg.transit)
-        #expect(transitLeg.mode == .transit)
-        #expect(transit.mode == .metro)
-        #expect(transit.patternID == "metro-pattern-1")
-        #expect(transit.serviceLabel == "Blue Line")
-        #expect(transit.headsign == "Nangang Exhibition Center")
-        #expect(transit.boardingPointID == "metro-stop-1")
-        #expect(transit.alightingPointID == "metro-stop-2")
-
-        let bikeShareResult = try await Self.plan(planner, fixture: "bike-share-result.json")
-        let bikeShareOption = try #require(bikeShareResult.options.first)
-        let bikeShareLeg = try #require(bikeShareOption.legs.first { $0.mode == .bicycle })
-        let bikeShare = try #require(bikeShareLeg.bikeShare)
-        #expect(bikeShareLeg.mode == .bicycle)
-        #expect(bikeShare.pickupStationID == "youbike-pickup")
-        #expect(bikeShare.pickupStationName == "Taipei Main Station YouBike")
-        #expect(bikeShare.dropoffStationID == "youbike-dropoff")
-        #expect(bikeShare.dropoffStationName == "Taipei 101 YouBike")
-    }
-
-    @Test("HTTP planner maps the shared error statuses")
-    func mapsErrorStatuses() async {
-        let planner = HTTPJourneyPlanner(
-            baseURL: URL(string: "https://api.example.test")!,
-            urlSession: Self.stubSession()
-        )
-        let request = Self.request()
-
-        for (status, expected) in [
-            (400, JourneyPlanningError.invalidRequest(field: "/origin")),
-            (503, JourneyPlanningError.temporarilyUnavailable),
-            (500, JourneyPlanningError.unexpectedFailure)
-        ] as [(Int, JourneyPlanningError)] {
-            StubURLProtocol.reset(statusCode: status, body: Self.errorBody)
-            do {
-                _ = try await planner.plan(request)
-                Issue.record("expected HTTP \(status) to throw")
-            } catch let error as JourneyPlanningError {
-                #expect(error == expected)
-            } catch {
-                Issue.record("unexpected error: \(error)")
-            }
+    @Test(arguments: [
+        (400, #"{"error":{"code":"invalid_coordinate","field":"/origin/coordinate/latitude"}}"#, JourneyPlanningError.invalidRequest(field: "/origin/coordinate/latitude")),
+        (408, #"{"error":{"code":"request_timeout"}}"#, .timedOut),
+        (503, #"{"error":{"code":"temporarily_unavailable"}}"#, .temporarilyUnavailable),
+        (500, #"{"error":{"code":"planner_failure"}}"#, .unexpected),
+        (200, #"{"unexpected":true}"#, .unsupportedResponse),
+    ])
+    func mapsServerErrors(status: Int, body: String, expected: JourneyPlanningError) async {
+        let planner = makePlanner { _ in (status, Data(body.utf8)) }
+        await #expect(throws: expected) {
+            try await planner.plan(request)
         }
     }
 
-    @Test("API client preserves non-success status and response body")
-    func apiClientMapsNonSuccessResponses() async {
-        StubURLProtocol.reset(statusCode: 429, body: Self.errorBody)
-        let client = APIClient(
-            baseURL: URL(string: "https://api.example.test")!,
-            urlSession: Self.stubSession()
-        )
-
-        do {
-            let _: JourneyPlanResponseDTO = try await client.send(
-                request: JourneyPlanRequestDTO(request: Self.request()),
-                path: "v1/journey-plans"
-            )
-            Issue.record("expected the API client to reject HTTP 429")
-        } catch let error as APIError {
-            guard case let .httpStatus(code, body) = error else {
-                Issue.record("unexpected API error: \(error)")
-                return
+    @Test func fetchesNearbyStops() async throws {
+        StubProtocol.handler = { urlRequest in
+            let components = URLComponents(url: urlRequest.url!, resolvingAgainstBaseURL: false)!
+            #expect(urlRequest.httpMethod == "GET")
+            #expect(components.path == "/v1/nearby-stops")
+            #expect(components.queryItems == [
+                URLQueryItem(name: "latitude", value: "25.04776"),
+                URLQueryItem(name: "longitude", value: "121.51706"),
+                URLQueryItem(name: "radius_metres", value: "1000"),
+            ])
+            return (200, Data("""
+            {
+              "generated_at": "2026-11-02T00:05:20+08:00",
+              "transit_stops": [{
+                "via_ids": ["s1", "s2"], "name": "台北車站",
+                "coordinate": {"latitude": 25.0461, "longitude": 121.5174},
+                "distance_metres": 165, "modes": ["metro", "ferry"], "route_labels": ["BL", "R"]
+              }],
+              "bike_stations": [
+                {"via_id": "b1", "name": "YouBike2.0_太原廣場",
+                 "coordinate": {"latitude": 25.0499, "longitude": 121.5172}, "distance_metres": 291,
+                 "availability": {"available_bikes": 1, "available_return_slots": 28, "in_service": true,
+                                  "observed_at": "2026-11-02T00:04:02+08:00"}},
+                {"via_id": "b2", "name": "YouBike2.0_M2",
+                 "coordinate": {"latitude": 25.048, "longitude": 121.519}, "distance_metres": 205,
+                 "availability": null}
+              ]
             }
-            #expect(code == 429)
-            #expect(body == Self.errorBody)
-        } catch {
-            Issue.record("unexpected error: \(error)")
+            """.utf8))
         }
-    }
-
-    private static func stubSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [StubURLProtocol.self]
-        return URLSession(configuration: configuration)
-    }
+        configuration.protocolClasses = [StubProtocol.self]
+        let source = HTTPNearbyStopsSource(client: APIClient(
+            baseURL: URL(string: "http://via.test")!,
+            session: URLSession(configuration: configuration)
+        ))
 
-    private static func request() -> PlanningRequest {
-        PlanningRequest(
-            origin: Place(name: "Origin", coordinate: Coordinate(latitude: 25, longitude: 121)),
-            destination: Place(name: "Destination", coordinate: Coordinate(latitude: 25.01, longitude: 121.01)),
-            selectedModes: [.metro],
-            departureSetting: .departNow
+        let stops = try await source.nearbyStops(
+            around: Coordinate(latitude: 25.04776, longitude: 121.51706),
+            radiusMetres: 1_000
         )
+
+        let metro = try #require(stops.transitStops.first)
+        #expect(metro.viaIDs == ["s1", "s2"])
+        #expect(metro.modes == [.metro])
+        #expect(metro.routeLabels == ["BL", "R"])
+        #expect(metro.distance == 165)
+        #expect(stops.bikeStations.map(\.availability) == [
+            BikeAvailability(availableBikes: 1, availableDocks: 28, inService: true),
+            nil,
+        ])
     }
 
-    private static func plan(
-        _ planner: HTTPJourneyPlanner,
-        fixture name: String
-    ) async throws -> JourneyResult {
-        StubURLProtocol.reset(statusCode: 200, body: try apiFixture(named: name))
-        return try await planner.plan(request())
+    @Test func mapsTransportFailures() {
+        #expect(HTTPJourneyPlanner.planningError(for: .transport(.cannotConnectToHost)) == .serverUnreachable)
+        #expect(HTTPJourneyPlanner.planningError(for: .transport(.timedOut)) == .timedOut)
     }
 
-    private static func apiFixture(named name: String) throws -> Data {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let fixtureURL = repositoryRoot
-            .appendingPathComponent("server", isDirectory: true)
-            .appendingPathComponent("fixtures", isDirectory: true)
-            .appendingPathComponent("api", isDirectory: true)
-            .appendingPathComponent(name)
-        return try Data(contentsOf: fixtureURL)
+    private func makePlanner(_ handler: @escaping @Sendable (URLRequest) -> (Int, Data)) -> HTTPJourneyPlanner {
+        StubProtocol.handler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let client = APIClient(baseURL: URL(string: "http://via.test")!, session: URLSession(configuration: configuration))
+        return HTTPJourneyPlanner(client: client)
     }
-
-    private static let emptyResult = Data(#"""
-    {
-      "generated_at":"2026-08-29T10:08:00+08:00",
-      "empty":{"code":"no_feasible_journey_option"}
-    }
-    """#.utf8)
-
-    private static let errorBody = Data(#"""
-    {
-      "error":{"code":"invalid_request","field":"/origin"}
-    }
-    """#.utf8)
 }
 
-private final class StubURLProtocol: URLProtocol, @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var responseStatus = 200
-    private static var responseBody = Data()
-    private(set) static var lastRequest: URLRequest?
-
-    static func reset(statusCode: Int, body: Data) {
-        lock.lock()
-        responseStatus = statusCode
-        responseBody = body
-        lastRequest = nil
-        lock.unlock()
-    }
+nonisolated final class StubProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.lock.lock()
-        Self.lastRequest = request
-        let status = Self.responseStatus
-        let body = Self.responseBody
-        Self.lock.unlock()
-        let response = HTTPURLResponse(
-            url: request.url!,
-            statusCode: status,
-            httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"]
-        )!
+        guard let handler = Self.handler, let url = request.url else { return }
+        let (status, data) = handler(request)
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 

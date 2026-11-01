@@ -1,0 +1,19 @@
+{
+  "sourceLanguage": "en",
+  "version": "1.0",
+  "strings": {
+    "CFBundleDisplayName": {
+      "shouldTranslate": false
+    },
+    "NSLocationWhenInUseUsageDescription": {
+      "localizations": {
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Via 會使用你的位置顯示你所在之處，並以此規劃行程。"
+          }
+        }
+      }
+    }
+  }
+}

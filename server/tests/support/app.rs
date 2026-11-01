@@ -94,6 +94,7 @@ where
     Ok(build_router(
         runtime.routing,
         runtime.health,
+        runtime.nearby,
         metrics,
         via_server::config::Environment::Development,
         &via_server::config::ViaConfig::default().server,

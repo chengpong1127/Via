@@ -1,168 +1,367 @@
+// !$*UTF8*$!
 {
 	archiveVersion = 1;
-	classes = {};
-	objectVersion = 56;
+	classes = {
+	};
+	objectVersion = 77;
 	objects = {
 
-		A00000000000000000000101 = {isa = PBXBuildFile; fileRef = A00000000000000000000201 ; };
-		A00000000000000000000102 = {isa = PBXBuildFile; fileRef = A00000000000000000000202 ; };
-		A00000000000000000000103 = {isa = PBXBuildFile; fileRef = A00000000000000000000203 ; };
-		A00000000000000000000104 = {isa = PBXBuildFile; fileRef = A00000000000000000000204 ; };
-		A0000000000000000000010D = {isa = PBXBuildFile; fileRef = A0000000000000000000020F ; };
-		A0000000000000000000010F = {isa = PBXBuildFile; fileRef = A00000000000000000000213 ; };
-		A00000000000000000000110 = {isa = PBXBuildFile; fileRef = A00000000000000000000214 ; };
-		A00000000000000000000112 = {isa = PBXBuildFile; fileRef = A00000000000000000000216 ; };
-		A00000000000000000000113 = {isa = PBXBuildFile; fileRef = A00000000000000000000217 ; };
-		A00000000000000000000114 = {isa = PBXBuildFile; fileRef = A00000000000000000000218 ; };
-		A00000000000000000000115 = {isa = PBXBuildFile; fileRef = A00000000000000000000219 ; };
-		A00000000000000000000116 = {isa = PBXBuildFile; fileRef = A0000000000000000000021A ; };
-		A00000000000000000000117 = {isa = PBXBuildFile; fileRef = A0000000000000000000021B ; };
-		A00000000000000000000118 = {isa = PBXBuildFile; fileRef = A0000000000000000000021C ; };
-		A00000000000000000000119 = {isa = PBXBuildFile; fileRef = A0000000000000000000021D ; };
-		A0000000000000000000011A = {isa = PBXBuildFile; fileRef = A0000000000000000000021E ; };
-		A00000000000000000000105 = {isa = PBXBuildFile; fileRef = A00000000000000000000205 ; };
-		A00000000000000000000106 = {isa = PBXBuildFile; fileRef = A00000000000000000000206 ; };
-		A00000000000000000000107 = {isa = PBXBuildFile; fileRef = A00000000000000000000207 ; };
-		A00000000000000000000108 = {isa = PBXBuildFile; fileRef = A00000000000000000000208 ; };
-		A00000000000000000000109 = {isa = PBXBuildFile; fileRef = A00000000000000000000209 ; };
-		A0000000000000000000010A = {isa = PBXBuildFile; fileRef = A0000000000000000000020A ; };
-		A0000000000000000000010B = {isa = PBXBuildFile; fileRef = A0000000000000000000020D ; };
-		A0000000000000000000010C = {isa = PBXBuildFile; fileRef = A0000000000000000000020E ; };
-		A0000000000000000000010E = {isa = PBXBuildFile; fileRef = A00000000000000000000212 ; };
-
-		A00000000000000000000301 = {
+/* Begin PBXContainerItemProxy section */
+		A10000000000000000000301 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = A00000000000000000000401 ;
+			containerPortal = A10000000000000000000401 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = A00000000000000000000501;
+			remoteGlobalIDString = A10000000000000000000501;
 			remoteInfo = Via;
 		};
+/* End PBXContainerItemProxy section */
 
-		A00000000000000000000201 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViaApp.swift; sourceTree = "<group>"; };
-		A00000000000000000000202 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyModels.swift; sourceTree = "<group>"; };
-		A00000000000000000000203 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneySession.swift; sourceTree = "<group>"; };
-		A00000000000000000000204 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoJourneyPlanner.swift; sourceTree = "<group>"; };
-		A0000000000000000000020F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPJourneyPlanner.swift; sourceTree = "<group>"; };
-		A00000000000000000000213 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
-		A00000000000000000000214 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIError.swift; sourceTree = "<group>"; };
-		A00000000000000000000216 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyRequestDTO.swift; sourceTree = "<group>"; };
-		A00000000000000000000217 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyResponseDTO.swift; sourceTree = "<group>"; };
-		A00000000000000000000218 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommonDTO.swift; sourceTree = "<group>"; };
-		A00000000000000000000219 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyMapper.swift; sourceTree = "<group>"; };
-		A0000000000000000000021A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationService.swift; sourceTree = "<group>"; };
-		A0000000000000000000021B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationSearchTests.swift; sourceTree = "<group>"; };
-		A0000000000000000000021C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationModels.swift; sourceTree = "<group>"; };
-		A0000000000000000000021D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanningModels.swift; sourceTree = "<group>"; };
-		A0000000000000000000021E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyPlanningStateContent.swift; sourceTree = "<group>"; };
-		A00000000000000000000205 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeBadge.swift; sourceTree = "<group>"; };
-		A00000000000000000000206 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyMapView.swift; sourceTree = "<group>"; };
-		A00000000000000000000207 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionsPanel.swift; sourceTree = "<group>"; };
-		A00000000000000000000208 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyOptionCard.swift; sourceTree = "<group>"; };
-		A00000000000000000000209 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyDetailsView.swift; sourceTree = "<group>"; };
-		A0000000000000000000020A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Search/LocationSearchView.swift; sourceTree = "<group>"; };
-		A0000000000000000000020B = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
-		A0000000000000000000020C = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hant"; path = "zh-Hant.lproj/Localizable.strings"; sourceTree = "<group>"; };
-		A0000000000000000000020E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneySessionTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000212 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPJourneyPlannerTests.swift; sourceTree = "<group>"; };
-		A00000000000000000000210 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Via.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A00000000000000000000211 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ViaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* Begin PBXFileReference section */
+		A10000000000000000000201 /* Via.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Via.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000202 /* ViaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ViaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
 
-		A00000000000000000000601 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		A00000000000000000000602 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-
-		A00000000000000000000701 = {
-			isa = PBXGroup;
-			children = (
-				A00000000000000000000702 ,
-				A00000000000000000000709 ,
-				A0000000000000000000070A ,
-			);
-			sourceTree = "<group>";
-		};
-		A00000000000000000000702 = {
-			isa = PBXGroup;
-			children = (A00000000000000000000703, A00000000000000000000704, A00000000000000000000705, A00000000000000000000706, A00000000000000000000707, A00000000000000000000708);
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		A10000000000000000000701 /* Via */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Via;
 			sourceTree = "<group>";
 		};
-		A00000000000000000000703 = {isa = PBXGroup; children = (A00000000000000000000201); path = App; sourceTree = "<group>"; };
-		A00000000000000000000704 = {isa = PBXGroup; children = (A00000000000000000000202, A00000000000000000000203, A0000000000000000000021C, A0000000000000000000021D); path = Domain; sourceTree = "<group>"; };
-		A00000000000000000000705 = {isa = PBXGroup; children = (A00000000000000000000204, A0000000000000000000020F, A0000000000000000000021A, A0000000000000000000070B); path = Services; sourceTree = "<group>"; };
-		A00000000000000000000706 = {isa = PBXGroup; children = (A00000000000000000000205); path = Components; sourceTree = "<group>"; };
-		A00000000000000000000707 = {isa = PBXGroup; children = (A00000000000000000000206, A00000000000000000000207, A00000000000000000000208, A00000000000000000000209, A0000000000000000000021E); path = Features/Journey; sourceTree = "<group>"; };
-		A00000000000000000000708 = {isa = PBXGroup; children = (A0000000000000000000020A, A0000000000000000000020D); name = "Resources and Search"; sourceTree = "<group>"; };
-		A00000000000000000000709 = {isa = PBXGroup; children = (A0000000000000000000020E, A00000000000000000000212, A0000000000000000000021B); path = ViaTests; sourceTree = "<group>"; };
-		A0000000000000000000070A = {isa = PBXGroup; children = (A00000000000000000000210, A00000000000000000000211); name = Products; sourceTree = "<group>"; };
-		A0000000000000000000070B = {isa = PBXGroup; children = (A00000000000000000000213, A00000000000000000000214, A0000000000000000000070C, A0000000000000000000070D); path = API; sourceTree = "<group>"; };
-		A0000000000000000000070C = {isa = PBXGroup; children = (A00000000000000000000216, A00000000000000000000217, A00000000000000000000218); path = DTO; sourceTree = "<group>"; };
-		A0000000000000000000070D = {isa = PBXGroup; children = (A00000000000000000000219); path = Mapping; sourceTree = "<group>"; };
+		A10000000000000000000702 /* ViaTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ViaTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
-		A00000000000000000000501 = {
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000601 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000602 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000801 = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000701 /* Via */,
+				A10000000000000000000702 /* ViaTests */,
+				A10000000000000000000802 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000802 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000201 /* Via.app */,
+				A10000000000000000000202 /* ViaTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000501 /* Via */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A00000000000000000000902;
-			buildPhases = (A00000000000000000000801, A00000000000000000000601, A00000000000000000000802);
-			buildRules = ();
-			dependencies = ();
+			buildConfigurationList = A10000000000000000000902 /* Build configuration list for PBXNativeTarget "Via" */;
+			buildPhases = (
+				A10000000000000000000603 /* Sources */,
+				A10000000000000000000601 /* Frameworks */,
+				A10000000000000000000604 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A10000000000000000000701 /* Via */,
+			);
 			name = Via;
 			productName = Via;
-			productReference = A00000000000000000000210;
+			productReference = A10000000000000000000201 /* Via.app */;
 			productType = "com.apple.product-type.application";
 		};
-		A00000000000000000000502 = {
+		A10000000000000000000502 /* ViaTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A00000000000000000000903;
-			buildPhases = (A00000000000000000000803, A00000000000000000000602);
-			buildRules = ();
-			dependencies = (A00000000000000000000A01);
+			buildConfigurationList = A10000000000000000000903 /* Build configuration list for PBXNativeTarget "ViaTests" */;
+			buildPhases = (
+				A10000000000000000000605 /* Sources */,
+				A10000000000000000000602 /* Frameworks */,
+				A10000000000000000000606 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000000000000000000A01 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A10000000000000000000702 /* ViaTests */,
+			);
 			name = ViaTests;
 			productName = ViaTests;
-			productReference = A00000000000000000000211;
+			productReference = A10000000000000000000202 /* ViaTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+/* End PBXNativeTarget section */
 
-		A00000000000000000000401 = {
+/* Begin PBXProject section */
+		A10000000000000000000401 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2700;
-				LastUpgradeCheck = 2700;
+				LastSwiftUpdateCheck = 2720;
+				LastUpgradeCheck = 2720;
 				TargetAttributes = {
-					A00000000000000000000501 = {CreatedOnToolsVersion = 27.0;};
-					A00000000000000000000502 = {CreatedOnToolsVersion = 27.0; TestTargetID = A00000000000000000000501;};
+					A10000000000000000000501 = {
+						CreatedOnToolsVersion = 27.2;
+					};
+					A10000000000000000000502 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = A10000000000000000000501;
+					};
 				};
 			};
-			buildConfigurationList = A00000000000000000000901;
-			compatibilityVersion = "Xcode 14.0";
+			buildConfigurationList = A10000000000000000000901 /* Build configuration list for PBXProject "Via" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
-			knownRegions = (en, Base, "zh-Hant");
-			mainGroup = A00000000000000000000701;
-			productRefGroup = A0000000000000000000070A;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hant",
+			);
+			mainGroup = A10000000000000000000801;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A10000000000000000000802 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
-			targets = (A00000000000000000000501, A00000000000000000000502);
+			targets = (
+				A10000000000000000000501 /* Via */,
+				A10000000000000000000502 /* ViaTests */,
+			);
 		};
+/* End PBXProject section */
 
-		A00000000000000000000802 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000010B); runOnlyForDeploymentPostprocessing = 0; };
+/* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000604 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000606 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
-		A00000000000000000000801 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000101, A00000000000000000000102, A00000000000000000000103, A00000000000000000000104, A0000000000000000000010D, A0000000000000000000010F, A00000000000000000000110, A00000000000000000000112, A00000000000000000000113, A00000000000000000000114, A00000000000000000000115, A00000000000000000000116, A00000000000000000000105, A00000000000000000000106, A00000000000000000000107, A00000000000000000000108, A00000000000000000000109, A0000000000000000000010A, A00000000000000000000118, A00000000000000000000119, A0000000000000000000011A); runOnlyForDeploymentPostprocessing = 0; };
-		A00000000000000000000803 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000010C, A0000000000000000000010E, A00000000000000000000117); runOnlyForDeploymentPostprocessing = 0; };
+/* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000603 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000605 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
 
-		A00000000000000000000A01 = {isa = PBXTargetDependency; target = A00000000000000000000501; targetProxy = A00000000000000000000301; };
+/* Begin PBXTargetDependency section */
+		A10000000000000000000A01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000501 /* Via */;
+			targetProxy = A10000000000000000000301 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
-		A0000000000000000000020D = {isa = PBXVariantGroup; children = (A0000000000000000000020B, A0000000000000000000020C); name = Localizable.strings; path = Resources; sourceTree = "<group>"; };
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000B01 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A10000000000000000000B02 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A10000000000000000000B03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Via;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)";
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+				VIA_API_BASE_URL = "http://127.0.0.1:3000";
+			};
+			name = Debug;
+		};
+		A10000000000000000000B04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Via;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)";
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+				VIA_API_BASE_URL = "";
+			};
+			name = Release;
+		};
+		A10000000000000000000B05 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Via.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Via";
+			};
+			name = Debug;
+		};
+		A10000000000000000000B06 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Via.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Via";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
 
-		A00000000000000000000B01 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_C_LANGUAGE_STANDARD = gnu17; GCC_OPTIMIZATION_LEVEL = 0; MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE; ONLY_ACTIVE_ARCH = YES; SDKROOT = iphoneos; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; SWIFT_OPTIMIZATION_LEVEL = "-Onone";}; name = Debug; };
-		A00000000000000000000B02 = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; CLANG_ENABLE_OBJC_ARC = YES; COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; ENABLE_NS_ASSERTIONS = NO; GCC_C_LANGUAGE_STANDARD = gnu17; MTL_ENABLE_DEBUG_INFO = NO; SDKROOT = iphoneos; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; VALIDATE_PRODUCT = YES;}; name = Release; };
-		A00000000000000000000B03 = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Via; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to plan trips from where you are."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.via.journey; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; VIA_API_BASE_URL = "http://127.0.0.1:3000";}; name = Debug; };
-		A00000000000000000000B04 = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = Via; INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation"; INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to plan trips from where you are."; INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES; INFOPLIST_KEY_UILaunchScreen_Generation = YES; INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait; INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)"; IPHONEOS_DEPLOYMENT_TARGET = 17.0; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = org.via.journey; PRODUCT_NAME = "$(TARGET_NAME)"; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SUPPORTS_MACCATALYST = NO; SWIFT_EMIT_LOC_STRINGS = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; VIA_API_BASE_URL = "";}; name = Release; };
-		A00000000000000000000B05 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Via.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Via";}; name = Debug; };
-		A00000000000000000000B06 = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 17.0; PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = 1; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Via.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Via";}; name = Release; };
-
-		A00000000000000000000901 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000B01, A00000000000000000000B02); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		A00000000000000000000902 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000B03, A00000000000000000000B04); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-		A00000000000000000000903 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000B05, A00000000000000000000B06); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
-
+/* Begin XCConfigurationList section */
+		A10000000000000000000901 /* Build configuration list for PBXProject "Via" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000B01 /* Debug */,
+				A10000000000000000000B02 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000902 /* Build configuration list for PBXNativeTarget "Via" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000B03 /* Debug */,
+				A10000000000000000000B04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000903 /* Build configuration list for PBXNativeTarget "ViaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000B05 /* Debug */,
+				A10000000000000000000B06 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
 	};
-	rootObject = A00000000000000000000401 ;
+	rootObject = A10000000000000000000401 /* Project object */;
 }

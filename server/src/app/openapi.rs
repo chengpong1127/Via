@@ -15,6 +15,7 @@ pub(super) fn documented_router() -> OpenApiRouter<AppState> {
         .routes(utoipa_axum::routes!(super::handlers::metrics))
         .routes(utoipa_axum::routes!(super::handlers::street_routing_health))
         .routes(utoipa_axum::routes!(super::handlers::journey_plan))
+        .routes(utoipa_axum::routes!(super::handlers::nearby_stops))
 }
 
 pub(super) fn openapi_document() -> OpenApi {
