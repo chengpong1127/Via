@@ -496,7 +496,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
             1,
             1,
             1,
-            TimeDuration::seconds(121),
+            TimeDuration::seconds(181),
         )]),
         json!([]),
     )
@@ -626,8 +626,8 @@ async fn groups_requested_stations_by_city_and_escapes_uid_filter_literals() {
 }
 
 #[tokio::test]
-async fn availability_requests_are_batched_at_four_hundred_stations() {
-    for count in [400usize, 401] {
+async fn availability_requests_are_batched_at_three_hundred_stations() {
+    for count in [300usize, 301] {
         let uids = station_uids("UID-", count);
         let response = uids
             .iter()
@@ -646,14 +646,14 @@ async fn availability_requests_are_batched_at_four_hundred_stations() {
         let snapshot = source.snapshot(&requested).await.unwrap();
         assert_eq!(snapshot.stations.len(), count);
         let requests = fixture.requests.lock().await;
-        assert_eq!(requests.len(), count.div_ceil(400));
+        assert_eq!(requests.len(), count.div_ceil(300));
         let tops = requests
             .iter()
             .map(|(_, query)| query.get("$top").unwrap().parse::<usize>().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(tops.iter().sum::<usize>(), count);
-        assert!(tops.contains(&400));
-        assert_eq!(tops.contains(&1), count == 401);
+        assert!(tops.contains(&300));
+        assert_eq!(tops.contains(&1), count == 301);
     }
 }
 
@@ -684,7 +684,7 @@ async fn stale_cached_observation_is_refetched_before_cache_ttl() {
                 async move {
                     let call = counter.fetch_add(1, Ordering::Relaxed);
                     let age = if call == 0 {
-                        TimeDuration::seconds(119)
+                        TimeDuration::seconds(179)
                     } else {
                         TimeDuration::seconds(10)
                     };
@@ -771,7 +771,7 @@ async fn partial_city_failure_keeps_successful_and_cached_station_data() {
 #[tokio::test]
 async fn changed_toml_batch_size_applies_to_every_supported_bike_city() {
     let config = via_server::config::ViaConfig::from_toml(
-        &include_str!("../../config/via.toml").replace("bike_stations = 400", "bike_stations = 3"),
+        &include_str!("../../config/via.toml").replace("bike_stations = 300", "bike_stations = 3"),
     )
     .unwrap();
     for (city, _) in via_server::tdx::BIKE_CITIES {

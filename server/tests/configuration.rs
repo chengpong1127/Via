@@ -15,21 +15,21 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     assert_eq!(limits.planner.max_candidates, 16);
     assert_eq!(limits.planner.max_departures_per_query, 3);
     assert_eq!(limits.planner.max_journey_duration_seconds, 14_400);
-    assert_eq!(limits.request_timeout, Duration::from_secs(5));
+    assert_eq!(limits.request_timeout, Duration::from_secs(10));
     assert_eq!(
         settings.routing.ranking,
         via_server::domain::ranking::RankingPolicy::default()
     );
-    assert_eq!(settings.tdx.batch.bike_stations, 400);
+    assert_eq!(settings.tdx.batch.bike_stations, 300);
     assert_eq!(settings.tdx.batch.bus_stops, 200);
-    assert_eq!(settings.tdx.batch.metro_pairs, 200);
+    assert_eq!(settings.tdx.batch.metro_pairs, 100);
     assert_eq!(
         settings
             .valhalla
             .provider_config(false)
             .unwrap()
             .request_timeout,
-        Duration::from_millis(1200)
+        Duration::from_millis(5000)
     );
     assert_eq!(
         settings
@@ -47,15 +47,23 @@ fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
         "this is not TOML".to_owned(),
         TOML.replace("port = 3000", "port = 3000\ntypo = 1"),
         TOML.replace("bus_stops = 200", "bus_stops = 0"),
-        TOML.replace("metro_pairs = 200", "metro_pairs = -1"),
-        TOML.replace("request_timeout_ms = 1200", "request_timeout_ms = 0"),
+        TOML.replace("metro_pairs = 100", "metro_pairs = -1"),
+        TOML.replace("request_timeout_ms = 5000", "request_timeout_ms = 0"),
         TOML.replace(
-            "request_timeout_ms = 1200",
+            "request_timeout_ms = 5000",
             "request_timeout_ms = 9223372036854775807",
         ),
-        TOML.replace("max_sources = 32", "max_sources = 0"),
-        TOML.replace("degraded_seconds = 180", "degraded_seconds = 119"),
-        TOML.replace("max_targets = 32", "max_targets = 8"),
+        TOML.replace("max_sources = 64", "max_sources = 0"),
+        TOML.replace("degraded_seconds = 360", "degraded_seconds = 119"),
+        TOML.replace("max_targets = 64", "max_targets = 8"),
+        TOML.replace(
+            "max_transit_access_stops = 64",
+            "max_transit_access_stops = 65",
+        ),
+        TOML.replace(
+            "max_transit_egress_stops = 64",
+            "max_transit_egress_stops = 65",
+        ),
         TOML.replace(
             "endpoint_radius_metres = 1500",
             "endpoint_radius_metres = 4294967296",
@@ -137,9 +145,9 @@ fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
     let config = ViaConfig::from_toml(
         &TOML
             .replace("max_candidates = 16", "max_candidates = 7")
-            .replace("max_sources = 32", "max_sources = 17")
+            .replace("max_sources = 64", "max_sources = 96")
             .replace(
-                "max_geometric_radius_metres = 300",
+                "max_geometric_radius_metres = 500",
                 "max_geometric_radius_metres = 42",
             ),
     )
@@ -147,7 +155,7 @@ fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
     assert_eq!(config.journey_limits().planner.max_candidates, 7);
     assert_eq!(
         config.valhalla.provider_config(false).unwrap().max_sources,
-        17
+        96
     );
     assert_eq!(
         config.bikeshare.preprocessing.max_geometric_radius_metres,

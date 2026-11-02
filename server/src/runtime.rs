@@ -170,7 +170,7 @@ mod tests {
         }
 
         async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
-            tokio::time::sleep(Duration::from_secs(11)).await;
+            tokio::time::sleep(Duration::from_secs(16)).await;
             StraightLineStreetRouter::default().route(query).await
         }
     }
@@ -178,7 +178,7 @@ mod tests {
     #[async_trait]
     impl DependencyHealth for SlowStreetRouter {
         async fn healthy(&self) -> bool {
-            tokio::time::sleep(Duration::from_secs(11)).await;
+            tokio::time::sleep(Duration::from_secs(16)).await;
             true
         }
 
@@ -227,18 +227,18 @@ mod tests {
         let started = tokio::time::Instant::now();
         let result = runtime.routing.plan(request().into()).await.unwrap();
         assert!(matches!(result, PlanningOutcome::Options(_)));
-        assert!(started.elapsed() >= Duration::from_secs(11));
+        assert!(started.elapsed() >= Duration::from_secs(16));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn production_planning_keeps_the_five_second_timeout() {
+    async fn production_planning_keeps_the_ten_second_timeout() {
         let runtime = runtime(Environment::Production);
         let started = tokio::time::Instant::now();
         assert!(matches!(
             runtime.routing.plan(request().into()).await,
             Err(PlanningError::TemporarilyUnavailable)
         ));
-        assert_eq!(started.elapsed(), Duration::from_secs(5));
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
     }
 
     async fn slow_http_response(environment: Environment) -> StatusCode {
@@ -271,16 +271,16 @@ mod tests {
             slow_http_response(Environment::Development).await,
             StatusCode::OK
         );
-        assert_eq!(started.elapsed(), Duration::from_secs(11));
+        assert_eq!(started.elapsed(), Duration::from_secs(16));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn production_router_keeps_the_ten_second_http_timeout() {
+    async fn production_router_keeps_the_fifteen_second_http_timeout() {
         let started = tokio::time::Instant::now();
         assert_eq!(
             slow_http_response(Environment::Production).await,
             StatusCode::REQUEST_TIMEOUT
         );
-        assert_eq!(started.elapsed(), Duration::from_secs(10));
+        assert_eq!(started.elapsed(), Duration::from_secs(15));
     }
 }

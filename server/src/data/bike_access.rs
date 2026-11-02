@@ -422,6 +422,7 @@ mod tests {
         let transit = transit_at(&boarding_points);
         let bike_network = bike(stations);
         let policy = BikeAccessPolicy {
+            max_geometric_radius_metres: 300,
             max_geometric_candidates_per_boarding_point: 23,
             ..BikeAccessPolicy::default()
         };

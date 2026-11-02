@@ -475,6 +475,11 @@ impl ViaConfig {
         {
             return Err(ConfigError::Invalid("bikeshare.preprocessing.max_geometric_candidates_per_boarding_point must fit both valhalla.max_sources and valhalla.max_targets".into()));
         }
+        if self.routing.access.max_transit_access_stops > self.valhalla.max_targets
+            || self.routing.access.max_transit_egress_stops > self.valhalla.max_sources
+        {
+            return Err(ConfigError::Invalid("routing.access.max_transit_access_stops must fit valhalla.max_targets and max_transit_egress_stops must fit valhalla.max_sources".into()));
+        }
         if self
             .valhalla
             .max_sources

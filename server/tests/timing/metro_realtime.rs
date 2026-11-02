@@ -361,10 +361,10 @@ async fn duplicate_metro_queries_use_one_batched_tdx_request() {
 
 #[tokio::test]
 async fn metro_batches_unique_pairs_and_obeys_changed_toml() {
-    for (count, size, expected) in [(200, 200, 1), (201, 200, 2), (201, 75, 3)] {
+    for (count, size, expected) in [(100, 100, 1), (101, 100, 2), (101, 40, 3)] {
         let config = via_server::config::ViaConfig::from_toml(
             &include_str!("../../config/via.toml")
-                .replace("metro_pairs = 200", &format!("metro_pairs = {size}")),
+                .replace("metro_pairs = 100", &format!("metro_pairs = {size}")),
         )
         .unwrap();
         let after = OffsetDateTime::now_utc() - Duration::seconds(10);

@@ -210,8 +210,11 @@ fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
         ));
     }
     let network = Arc::new(BikeShareNetwork::new(stations).with_access_links(links));
-    let planner =
-        BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy());
+    let policy = BikeMovementPolicy {
+        max_stations_per_endpoint: 3,
+        ..crate::config::ViaConfig::default().bike_policy()
+    };
+    let planner = BikeShareMovementPlanner::new(network, policy.clone());
     let required = planner.required_station_ids(anchors.iter().chain(anchors.iter()));
     assert_eq!(required.len(), 10);
     assert!(!required.contains(&BikeStationId::new("outside-radius")));
@@ -257,21 +260,14 @@ fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
     let candidate = planner
         .movement_candidate(&anchors[0], anchors.last().unwrap(), &snapshot, now)
         .unwrap();
-    assert_eq!(
-        candidate.pickups.len(),
-        crate::config::ViaConfig::default()
-            .bikeshare
-            .max_stations_per_endpoint
-    );
+    assert_eq!(candidate.pickups.len(), policy.max_stations_per_endpoint);
     assert_eq!(candidate.pickups[0].station_id.as_str(), "near-origin-0");
     let boarding_candidate = planner
         .movement_candidate(&anchors[1], anchors.last().unwrap(), &snapshot, now)
         .unwrap();
     assert_eq!(
         boarding_candidate.pickups.len(),
-        crate::config::ViaConfig::default()
-            .bikeshare
-            .max_pickup_stations_per_anchor
+        policy.max_pickup_stations_per_anchor
     );
 }
 
@@ -391,7 +387,10 @@ async fn cached_bike_availability_is_checked_at_the_request_time() {
     let snapshot = BikeAvailabilitySnapshot::new(received_at, stations);
     let planner = BikeShareMovementPlanner::new(
         bike_network,
-        crate::config::ViaConfig::default().bike_policy(),
+        BikeMovementPolicy {
+            availability_max_age_seconds: 120,
+            ..crate::config::ViaConfig::default().bike_policy()
+        },
     );
 
     let from_endpoint = CorridorAnchor {
