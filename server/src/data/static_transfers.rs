@@ -79,7 +79,8 @@ pub async fn enrich_network_with_static_transfers(
         policy,
     )
     .await?;
-    network.transfer_edges = retain_outgoing_transfers(best, &mut stats, policy);
+    network.transfer_edges =
+        retain_outgoing_transfers(best, &mut stats, policy, network.default_transfer_seconds);
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
     stats.elapsed_milliseconds = started.elapsed().as_millis();
@@ -175,8 +176,7 @@ async fn query_walking_transfers(
             for (target, value) in targets.into_iter().zip(cells) {
                 if let MatrixCell::Reachable { duration, distance } = value {
                     stats.reachable_walking_pairs += 1;
-                    if duration.0 == 0
-                        || duration.0 > policy.max_duration_seconds
+                    if duration.0 > policy.max_duration_seconds
                         || distance.0 > policy.max_distance_metres
                     {
                         stats.removed_by_limits += 1;
@@ -204,6 +204,7 @@ fn retain_outgoing_transfers(
     best: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
     stats: &mut TransferStatistics,
     policy: TransferSettings,
+    co_located_transfer_seconds: u32,
 ) -> Vec<TransferEdge> {
     let mut by_source =
         HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
@@ -222,7 +223,11 @@ fn retain_outgoing_transfers(
             transfer_edges.push(TransferEdge::new(
                 from.clone(),
                 to,
-                metrics.duration_seconds,
+                if metrics.duration_seconds == 0 {
+                    co_located_transfer_seconds
+                } else {
+                    metrics.duration_seconds
+                },
                 metrics.distance_metres,
             ));
         }
@@ -350,6 +355,7 @@ mod tests {
             best,
             &mut stats,
             crate::config::ViaConfig::default().preprocessing.transfers,
+            0,
         );
         let pairs = edges
             .iter()
@@ -629,5 +635,45 @@ mod tests {
         assert!(stats.matrix_pairs_queried >= 65);
         assert_eq!(network.transfer_edges.len(), 1);
         assert_eq!(network.transfer_edges[0].to.as_str(), "target65");
+    }
+
+    #[tokio::test]
+    async fn co_located_platforms_keep_a_transfer_ahead_of_nearby_stops() {
+        let mut stops = vec![point("green", 25.0), point("red", 25.0)];
+        let mut builder = FakeStreetRouter::builder().matrix_leg(
+            StreetTravelMode::Walking,
+            coord(25.0),
+            coord(25.0),
+            Seconds(0),
+            Metres(0),
+        );
+        for index in 1..=14 {
+            let latitude = 25.0 + f64::from(index) * 0.0001;
+            stops.push(point(&format!("bus{index:02}"), latitude));
+            builder = builder.matrix_leg(
+                StreetTravelMode::Walking,
+                coord(25.0),
+                coord(latitude),
+                Seconds(index * 5),
+                Metres(index * 6),
+            );
+        }
+        let mut network = network(stops);
+        network.default_transfer_seconds = 120;
+        enrich_network_with_static_transfers(
+            &mut network,
+            &builder.build(),
+            crate::config::ViaConfig::default().preprocessing.transfers,
+        )
+        .await
+        .unwrap();
+        for (from, to) in [("green", "red"), ("red", "green")] {
+            let edge = network
+                .transfer_edges
+                .iter()
+                .find(|edge| edge.from.as_str() == from && edge.to.as_str() == to)
+                .unwrap_or_else(|| panic!("missing {from} -> {to}"));
+            assert_eq!((edge.duration_seconds, edge.distance_metres), (120, 0));
+        }
     }
 }
