@@ -171,8 +171,7 @@ impl RankingPolicy {
                         <= self.near_duplicate_arrival_seconds
                     && current.walking_seconds.abs_diff(candidate.walking_seconds)
                         < self.material_walking_difference_seconds
-                    && current.bicycle_seconds == candidate.bicycle_seconds
-                    && current.bike_share_uses == candidate.bike_share_uses
+                    && self.same_bicycle_use(current, &candidate)
             });
             if !duplicate {
                 kept.push(candidate);
@@ -187,8 +186,7 @@ impl RankingPolicy {
             .walking_seconds
             .saturating_sub(candidate.walking_seconds)
             >= self.material_walking_difference_seconds;
-        let different_bicycle = candidate.bicycle_seconds != current.bicycle_seconds
-            || candidate.bike_share_uses != current.bike_share_uses;
+        let different_bicycle = !self.same_bicycle_use(current, candidate);
         let different_sequence = candidate.main_pattern_sequence != current.main_pattern_sequence;
         if !different_sequence && !fewer_transfers && !less_walking && !different_bicycle {
             return false;
@@ -198,6 +196,12 @@ impl RankingPolicy {
             || fewer_transfers
             || less_walking
             || different_bicycle
+    }
+
+    fn same_bicycle_use(&self, current: &RankedJourney, candidate: &RankedJourney) -> bool {
+        current.bike_share_uses == candidate.bike_share_uses
+            && current.bicycle_seconds.abs_diff(candidate.bicycle_seconds)
+                < self.material_walking_difference_seconds
     }
 
     fn compare_ranked(&self, left: &RankedJourney, right: &RankedJourney) -> Ordering {

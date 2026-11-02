@@ -325,3 +325,49 @@ fn near_duplicates_keep_the_option_preferred_by_the_ranking_policy() {
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].stable_key, "reliable");
 }
+
+fn bike_only(key: &str, arrival: i64, walking: u32, bicycle: u32) -> RankingCandidate {
+    let mut journey = candidate(key, arrival);
+    journey.walking_seconds = walking;
+    journey.bicycle_seconds = bicycle;
+    journey.bike_share_uses = 1;
+    journey.transfer_count = 0;
+    journey.main_pattern_sequence.clear();
+    journey
+}
+
+#[test]
+fn bike_rides_from_nearby_stations_collapse_into_one_option() {
+    let ranked = RankingPolicy::default().rank(vec![
+        bike_only("station-a", 1_536, 221, 315),
+        bike_only("station-b", 1_551, 163, 388),
+        bike_only("station-c", 1_592, 290, 302),
+    ]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| value.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["station-a"]
+    );
+}
+
+#[test]
+fn materially_shorter_bike_ride_remains_a_separate_option() {
+    let policy = RankingPolicy::default();
+    let threshold = policy.material_walking_difference_seconds;
+    let ranked = policy.rank(vec![
+        bike_only("long-ride", 1_500, 300, 900),
+        bike_only("short-ride", 1_560, 400, 900 - threshold),
+        bike_only("just-under", 1_520, 350, 900 - threshold + 1),
+    ]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| value.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["long-ride", "short-ride"]
+    );
+}
