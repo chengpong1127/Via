@@ -17,7 +17,9 @@ up without editing the project.
 
 Debug builds call `http://127.0.0.1:3000`, which a simulator reaches on the host.
 Release builds require an HTTPS `VIA_API_BASE_URL` build setting and fail at startup
-when it is missing or insecure.
+when it is missing or insecure. The setting reaches the app through `Via-Info.plist`,
+so either configuration can be pointed elsewhere, for example
+`xcodebuild … VIA_API_BASE_URL=http://127.0.0.1:3100`.
 
 ## Structure
 

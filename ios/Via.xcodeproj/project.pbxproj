@@ -261,7 +261,7 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)";
+				INFOPLIST_FILE = "Via-Info.plist";
 				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -289,7 +289,7 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_KEY_VIA_API_BASE_URL = "$(VIA_API_BASE_URL)";
+				INFOPLIST_FILE = "Via-Info.plist";
 				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
