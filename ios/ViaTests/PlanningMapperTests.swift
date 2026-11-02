@@ -55,10 +55,19 @@ struct PlanningMapperTests {
         let walk = option.legs[0]
         #expect(walk.kind == .walking)
         #expect(walk.guidance.map(\.code) == ["depart", "turn_left", "arrive"])
+        #expect(walk.guidance[1].geometryIndex == 1)
+        #expect(walk.guidance[1].streetName == "Zhongxiao W. Rd.")
+        #expect(walk.guidance[0].streetName == nil)
         #expect(walk.attributions == [Attribution(text: "OpenStreetMap", url: URL(string: "https://www.openstreetmap.org/copyright"), licence: "ODbL")])
 
         let ride = try #require(option.legs[1].transit)
-        #expect(ride == TransitRide(mode: .metro, serviceLabel: "BL", headsign: "Nangang Exhibition Center", patternID: "pattern-1"))
+        #expect(ride == TransitRide(
+            mode: .metro,
+            serviceLabel: "BL",
+            headsign: "Nangang Exhibition Center",
+            patternID: "pattern-1",
+            intermediateStops: [Stop(name: "NTU Hospital", coordinate: Coordinate(latitude: 25.0441, longitude: 121.5161), viaID: "stop-3")]
+        ))
         #expect(option.legs[1].from.viaID == "stop-1")
 
         guard case let .bikeShare(bike) = option.legs[2].kind else {
@@ -118,7 +127,7 @@ nonisolated enum Fixtures {
             "departure_time": "2026-11-01T09:31:00+08:00", "arrival_time": "2026-11-01T09:35:00+08:00",
             "duration_seconds": 240,
             "geometry": {"encoding": "polyline6", "points": "_lxwn@g_ywfFn}Ycr{A"},
-            "guidance": [{"code": "depart", "parameters": {}}, {"code": "turn_left", "parameters": {}}, {"code": "arrive", "parameters": {}}],
+            "guidance": [{"code": "depart", "parameters": {"geometry_index": "0"}}, {"code": "turn_left", "parameters": {"geometry_index": "1", "street_name": "Zhongxiao W. Rd."}}, {"code": "arrive", "parameters": {"geometry_index": "1"}}],
             "details": {"type": "walking"},
             "attribution": [{"text": "OpenStreetMap", "url": "https://www.openstreetmap.org/copyright", "licence": "ODbL"}]
           },
@@ -133,7 +142,8 @@ nonisolated enum Fixtures {
             "details": {
               "type": "transit", "transit_mode": "metro", "via_pattern_id": "pattern-1",
               "via_boarding_point_id": "stop-1", "via_alighting_point_id": "stop-2",
-              "service_label": "BL", "headsign": "Nangang Exhibition Center"
+              "service_label": "BL", "headsign": "Nangang Exhibition Center",
+              "intermediate_stops": [{"display_name": "NTU Hospital", "coordinate": {"latitude": 25.0441, "longitude": 121.5161}, "via_id": "stop-3"}]
             },
             "attribution": []
           },

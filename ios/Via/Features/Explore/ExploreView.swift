@@ -8,7 +8,9 @@ struct ExploreView: View {
         MapReader { proxy in
             Map(position: $model.camera, selection: $model.mapSelection) {
                 UserAnnotation()
-                if model.isPlanning {
+                if let navigation = model.navigation {
+                    RouteLegsContent(option: navigation.option, focusedLegID: nil)
+                } else if model.isPlanning {
                     JourneyMapContent(directions: model.directions, focusedLegID: model.focusedLegID)
                 } else {
                     ForEach(model.resultMarkers) { result in
@@ -27,9 +29,27 @@ struct ExploreView: View {
                 pointsOfInterest: model.isPlanning ? .excludingAll : .all
             ))
             .mapControls {
-                MapUserLocationButton()
+                if !model.isNavigating {
+                    MapUserLocationButton()
+                    MapPitchToggle()
+                }
                 MapCompass()
-                MapPitchToggle()
+            }
+            .safeAreaInset(edge: .top) {
+                if let navigation = model.navigation {
+                    NavigationBanner(navigation: navigation)
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let navigation = model.navigation {
+                    VStack(alignment: .trailing, spacing: 12) {
+                        if !model.camera.followsUserLocation {
+                            Button("Re-center", systemImage: "location.north.line.fill", action: model.recenter)
+                                .buttonStyle(.glass)
+                        }
+                        NavigationTray(navigation: navigation, end: model.endNavigation)
+                    }
+                }
             }
             .onMapCameraChange(frequency: .onEnd) { context in
                 model.search.service.region = context.region
@@ -49,7 +69,7 @@ struct ExploreView: View {
             )
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { model.mapSize = $0 }
-        .sheet(isPresented: .constant(true)) {
+        .sheet(isPresented: Binding(get: { !model.isNavigating }, set: { _ in })) {
             ExploreSheet(model: model)
                 .presentationDetents([.collapsed, .medium, .large], selection: $model.detent)
                 .presentationBackgroundInteraction(.enabled(upThrough: .medium))
@@ -58,6 +78,14 @@ struct ExploreView: View {
         }
         .task {
             model.location.requestAuthorizationIfNeeded()
+        }
+        .onChange(of: model.isNavigating) { _, navigating in
+            UIApplication.shared.isIdleTimerDisabled = navigating
+        }
+        .task(id: model.isNavigating) {
+            guard model.isNavigating else { return }
+            try? await Task.sleep(for: .milliseconds(500))
+            model.recenter()
         }
     }
 }
@@ -98,47 +126,56 @@ struct JourneyMapContent: MapContent {
                 MapPolyline(coordinates: option.overview.map(\.clCoordinate))
                     .stroke(.gray.opacity(0.55), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             }
-            ForEach(selected.legs) { leg in
-                let coordinates = leg.path.map(\.clCoordinate)
-                let dimmed = focusedLegID != nil && focusedLegID != leg.id
-                if case .walking = leg.kind {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(
-                            leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
-                            style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round, dash: [0.5, 9])
-                        )
-                } else {
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(.white, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
-                    MapPolyline(coordinates: coordinates)
-                        .stroke(
-                            leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
-                            style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
-                        )
-                }
-            }
-            ForEach(selected.legs.filter { if case .walking = $0.kind { false } else { true } }) { leg in
-                Annotation(leg.from.name, coordinate: leg.from.coordinate.clCoordinate, anchor: .center) {
-                    StopDot(color: leg.kind.color)
-                }
-                .annotationTitles(.hidden)
-                Annotation(leg.to.name, coordinate: leg.to.coordinate.clCoordinate, anchor: .center) {
-                    StopDot(color: leg.kind.color)
-                }
-                .annotationTitles(.hidden)
-            }
-            if let first = selected.legs.first {
-                Annotation(first.from.name, coordinate: first.from.coordinate.clCoordinate, anchor: .center) {
-                    StopDot(color: .blue, size: 14)
-                }
-                .annotationTitles(.hidden)
-            }
-            if let last = selected.legs.last {
-                Marker(last.to.name, systemImage: "mappin", coordinate: last.to.coordinate.clCoordinate)
-                    .tint(.red)
-            }
+            RouteLegsContent(option: selected, focusedLegID: focusedLegID)
         } else if case let .place(destination)? = directions.destination {
             Marker(destination.name, coordinate: destination.coordinate.clCoordinate)
+                .tint(.red)
+        }
+    }
+}
+
+struct RouteLegsContent: MapContent {
+    let option: JourneyOption
+    let focusedLegID: String?
+
+    var body: some MapContent {
+        ForEach(option.legs) { leg in
+            let coordinates = leg.path.map(\.clCoordinate)
+            let dimmed = focusedLegID != nil && focusedLegID != leg.id
+            if case .walking = leg.kind {
+                MapPolyline(coordinates: coordinates)
+                    .stroke(
+                        leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
+                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round, dash: [0.5, 9])
+                    )
+            } else {
+                MapPolyline(coordinates: coordinates)
+                    .stroke(.white, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+                MapPolyline(coordinates: coordinates)
+                    .stroke(
+                        leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
+                    )
+            }
+        }
+        ForEach(option.legs.filter { if case .walking = $0.kind { false } else { true } }) { leg in
+            Annotation(leg.from.name, coordinate: leg.from.coordinate.clCoordinate, anchor: .center) {
+                StopDot(color: leg.kind.color)
+            }
+            .annotationTitles(.hidden)
+            Annotation(leg.to.name, coordinate: leg.to.coordinate.clCoordinate, anchor: .center) {
+                StopDot(color: leg.kind.color)
+            }
+            .annotationTitles(.hidden)
+        }
+        if let first = option.legs.first {
+            Annotation(first.from.name, coordinate: first.from.coordinate.clCoordinate, anchor: .center) {
+                StopDot(color: .blue, size: 14)
+            }
+            .annotationTitles(.hidden)
+        }
+        if let last = option.legs.last {
+            Marker(last.to.name, systemImage: "mappin", coordinate: last.to.coordinate.clCoordinate)
                 .tint(.red)
         }
     }

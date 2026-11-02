@@ -7,6 +7,20 @@ enum LocationError: Error, Equatable {
     case unavailable
 }
 
+nonisolated struct LocationFix: Hashable, Sendable {
+    let coordinate: Coordinate
+    let horizontalAccuracy: Double
+    let course: Double?
+    let speed: Double?
+    let timestamp: Date
+}
+
+protocol LocationTracking: AnyObject {
+    func fixes() -> AsyncStream<LocationFix>
+    func beginNavigation()
+    func endNavigation()
+}
+
 protocol LocationProviding: AnyObject {
     var coordinate: Coordinate? { get }
     func requestAuthorizationIfNeeded()
@@ -14,12 +28,13 @@ protocol LocationProviding: AnyObject {
 }
 
 @Observable
-final class LocationService: NSObject, LocationProviding {
+final class LocationService: NSObject, LocationProviding, LocationTracking {
     private(set) var authorizationStatus: CLAuthorizationStatus
     private(set) var coordinate: Coordinate?
 
     @ObservationIgnored private let manager = CLLocationManager()
     @ObservationIgnored private var waiters: [CheckedContinuation<Coordinate, Error>] = []
+    @ObservationIgnored private var subscribers: [UUID: AsyncStream<LocationFix>.Continuation] = [:]
 
     override init() {
         authorizationStatus = manager.authorizationStatus
@@ -62,6 +77,30 @@ final class LocationService: NSObject, LocationProviding {
         }
     }
 
+    func fixes() -> AsyncStream<LocationFix> {
+        let (stream, continuation) = AsyncStream.makeStream(of: LocationFix.self, bufferingPolicy: .bufferingNewest(1))
+        let id = UUID()
+        subscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor in self?.subscribers[id] = nil }
+        }
+        return stream
+    }
+
+    func beginNavigation() {
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.activityType = .fitness
+        manager.distanceFilter = 3
+        requestAuthorizationIfNeeded()
+        if isAuthorized { manager.startUpdatingLocation() }
+    }
+
+    func endNavigation() {
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.activityType = .other
+        manager.distanceFilter = kCLDistanceFilterNone
+    }
+
     private func resumeWaiters(with result: Result<Coordinate, Error>) {
         let pending = waiters
         waiters = []
@@ -91,9 +130,17 @@ extension LocationService: CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         let coordinate = Coordinate(location.coordinate)
+        let fix = LocationFix(
+            coordinate: coordinate,
+            horizontalAccuracy: location.horizontalAccuracy,
+            course: location.course >= 0 ? location.course : nil,
+            speed: location.speed >= 0 ? location.speed : nil,
+            timestamp: location.timestamp
+        )
         MainActor.assumeIsolated {
             self.coordinate = coordinate
             resumeWaiters(with: .success(coordinate))
+            subscribers.values.forEach { $0.yield(fix) }
         }
     }
 

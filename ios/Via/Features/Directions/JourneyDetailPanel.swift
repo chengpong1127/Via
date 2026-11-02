@@ -48,6 +48,13 @@ struct JourneyDetailPanel: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
+            if model.canNavigate {
+                Button("Start", systemImage: "location.north.fill") {
+                    model.startNavigation(option)
+                }
+                .buttonStyle(.glassProminent)
+                .font(.headline)
+            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 20)
@@ -142,7 +149,7 @@ private struct LegRow: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
                                 Label {
-                                    Text(step.instruction)
+                                    step.detailedInstruction
                                 } icon: {
                                     Image(systemName: step.symbol)
                                 }
@@ -164,8 +171,8 @@ private struct LegRow: View {
     }
 
     private var steps: [Guidance] {
-        guard case .walking = leg.kind else { return [] }
-        return leg.guidance.filter { $0.code != "depart" && $0.code != "arrive" }
+        if case .transit = leg.kind { return [] }
+        return leg.guidance.filter { !["depart", "arrive", "bike_share"].contains($0.code) }
     }
 
     @ViewBuilder

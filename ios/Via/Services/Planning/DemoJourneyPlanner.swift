@@ -40,7 +40,15 @@ nonisolated struct DemoJourneyPlanner: JourneyPlanner {
         let first = leg("\(mode)-walk-1", .walking, request.origin.stop, boardStop, start, 300)
         let transit = leg(
             "\(mode)-ride",
-            .transit(TransitRide(mode: mode, serviceLabel: label, headsign: headsign, patternID: "demo-\(mode)")),
+            .transit(TransitRide(
+                mode: mode,
+                serviceLabel: label,
+                headsign: headsign,
+                patternID: "demo-\(mode)",
+                intermediateStops: [0.3, 0.5, 0.7].enumerated().map { index, fraction in
+                    Stop(name: "Stop \(index + 1)", coordinate: board.interpolated(to: alight, fraction: fraction), viaID: nil)
+                }
+            )),
             boardStop, alightStop, first.arrivalTime.addingTimeInterval(120), ride * 60
         )
         let last = leg("\(mode)-walk-2", .walking, alightStop, request.destination.stop, transit.arrivalTime, 240)
@@ -76,9 +84,25 @@ nonisolated struct DemoJourneyPlanner: JourneyPlanner {
             arrivalTime: start.addingTimeInterval(duration),
             duration: duration,
             path: (0...8).map { from.coordinate.interpolated(to: to.coordinate, fraction: Double($0) / 8) },
-            guidance: [],
+            guidance: guidance(for: kind),
             attributions: []
         )
+    }
+
+    private func guidance(for kind: LegKind) -> [Guidance] {
+        func step(_ code: String, _ index: Int, _ street: String? = nil) -> Guidance {
+            var parameters = ["geometry_index": String(index)]
+            parameters["street_name"] = street
+            return Guidance(code: code, parameters: parameters)
+        }
+        switch kind {
+        case .walking:
+            return [step("depart", 0), step("turn_right", 3, "Zhongxiao E. Rd."), step("turn_left", 6, "Songren Rd."), step("arrive", 8)]
+        case .bikeShare:
+            return [Guidance(code: "bike_share", parameters: [:]), step("depart", 0), step("turn_left", 4, "Xinyi Rd."), step("arrive", 8)]
+        case .transit:
+            return []
+        }
     }
 
     private func option(_ key: String, label: JourneyLabel?, legs: [Leg], walking: TimeInterval, live: LiveStatus = .notApplicable) -> JourneyOption {

@@ -11,7 +11,8 @@ struct ViaApp: App {
         _model = State(initialValue: ExploreModel(
             search: SearchModel(service: PlaceSearchService(), nearbyStops: HTTPNearbyStopsSource(client: client)),
             directions: DirectionsModel(planner: planner, location: location),
-            location: location
+            location: location,
+            planner: planner
         ))
     }
 

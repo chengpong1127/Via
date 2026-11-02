@@ -44,4 +44,7 @@ a database or identity-reconciliation layer.
 
 Keep iOS feature-oriented. Production planning flows through `JourneyPlanner →
 HTTPJourneyPlanner → APIClient`; retain `DemoJourneyPlanner` for previews and offline
-tests. `Features/Navigation` is not part of the current implementation.
+tests. `Features/Navigation` follows a selected `JourneyOption` on-device:
+`NavigationTracker` snaps location fixes to leg geometry and transit stops, and
+`NavigationModel` re-routes through `JourneyPlanner` with at most one plan per
+minute. There is no separate navigation backend.

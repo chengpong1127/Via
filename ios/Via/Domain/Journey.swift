@@ -56,6 +56,7 @@ nonisolated struct TransitRide: Hashable, Sendable {
     let serviceLabel: String
     let headsign: String
     let patternID: String
+    var intermediateStops: [Stop] = []
 }
 
 nonisolated struct BikeShareRide: Hashable, Sendable {
@@ -74,6 +75,14 @@ nonisolated enum LegKind: Hashable, Sendable {
 nonisolated struct Guidance: Hashable, Sendable {
     let code: String
     let parameters: [String: String]
+
+    var geometryIndex: Int? {
+        parameters["geometry_index"].flatMap(Int.init)
+    }
+
+    var streetName: String? {
+        parameters["street_name"].flatMap { $0.isEmpty ? nil : $0 }
+    }
 }
 
 nonisolated struct Attribution: Hashable, Sendable {

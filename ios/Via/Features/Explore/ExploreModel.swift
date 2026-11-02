@@ -36,15 +36,24 @@ final class ExploreModel {
     @ObservationIgnored var mapSize = CGSize(width: 402, height: 874)
     private(set) var selectedPlace: PlaceResult?
     private(set) var focusedLegID: String?
+    private(set) var navigation: NavigationModel?
 
     let search: SearchModel
     let directions: DirectionsModel
     let location: LocationService
+    @ObservationIgnored private let planner: any JourneyPlanner
 
-    init(search: SearchModel, directions: DirectionsModel, location: LocationService) {
+    init(search: SearchModel, directions: DirectionsModel, location: LocationService, planner: any JourneyPlanner) {
         self.search = search
         self.directions = directions
         self.location = location
+        self.planner = planner
+    }
+
+    var isNavigating: Bool { navigation != nil }
+
+    var canNavigate: Bool {
+        directions.origin == .currentLocation && directions.destination?.place != nil
     }
 
     var isPlanning: Bool {
@@ -183,8 +192,38 @@ final class ExploreModel {
         fit(leg.path + [leg.from.coordinate, leg.to.coordinate])
     }
 
+    func startNavigation(_ option: JourneyOption) {
+        guard canNavigate, let destination = directions.destination?.place else { return }
+        let navigation = NavigationModel(
+            option: option,
+            destination: destination,
+            modes: directions.modes,
+            planner: planner,
+            location: location
+        )
+        focusedLegID = nil
+        self.navigation = navigation
+        navigation.start()
+        recenter()
+    }
+
+    func endNavigation() {
+        navigation?.stop()
+        navigation = nil
+        detent = .medium
+        if let option = directions.selectedOption {
+            fit(option.overview)
+        }
+    }
+
+    func recenter() {
+        withAnimation(.smooth) {
+            camera = .userLocation(followsHeading: true, fallback: .automatic)
+        }
+    }
+
     func handleMapSelection() async {
-        guard let selection = mapSelection, !isPlanning else { return }
+        guard let selection = mapSelection, !isPlanning, !isNavigating else { return }
         if let id = selection.value, let result = resultMarkers.first(where: { $0.id == id }) {
             show(result)
         } else if let feature = selection.feature,
@@ -194,7 +233,7 @@ final class ExploreModel {
     }
 
     func dropPin(at coordinate: Coordinate) async {
-        guard !isPlanning else { return }
+        guard !isPlanning, !isNavigating else { return }
         show(await search.service.result(at: coordinate))
     }
 

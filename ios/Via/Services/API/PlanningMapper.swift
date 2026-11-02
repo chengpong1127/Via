@@ -110,7 +110,13 @@ nonisolated enum PlanningMapper {
             else {
                 throw JourneyPlanningError.unsupportedResponse
             }
-            return .transit(TransitRide(mode: mode, serviceLabel: serviceLabel, headsign: headsign, patternID: patternID))
+            return .transit(TransitRide(
+                mode: mode,
+                serviceLabel: serviceLabel,
+                headsign: headsign,
+                patternID: patternID,
+                intermediateStops: details.intermediateStops?.map(stop) ?? []
+            ))
         case ("bicycle", "bike_share"):
             guard let pickupID = details.pickupStationID,
                   let pickupName = details.pickupStationName,

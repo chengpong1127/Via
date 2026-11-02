@@ -143,6 +143,7 @@ nonisolated struct LegDetailsDTO: Decodable, Sendable {
     let pickupStationName: String?
     let dropoffStationID: String?
     let dropoffStationName: String?
+    let intermediateStops: [PlaceDTO]?
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -154,6 +155,7 @@ nonisolated struct LegDetailsDTO: Decodable, Sendable {
         case pickupStationName = "pickup_station_name"
         case dropoffStationID = "dropoff_station_id"
         case dropoffStationName = "dropoff_station_name"
+        case intermediateStops = "intermediate_stops"
     }
 }
 

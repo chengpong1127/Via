@@ -61,6 +61,14 @@ unmapped IDs reported. There is no identity database.
 Production iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient`;
 `DemoJourneyPlanner` supports previews and offline tests.
 
+iOS navigation runs on-device against the selected journey. Walking and cycling
+guidance carries `geometry_index` (into the leg geometry) and `street_name`
+parameters; transit legs carry `intermediate_stops` for the stop countdown.
+`NavigationTracker` projects fixes forward along each leg, counts down stops,
+raises action-only alerts and flags off-route or missed connections;
+`NavigationModel` re-plans from the current position with a 60 s cooldown to
+respect the TDX rate limit.
+
 See [server/README.md](server/README.md) for local development and verification,
 [configuration](server/docs/configuration.md) for runtime settings, and the
 [VIA project](https://app.notion.com/p/408aefae2f748154b5ebcdf042f8c303)
