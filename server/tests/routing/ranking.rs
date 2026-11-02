@@ -371,3 +371,79 @@ fn materially_shorter_bike_ride_remains_a_separate_option() {
         vec!["long-ride", "short-ride"]
     );
 }
+
+#[test]
+fn much_later_walk_only_option_is_not_offered_beside_a_bike_ride() {
+    let bike = bike_only("bike", 2_340, 540, 1_800);
+    let mut walk = candidate("walk-only", 2_340 + 63 * 60);
+    walk.walking_seconds = 102 * 60;
+    walk.transfer_count = 0;
+    walk.main_pattern_sequence.clear();
+
+    let ranked = RankingPolicy::default().rank(vec![walk, bike]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| value.stable_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["bike"]
+    );
+}
+
+#[test]
+fn much_later_alternatives_need_a_real_tradeoff() {
+    let mut best = candidate("metro-change", 30 * 60);
+    best.walking_seconds = 3 * 60;
+    best.transfer_count = 1;
+    let mut long_walk = candidate("walk-to-one-line", 50 * 60);
+    long_walk.walking_seconds = 32 * 60;
+    long_walk.transfer_count = 0;
+    let mut direct = candidate("direct-bus", 52 * 60);
+    direct.walking_seconds = 4 * 60;
+    direct.transfer_count = 0;
+
+    let ranked = RankingPolicy::default().rank(vec![long_walk, direct, best]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| (value.stable_key.as_str(), value.label))
+            .collect::<Vec<_>>(),
+        vec![
+            ("metro-change", Some(JourneyLabel::BestNow)),
+            ("direct-bus", Some(JourneyLabel::FewerTransfers)),
+        ]
+    );
+}
+
+#[test]
+fn each_tradeoff_label_is_given_once_and_only_for_a_material_saving() {
+    let mut best = candidate("best", 2_000);
+    best.walking_seconds = 900;
+    let mut slight = candidate("slightly-less-walking", 2_010);
+    slight.walking_seconds = 840;
+    let mut less = candidate("less-walking", 2_020);
+    less.walking_seconds = 400;
+    let mut least = candidate("least-walking", 2_030);
+    least.walking_seconds = 100;
+
+    let ranked = RankingPolicy {
+        result_limit: 4,
+        ..RankingPolicy::default()
+    }
+    .rank(vec![least, less, slight, best]);
+
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|value| (value.stable_key.as_str(), value.label))
+            .collect::<Vec<_>>(),
+        vec![
+            ("best", Some(JourneyLabel::BestNow)),
+            ("slightly-less-walking", None),
+            ("less-walking", Some(JourneyLabel::LessWalking)),
+            ("least-walking", None),
+        ]
+    );
+}

@@ -784,3 +784,68 @@ fn equal_cost_walking_transfers_are_kept_in_stop_order() {
         assert_eq!(feeders(), first);
     }
 }
+
+#[test]
+fn rail_patterns_sharing_one_route_can_be_connected() {
+    for mode in [TransitMode::Rail, TransitMode::HighSpeedRail] {
+        let first = pattern("main-line", mode, &["o", "hub"]);
+        let mut second = pattern("branch-line", mode, &["hub", "d"]);
+        second.route_id = first.route_id.clone();
+        let network = network(
+            vec![first, second],
+            vec![
+                trip("main-trip", "main-line", &[0, 100]),
+                trip("branch-trip", "branch-line", &[0, 100]),
+            ],
+        );
+
+        let corridors = run(&network, &query("o", "d", &[mode], 1, 10));
+
+        assert_eq!(corridors.retained().len(), 1, "{mode:?}");
+        assert_eq!(
+            corridors.retained()[0].pattern_sequence(),
+            vec![
+                TransitPatternId::new("main-line"),
+                TransitPatternId::new("branch-line")
+            ]
+        );
+    }
+}
+
+#[test]
+fn retained_corridors_prefer_distinct_ride_sequences_over_stop_variants() {
+    let network = network(
+        vec![
+            pattern("main", TransitMode::Bus, &["o1", "o2", "o3", "d"]),
+            pattern("other", TransitMode::Bus, &["x", "d"]),
+        ],
+        vec![
+            trip("main-trip", "main", &[0, 60, 120, 600]),
+            trip("other-trip", "other", &[0, 900]),
+        ],
+    );
+    let mut query = query("o1", "d", &[TransitMode::Bus], 0, 2);
+    query.origin_access = ["o1", "o2", "o3", "x"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, stop)| {
+            AccessPoint::new(
+                id(stop),
+                datetime!(2026-09-21 10:00 UTC),
+                datetime!(2026-09-21 10:00 UTC),
+                60 * index as u32,
+                0,
+            )
+        })
+        .collect();
+
+    let corridors = run(&network, &query);
+
+    let sequences = corridors
+        .retained()
+        .iter()
+        .map(|corridor| corridor.pattern_sequence())
+        .collect::<HashSet<_>>();
+    assert_eq!(corridors.retained().len(), 2);
+    assert!(sequences.contains(&vec![TransitPatternId::new("other")]));
+}

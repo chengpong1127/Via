@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use serde_json::json;
+use serde_json::{Value, json};
 use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use via_server::{
     domain::bikeshare::BikeShareNetwork,
@@ -781,6 +781,31 @@ async fn arrive_by_direct_walking_respects_the_latest_arrival() {
 }
 
 #[tokio::test]
+async fn arrive_by_leaves_close_to_the_requested_arrival() {
+    let origin = coordinate(25.30, 121.60);
+    let destination = coordinate(25.301, 121.601);
+    let mut body = request(origin, destination, &[]);
+    body["departure_setting"] = json!({"type": "arrive_by", "time": "2026-08-31T10:10:00+08:00"});
+    let result = route_body(
+        FakeStreetRouter::builder()
+            .path(
+                StreetTravelMode::Walking,
+                origin,
+                destination,
+                path(origin, destination, 300),
+            )
+            .build(),
+        FixtureRealtime::empty(),
+        body,
+    )
+    .await;
+    let option = &result["journey_options"][0];
+
+    assert!(option["departure_time"].as_str().unwrap() >= "2026-08-31T09:55:00+08:00");
+    assert!(option["arrival_time"].as_str().unwrap() <= "2026-08-31T10:10:00+08:00");
+}
+
+#[tokio::test]
 async fn arrive_by_walking_replacement_is_checked_after_the_previous_transit_arrival() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
@@ -1089,4 +1114,84 @@ async fn reconstructed_walking_duration_must_still_fit_the_query_limit() {
     .unwrap();
     assert_eq!(body["empty"]["code"], "no_feasible_journey_option");
     assert!(body.get("journey_options").is_none());
+}
+
+fn through_train_network() -> TransitNetwork {
+    let mut value: Value = serde_json::to_value(network()).unwrap();
+    value["stops"].as_array_mut().unwrap().push(json!({
+        "id": "F-TRA-C",
+        "name": "Fixture TRA Terminal",
+        "coordinate": {"latitude": 25.122, "longitude": 121.522}
+    }));
+    let patterns = value["patterns"].as_array_mut().unwrap();
+    patterns.push(json!({
+        "id": "fixture-tra-through",
+        "route_id": "fixture-tra-local",
+        "direction": null,
+        "headsign": "Fixture TRA Terminal",
+        "stops": ["F-TRA-A", "F-TRA-B", "F-TRA-C"],
+        "static_profile": {"segments": [
+            {"seconds": 900, "source": "schedule"},
+            {"seconds": 600, "source": "schedule"}
+        ]}
+    }));
+    patterns.push(json!({
+        "id": "fixture-tra-branch",
+        "route_id": "fixture-tra-local",
+        "direction": null,
+        "headsign": "Fixture TRA Terminal",
+        "stops": ["F-TRA-B", "F-TRA-C"],
+        "static_profile": {"segments": [{"seconds": 600, "source": "schedule"}]}
+    }));
+    let trips = value["trips"].as_array_mut().unwrap();
+    trips.push(json!({
+        "id": "fixture-tra-through-run",
+        "pattern_id": "fixture-tra-through",
+        "calendar_id": "fixture-monday",
+        "stop_times": [
+            {"arrival_seconds": 36300, "departure_seconds": 36300},
+            {"arrival_seconds": 37200, "departure_seconds": 37380},
+            {"arrival_seconds": 37980, "departure_seconds": 37980}
+        ]
+    }));
+    trips.push(json!({
+        "id": "fixture-tra-branch-run",
+        "pattern_id": "fixture-tra-branch",
+        "calendar_id": "fixture-monday",
+        "stop_times": [
+            {"arrival_seconds": 39000, "departure_seconds": 39000},
+            {"arrival_seconds": 39600, "departure_seconds": 39600}
+        ]
+    }));
+    TransitNetwork::from_artifact_json(&value.to_string()).unwrap()
+}
+
+#[tokio::test]
+async fn staying_on_one_train_is_never_shown_as_two_rides() {
+    let network = through_train_network();
+    let origin = near_stop(&network, "F-TRA-A");
+    let destination = near_stop(&network, "F-TRA-C");
+    let body = route_body_with_network(
+        transit_street(&network, origin, "F-TRA-A", destination, "F-TRA-C"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["tra"]),
+        network,
+    )
+    .await;
+    let options = body["journey_options"].as_array().unwrap();
+
+    assert!(!options.is_empty());
+    for option in options {
+        let rides = option["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|leg| leg["mode"] == "transit")
+            .count();
+        assert_eq!(
+            option["transfer_count"],
+            rides.saturating_sub(1),
+            "{option}"
+        );
+    }
 }

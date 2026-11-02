@@ -36,6 +36,11 @@ impl ReconstructionState<'_, '_> {
             .ok_or(PlanningError::Internal)?;
         if Some(board.stop_id.clone()) != self.current_stop
             || self.assembly.arrival_time > board.departure_at
+            || self.pending_transfer.is_none()
+                && self
+                    .previous_transit
+                    .as_ref()
+                    .is_some_and(|previous| previous.trip_id == trip.id)
         {
             return Ok(false);
         }

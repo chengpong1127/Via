@@ -36,7 +36,7 @@ struct Label {
     last_mode: Option<TransitMode>,
     node: usize,
     structure: u64,
-    last_route_id: Option<TransitRouteId>,
+    last_line_id: Option<TransitRouteId>,
     after_ride: bool,
 }
 
@@ -80,7 +80,7 @@ type RoundLabels = HashMap<BoardingPointId, Vec<Label>>;
 struct BagEntry {
     cost_seconds: u32,
     structure: u64,
-    last_route_id: Option<TransitRouteId>,
+    last_line_id: Option<TransitRouteId>,
 }
 
 pub fn generate(
@@ -130,7 +130,7 @@ pub fn generate(
             last_mode: None,
             node,
             structure: fingerprint(0, &access.stop_id),
-            last_route_id: None,
+            last_line_id: None,
             after_ride: false,
         };
         if search.insert(&access.stop_id, &label) {
@@ -236,7 +236,16 @@ impl Search<'_> {
         next: &mut RoundLabels,
     ) {
         let group = patterns.group(group_index);
-        let route_id = &self.network.required_pattern(&group.pattern_id).route_id;
+        let line_id = match group.mode {
+            TransitMode::Rail | TransitMode::HighSpeedRail => {
+                TransitRouteId::new(group.pattern_id.as_str())
+            }
+            TransitMode::Bus | TransitMode::Metro => self
+                .network
+                .required_pattern(&group.pattern_id)
+                .route_id
+                .clone(),
+        };
         let mut boarded = Vec::<Boarded>::new();
         for stop_index in first_index..group.stops.len() {
             let stop_id = &group.stops[stop_index];
@@ -273,7 +282,7 @@ impl Search<'_> {
                         last_mode: Some(group.mode),
                         node,
                         structure,
-                        last_route_id: Some(route_id.clone()),
+                        last_line_id: Some(line_id.clone()),
                         after_ride: true,
                     };
                     if self.insert(stop_id, &label) {
@@ -294,7 +303,7 @@ impl Search<'_> {
                 continue;
             }
             for label in labels {
-                if label.last_route_id.as_ref() == Some(route_id) {
+                if label.last_line_id.as_ref() == Some(&line_id) {
                     continue;
                 }
                 let transfer_penalty_seconds = match label.last_mode {
@@ -351,7 +360,7 @@ impl Search<'_> {
                         last_mode: label.last_mode,
                         node,
                         structure: fingerprint(label.structure, &(&shortcut.from, &shortcut.to)),
-                        last_route_id: label.last_route_id.clone(),
+                        last_line_id: label.last_line_id.clone(),
                         after_ride: false,
                     };
                     if self.insert(&shortcut.to, &transferred) {
@@ -384,7 +393,7 @@ impl Search<'_> {
         }
         let bag = self.best.entry(stop_id.clone()).or_default();
         if let Some(index) = bag.iter().position(|known| {
-            known.structure == label.structure && known.last_route_id == label.last_route_id
+            known.structure == label.structure && known.last_line_id == label.last_line_id
         }) {
             if bag[index].cost_seconds <= label.cost_seconds {
                 return false;
@@ -414,7 +423,7 @@ impl Search<'_> {
         bag.push(BagEntry {
             cost_seconds: label.cost_seconds,
             structure: label.structure,
-            last_route_id: label.last_route_id.clone(),
+            last_line_id: label.last_line_id.clone(),
         });
         bag.sort_by_key(|known| known.cost_seconds);
         let mut structures = Vec::new();
@@ -443,7 +452,7 @@ impl Search<'_> {
                 bag.iter().any(|known| {
                     known.cost_seconds == label.cost_seconds
                         && known.structure == label.structure
-                        && known.last_route_id == label.last_route_id
+                        && known.last_line_id == label.last_line_id
                 })
             });
             !labels.is_empty()
@@ -541,6 +550,18 @@ fn select(
                 chosen.insert(index);
                 best_with_fewer_rides = duration;
             }
+        }
+    }
+    let mut sequences = chosen
+        .iter()
+        .map(|&index| candidates[index].corridor.pattern_sequence())
+        .collect::<HashSet<_>>();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if chosen.len() >= limit {
+            break;
+        }
+        if sequences.insert(candidate.corridor.pattern_sequence()) {
+            chosen.insert(index);
         }
     }
     for index in 0..candidates.len() {

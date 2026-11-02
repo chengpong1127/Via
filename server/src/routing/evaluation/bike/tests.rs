@@ -510,7 +510,12 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
     );
     let movements = session.movements(&from, &to, 3, 4).await.unwrap();
     let bike_movement = &movements[0];
-    assert_eq!(bike_movement.total_seconds, 130);
+    assert_eq!(
+        bike_movement.total_seconds,
+        130 + crate::config::ViaConfig::default()
+            .bikeshare
+            .rental_handling_seconds
+    );
     assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
     assert_eq!(street.requests(), 2);
     let remapped = session.movements(&from, &to, 0, 1).await.unwrap();

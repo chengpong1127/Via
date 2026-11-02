@@ -115,7 +115,7 @@ impl RankingPolicy {
                 selected.push(candidate);
             }
         }
-        apply_labels(&mut selected);
+        apply_labels(self, &mut selected);
         selected
     }
 
@@ -191,11 +191,15 @@ impl RankingPolicy {
         if !different_sequence && !fewer_transfers && !less_walking && !different_bicycle {
             return false;
         }
+        let more_walking = candidate
+            .walking_seconds
+            .saturating_sub(current.walking_seconds)
+            >= self.material_walking_difference_seconds;
+        let more_transfers = candidate.transfer_count > current.transfer_count;
         candidate.arrival_epoch_seconds - current.arrival_epoch_seconds
             <= self.max_sequence_only_option_delay_seconds
-            || fewer_transfers
-            || less_walking
-            || different_bicycle
+            || (fewer_transfers && !more_walking)
+            || (less_walking && !more_transfers)
     }
 
     fn same_bicycle_use(&self, current: &RankedJourney, candidate: &RankedJourney) -> bool {
@@ -285,22 +289,23 @@ fn class_is_strictly_better(
     left.class != right.class && compare_primary_preference(policy, left, right) == Ordering::Less
 }
 
-fn apply_labels(options: &mut [RankedJourney]) {
-    if options.is_empty() {
+fn apply_labels(policy: &RankingPolicy, options: &mut [RankedJourney]) {
+    let Some((best, alternatives)) = options.split_first_mut() else {
         return;
-    }
-    let best_index = 0;
-    let best_transfers = options[best_index].transfer_count;
-    let best_walking = options[best_index].walking_seconds;
-    options[best_index].label = Some(JourneyLabel::BestNow);
-    for (index, option) in options.iter_mut().enumerate() {
-        if index == best_index {
-            continue;
-        }
-        if option.transfer_count < best_transfers {
+    };
+    best.label = Some(JourneyLabel::BestNow);
+    let mut fewer_transfers_labelled = false;
+    let mut less_walking_labelled = false;
+    for option in alternatives {
+        if !fewer_transfers_labelled && option.transfer_count < best.transfer_count {
             option.label = Some(JourneyLabel::FewerTransfers);
-        } else if option.walking_seconds < best_walking {
+            fewer_transfers_labelled = true;
+        } else if !less_walking_labelled
+            && best.walking_seconds.saturating_sub(option.walking_seconds)
+                >= policy.material_walking_difference_seconds
+        {
             option.label = Some(JourneyLabel::LessWalking);
+            less_walking_labelled = true;
         }
     }
 }

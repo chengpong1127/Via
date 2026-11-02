@@ -40,6 +40,7 @@ max_endpoint_walk_seconds = 900
 max_bike_duration_seconds = 3600
 max_bike_distance_metres = 20000
 optimistic_walk_speed_metres_per_second = 2.0
+rental_handling_seconds = 60
 
 [bikeshare.preprocessing]
 max_geometric_radius_metres = 500

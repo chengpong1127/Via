@@ -74,6 +74,7 @@ pub struct BikeShareSettings {
     pub max_bike_duration_seconds: u32,
     pub max_bike_distance_metres: u32,
     pub optimistic_walk_speed_metres_per_second: f64,
+    pub rental_handling_seconds: u32,
     pub preprocessing: BikeAccessPolicy,
 }
 
@@ -549,6 +550,7 @@ impl ViaConfig {
             optimistic_walk_speed_metres_per_second: self
                 .bikeshare
                 .optimistic_walk_speed_metres_per_second,
+            rental_handling_seconds: self.bikeshare.rental_handling_seconds,
             availability_max_age_seconds: self.tdx.bikeshare.max_age_seconds,
             availability_max_clock_skew_seconds: self.tdx.bikeshare.max_clock_skew_seconds,
         }

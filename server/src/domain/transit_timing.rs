@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
@@ -222,31 +225,59 @@ impl TimingSnapshot {
         let Some(departures) = self.departures.get(&(pattern_id.clone(), board_index)) else {
             return Vec::new();
         };
-        let preferred = departures
+        let departs_in_time = |trip: &&Arc<EffectiveTrip>| {
+            trip.stop_times
+                .get(board_index)
+                .is_some_and(|stop| stop.departure_at >= after)
+        };
+        let mut preferred = departures
             .preferred
             .iter()
-            .filter(|trip| {
-                trip.stop_times
-                    .get(board_index)
-                    .is_some_and(|stop| stop.departure_at >= after)
-            })
-            .take(limit)
+            .filter(departs_in_time)
             .map(Arc::as_ref)
             .collect::<Vec<_>>();
-        if !preferred.is_empty() {
+        if preferred.is_empty() {
+            return departures
+                .fallback
+                .iter()
+                .filter(departs_in_time)
+                .take(limit)
+                .map(Arc::as_ref)
+                .collect();
+        }
+        if departures
+            .preferred
+            .iter()
+            .any(|trip| trip.scheduled_trip_id.is_none())
+        {
+            preferred.truncate(limit);
             return preferred;
         }
-        departures
-            .fallback
+        let observed = departures
+            .preferred
             .iter()
-            .filter(|trip| {
-                trip.stop_times
-                    .get(board_index)
-                    .is_some_and(|stop| stop.departure_at >= after)
-            })
-            .take(limit)
-            .map(Arc::as_ref)
-            .collect()
+            .filter_map(|trip| trip.scheduled_trip_id.as_ref())
+            .collect::<HashSet<_>>();
+        preferred.extend(
+            departures
+                .fallback
+                .iter()
+                .filter(departs_in_time)
+                .filter(|trip| {
+                    trip.scheduled_trip_id
+                        .as_ref()
+                        .is_none_or(|id| !observed.contains(id))
+                })
+                .map(Arc::as_ref),
+        );
+        preferred.sort_by(|left, right| {
+            left.stop_times[board_index]
+                .departure_at
+                .cmp(&right.stop_times[board_index].departure_at)
+                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+        });
+        preferred.truncate(limit);
+        preferred
     }
 }
 
@@ -675,6 +706,50 @@ mod tests {
         let departures = snapshot.departures(&pattern_id, 0, datetime!(2026-08-31 10:30 UTC), 3);
         assert_eq!(departures.len(), 1);
         assert_eq!(departures[0].id, EffectiveTripId::new("schedule"));
+    }
+
+    #[test]
+    fn unobserved_scheduled_trains_stay_beside_schedule_linked_observations() {
+        let pattern_id = TransitPatternId::new("service");
+        let linked = |id: &str, scheduled: &str, departure_at| EffectiveTrip {
+            scheduled_trip_id: Some(TransitTripId::new(scheduled)),
+            ..trip(id, &pattern_id, departure_at)
+        };
+        let mut snapshot = TimingSnapshot::default();
+        snapshot.insert_entry(
+            pattern_id.clone(),
+            0,
+            SnapshotDepartures {
+                preferred: vec![linked(
+                    "observed-late",
+                    "train-2125",
+                    datetime!(2026-08-31 21:27 UTC),
+                )],
+                fallback: vec![
+                    linked(
+                        "scheduled-early",
+                        "train-2055",
+                        datetime!(2026-08-31 20:55 UTC),
+                    ),
+                    linked(
+                        "scheduled-late",
+                        "train-2125",
+                        datetime!(2026-08-31 21:25 UTC),
+                    ),
+                ],
+                failure: None,
+            },
+        );
+
+        let departures = snapshot.departures(&pattern_id, 0, datetime!(2026-08-31 20:41 UTC), 3);
+
+        assert_eq!(
+            departures
+                .iter()
+                .map(|trip| trip.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["scheduled-early", "observed-late"]
+        );
     }
 
     #[tokio::test]

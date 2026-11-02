@@ -40,6 +40,7 @@ pub struct BikeMovementPolicy {
     pub max_bike_duration_seconds: u32,
     pub max_bike_distance_metres: u32,
     pub optimistic_walk_speed_metres_per_second: f64,
+    pub rental_handling_seconds: u32,
     pub availability_max_age_seconds: u32,
     pub availability_max_clock_skew_seconds: u32,
 }

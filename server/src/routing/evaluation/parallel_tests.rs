@@ -394,7 +394,12 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
         .iter()
         .map(|movements| {
             assert_eq!(movements.len(), 1);
-            assert_eq!(movements[0].total_seconds, 720);
+            assert_eq!(
+                movements[0].total_seconds,
+                720 + crate::config::ViaConfig::default()
+                    .bikeshare
+                    .rental_handling_seconds
+            );
             (movements[0].from_anchor, movements[0].to_anchor)
         })
         .collect::<Vec<_>>();
@@ -412,7 +417,9 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
         };
         assert_eq!(
             session.movements(&from, &to, 0, 1).await.unwrap()[0].total_seconds,
-            140
+            140 + crate::config::ViaConfig::default()
+                .bikeshare
+                .rental_handling_seconds
         );
     }
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);

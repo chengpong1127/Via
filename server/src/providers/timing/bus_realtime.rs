@@ -13,7 +13,8 @@ use crate::{
         transit_timing::DepartureError,
     },
     tdx::{
-        TdxClientError, boarding_point_id, transit_service_id, transit_service_id_for_direction,
+        TdxClientError, boarding_point_id, tdx_sub_route_uid, transit_service_id,
+        transit_service_id_for_direction,
     },
 };
 
@@ -48,6 +49,7 @@ pub(super) fn parse_bus_realtime_payload(
         .or_else(|| payload.get("value").and_then(serde_json::Value::as_array))
         .ok_or(DepartureError::InvalidResponse)?;
     let received_at = OffsetDateTime::now_utc();
+    let parent_services = parent_route_services(requested_services);
     let mut normalized = Vec::new();
     for record in records {
         let Ok(record) = serde_json::from_value::<TdxBusEstimatedArrival>(record.clone()) else {
@@ -80,7 +82,16 @@ pub(super) fn parse_bus_realtime_payload(
         let ids = directional_id
             .as_ref()
             .and_then(|id| requested_services.get(id.as_str()))
-            .or_else(|| requested_services.get(base_id.as_str()));
+            .or_else(|| requested_services.get(base_id.as_str()))
+            .or_else(|| {
+                if record.sub_route_uid.is_some() {
+                    return None;
+                }
+                directional_id
+                    .as_ref()
+                    .and_then(|id| parent_services.get(id.as_str()))
+                    .or_else(|| parent_services.get(base_id.as_str()))
+            });
         for pattern_id in ids.into_iter().flatten() {
             let arrival = normalize_n1(
                 pattern_id.clone(),
@@ -96,6 +107,28 @@ pub(super) fn parse_bus_realtime_payload(
         }
     }
     Ok(normalized)
+}
+
+fn parent_route_services(
+    requested_services: &HashMap<String, Vec<TransitPatternId>>,
+) -> HashMap<String, Vec<TransitPatternId>> {
+    let mut parents = HashMap::<String, Vec<TransitPatternId>>::new();
+    for (service_id, patterns) in requested_services {
+        let service = TransitPatternId::new(service_id.as_str());
+        let sub_route_uid = tdx_sub_route_uid(&service);
+        let direction_suffix = &service_id[sub_route_uid.len()..];
+        let Some(route_uid) = sub_route_uid
+            .strip_suffix(|character: char| character.is_ascii_digit())
+            .filter(|route_uid| !route_uid.is_empty())
+        else {
+            continue;
+        };
+        parents
+            .entry(format!("{route_uid}{direction_suffix}"))
+            .or_default()
+            .extend(patterns.iter().cloned());
+    }
+    parents
 }
 
 pub(super) fn map_tdx_error(error: TdxClientError) -> DepartureError {
@@ -187,5 +220,68 @@ mod tests {
         assert_eq!(arrival.transit_pattern_id, pattern_id);
         assert_eq!(arrival.boarding_point_id, boarding_point_id("TPE11896"));
         assert_eq!(arrival.state, ArrivalState::Predicted);
+    }
+
+    #[test]
+    fn route_level_estimates_reach_sub_routes_named_after_their_route() {
+        let pattern_id = TransitPatternId::new("pattern:TPE153340::direction=0::variant=0");
+        let other_direction = TransitPatternId::new("pattern:TPE153340::direction=1::variant=0");
+        let requested_services = HashMap::from([
+            (
+                transit_service_id_for_direction("TPE153340", 0)
+                    .as_str()
+                    .to_owned(),
+                vec![pattern_id.clone()],
+            ),
+            (
+                transit_service_id_for_direction("TPE153340", 1)
+                    .as_str()
+                    .to_owned(),
+                vec![other_direction],
+            ),
+        ]);
+        let update_time = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+        let payload = serde_json::json!([
+            {
+                "RouteUID": "TPE15334",
+                "StopUID": "TPE30141",
+                "Direction": 0,
+                "StopStatus": 0,
+                "EstimateTime": 897,
+                "UpdateTime": update_time,
+            },
+            {
+                "RouteUID": "TPE1533",
+                "StopUID": "TPE30141",
+                "Direction": 0,
+                "StopStatus": 0,
+                "EstimateTime": 60,
+                "UpdateTime": update_time,
+            },
+            {
+                "RouteUID": "TPE15334",
+                "SubRouteUID": "TPE153349",
+                "StopUID": "TPE30141",
+                "Direction": 0,
+                "StopStatus": 0,
+                "EstimateTime": 30,
+                "UpdateTime": update_time,
+            }
+        ]);
+
+        let values = parse_bus_realtime_payload(
+            &payload,
+            &requested_services,
+            &FreshnessPolicy::tdx_default(),
+            300,
+        )
+        .unwrap();
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].value.transit_pattern_id, pattern_id);
+        assert_eq!(
+            values[0].value.boarding_point_id,
+            boarding_point_id("TPE30141")
+        );
     }
 }

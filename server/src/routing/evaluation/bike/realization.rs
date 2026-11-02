@@ -217,7 +217,7 @@ fn bike_movement_from_cell(
         dropoff_station_id.clone(),
         walk_to_pickup,
         BikeRide {
-            duration_seconds: duration.0,
+            duration_seconds: duration.0.saturating_add(settings.rental_handling_seconds),
             distance_metres: distance.0,
         },
         walk_from_dropoff,

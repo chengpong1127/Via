@@ -282,14 +282,11 @@ impl TdxClient {
         Ok(url)
     }
 
-    async fn authenticated_get(&self, url: Url) -> Result<Response, TdxClientError> {
-        self.authenticated_get_with(&self.client, url).await
-    }
-
     async fn authenticated_get_with(
         &self,
         client: &Client,
         url: Url,
+        max_rate_limit_retries: usize,
     ) -> Result<Response, TdxClientError> {
         let token = self.access_token().await?;
         let mut retries = 0;
@@ -302,7 +299,7 @@ impl TdxClient {
                 .map_err(TdxClientError::ApiRequest)?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
-                    && retries < self.settings.max_rate_limit_retries
+                    && retries < max_rate_limit_retries
                 {
                     retries += 1;
                     tokio::time::sleep(delay).await;
@@ -321,11 +318,21 @@ impl TdxClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<bytes::Bytes, TdxClientError> {
-        self.get_url_bytes(self.api_url(path, query)?).await
+        self.get_url_bytes(
+            self.api_url(path, query)?,
+            self.settings.max_rate_limit_retries,
+        )
+        .await
     }
 
-    async fn get_url_bytes(&self, url: Url) -> Result<bytes::Bytes, TdxClientError> {
-        let response = self.authenticated_get(url).await?;
+    async fn get_url_bytes(
+        &self,
+        url: Url,
+        max_rate_limit_retries: usize,
+    ) -> Result<bytes::Bytes, TdxClientError> {
+        let response = self
+            .authenticated_get_with(&self.client, url, max_rate_limit_retries)
+            .await?;
         if response
             .content_length()
             .is_some_and(|length| length > self.settings.max_response_bytes as u64)
@@ -344,7 +351,7 @@ impl TdxClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<T, TdxClientError> {
-        let body = self.get_bytes(path, query).await?;
+        let body = self.get_url_bytes(self.api_url(path, query)?, 0).await?;
         serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
     }
 
@@ -359,7 +366,7 @@ impl TdxClient {
             ::metrics::counter!("via_tdx_realtime_cache_hits_total").increment(1);
             (body, true)
         } else {
-            let body = self.get_url_bytes(url).await?;
+            let body = self.get_url_bytes(url, 0).await?;
             self.realtime_responses.insert(key, body.clone()).await;
             (body, false)
         };
@@ -374,7 +381,11 @@ impl TdxClient {
     ) -> Result<u64, TdxClientError> {
         let url = Url::parse(url).map_err(|_| TdxClientError::InvalidConfiguration)?;
         let mut response = self
-            .authenticated_get_with(&self.download_client, url)
+            .authenticated_get_with(
+                &self.download_client,
+                url,
+                self.settings.max_rate_limit_retries,
+            )
             .await?;
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -586,6 +597,40 @@ mod tests {
 
         assert_eq!(response.as_ref(), expected);
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn request_time_reads_return_rate_limits_without_waiting() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(any(rate_limited_once))
+            .with_state((Arc::new(b"[]".to_vec()), requests.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = TdxClient::new(
+            TdxCredentials::from_client_credentials("client", "secret"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/api/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
+        )
+        .unwrap();
+
+        let realtime = client
+            .get_realtime_json::<serde_json::Value>("live", &[])
+            .await;
+
+        assert!(matches!(
+            realtime,
+            Err(super::TdxClientError::RateLimitedWithRetryAfter(_)
+                | super::TdxClientError::RateLimited)
+        ));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     async fn counted_response(
