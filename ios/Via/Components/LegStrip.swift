@@ -15,11 +15,11 @@ struct LegStrip: View {
     }
 
     private func strip(compact: Bool) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             ForEach(Array(visibleLegs.enumerated()), id: \.element.id) { index, leg in
                 if index > 0 {
-                    Image(systemName: "chevron.compact.right")
-                        .font(.caption2)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
                 LegBadge(leg: leg, compact: compact)
@@ -36,44 +36,55 @@ struct LegBadge: View {
     var body: some View {
         switch leg.kind {
         case .walking:
-            HStack(spacing: 1) {
-                Image(systemName: "figure.walk")
+            MinutesSymbol(symbol: "figure.walk", duration: leg.duration, showsMinutes: !compact)
+                .foregroundStyle(.primary)
+        case let .transit(ride):
+            HStack(spacing: 4) {
+                ServiceBadge(ride: ride)
                 if !compact {
-                    Text(verbatim: "\(Int((leg.duration / 60).rounded(.up)))")
-                        .font(.caption2.weight(.semibold))
+                    Image(systemName: ride.mode.outlineSymbol)
+                        .font(.title3)
+                        .foregroundStyle(.primary)
                 }
             }
-            .foregroundStyle(.secondary)
-            .font(.subheadline)
-        case let .transit(ride):
-            ServiceBadge(ride: ride, compact: compact)
         case .bikeShare:
-            Image(systemName: "bicycle")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(leg.kind.color, in: .rect(cornerRadius: 5))
+            MinutesSymbol(symbol: "bicycle", duration: leg.duration, showsMinutes: !compact)
+                .foregroundStyle(Color.bikeShare)
+        }
+    }
+}
+
+private struct MinutesSymbol: View {
+    let symbol: String
+    let duration: TimeInterval
+    let showsMinutes: Bool
+
+    var body: some View {
+        HStack(alignment: .lastTextBaseline, spacing: 1) {
+            Image(systemName: symbol)
+                .font(.title3)
+            if showsMinutes {
+                Text(verbatim: "\(Int((duration / 60).rounded(.up)))")
+                    .font(.caption.weight(.semibold))
+                    .baselineOffset(-4)
+            }
         }
     }
 }
 
 struct ServiceBadge: View {
     let ride: TransitRide
-    var compact = false
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: ride.mode.symbol)
-            if !compact || ride.serviceLabel.count <= 4 {
-                Text(ride.serviceLabel)
-                    .lineLimit(1)
-            }
-        }
-        .font(.caption.weight(.bold))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(ride.mode.color, in: .rect(cornerRadius: 5))
+        let style = ride.lineStyle
+        Text(ride.shortLabel)
+            .font(.subheadline.weight(.bold))
+            .lineLimit(1)
+            .foregroundStyle(style.foreground)
+            .padding(.horizontal, 7)
+            .frame(minWidth: 30, minHeight: 28)
+            .background(style.background, in: .rect(cornerRadius: 6))
+            .fixedSize()
+            .accessibilityLabel(Text("\(String(localized: ride.mode.title)) \(ride.serviceLabel)"))
     }
 }

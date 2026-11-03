@@ -18,6 +18,7 @@ enum SheetRoute: Hashable {
 
 extension PresentationDetent {
     static let collapsed = PresentationDetent.height(92)
+    static let navigationStage = PresentationDetent.height(200)
 }
 
 extension MKCoordinateRegion {
@@ -203,6 +204,7 @@ final class ExploreModel {
         )
         focusedLegID = nil
         self.navigation = navigation
+        detent = .navigationStage
         navigation.start()
         recenter()
     }

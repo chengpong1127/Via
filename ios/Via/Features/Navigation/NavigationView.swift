@@ -170,100 +170,362 @@ private struct NoticeCapsule: View {
     }
 }
 
-struct NavigationTray: View {
-    @Bindable var navigation: NavigationModel
+struct NavigationSheet: View {
+    let navigation: NavigationModel
     let end: () -> Void
+    let isExpanded: Bool
+
+    private var tracker: NavigationTracker { navigation.tracker }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(navigation.estimatedArrival.formatted(.clockTime))
-                        .font(.title3.bold())
-                        .monospacedDigit()
-                    Group {
-                        if navigation.isFinished {
-                            Text("Arrived")
-                        } else {
-                            Text("\(remaining.travelTime) · arrival")
-                        }
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                CurrentStageCard(navigation: navigation, end: end)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 22)
+                    .padding(.bottom, 18)
+                if isExpanded {
+                    allSteps
                 }
-                Spacer()
-                Button {
-                    withAnimation(.smooth) { navigation.isMinimized.toggle() }
-                } label: {
-                    Image(systemName: navigation.isMinimized ? "chevron.up" : "chevron.down")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .accessibilityLabel(navigation.isMinimized ? Text("Show steps") : Text("Hide steps"))
-                Button(navigation.isFinished ? "Done" : "End", role: .destructive, action: end)
-                    .buttonStyle(.glassProminent)
-                    .tint(.red)
-            }
-            if !navigation.isMinimized {
-                Divider()
-                LegTimeline(navigation: navigation)
             }
         }
-        .padding(16)
-        .glassEffect(.regular, in: .rect(cornerRadius: 24))
-        .padding(.horizontal, 12)
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollDisabled(!isExpanded)
+    }
+
+    @ViewBuilder
+    private var allSteps: some View {
+        Divider()
+        summary
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+        ForEach(Array(tracker.route.legs.enumerated()), id: \.element.leg.id) { index, item in
+            NavigationStepRows(
+                item: item,
+                state: state(of: index),
+                stopsRemaining: index == tracker.legIndex ? tracker.stopsRemaining : nil
+            )
+        }
+        NavigationStepRow(
+            title: Text("Arrive at \(navigation.destination.name)"),
+            subtitle: Text(navigation.option.arrivalTime.formatted(.clockTime)),
+            state: navigation.isFinished ? .current : .upcoming
+        ) {
+            Image(systemName: "mappin.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.red)
+        }
+        Button(navigation.isFinished ? "Done" : "End Route", role: .destructive, action: end)
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .tint(.red)
+            .padding(20)
+    }
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(navigation.destination.name)
+                .font(.title2.bold())
+                .lineLimit(2)
+            Group {
+                if navigation.isFinished {
+                    Text("Arrived at \(navigation.estimatedArrival.formatted(.clockTime))")
+                } else {
+                    Text("Arrive \(navigation.estimatedArrival.formatted(.clockTime)) · \(remaining.travelTime)")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        }
     }
 
     private var remaining: TimeInterval {
         max(navigation.estimatedArrival.timeIntervalSince(navigation.now), 0)
     }
+
+    private func state(of index: Int) -> NavigationStepState {
+        if navigation.isFinished || index < tracker.legIndex { return .done }
+        return index == tracker.legIndex ? .current : .upcoming
+    }
 }
 
-private struct LegTimeline: View {
+private struct CurrentStageCard: View {
     let navigation: NavigationModel
+    let end: () -> Void
+
+    private var tracker: NavigationTracker { navigation.tracker }
+    private var leg: Leg { navigation.currentLeg.leg }
 
     var body: some View {
-        let legs = navigation.tracker.route.legs
-        let current = navigation.tracker.legIndex
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(legs.enumerated()), id: \.element.leg.id) { index, item in
-                HStack(spacing: 12) {
-                    LegBadge(leg: item.leg, compact: true)
-                        .frame(minWidth: 44, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(summary(item.leg))
-                            .font(.subheadline.weight(index == current ? .semibold : .regular))
-                        Text(item.leg.departureTime.formatted(.clockTime))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    if index < current || navigation.isFinished {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    } else if index == current {
-                        Image(systemName: "location.fill")
-                            .foregroundStyle(.blue)
-                    }
-                }
-                .opacity(index < current ? 0.5 : 1)
+        HStack(alignment: .top, spacing: 14) {
+            icon
+                .frame(minWidth: 44)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 4) {
+                title
+                    .font(.title2.bold())
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+                subtitle
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                detail
+                    .font(.body)
+                    .monospacedDigit()
+                    .padding(.top, 4)
+            }
+            Spacer(minLength: 8)
+            CloseButton(action: end)
+                .accessibilityLabel(navigation.isFinished ? Text("Done") : Text("End Route"))
+        }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if navigation.isFinished {
+            Image(systemName: "mappin.circle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.red)
+        } else {
+            switch leg.kind {
+            case let .transit(ride):
+                ServiceBadge(ride: ride)
+            case .walking:
+                Image(systemName: "figure.walk")
+                    .font(.largeTitle)
+            case .bikeShare:
+                Image(systemName: "bicycle")
+                    .font(.title)
+                    .foregroundStyle(Color.bikeShare)
             }
         }
     }
 
-    private func summary(_ leg: Leg) -> LocalizedStringKey {
+    @ViewBuilder
+    private var title: some View {
+        if navigation.isFinished {
+            Text("You've arrived")
+        } else {
+            switch leg.kind {
+            case let .transit(ride):
+                if tracker.boarded {
+                    Text("Exit at \(leg.to.name)")
+                } else {
+                    Text("Board \(String(localized: ride.mode.title)) \(ride.serviceLabel)")
+                }
+            case .walking:
+                Text("Walk to \(leg.to.name)")
+            case let .bikeShare(ride):
+                Text("Ride YouBike to \(ride.dropoffStationName)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var subtitle: some View {
+        if navigation.isFinished {
+            Text(navigation.destination.name)
+        } else {
+            switch leg.kind {
+            case let .transit(ride):
+                if tracker.boarded, let stops = tracker.stopsRemaining {
+                    Text("^[\(stops) stop](inflect: true) left")
+                } else if !ride.headsign.isEmpty {
+                    Text("Towards \(ride.headsign)")
+                } else {
+                    Text("At \(leg.from.name)")
+                }
+            case .walking, .bikeShare:
+                Text("\(tracker.remainingLegDistance.distanceText), about \(remainingLegTime.travelTime)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        if !navigation.isFinished {
+            switch leg.kind {
+            case .transit:
+                if tracker.boarded {
+                    Text("Arrives at \(leg.arrivalTime.formatted(.clockTime))")
+                } else {
+                    Text("Departs at \(leg.departureTime.formatted(.clockTime))")
+                }
+            case .walking, .bikeShare:
+                if let next = tracker.nextLeg?.leg, let ride = next.transit {
+                    HStack(spacing: 8) {
+                        ServiceBadge(ride: ride)
+                        Text("Departs at \(next.departureTime.formatted(.clockTime))")
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+
+    private var remainingLegTime: TimeInterval {
+        let length = navigation.currentLeg.length
+        return length > 0 ? leg.duration * tracker.remainingLegDistance / length : 0
+    }
+}
+
+private struct NavigationStepRows: View {
+    let item: NavigationLeg
+    let state: NavigationStepState
+    let stopsRemaining: Int?
+
+    private var leg: Leg { item.leg }
+
+    var body: some View {
         switch leg.kind {
         case .walking:
-            "Walk \(leg.duration.travelTime) to \(leg.to.name)"
-        case let .transit(ride):
-            ride.intermediateStops.isEmpty
-                ? "Ride to \(leg.to.name)"
-                : "Ride ^[\(ride.intermediateStops.count + 1) stop](inflect: true) to \(leg.to.name)"
+            NavigationStepRow(
+                title: Text("Walk to \(leg.to.name)"),
+                subtitle: Text("\(item.length.distanceText), about \(leg.duration.travelTime)"),
+                state: state
+            ) {
+                Image(systemName: "figure.walk")
+                    .font(.title)
+            }
         case let .bikeShare(ride):
-            "Ride YouBike to \(ride.dropoffStationName)"
+            NavigationStepRow(
+                title: Text("Ride YouBike to \(ride.dropoffStationName)"),
+                subtitle: Text("\(item.length.distanceText), about \(leg.duration.travelTime)"),
+                state: state
+            ) {
+                Image(systemName: "bicycle")
+                    .font(.title2)
+                    .foregroundStyle(Color.bikeShare)
+            }
+        case let .transit(ride):
+            NavigationStepRow(
+                title: Text("Board \(String(localized: ride.mode.title)) \(ride.serviceLabel)"),
+                subtitle: ride.headsign.isEmpty ? Text("At \(leg.from.name)") : Text("Towards \(ride.headsign)"),
+                detail: Text("Departs at \(leg.departureTime.formatted(.clockTime))"),
+                state: state
+            ) {
+                ServiceBadge(ride: ride)
+            }
+            NavigationStepRow(
+                title: Text("Exit at \(leg.to.name)"),
+                subtitle: nil,
+                state: state
+            ) {
+                Image(systemName: "rectangle.portrait.and.arrow.right")
+                    .font(.title2)
+            } extra: {
+                RideTimeline(leg: leg, ride: ride, stopsRemaining: stopsRemaining)
+            }
         }
+    }
+}
+
+private struct RideTimeline: View {
+    let leg: Leg
+    let ride: TransitRide
+    let stopsRemaining: Int?
+
+    var body: some View {
+        let color = ride.lineStyle.background
+        VStack(alignment: .leading, spacing: 6) {
+            stop(leg.from.name, leg.departureTime, color: color)
+            HStack(spacing: 12) {
+                VStack(spacing: 5) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle().fill(color).frame(width: 5, height: 5)
+                    }
+                }
+                .frame(width: 16)
+                Group {
+                    if let stopsRemaining {
+                        Text("^[\(stopsRemaining) stop](inflect: true) left")
+                    } else {
+                        Text("Go ^[\(ride.intermediateStops.count + 1) stop](inflect: true), \(leg.duration.travelTime)")
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(Color.accentColor)
+            }
+            stop(leg.to.name, leg.arrivalTime, color: color)
+        }
+        .padding(.top, 6)
+    }
+
+    private func stop(_ name: String, _ time: Date, color: Color) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .strokeBorder(color, lineWidth: 4)
+                .frame(width: 16, height: 16)
+            Text(name)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Text(time.formatted(.clockTime))
+                .font(.subheadline)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private enum NavigationStepState {
+    case done
+    case current
+    case upcoming
+}
+
+private struct NavigationStepRow<Extra: View>: View {
+    let title: Text
+    let subtitle: Text?
+    var detail: Text?
+    let state: NavigationStepState
+    @ViewBuilder let icon: () -> AnyView
+    @ViewBuilder let extra: () -> Extra
+
+    init<Icon: View>(
+        title: Text,
+        subtitle: Text?,
+        detail: Text? = nil,
+        state: NavigationStepState,
+        @ViewBuilder icon: @escaping () -> Icon,
+        @ViewBuilder extra: @escaping () -> Extra = { EmptyView() }
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.detail = detail
+        self.state = state
+        self.icon = { AnyView(icon()) }
+        self.extra = extra
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            icon()
+                .frame(minWidth: 44)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
+                title
+                    .font(.title3.bold())
+                subtitle?
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                detail?
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .padding(.top, 4)
+                extra()
+                Divider()
+                    .padding(.top, 12)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 14)
+        .background(state == .current ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear))
+        .opacity(state == .done ? 0.45 : 1)
     }
 }
 

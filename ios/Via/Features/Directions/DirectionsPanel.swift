@@ -3,6 +3,7 @@ import SwiftUI
 struct DirectionsPanel: View {
     @Bindable var model: ExploreModel
     @State private var editingTime = false
+    @State private var editingModes = false
 
     private var directions: DirectionsModel { model.directions }
 
@@ -27,6 +28,14 @@ struct DirectionsPanel: View {
                 model.replan()
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $editingModes) {
+            ModePicker(modes: directions.modes) { modes in
+                guard modes != directions.modes else { return }
+                directions.modes = modes
+                model.replan()
+            }
+            .presentationDetents([.medium])
         }
     }
 
@@ -54,11 +63,8 @@ struct DirectionsPanel: View {
                 }
                 .buttonStyle(.plain)
 
-                ForEach(PlanningMode.allCases) { mode in
-                    ModeChip(mode: mode, isOn: directions.modes.contains(mode)) {
-                        directions.toggle(mode)
-                        model.replan()
-                    }
+                ModeButton(modes: directions.modes) {
+                    editingModes = true
                 }
             }
             .padding(.vertical, 2)
@@ -104,7 +110,8 @@ struct DirectionsPanel: View {
                             option: option,
                             isSelected: option.id == directions.selectedOption?.id,
                             select: { model.select(option) },
-                            showDetails: { model.showJourney(option) }
+                            showDetails: { model.showJourney(option) },
+                            start: model.canNavigate ? { model.startNavigation(option) } : nil
                         )
                     }
                 }
@@ -197,96 +204,90 @@ private struct EndpointCard: View {
     }
 }
 
-private struct ModeChip: View {
-    let mode: PlanningMode
-    let isOn: Bool
-    let toggle: () -> Void
-
-    var body: some View {
-        Button(action: toggle) {
-            Label {
-                Text(mode.title)
-            } icon: {
-                Image(systemName: mode.symbol)
-            }
-            .font(.subheadline.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .foregroundStyle(isOn ? .white : .primary)
-            .background(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.fill.tertiary), in: .capsule)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isOn ? .isSelected : [])
-        .sensoryFeedback(.selection, trigger: isOn)
-    }
-}
-
 struct JourneyOptionRow: View {
     let option: JourneyOption
     let isSelected: Bool
     let select: () -> Void
     let showDetails: () -> Void
+    var start: (() -> Void)?
 
     var body: some View {
         Button(action: isSelected ? showDetails : select) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(option.duration.travelTime)
-                        .font(.title3.bold())
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(option.duration.travelTime)
+                            .font(.title2.bold())
+                            .monospacedDigit()
+                        if let label = option.label {
+                            Text(label.title)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .foregroundStyle(.green)
+                                .background(.green.opacity(0.15), in: .capsule)
+                        }
+                    }
+                    if let boarding = firstRide {
+                        boardingText(boarding)
+                    }
+                    Text("\(option.arrivalTime.formatted(.clockTime)) ETA")
                         .monospacedDigit()
-                    if let label = option.label {
-                        Text(label.title)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .foregroundStyle(.green)
-                            .background(.green.opacity(0.15), in: .capsule)
-                    }
-                    Spacer()
-                    LiveBadge(status: option.liveStatus)
-                }
-                LegStrip(legs: option.legs)
-                HStack(spacing: 4) {
-                    Text("\(option.departureTime.formatted(.clockTime))–\(option.arrivalTime.formatted(.clockTime))")
-                        .monospacedDigit()
-                    if option.walkingDuration > 0 {
-                        Text(verbatim: "·")
-                        Image(systemName: "figure.walk")
-                        Text(option.walkingDuration.travelTime)
-                    }
-                    if option.transferCount > 0 {
-                        Text(verbatim: "·")
-                        Text("^[\(option.transferCount) transfer](inflect: true)")
-                    }
+                        .foregroundStyle(.secondary)
                 }
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-
-                if isSelected {
-                    HStack {
-                        Text("Details")
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.footnote.weight(.bold))
-                    }
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 2)
-                }
+                .padding(.trailing, start == nil ? 0 : 92)
+                LegStrip(legs: option.legs)
             }
-            .padding(14)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: .rect(cornerRadius: 16))
+            .background(.background.secondary, in: .rect(cornerRadius: 20))
             .overlay {
-                RoundedRectangle(cornerRadius: 16)
+                RoundedRectangle(cornerRadius: 20)
                     .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
             }
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if let start {
+                Button(action: start) {
+                    Text("GO")
+                        .font(.title2.weight(.heavy))
+                        .foregroundStyle(.white)
+                        .frame(width: 76, height: 60)
+                        .background(.green, in: .rect(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Start Navigation")
+                .padding(16)
+            }
+        }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var firstRide: (ride: TransitRide, departure: Date)? {
+        for leg in option.legs {
+            if case let .transit(ride) = leg.kind { return (ride, leg.departureTime) }
+        }
+        return nil
+    }
+
+    private func boardingText(_ boarding: (ride: TransitRide, departure: Date)) -> some View {
+        let mode = String(localized: boarding.ride.mode.title)
+        let time = boarding.departure.formatted(.clockTime)
+        return Group {
+            if option.liveStatus == .fresh {
+                Text("\(mode) departs at \(time)")
+                    .foregroundStyle(.green)
+            } else {
+                Text("\(mode) scheduled at \(time)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .monospacedDigit()
     }
 }
 

@@ -15,7 +15,6 @@ final class NavigationModel {
     private(set) var isRerouting = false
     private(set) var rerouteFailed = false
     private(set) var now: Date
-    var isMinimized = false
 
     @ObservationIgnored let destination: Place
     @ObservationIgnored let modes: Set<PlanningMode>

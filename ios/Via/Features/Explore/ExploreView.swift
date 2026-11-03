@@ -11,7 +11,7 @@ struct ExploreView: View {
                 if let navigation = model.navigation {
                     RouteLegsContent(option: navigation.option, focusedLegID: nil)
                 } else if model.isPlanning {
-                    JourneyMapContent(directions: model.directions, focusedLegID: model.focusedLegID)
+                    JourneyMapContent(directions: model.directions, focusedLegID: model.focusedLegID, select: model.select)
                 } else {
                     ForEach(model.resultMarkers) { result in
                         Marker(result.place.name, coordinate: result.place.coordinate.clCoordinate)
@@ -37,17 +37,17 @@ struct ExploreView: View {
             }
             .safeAreaInset(edge: .top) {
                 if let navigation = model.navigation {
-                    NavigationBanner(navigation: navigation)
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let navigation = model.navigation {
                     VStack(alignment: .trailing, spacing: 12) {
+                        NavigationBanner(navigation: navigation)
                         if !model.camera.followsUserLocation {
                             Button("Re-center", systemImage: "location.north.line.fill", action: model.recenter)
+                                .labelStyle(.iconOnly)
+                                .font(.title3)
+                                .frame(width: 30, height: 30)
                                 .buttonStyle(.glass)
+                                .buttonBorderShape(.circle)
+                                .padding(.horizontal, 12)
                         }
-                        NavigationTray(navigation: navigation, end: model.endNavigation)
                     }
                 }
             }
@@ -69,12 +69,21 @@ struct ExploreView: View {
             )
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { model.mapSize = $0 }
-        .sheet(isPresented: Binding(get: { !model.isNavigating }, set: { _ in })) {
-            ExploreSheet(model: model)
-                .presentationDetents([.collapsed, .medium, .large], selection: $model.detent)
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-                .presentationContentInteraction(.scrolls)
-                .interactiveDismissDisabled()
+        .sheet(isPresented: .constant(true)) {
+            Group {
+                if let navigation = model.navigation {
+                    NavigationSheet(navigation: navigation, end: model.endNavigation, isExpanded: model.detent != .navigationStage)
+                } else {
+                    ExploreSheet(model: model)
+                }
+            }
+            .presentationDetents(
+                model.isNavigating ? [.navigationStage, .medium, .large] : [.collapsed, .medium, .large],
+                selection: $model.detent
+            )
+            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            .presentationContentInteraction(.scrolls)
+            .interactiveDismissDisabled()
         }
         .task {
             model.location.requestAuthorizationIfNeeded()
@@ -119,6 +128,9 @@ private struct ExploreSheet: View {
 struct JourneyMapContent: MapContent {
     let directions: DirectionsModel
     let focusedLegID: String?
+    let select: (JourneyOption) -> Void
+
+    private static let labelFractions = [0.5, 0.3, 0.7, 0.2, 0.8]
 
     var body: some MapContent {
         if let selected = directions.selectedOption {
@@ -127,6 +139,18 @@ struct JourneyMapContent: MapContent {
                     .stroke(.gray.opacity(0.55), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
             }
             RouteLegsContent(option: selected, focusedLegID: focusedLegID)
+            if focusedLegID == nil {
+                ForEach(Array(directions.options.enumerated()), id: \.element.id) { index, option in
+                    if let point = option.overview.point(atFraction: Self.labelFractions[index % Self.labelFractions.count]) {
+                        Annotation(option.duration.travelTime, coordinate: point.clCoordinate, anchor: .bottom) {
+                            RouteTimeLabel(option: option, isSelected: option.id == selected.id) {
+                                select(option)
+                            }
+                        }
+                        .annotationTitles(.hidden)
+                    }
+                }
+            }
         } else if case let .place(destination)? = directions.destination {
             Marker(destination.name, coordinate: destination.coordinate.clCoordinate)
                 .tint(.red)
@@ -178,6 +202,55 @@ struct RouteLegsContent: MapContent {
             Marker(last.to.name, systemImage: "mappin", coordinate: last.to.coordinate.clCoordinate)
                 .tint(.red)
         }
+    }
+}
+
+private struct RouteTimeLabel: View {
+    let option: JourneyOption
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(option.duration.travelTime)
+                    .font(.subheadline.bold())
+                    .monospacedDigit()
+                if isSelected, let label = option.label {
+                    Text(label.title)
+                        .font(.caption.weight(.semibold))
+                }
+            }
+            .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(isSelected ? Color.accentColor : Color(.systemBackground), in: .rect(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+        }
+        .buttonStyle(.plain)
+        .zIndex(isSelected ? 1 : 0)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+private extension [Coordinate] {
+    func point(atFraction fraction: Double) -> Coordinate? {
+        guard let first else { return nil }
+        let lengths = zip(self, dropFirst()).map { $0.distance(to: $1) }
+        var remaining = lengths.reduce(0, +) * fraction
+        for (index, length) in lengths.enumerated() {
+            if remaining <= length, length > 0 {
+                let ratio = remaining / length
+                let start = self[index]
+                let end = self[index + 1]
+                return Coordinate(
+                    latitude: start.latitude + (end.latitude - start.latitude) * ratio,
+                    longitude: start.longitude + (end.longitude - start.longitude) * ratio
+                )
+            }
+            remaining -= length
+        }
+        return last ?? first
     }
 }
 

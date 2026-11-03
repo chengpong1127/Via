@@ -11,6 +11,14 @@ extension TransitMode {
         }
     }
 
+    var outlineSymbol: String {
+        switch self {
+        case .bus: "bus"
+        case .metro: "tram"
+        case .rail, .highSpeedRail: "train.side.front.car"
+        }
+    }
+
     var color: Color {
         switch self {
         case .bus: Color(red: 0.13, green: 0.6, blue: 0.33)
@@ -26,6 +34,27 @@ extension TransitMode {
         case .metro: "Metro"
         case .rail: "TRA"
         case .highSpeedRail: "THSR"
+        }
+    }
+}
+
+extension TransitRide {
+    var shortLabel: String {
+        let parts = serviceLabel.split(separator: "_")
+        return parts.count >= 3 ? String(parts[1]) : serviceLabel
+    }
+
+    var lineStyle: (background: Color, foreground: Color) {
+        guard mode == .metro else { return (mode.color, .white) }
+        switch shortLabel {
+        case "BL": return (Color(red: 0.0, green: 0.44, blue: 0.74), .white)
+        case "BR": return (Color(red: 0.77, green: 0.55, blue: 0.19), .white)
+        case "G": return (Color(red: 0.0, green: 0.53, blue: 0.35), .white)
+        case "O": return (Color(red: 0.97, green: 0.71, blue: 0.11), .black)
+        case "R": return (Color(red: 0.89, green: 0.0, blue: 0.17), .white)
+        case "Y": return (Color(red: 1.0, green: 0.86, blue: 0.0), .black)
+        case "A": return (Color(red: 0.51, green: 0.27, blue: 0.69), .white)
+        default: return (mode.color, .white)
         }
     }
 }
@@ -48,6 +77,16 @@ extension PlanningMode {
         case .tra: "TRA"
         case .thsr: "THSR"
         case .bikeShare: "YouBike"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .bus: TransitMode.bus.color
+        case .metro: TransitMode.metro.color
+        case .tra: TransitMode.rail.color
+        case .thsr: TransitMode.highSpeedRail.color
+        case .bikeShare: .bikeShare
         }
     }
 }
