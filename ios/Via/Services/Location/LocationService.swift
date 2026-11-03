@@ -35,6 +35,7 @@ final class LocationService: NSObject, LocationProviding, LocationTracking {
     @ObservationIgnored private let manager = CLLocationManager()
     @ObservationIgnored private var waiters: [CheckedContinuation<Coordinate, Error>] = []
     @ObservationIgnored private var subscribers: [UUID: AsyncStream<LocationFix>.Continuation] = [:]
+    @ObservationIgnored private var backgroundSession: CLBackgroundActivitySession?
 
     override init() {
         authorizationStatus = manager.authorizationStatus
@@ -89,13 +90,22 @@ final class LocationService: NSObject, LocationProviding, LocationTracking {
 
     func beginNavigation() {
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.activityType = .fitness
+        manager.activityType = .otherNavigation
         manager.distanceFilter = 3
+        manager.pausesLocationUpdatesAutomatically = false
+        manager.allowsBackgroundLocationUpdates = true
+        manager.showsBackgroundLocationIndicator = true
+        backgroundSession = backgroundSession ?? CLBackgroundActivitySession()
         requestAuthorizationIfNeeded()
         if isAuthorized { manager.startUpdatingLocation() }
     }
 
     func endNavigation() {
+        backgroundSession?.invalidate()
+        backgroundSession = nil
+        manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
+        manager.pausesLocationUpdatesAutomatically = true
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
         manager.activityType = .other
         manager.distanceFilter = kCLDistanceFilterNone

@@ -9,6 +9,7 @@ nonisolated struct NavigationNotice: Equatable, Sendable {
 @Observable
 final class NavigationModel {
     static let rerouteCooldown: TimeInterval = 60
+    static let maneuverAnnouncementDistance = 30.0
 
     private(set) var tracker: NavigationTracker
     private(set) var notice: NavigationNotice?
@@ -21,6 +22,9 @@ final class NavigationModel {
     @ObservationIgnored private let planner: any JourneyPlanner
     @ObservationIgnored private let location: any LocationTracking
     @ObservationIgnored private let clock: () -> Date
+    @ObservationIgnored private let feedback: [any NavigationFeedback]
+    @ObservationIgnored private var announcedManeuvers: Set<String> = []
+    @ObservationIgnored private var isActive = false
     @ObservationIgnored private var lastRerouteAt: Date?
     @ObservationIgnored private var noticeCount = 0
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
@@ -31,6 +35,7 @@ final class NavigationModel {
         modes: Set<PlanningMode>,
         planner: any JourneyPlanner,
         location: any LocationTracking,
+        feedback: [any NavigationFeedback] = [],
         clock: @escaping () -> Date = Date.init
     ) {
         let now = clock()
@@ -40,6 +45,7 @@ final class NavigationModel {
         self.modes = modes
         self.planner = planner
         self.location = location
+        self.feedback = feedback
         self.clock = clock
     }
 
@@ -49,8 +55,11 @@ final class NavigationModel {
     var estimatedArrival: Date { isFinished ? now : tracker.estimatedArrival(now: now) }
 
     func start() {
-        guard tasks.isEmpty else { return }
+        guard tasks.isEmpty, !isActive else { return }
+        isActive = true
         location.beginNavigation()
+        let status = status
+        feedback.forEach { $0.start(destination: destination.name, status: status) }
         let fixes = location.fixes()
         tasks = [
             Task { [weak self] in
@@ -72,7 +81,11 @@ final class NavigationModel {
     func stop() {
         tasks.forEach { $0.cancel() }
         tasks = []
+        guard isActive else { return }
+        isActive = false
         location.endNavigation()
+        let status = status
+        feedback.forEach { $0.stop(status) }
     }
 
     func dismissNotice() {
@@ -96,13 +109,30 @@ final class NavigationModel {
             noticeCount += 1
             notice = NavigationNotice(id: noticeCount, alert: alert)
         }
+        update.alerts.forEach { send(.alert($0)) }
         if tracker.isFinished {
             stop()
             return
         }
+        announceManeuverIfNear()
         if update.reroute != nil, let coordinate {
             await reroute(from: coordinate)
         }
+        let status = status
+        feedback.forEach { $0.update(status) }
+    }
+
+    private func announceManeuverIfNear() {
+        guard let maneuver = tracker.nextManeuver, maneuver.guidance.code != "depart",
+              let distance = tracker.distanceToManeuver, distance <= Self.maneuverAnnouncementDistance
+        else { return }
+        let key = "\(option.id)-\(tracker.legIndex)-\(maneuver.distanceAlong)"
+        guard announcedManeuvers.insert(key).inserted else { return }
+        send(.maneuver(maneuver.guidance.spokenInstruction))
+    }
+
+    private func send(_ cue: NavigationCue) {
+        feedback.forEach { $0.cue(cue) }
     }
 
     private func reroute(from coordinate: Coordinate) async {
@@ -123,12 +153,15 @@ final class NavigationModel {
             let key = option.matchingKey
             guard let next = plan.options.first(where: { $0.matchingKey == key }) ?? plan.options.first else {
                 rerouteFailed = true
+                send(.rerouteFailed)
                 return
             }
             rerouteFailed = false
             tracker = NavigationTracker(route: NavigationRoute(option: next), startedAt: now)
+            send(.rerouted)
         } catch {
             rerouteFailed = true
+            send(.rerouteFailed)
         }
     }
 }

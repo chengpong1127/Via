@@ -43,12 +43,20 @@ final class ExploreModel {
     let directions: DirectionsModel
     let location: LocationService
     @ObservationIgnored private let planner: any JourneyPlanner
+    @ObservationIgnored private let makeFeedback: () -> [any NavigationFeedback]
 
-    init(search: SearchModel, directions: DirectionsModel, location: LocationService, planner: any JourneyPlanner) {
+    init(
+        search: SearchModel,
+        directions: DirectionsModel,
+        location: LocationService,
+        planner: any JourneyPlanner,
+        makeFeedback: @escaping () -> [any NavigationFeedback] = { [] }
+    ) {
         self.search = search
         self.directions = directions
         self.location = location
         self.planner = planner
+        self.makeFeedback = makeFeedback
     }
 
     var isNavigating: Bool { navigation != nil }
@@ -200,7 +208,8 @@ final class ExploreModel {
             destination: destination,
             modes: directions.modes,
             planner: planner,
-            location: location
+            location: location,
+            feedback: makeFeedback()
         )
         focusedLegID = nil
         self.navigation = navigation

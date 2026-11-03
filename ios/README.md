@@ -33,12 +33,21 @@ so either configuration can be pointed elsewhere, for example
 | `Features/Explore` | Map screen, sheet routing and route overlays |
 | `Features/Search`, `Features/Place`, `Features/Directions` | Sheet panels |
 | `Features/Navigation` | Turn-by-turn banner, stop countdown, alerts and re-routing |
+| `Features/Navigation/Feedback` | Live Activity, spoken guidance with haptics, and local notifications |
 | `Components` | Shared badges, headers and mode styling |
+| `Shared` | `NavigationActivityAttributes`, compiled into the app and the extension |
+| `ViaLiveActivity` (target) | Widget extension rendering the Lock Screen and Dynamic Island activity |
 
 Production planning flows through `JourneyPlanner → HTTPJourneyPlanner → APIClient`
 and calls `POST /v1/journey-plans`. Responses are not cached; an empty result shows
 "No Routes Found". `Features/Navigation` follows a selected journey on-device using the
 leg guidance `geometry_index`/`street_name` parameters and transit `intermediate_stops`.
+While a trip is active, location keeps updating in the background (`UIBackgroundModes`
+`location`, `CLBackgroundActivitySession`), and `NavigationModel` publishes a
+`NavigationStatus` and `NavigationCue`s to each `NavigationFeedback`: the Live Activity
+shows the current step and arrival time, turns are spoken about 30 m ahead (`audio`
+background mode), and alerts and re-routes post notifications when the app is not
+in the foreground.
 
 Only the selected transport modes (`bus`, `metro`, `tra`, `thsr`, `bike_share`) are
 stored, as a local preference; walking is always implicit. Selected places and

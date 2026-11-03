@@ -12,7 +12,8 @@ struct ViaApp: App {
             search: SearchModel(service: PlaceSearchService(), nearbyStops: HTTPNearbyStopsSource(client: client)),
             directions: DirectionsModel(planner: planner, location: location),
             location: location,
-            planner: planner
+            planner: planner,
+            makeFeedback: { [NavigationLiveActivity(), SpokenGuidance(), NavigationNotifications()] }
         ))
     }
 
