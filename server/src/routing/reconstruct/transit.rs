@@ -49,16 +49,18 @@ impl ReconstructionState<'_, '_> {
             .transit_runtime
             .required_pattern(&trip.pattern_id);
         let route_data = self.reconstructor.transit_runtime.route_of(pattern_data);
-        let boarding = self
-            .reconstructor
-            .transit_runtime
-            .stop(&board.stop_id)
-            .ok_or(PlanningError::Internal)?;
-        let alighting = self
-            .reconstructor
-            .transit_runtime
-            .stop(&alight.stop_id)
-            .ok_or(PlanningError::Internal)?;
+        let ride_stops = trip
+            .stop_times
+            .get(board_index..=alight_index)
+            .ok_or(PlanningError::Internal)?
+            .iter()
+            .map(|stop_time| {
+                self.reconstructor
+                    .transit_runtime
+                    .stop(&stop_time.stop_id)
+                    .ok_or(PlanningError::Internal)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let live_evidence = trip
             .evidence
             .iter()
@@ -73,8 +75,7 @@ impl ReconstructionState<'_, '_> {
             leg_id.clone(),
             pattern_data,
             route_data,
-            boarding,
-            alighting,
+            &ride_stops,
             board.departure_at,
             alight.arrival_at,
         )?);
@@ -169,11 +170,17 @@ fn transit_leg(
     id: String,
     service: &crate::domain::transit::TransitPattern,
     route: &crate::domain::transit::TransitRoute,
-    boarding: &crate::domain::transit::TransitStop,
-    alighting: &crate::domain::transit::TransitStop,
+    stops: &[&crate::domain::transit::TransitStop],
     departure: OffsetDateTime,
     arrival: OffsetDateTime,
 ) -> Result<Leg, PlanningError> {
+    let [boarding, intermediate @ .., alighting] = stops else {
+        return Err(PlanningError::Internal);
+    };
+    let intermediate_stops = intermediate
+        .iter()
+        .map(|stop| transit_place(stop))
+        .collect::<Vec<_>>();
     let guidance_code = match route.mode {
         TransitMode::Bus => "board_bus",
         TransitMode::Metro => "board_metro",
@@ -188,7 +195,7 @@ fn transit_leg(
         departure_time: departure,
         arrival_time: arrival,
         duration_seconds: seconds_between(departure, arrival).ok_or(PlanningError::Internal)?,
-        geometry: geometry::straight_geometry(boarding.coordinate, alighting.coordinate),
+        geometry: geometry::stop_geometry(stops.iter().map(|stop| stop.coordinate)),
         guidance: vec![Guidance {
             code: guidance_code,
             parameters: std::collections::BTreeMap::from([
@@ -203,6 +210,7 @@ fn transit_leg(
             via_alighting_point_id: alighting.id.as_str().into(),
             service_label: route.label.clone(),
             headsign: service.headsign.clone(),
+            intermediate_stops,
         },
         attribution: Vec::new(),
     })

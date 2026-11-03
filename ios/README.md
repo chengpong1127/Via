@@ -32,11 +32,13 @@ so either configuration can be pointed elsewhere, for example
 | `Services/Location`, `Services/Search` | Core Location and MapKit search (`MKLocalSearchCompleter`, `MKLocalSearch`, POI lookup) |
 | `Features/Explore` | Map screen, sheet routing and route overlays |
 | `Features/Search`, `Features/Place`, `Features/Directions` | Sheet panels |
+| `Features/Navigation` | Turn-by-turn banner, stop countdown, alerts and re-routing |
 | `Components` | Shared badges, headers and mode styling |
 
 Production planning flows through `JourneyPlanner → HTTPJourneyPlanner → APIClient`
 and calls `POST /v1/journey-plans`. Responses are not cached; an empty result shows
-"No Routes Found". Navigation is not implemented yet.
+"No Routes Found". `Features/Navigation` follows a selected journey on-device using the
+leg guidance `geometry_index`/`street_name` parameters and transit `intermediate_stops`.
 
 Only the selected transport modes (`bus`, `metro`, `tra`, `thsr`, `bike_share`) are
 stored, as a local preference; walking is always implicit. Selected places and

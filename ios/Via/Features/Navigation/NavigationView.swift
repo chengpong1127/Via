@@ -181,9 +181,15 @@ struct NavigationTray: View {
                     Text(navigation.estimatedArrival.formatted(.clockTime))
                         .font(.title3.bold())
                         .monospacedDigit()
-                    Text("\(remaining.travelTime) · arrival")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    Group {
+                        if navigation.isFinished {
+                            Text("Arrived")
+                        } else {
+                            Text("\(remaining.travelTime) · arrival")
+                        }
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {

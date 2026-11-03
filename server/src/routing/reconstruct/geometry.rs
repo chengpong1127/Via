@@ -32,12 +32,16 @@ pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
     }
 }
 
-pub(super) fn straight_geometry(from: GeoCoordinate, to: GeoCoordinate) -> Geometry {
-    let from = Coordinate::try_new(from.latitude, from.longitude).expect("validated coordinate");
-    let to = Coordinate::try_new(to.latitude, to.longitude).expect("validated coordinate");
+pub(super) fn stop_geometry(stops: impl IntoIterator<Item = GeoCoordinate>) -> Geometry {
+    let points = stops
+        .into_iter()
+        .map(|stop| {
+            Coordinate::try_new(stop.latitude, stop.longitude).expect("validated coordinate")
+        })
+        .collect::<Vec<_>>();
     Geometry {
         encoding: "polyline6",
-        points: encode_polyline6(&[from, to]),
+        points: encode_polyline6(&points),
     }
 }
 
@@ -55,9 +59,28 @@ pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
                 ManeuverKind::ExitRoundabout => "exit_roundabout",
                 ManeuverKind::Arrive => "arrive",
             },
-            parameters: BTreeMap::new(),
+            parameters: maneuver_parameters(maneuver),
         })
         .collect()
+}
+
+fn maneuver_parameters(maneuver: &Maneuver) -> BTreeMap<String, String> {
+    let mut parameters = BTreeMap::from([(
+        "geometry_index".to_owned(),
+        maneuver.begin_geometry_index.to_string(),
+    )]);
+    if let Some(street) = maneuver
+        .street_names
+        .iter()
+        .map(|name| name.trim())
+        .find(|name| !name.is_empty())
+    {
+        parameters.insert("street_name".to_owned(), street.to_owned());
+    }
+    if let Some(exit) = maneuver.roundabout_exit {
+        parameters.insert("roundabout_exit".to_owned(), exit.to_string());
+    }
+    parameters
 }
 
 pub(super) fn encode_polyline6(coordinates: &[Coordinate]) -> String {

@@ -47,7 +47,7 @@ final class NavigationModel {
     var option: JourneyOption { tracker.route.option }
     var currentLeg: NavigationLeg { tracker.currentLeg }
     var isFinished: Bool { tracker.isFinished }
-    var estimatedArrival: Date { tracker.estimatedArrival(now: now) }
+    var estimatedArrival: Date { isFinished ? now : tracker.estimatedArrival(now: now) }
 
     func start() {
         guard tasks.isEmpty else { return }

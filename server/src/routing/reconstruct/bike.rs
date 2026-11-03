@@ -158,13 +158,15 @@ fn append_bicycle(
             encoding: "polyline6",
             points: geometry::encode_polyline6(&path.geometry),
         },
-        guidance: vec![Guidance {
+        guidance: std::iter::once(Guidance {
             code: "bike_share",
             parameters: std::collections::BTreeMap::from([
                 ("pickup_station_name".into(), pickup.display_name.clone()),
                 ("dropoff_station_name".into(), dropoff.display_name.clone()),
             ]),
-        }],
+        })
+        .chain(geometry::guidance(&path.maneuvers))
+        .collect(),
         details: LegDetails::BikeShare {
             pickup_station_id: pickup_station_id.as_str().into(),
             pickup_station_name: pickup.display_name.clone(),

@@ -49,6 +49,19 @@ struct NavigationModelTests {
         #expect(model.notice == nil)
     }
 
+    @Test func reportsTheActualArrivalTimeOnceFinished() async {
+        let model = makeModel(planner: StubPlanner(plans: []))
+
+        await model.handle(NavigationFixture.fix(north: 0, east: 200, at: 10))
+        await model.handle(NavigationFixture.fix(north: 195, east: 200, at: 20))
+        await model.handle(NavigationFixture.fix(north: 200, east: 900, at: 450))
+        await model.handle(NavigationFixture.fix(north: 200, east: 2190, at: 900))
+        await model.handle(NavigationFixture.fix(north: 395, east: 2200, at: 1100))
+
+        #expect(model.isFinished)
+        #expect(model.estimatedArrival == NavigationFixture.t0.addingTimeInterval(1100))
+    }
+
     private func leaveRoute(_ model: NavigationModel, from second: Int) async {
         for offset in 0..<3 {
             await model.handle(NavigationFixture.fix(north: 100, east: 100, at: second + offset))

@@ -11,7 +11,7 @@ use via_server::{
     domain::transit_timing::{DepartureError, SnapshotDepartures, TimingSnapshot},
     domain::{
         ids::BoardingPointId,
-        transit::{TransferEdge, TransitNetwork},
+        transit::{ScheduledStopTime, TransferEdge, TransitNetwork},
     },
     providers::UnavailableBikeAvailabilitySource,
     routing::JourneyPlanningLimits,
@@ -130,6 +130,59 @@ async fn simple_mrt_uses_the_fixture_schedule_end_to_end() {
         option["legs"][1]["arrival_time"],
         "2026-08-31T10:07:00+08:00"
     );
+}
+
+fn three_stop_red_line_network() -> TransitNetwork {
+    let mut network = red_line_fixture_network();
+    network
+        .patterns
+        .retain(|pattern| pattern.id.as_str() == "fixture-mrt-red");
+    network
+        .trips
+        .retain(|trip| trip.pattern_id.as_str() == "fixture-mrt-red");
+    let red = &mut network.patterns[0];
+    red.stops.push(BoardingPointId::new("F-M3-BLUE"));
+    let segment = red.static_profile.segments[0].clone();
+    red.static_profile.segments.push(segment);
+    for trip in &mut network.trips {
+        let next = trip.stop_times.last().unwrap().departure_seconds + 300;
+        trip.stop_times.push(ScheduledStopTime::new(next, next));
+    }
+    network
+}
+
+#[tokio::test]
+async fn transit_legs_list_intermediate_stops_and_street_guidance_carries_geometry_indexes() {
+    let network = three_stop_red_line_network();
+    let origin = near_stop(&network, "F-M1");
+    let destination = near_stop(&network, "F-M3-BLUE");
+    let body = route_body_with_network(
+        transit_street(&network, origin, "F-M1", destination, "F-M3-BLUE"),
+        FixtureRealtime::empty(),
+        request(origin, destination, &["metro"]),
+        network,
+    )
+    .await;
+    let option = option_for_patterns(&body, &["fixture-mrt-red"]);
+    let legs = option["legs"].as_array().unwrap();
+
+    assert_eq!(leg_modes(option), vec!["walking", "transit", "walking"]);
+    let stops = legs[1]["details"]["intermediate_stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["via_id"], "F-M2-RED");
+    assert_eq!(stops[0]["display_name"], "Fixture MRT Interchange Red");
+    assert_ne!(
+        legs[1]["geometry"]["points"],
+        json!(""),
+        "transit geometry should follow its stops"
+    );
+    for leg in [&legs[0], &legs[2]] {
+        let guidance = leg["guidance"].as_array().unwrap();
+        assert!(!guidance.is_empty());
+        for guidance in guidance {
+            assert!(guidance["parameters"]["geometry_index"].is_string());
+        }
+    }
 }
 
 #[tokio::test]
