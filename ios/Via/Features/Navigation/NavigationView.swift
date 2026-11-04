@@ -2,32 +2,37 @@ import SwiftUI
 
 struct NavigationBanner: View {
     let navigation: NavigationModel
+    @State private var showsSteps = false
+    @State private var stepsHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: symbol)
-                    .font(.system(size: 34, weight: .semibold))
-                    .frame(width: 48)
-                    .foregroundStyle(tint)
-                VStack(alignment: .leading, spacing: 2) {
-                    headline
-                        .font(.title2.bold())
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.7)
-                    subtitle
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+            VStack(spacing: 0) {
+                instruction
+                    .contentShape(.rect)
+                    .gesture(stepsDrag)
+                    .onTapGesture { showsSteps.toggle() }
+                if showsSteps {
+                    Divider()
+                    ScrollView {
+                        NavigationStepList(navigation: navigation)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { stepsHeight = $0 }
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(height: min(stepsHeight, 460))
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                Spacer(minLength: 0)
-                if navigation.isRerouting {
-                    ProgressView()
-                }
+                Capsule()
+                    .fill(.secondary.opacity(0.5))
+                    .frame(width: 36, height: 5)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(.rect)
+                    .gesture(stepsDrag)
+                    .onTapGesture { showsSteps.toggle() }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .glassEffect(.regular, in: .rect(cornerRadius: 24))
+            .animation(.smooth(duration: 0.3), value: showsSteps)
             if let notice = navigation.notice {
                 NoticeCapsule(alert: notice.alert)
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -37,11 +42,46 @@ struct NavigationBanner: View {
         .padding(.horizontal, 12)
         .animation(.smooth, value: navigation.notice)
         .sensoryFeedback(.warning, trigger: navigation.notice) { _, new in new != nil }
+        .sensoryFeedback(.selection, trigger: showsSteps)
         .task(id: navigation.notice?.id) {
             guard navigation.notice != nil else { return }
             try? await Task.sleep(for: .seconds(6))
             navigation.dismissNotice()
         }
+    }
+
+    private var stepsDrag: some Gesture {
+        DragGesture(minimumDistance: 12).onEnded { value in
+            if value.translation.height > 30 { showsSteps = true }
+            if value.translation.height < -30 { showsSteps = false }
+        }
+    }
+
+    private var instruction: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: symbol)
+                .font(.system(size: 34, weight: .semibold))
+                .frame(width: 48)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                headline
+                    .font(.title2.bold())
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                subtitle
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            if navigation.isRerouting {
+                ProgressView()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var tracker: NavigationTracker { navigation.tracker }
@@ -175,53 +215,57 @@ struct NavigationSheet: View {
     let end: () -> Void
     let isExpanded: Bool
 
+    var body: some View {
+        VStack(spacing: 0) {
+            NavigationStatusRow(navigation: navigation)
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
+            if isExpanded {
+                Button(role: .destructive, action: end) {
+                    Text(navigation.isFinished ? "Done" : "End Route")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(.red)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct NavigationStepList: View {
+    let navigation: NavigationModel
+
     private var tracker: NavigationTracker { navigation.tracker }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                CurrentStageCard(navigation: navigation, end: end)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 22)
-                    .padding(.bottom, 18)
-                if isExpanded {
-                    allSteps
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            summary
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+            ForEach(Array(tracker.route.legs.enumerated()), id: \.element.leg.id) { index, item in
+                NavigationStepRows(
+                    item: item,
+                    state: state(of: index),
+                    stopsRemaining: index == tracker.legIndex ? tracker.stopsRemaining : nil
+                )
+            }
+            NavigationStepRow(
+                title: Text("Arrive at \(navigation.destination.name)"),
+                subtitle: Text(navigation.option.arrivalTime.formatted(.clockTime)),
+                state: navigation.isFinished ? .current : .upcoming
+            ) {
+                Image(systemName: "mappin.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
             }
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .scrollDisabled(!isExpanded)
-    }
-
-    @ViewBuilder
-    private var allSteps: some View {
-        Divider()
-        summary
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-        ForEach(Array(tracker.route.legs.enumerated()), id: \.element.leg.id) { index, item in
-            NavigationStepRows(
-                item: item,
-                state: state(of: index),
-                stopsRemaining: index == tracker.legIndex ? tracker.stopsRemaining : nil
-            )
-        }
-        NavigationStepRow(
-            title: Text("Arrive at \(navigation.destination.name)"),
-            subtitle: Text(navigation.option.arrivalTime.formatted(.clockTime)),
-            state: navigation.isFinished ? .current : .upcoming
-        ) {
-            Image(systemName: "mappin.circle.fill")
-                .font(.title2)
-                .foregroundStyle(.red)
-        }
-        Button(navigation.isFinished ? "Done" : "End Route", role: .destructive, action: end)
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .buttonStyle(.glassProminent)
-            .controlSize(.large)
-            .tint(.red)
-            .padding(20)
+        .padding(.bottom, 8)
     }
 
     private var summary: some View {
@@ -252,124 +296,43 @@ struct NavigationSheet: View {
     }
 }
 
-private struct CurrentStageCard: View {
+private struct NavigationStatusRow: View {
     let navigation: NavigationModel
-    let end: () -> Void
-
-    private var tracker: NavigationTracker { navigation.tracker }
-    private var leg: Leg { navigation.currentLeg.leg }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            icon
-                .frame(minWidth: 44)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 4) {
-                title
-                    .font(.title2.bold())
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-                subtitle
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                detail
-                    .font(.body)
-                    .monospacedDigit()
-                    .padding(.top, 4)
-            }
-            Spacer(minLength: 8)
-            CloseButton(action: end)
-                .accessibilityLabel(navigation.isFinished ? Text("Done") : Text("End Route"))
+        HStack(alignment: .firstTextBaseline) {
+            metric(navigation.estimatedArrival.formatted(Date.FormatStyle(timeZone: .via).hour(.defaultDigits(amPM: .omitted)).minute()), "arrival")
+            metric(minutes, "min")
+            metric(distance.value, distance.unit)
         }
+        .monospacedDigit()
     }
 
-    @ViewBuilder
-    private var icon: some View {
-        if navigation.isFinished {
-            Image(systemName: "mappin.circle.fill")
-                .font(.largeTitle)
-                .foregroundStyle(.red)
-        } else {
-            switch leg.kind {
-            case let .transit(ride):
-                ServiceBadge(ride: ride)
-            case .walking:
-                Image(systemName: "figure.walk")
-                    .font(.largeTitle)
-            case .bikeShare:
-                Image(systemName: "bicycle")
-                    .font(.title)
-                    .foregroundStyle(Color.bikeShare)
-            }
-        }
+    private var minutes: String {
+        let remaining = max(navigation.estimatedArrival.timeIntervalSince(navigation.now), 0)
+        return Int((remaining / 60).rounded(.up)).formatted()
     }
 
-    @ViewBuilder
-    private var title: some View {
-        if navigation.isFinished {
-            Text("You've arrived")
-        } else {
-            switch leg.kind {
-            case let .transit(ride):
-                if tracker.boarded {
-                    Text("Exit at \(leg.to.name)")
-                } else {
-                    Text("Board \(String(localized: ride.mode.title)) \(ride.serviceLabel)")
-                }
-            case .walking:
-                Text("Walk to \(leg.to.name)")
-            case let .bikeShare(ride):
-                Text("Ride YouBike to \(ride.dropoffStationName)")
-            }
+    private var distance: (value: String, unit: LocalizedStringKey) {
+        let metres = navigation.isFinished ? 0 : navigation.tracker.remainingDistance
+        if metres < 1000 {
+            return (Int(metres.rounded()).formatted(), "m")
         }
+        return ((metres / 1000).formatted(.number.precision(.fractionLength(1))), "km")
     }
 
-    @ViewBuilder
-    private var subtitle: some View {
-        if navigation.isFinished {
-            Text(navigation.destination.name)
-        } else {
-            switch leg.kind {
-            case let .transit(ride):
-                if tracker.boarded, let stops = tracker.stopsRemaining {
-                    Text("^[\(stops) stop](inflect: true) left")
-                } else if !ride.headsign.isEmpty {
-                    Text("Towards \(ride.headsign)")
-                } else {
-                    Text("At \(leg.from.name)")
-                }
-            case .walking, .bikeShare:
-                Text("\(tracker.remainingLegDistance.distanceText), about \(remainingLegTime.travelTime)")
-            }
+    private func metric(_ value: String, _ label: LocalizedStringKey) -> some View {
+        VStack(spacing: 0) {
+            Text(value)
+                .font(.system(size: 30, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(.secondary)
         }
-    }
-
-    @ViewBuilder
-    private var detail: some View {
-        if !navigation.isFinished {
-            switch leg.kind {
-            case .transit:
-                if tracker.boarded {
-                    Text("Arrives at \(leg.arrivalTime.formatted(.clockTime))")
-                } else {
-                    Text("Departs at \(leg.departureTime.formatted(.clockTime))")
-                }
-            case .walking, .bikeShare:
-                if let next = tracker.nextLeg?.leg, let ride = next.transit {
-                    HStack(spacing: 8) {
-                        ServiceBadge(ride: ride)
-                        Text("Departs at \(next.departureTime.formatted(.clockTime))")
-                            .lineLimit(2)
-                    }
-                }
-            }
-        }
-    }
-
-    private var remainingLegTime: TimeInterval {
-        let length = navigation.currentLeg.length
-        return length > 0 ? leg.duration * tracker.remainingLegDistance / length : 0
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 

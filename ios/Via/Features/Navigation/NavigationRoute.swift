@@ -49,6 +49,21 @@ nonisolated struct NavigationLeg: Sendable {
 
     var length: Double { cumulative.last ?? 0 }
 
+    func split(at distance: Double) -> (traveled: [Coordinate], remaining: [Coordinate]) {
+        guard path.count >= 2, distance > 0 else { return ([], path) }
+        guard distance < length else { return (path, []) }
+        let index = cumulative.lastIndex { $0 <= distance } ?? 0
+        let start = path[index]
+        let end = path[index + 1]
+        let span = cumulative[index + 1] - cumulative[index]
+        let ratio = span > 0 ? (distance - cumulative[index]) / span : 0
+        let point = Coordinate(
+            latitude: start.latitude + (end.latitude - start.latitude) * ratio,
+            longitude: start.longitude + (end.longitude - start.longitude) * ratio
+        )
+        return (Array(path[...index]) + [point], [point] + Array(path[(index + 1)...]))
+    }
+
     var isStreet: Bool {
         if case .transit = leg.kind { false } else { true }
     }

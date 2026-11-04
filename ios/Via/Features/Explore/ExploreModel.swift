@@ -18,7 +18,9 @@ enum SheetRoute: Hashable {
 
 extension PresentationDetent {
     static let collapsed = PresentationDetent.height(92)
-    static let navigationStage = PresentationDetent.height(200)
+    static let navigationStageHeight: CGFloat = 96
+    static let navigationStage = PresentationDetent.height(navigationStageHeight)
+    static let navigationEnd = PresentationDetent.height(navigationStageHeight + 64)
 }
 
 extension MKCoordinateRegion {
@@ -120,6 +122,7 @@ final class ExploreModel {
         directions.reset()
         directions.origin = .currentLocation
         directions.destination = .place(result.place)
+        mapSelection = nil
         route = .directions
         detent = .medium
         replan()

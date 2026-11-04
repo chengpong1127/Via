@@ -80,6 +80,10 @@ nonisolated struct NavigationTracker: Sendable {
         max(currentLeg.length - distanceAlong, 0)
     }
 
+    var remainingDistance: Double {
+        remainingLegDistance + route.legs.dropFirst(legIndex + 1).map(\.length).reduce(0, +)
+    }
+
     var stopsRemaining: Int? {
         guard !currentLeg.isStreet else { return nil }
         return currentLeg.stopDistances.dropFirst().filter { $0 > distanceAlong + Self.stopPassMargin }.count
