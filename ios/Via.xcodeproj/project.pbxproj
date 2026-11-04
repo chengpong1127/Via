@@ -44,6 +44,7 @@
 /* Begin PBXFileReference section */
 		A10000000000000000000201 /* Via.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Via.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000202 /* ViaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ViaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000204 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		A10000000000000000000203 /* ViaLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ViaLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -102,8 +103,17 @@
 				A10000000000000000000702 /* ViaTests */,
 				A10000000000000000000703 /* Shared */,
 				A10000000000000000000704 /* ViaLiveActivity */,
+				A10000000000000000000803 /* Config */,
 				A10000000000000000000802 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		A10000000000000000000803 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000204 /* Debug.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000802 /* Products */ = {
@@ -313,6 +323,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
+				VIA_BUNDLE_ID = org.via.journey;
 			};
 			name = Debug;
 		};
@@ -336,18 +347,21 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
+				VIA_BUNDLE_ID = org.via.journey;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
 		A10000000000000000000B03 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000204 /* Debug.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = HH87C4ZJG2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Via-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
@@ -355,9 +369,8 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_FILE = "Via-Info.plist";
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VIA_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -365,7 +378,6 @@
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
-				VIA_API_BASE_URL = "http://127.0.0.1:3000";
 			};
 			name = Debug;
 		};
@@ -374,9 +386,10 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = HH87C4ZJG2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Via-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
@@ -384,9 +397,8 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
-				INFOPLIST_FILE = "Via-Info.plist";
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VIA_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -428,10 +440,11 @@
 		};
 		A10000000000000000000B07 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000204 /* Debug.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = HH87C4ZJG2;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ViaLiveActivity-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
@@ -441,7 +454,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.liveactivity;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VIA_BUNDLE_ID).liveactivity";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -458,7 +471,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = HH87C4ZJG2;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "ViaLiveActivity-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
@@ -468,7 +481,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 0.2.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.via.journey.liveactivity;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VIA_BUNDLE_ID).liveactivity";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;

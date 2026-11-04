@@ -16,6 +16,13 @@ folders are synchronized groups, so new files under `Via/` and `ViaTests/` are p
 up without editing the project.
 
 Debug builds call `http://127.0.0.1:3000`, which a simulator reaches on the host.
+To run on a phone, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`
+(ignored by git) and set `VIA_API_BASE_URL` to an address the phone can reach, such as
+the Mac's Tailscale Serve name (`https://<machine>.<tailnet>.ts.net`, see
+`server/README.md`); write `//` as `/$()/` because xcconfig treats `//` as a comment.
+App Transport Security allows plain HTTP only to IP addresses, so a host name needs
+HTTPS. `VIA_BUNDLE_ID` there overrides the app and extension bundle identifiers if
+`org.via.journey` is unavailable to your team.
 Release builds require an HTTPS `VIA_API_BASE_URL` build setting and fail at startup
 when it is missing or insecure. The setting reaches the app through `Via-Info.plist`,
 so either configuration can be pointed elsewhere, for example

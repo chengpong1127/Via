@@ -42,7 +42,12 @@ VIA_STATIC=/app/server/data/build/20260928T043000Z/.via-static.json \
 
 The iOS app remains a host process. The API is published at
 `http://127.0.0.1:3000`, and Valhalla is available at
-`http://127.0.0.1:8002` for host-side debugging.
+`http://127.0.0.1:8002` for host-side debugging. To reach the API from a phone on
+the same tailnet, keep it on loopback and publish it over HTTPS with
+`tailscale serve --bg --https=443 http://127.0.0.1:3000` (Serve and HTTPS
+certificates must be enabled for the tailnet); the API is then at
+`https://<machine>.<tailnet>.ts.net`. Alternatively, set `VIA_BIND_ADDRESS` to an
+address the phone can reach, such as the Mac's Tailscale IP (`tailscale ip -4`).
 
 The server exposes `POST /v1/journey-plans`, `GET /v1/nearby-stops`,
 `GET /openapi.json`, and `GET /health/street-routing`. Responses are not cached.

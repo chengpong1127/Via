@@ -21,3 +21,4 @@ perf.data.*
 /flamegraph.svg
 /benchmark-output/
 /server/benchmark-output/
+/ios/Config/Local.xcconfig

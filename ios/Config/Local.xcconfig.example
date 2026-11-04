@@ -1,0 +1,2 @@
+VIA_API_BASE_URL = https:/$()/your-mac.your-tailnet.ts.net
+VIA_BUNDLE_ID = org.via.journey
