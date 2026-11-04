@@ -18,7 +18,6 @@ final class DirectionsModel {
 
     var origin: JourneyEndpoint = .currentLocation
     var destination: JourneyEndpoint?
-    var departure: DepartureSetting = .now
     var modes: Set<PlanningMode> {
         didSet { defaults.set(PlanningMode.allCases.filter(modes.contains).map(\.rawValue), forKey: Self.modesKey) }
     }
@@ -92,7 +91,7 @@ final class DirectionsModel {
                 origin: try await resolve(origin),
                 destination: try await resolve(destination),
                 modes: modes,
-                departure: departure
+                departure: .now
             )
             guard request.origin.coordinate.distance(to: request.destination.coordinate) > 1 else {
                 throw DirectionsFailure.sameEndpoints

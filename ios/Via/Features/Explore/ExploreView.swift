@@ -9,7 +9,7 @@ struct ExploreView: View {
             Map(position: $model.camera, selection: $model.mapSelection) {
                 UserAnnotation()
                 if let navigation = model.navigation {
-                    RouteLegsContent(option: navigation.option, focusedLegID: nil)
+                    NavigationMapContent(tracker: navigation.tracker, destination: navigation.destination)
                 } else if model.isPlanning {
                     JourneyMapContent(directions: model.directions, focusedLegID: model.focusedLegID, select: model.select)
                 } else {
@@ -17,7 +17,7 @@ struct ExploreView: View {
                         Marker(result.place.name, coordinate: result.place.coordinate.clCoordinate)
                             .tag(MapSelection(result.id))
                     }
-                    if let place = model.selectedPlace, !model.resultMarkers.contains(place) {
+                    if let place = model.selectedPlace, !model.resultMarkers.contains(place), model.mapSelection?.feature == nil {
                         Marker(place.place.name, coordinate: place.place.coordinate.clCoordinate)
                             .tag(MapSelection(place.id))
                     }
@@ -37,18 +37,21 @@ struct ExploreView: View {
             }
             .safeAreaInset(edge: .top) {
                 if let navigation = model.navigation {
-                    VStack(alignment: .trailing, spacing: 12) {
-                        NavigationBanner(navigation: navigation)
-                        if !model.camera.followsUserLocation {
-                            Button("Re-center", systemImage: "location.north.line.fill", action: model.recenter)
-                                .labelStyle(.iconOnly)
-                                .font(.title3)
-                                .frame(width: 30, height: 30)
-                                .buttonStyle(.glass)
-                                .buttonBorderShape(.circle)
-                                .padding(.horizontal, 12)
-                        }
-                    }
+                    NavigationBanner(navigation: navigation)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if model.isNavigating {
+                    Button("Re-center", systemImage: model.camera.followsUserLocation ? "location.fill" : "location", action: model.recenter)
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 56, height: 56)
+                        .contentShape(.circle)
+                        .glassEffect(.regular.interactive(), in: .circle)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.blue)
+                        .padding(.trailing, 16)
+                        .padding(.bottom, PresentationDetent.navigationStageHeight - 16)
                 }
             }
             .onMapCameraChange(frequency: .onEnd) { context in
@@ -78,10 +81,10 @@ struct ExploreView: View {
                 }
             }
             .presentationDetents(
-                model.isNavigating ? [.navigationStage, .medium, .large] : [.collapsed, .medium, .large],
+                model.isNavigating ? [.navigationStage, .navigationEnd] : [.collapsed, .medium, .large],
                 selection: $model.detent
             )
-            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+            .presentationBackgroundInteraction(.enabled(upThrough: model.isNavigating ? .navigationEnd : .medium))
             .presentationContentInteraction(.scrolls)
             .interactiveDismissDisabled()
         }
@@ -151,9 +154,6 @@ struct JourneyMapContent: MapContent {
                     }
                 }
             }
-        } else if case let .place(destination)? = directions.destination {
-            Marker(destination.name, coordinate: destination.coordinate.clCoordinate)
-                .tint(.red)
         }
     }
 }
@@ -166,29 +166,22 @@ struct RouteLegsContent: MapContent {
         ForEach(option.legs) { leg in
             let coordinates = leg.path.map(\.clCoordinate)
             let dimmed = focusedLegID != nil && focusedLegID != leg.id
-            if case .walking = leg.kind {
-                MapPolyline(coordinates: coordinates)
-                    .stroke(
-                        leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round, dash: [0.5, 9])
-                    )
-            } else {
-                MapPolyline(coordinates: coordinates)
-                    .stroke(.white, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
-                MapPolyline(coordinates: coordinates)
-                    .stroke(
-                        leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
-                        style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
-                    )
-            }
+            MapPolyline(coordinates: coordinates)
+                .stroke(.white, style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+            MapPolyline(coordinates: coordinates)
+                .stroke(
+                    leg.kind.routeColor.opacity(dimmed ? 0.35 : 1),
+                    style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
+                )
         }
+        TransitStopsContent(legs: option.legs)
         ForEach(option.legs.filter { if case .walking = $0.kind { false } else { true } }) { leg in
             Annotation(leg.from.name, coordinate: leg.from.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.kind.color)
+                StopDot(color: leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
             Annotation(leg.to.name, coordinate: leg.to.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.kind.color)
+                StopDot(color: leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
         }
@@ -254,14 +247,32 @@ private extension [Coordinate] {
     }
 }
 
-private struct StopDot: View {
+struct StopDot: View {
     let color: Color
     var size: CGFloat = 11
+    var lineWidth: CGFloat = 3
 
     var body: some View {
         Circle()
             .fill(.white)
-            .stroke(color, lineWidth: 3)
+            .stroke(color, lineWidth: lineWidth)
             .frame(width: size, height: size)
+    }
+}
+
+struct TransitStopsContent: MapContent {
+    let legs: [Leg]
+
+    var body: some MapContent {
+        ForEach(legs) { leg in
+            if let ride = leg.transit {
+                ForEach(Array(ride.intermediateStops.enumerated()), id: \.offset) { _, stop in
+                    Annotation(stop.name, coordinate: stop.coordinate.clCoordinate, anchor: .center) {
+                        StopDot(color: leg.kind.routeColor, size: 8, lineWidth: 2)
+                    }
+                    .annotationTitles(.hidden)
+                }
+            }
+        }
     }
 }

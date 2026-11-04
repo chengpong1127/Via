@@ -182,12 +182,7 @@ private struct LegRow: View {
                 path.move(to: CGPoint(x: proxy.size.width / 2, y: 0))
                 path.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height))
             }
-            .stroke(
-                leg.kind.routeColor,
-                style: leg.kind == .walking
-                    ? StrokeStyle(lineWidth: 4, lineCap: .round, dash: [0.5, 8])
-                    : StrokeStyle(lineWidth: 6, lineCap: .round)
-            )
+            .stroke(leg.kind.routeColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
         }
     }
 

@@ -18,7 +18,9 @@ enum SheetRoute: Hashable {
 
 extension PresentationDetent {
     static let collapsed = PresentationDetent.height(92)
-    static let navigationStage = PresentationDetent.height(200)
+    static let navigationStageHeight: CGFloat = 96
+    static let navigationStage = PresentationDetent.height(navigationStageHeight)
+    static let navigationEnd = PresentationDetent.height(navigationStageHeight + 64)
 }
 
 extension MKCoordinateRegion {
@@ -91,7 +93,8 @@ final class ExploreModel {
         fit(results.map(\.place.coordinate))
     }
 
-    func show(_ result: PlaceResult) {
+    func show(_ result: PlaceResult, fromMap: Bool = false) {
+        if !fromMap { mapSelection = nil }
         selectedPlace = result
         route = .place(result)
         detent = .medium
@@ -120,6 +123,7 @@ final class ExploreModel {
         directions.reset()
         directions.origin = .currentLocation
         directions.destination = .place(result.place)
+        mapSelection = nil
         route = .directions
         detent = .medium
         replan()
@@ -229,7 +233,7 @@ final class ExploreModel {
 
     func recenter() {
         withAnimation(.smooth) {
-            camera = .userLocation(followsHeading: true, fallback: .automatic)
+            camera = .userLocation(followsHeading: false, fallback: .automatic)
         }
     }
 
@@ -239,7 +243,7 @@ final class ExploreModel {
             show(result)
         } else if let feature = selection.feature,
                   let result = try? await search.service.result(for: feature) {
-            show(result)
+            show(result, fromMap: true)
         }
     }
 
