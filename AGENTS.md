@@ -21,7 +21,8 @@ request snapshots.
 
 `MultimodalPlanner` owns static round-based (RAPTOR-style) transit corridor
 discovery and fixed-corridor evaluation. Each round adds one ride; keep the best
-corridor for each ride count plus near-best corridors up to `max_static_corridors`,
+corridor for each ride count, then the cheapest corridor for each set of transit
+modes, plus near-best corridors up to `max_static_corridors`,
 weighting transfers with the ranking transfer buffers, without an expansion cap.
 Include the direct walking corridor outside that set and evaluate it first. Skip transit search when no transit mode is selected;
 `selected_modes` contains only optional non-walking modes. All corridors use one

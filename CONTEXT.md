@@ -23,8 +23,10 @@ Routing modules follow the pipeline:
 | `cache` | Request-local Matrix cache and the reconstruction Route cache |
 
 Corridor search runs a static round-based (RAPTOR-style) search in which each
-round adds one ride; it keeps the best corridor for each ride count plus
-near-best corridors up to the configured cap, with transfers weighted by the
+round adds one ride; it keeps the best corridor for each ride count, then
+the cheapest corridor for each set of transit modes, so optimistic derived Bus
+costs cannot crowd out Metro or Rail, plus near-best corridors up to the
+configured cap, with transfers weighted by the
 ranking buffers. Corridor evaluation uses request-local snapshots to evaluate
 fixed corridors plus the direct walking corridor, which starts first and may
 overlap transit evaluation within the configured concurrency limit. Walking is

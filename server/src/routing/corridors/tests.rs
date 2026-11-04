@@ -702,6 +702,42 @@ fn best_corridor_for_each_ride_count_survives_a_full_cap_of_faster_transfers() {
 }
 
 #[test]
+fn cheapest_corridor_of_each_mode_set_survives_a_full_cap_of_faster_bus_corridors() {
+    let network = network(
+        vec![
+            pattern("direct-bus", TransitMode::Bus, &["o", "d"]),
+            pattern("feeder", TransitMode::Bus, &["o", "hub"]),
+            pattern("express", TransitMode::Bus, &["hub", "d"]),
+            pattern("metro", TransitMode::Metro, &["o", "d"]),
+        ],
+        vec![
+            trip("direct-trip", "direct-bus", &[0, 100]),
+            trip("feeder-trip", "feeder", &[0, 60]),
+            trip("express-trip", "express", &[0, 60]),
+            trip("metro-trip", "metro", &[0, 600]),
+        ],
+    );
+
+    let retained_corridors = run(
+        &network,
+        &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 1, 2),
+    );
+
+    let sequences = retained_corridors
+        .retained()
+        .iter()
+        .map(|corridor| corridor.pattern_sequence())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sequences,
+        vec![
+            vec![TransitPatternId::new("direct-bus")],
+            vec![TransitPatternId::new("metro")]
+        ]
+    );
+}
+
+#[test]
 fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
     let network = network(
         vec![

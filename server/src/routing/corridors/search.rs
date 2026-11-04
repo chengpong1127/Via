@@ -552,6 +552,18 @@ fn select(
             }
         }
     }
+    let mut mode_sets = chosen
+        .iter()
+        .map(|&index| corridor_modes(network, &candidates[index].corridor))
+        .collect::<HashSet<_>>();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if chosen.len() >= limit {
+            break;
+        }
+        if mode_sets.insert(corridor_modes(network, &candidate.corridor)) {
+            chosen.insert(index);
+        }
+    }
     let mut sequences = chosen
         .iter()
         .map(|&index| candidates[index].corridor.pattern_sequence())
@@ -627,6 +639,20 @@ fn equivalent_legs_for(
         equivalent_legs.insert(key, legs);
     }
     equivalent_legs
+}
+
+fn corridor_modes(network: &TransitRuntime, corridor: &StaticCorridor) -> Vec<TransitMode> {
+    let mut modes = corridor
+        .transit_legs()
+        .map(|leg| {
+            network
+                .route_of(network.required_pattern(&leg.pattern_id))
+                .mode
+        })
+        .collect::<Vec<_>>();
+    modes.sort_unstable();
+    modes.dedup();
+    modes
 }
 
 fn corridor_order_key(corridor: &StaticCorridor) -> (&str, &str, String) {
