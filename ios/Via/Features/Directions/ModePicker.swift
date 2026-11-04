@@ -66,14 +66,15 @@ struct ModePicker: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(modes.count == PlanningMode.allCases.count ? "Clear All" : "Select All") {
-                        modes = modes.count == PlanningMode.allCases.count ? [] : Set(PlanningMode.allCases)
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", systemImage: "checkmark", role: .confirm) {
+                    Button("Done", systemImage: "chevron.left") {
                         apply(modes)
                         dismiss()
+                    }
+                    .tint(.primary)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(modes.count == PlanningMode.allCases.count ? "Clear All" : "Select All") {
+                        modes = modes.count == PlanningMode.allCases.count ? [] : Set(PlanningMode.allCases)
                     }
                 }
             }

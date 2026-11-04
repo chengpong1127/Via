@@ -2,7 +2,6 @@ import SwiftUI
 
 struct DirectionsPanel: View {
     @Bindable var model: ExploreModel
-    @State private var editingTime = false
     @State private var editingModes = false
 
     private var directions: DirectionsModel { model.directions }
@@ -22,13 +21,6 @@ struct DirectionsPanel: View {
             .scrollBounceBehavior(.basedOnSize)
             .refreshable { await directions.plan() }
         }
-        .sheet(isPresented: $editingTime) {
-            DepartureEditor(setting: directions.departure) { setting in
-                directions.departure = setting
-                model.replan()
-            }
-            .presentationDetents([.medium, .large])
-        }
         .sheet(isPresented: $editingModes) {
             ModePicker(modes: directions.modes) { modes in
                 guard modes != directions.modes else { return }
@@ -42,27 +34,6 @@ struct DirectionsPanel: View {
     private var controls: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
-                Menu {
-                    Button("Leave Now", systemImage: "clock") {
-                        directions.departure = .now
-                        model.replan()
-                    }
-                    Button("Choose Time…", systemImage: "calendar") {
-                        editingTime = true
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(departureTitle)
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.bold))
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.fill.tertiary, in: .capsule)
-                }
-                .buttonStyle(.plain)
-
                 ModeButton(modes: directions.modes) {
                     editingModes = true
                 }
@@ -71,17 +42,6 @@ struct DirectionsPanel: View {
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
-    }
-
-    private var departureTitle: String {
-        switch directions.departure {
-        case .now:
-            String(localized: "Leave Now")
-        case let .departAt(date):
-            String(localized: "Leave at \(date.formatted(.departureTime))")
-        case let .arriveBy(date):
-            String(localized: "Arrive by \(date.formatted(.departureTime))")
-        }
     }
 
     @ViewBuilder
@@ -371,11 +331,5 @@ private struct FailureView: View {
         case .planning(.serverUnreachable): "wifi.exclamationmark"
         default: "exclamationmark.triangle"
         }
-    }
-}
-
-extension FormatStyle where Self == Date.FormatStyle {
-    static var departureTime: Date.FormatStyle {
-        Date.FormatStyle(timeZone: .via).weekday(.abbreviated).hour().minute()
     }
 }
