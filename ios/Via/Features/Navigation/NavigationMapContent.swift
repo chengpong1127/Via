@@ -15,13 +15,14 @@ struct NavigationMapContent: MapContent {
                 RouteLine(coordinates: parts.remaining, color: leg.leg.kind.routeColor, casing: leg.leg.kind.routeCasing)
             }
         }
+        TransitStopsContent(legs: tracker.route.legs.map(\.leg))
         ForEach(tracker.route.legs.filter { !$0.isStreet }, id: \.leg.id) { leg in
             Annotation(leg.leg.from.name, coordinate: leg.leg.from.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.leg.kind.color)
+                StopDot(color: leg.leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
             Annotation(leg.leg.to.name, coordinate: leg.leg.to.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.leg.kind.color)
+                StopDot(color: leg.leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
         }
@@ -55,7 +56,7 @@ private extension LegKind {
     var routeCasing: Color {
         switch self {
         case .walking: Color(red: 0.05, green: 0.33, blue: 0.85)
-        default: color.mix(with: .black, by: 0.3)
+        default: routeColor.mix(with: .black, by: 0.3)
         }
     }
 }

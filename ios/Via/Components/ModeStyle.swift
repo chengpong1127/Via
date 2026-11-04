@@ -111,7 +111,8 @@ extension LegKind {
     var routeColor: Color {
         switch self {
         case .walking: .blue
-        default: color
+        case let .transit(ride): ride.lineStyle.background
+        case .bikeShare: .bikeShare
         }
     }
 }

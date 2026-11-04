@@ -93,7 +93,8 @@ final class ExploreModel {
         fit(results.map(\.place.coordinate))
     }
 
-    func show(_ result: PlaceResult) {
+    func show(_ result: PlaceResult, fromMap: Bool = false) {
+        if !fromMap { mapSelection = nil }
         selectedPlace = result
         route = .place(result)
         detent = .medium
@@ -242,7 +243,7 @@ final class ExploreModel {
             show(result)
         } else if let feature = selection.feature,
                   let result = try? await search.service.result(for: feature) {
-            show(result)
+            show(result, fromMap: true)
         }
     }
 

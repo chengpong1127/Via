@@ -17,7 +17,7 @@ struct ExploreView: View {
                         Marker(result.place.name, coordinate: result.place.coordinate.clCoordinate)
                             .tag(MapSelection(result.id))
                     }
-                    if let place = model.selectedPlace, !model.resultMarkers.contains(place) {
+                    if let place = model.selectedPlace, !model.resultMarkers.contains(place), model.mapSelection?.feature == nil {
                         Marker(place.place.name, coordinate: place.place.coordinate.clCoordinate)
                             .tag(MapSelection(place.id))
                     }
@@ -174,13 +174,14 @@ struct RouteLegsContent: MapContent {
                     style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
                 )
         }
+        TransitStopsContent(legs: option.legs)
         ForEach(option.legs.filter { if case .walking = $0.kind { false } else { true } }) { leg in
             Annotation(leg.from.name, coordinate: leg.from.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.kind.color)
+                StopDot(color: leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
             Annotation(leg.to.name, coordinate: leg.to.coordinate.clCoordinate, anchor: .center) {
-                StopDot(color: leg.kind.color)
+                StopDot(color: leg.kind.routeColor)
             }
             .annotationTitles(.hidden)
         }
@@ -249,11 +250,29 @@ private extension [Coordinate] {
 struct StopDot: View {
     let color: Color
     var size: CGFloat = 11
+    var lineWidth: CGFloat = 3
 
     var body: some View {
         Circle()
             .fill(.white)
-            .stroke(color, lineWidth: 3)
+            .stroke(color, lineWidth: lineWidth)
             .frame(width: size, height: size)
+    }
+}
+
+struct TransitStopsContent: MapContent {
+    let legs: [Leg]
+
+    var body: some MapContent {
+        ForEach(legs) { leg in
+            if let ride = leg.transit {
+                ForEach(Array(ride.intermediateStops.enumerated()), id: \.offset) { _, stop in
+                    Annotation(stop.name, coordinate: stop.coordinate.clCoordinate, anchor: .center) {
+                        StopDot(color: leg.kind.routeColor, size: 8, lineWidth: 2)
+                    }
+                    .annotationTitles(.hidden)
+                }
+            }
+        }
     }
 }
