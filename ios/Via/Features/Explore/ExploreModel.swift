@@ -232,7 +232,7 @@ final class ExploreModel {
 
     func recenter() {
         withAnimation(.smooth) {
-            camera = .userLocation(followsHeading: true, fallback: .automatic)
+            camera = .userLocation(followsHeading: false, fallback: .automatic)
         }
     }
 
