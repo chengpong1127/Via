@@ -28,6 +28,7 @@ struct DirectionsPanel: View {
                 model.replan()
             }
             .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
         }
     }
 

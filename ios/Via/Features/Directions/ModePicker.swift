@@ -62,12 +62,12 @@ struct ModePicker: View {
                 }
             }
             .sensoryFeedback(.selection, trigger: modes)
+            .onDisappear { apply(modes) }
             .navigationTitle("Transport Modes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done", systemImage: "chevron.left") {
-                        apply(modes)
                         dismiss()
                     }
                     .tint(.primary)
