@@ -31,6 +31,7 @@ protocol LocationProviding: AnyObject {
 final class LocationService: NSObject, LocationProviding, LocationTracking {
     private(set) var authorizationStatus: CLAuthorizationStatus
     private(set) var coordinate: Coordinate?
+    private(set) var heading: Double?
 
     @ObservationIgnored private let manager = CLLocationManager()
     @ObservationIgnored private var waiters: [CheckedContinuation<Coordinate, Error>] = []
@@ -42,7 +43,13 @@ final class LocationService: NSObject, LocationProviding, LocationTracking {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        if isAuthorized { manager.startUpdatingLocation() }
+        manager.headingFilter = 2
+        if isAuthorized { startUpdates() }
+    }
+
+    private func startUpdates() {
+        manager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() { manager.startUpdatingHeading() }
     }
 
     var isAuthorized: Bool {
@@ -125,7 +132,7 @@ extension LocationService: CLLocationManagerDelegate {
             authorizationStatus = status
             switch status {
             case .authorizedWhenInUse, .authorizedAlways:
-                self.manager.startUpdatingLocation()
+                startUpdates()
                 if !waiters.isEmpty { self.manager.requestLocation() }
             case .denied:
                 resumeWaiters(with: .failure(LocationError.denied))
@@ -151,6 +158,14 @@ extension LocationService: CLLocationManagerDelegate {
             self.coordinate = coordinate
             resumeWaiters(with: .success(coordinate))
             subscribers.values.forEach { $0.yield(fix) }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        guard newHeading.headingAccuracy >= 0 else { return }
+        let value = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+        MainActor.assumeIsolated {
+            heading = value
         }
     }
 

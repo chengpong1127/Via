@@ -9,8 +9,6 @@ struct JourneyDetailPanel: View {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    LegStrip(legs: option.legs)
-                        .padding(.bottom, 16)
                     ForEach(Array(option.legs.enumerated()), id: \.element.id) { index, leg in
                         StopRow(
                             name: index == 0 ? originName(leg) : leg.from.name,
@@ -31,11 +29,27 @@ struct JourneyDetailPanel: View {
                 .padding(.bottom, 24)
             }
             .scrollBounceBehavior(.basedOnSize)
+            .opacity(model.detent == .collapsed ? 0 : 1)
+            .animation(.smooth(duration: 0.2), value: model.detent)
         }
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
+            summary
+            if model.detent != .collapsed {
+                LegStrip(legs: option.legs)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.smooth(duration: 0.2), value: model.detent)
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+    }
+
+    private var summary: some View {
+        HStack(alignment: .center, spacing: 12) {
             CloseButton(systemImage: "chevron.left", action: model.closeJourney)
             VStack(alignment: .leading, spacing: 2) {
                 Text(option.duration.travelTime)
@@ -56,9 +70,6 @@ struct JourneyDetailPanel: View {
                 .font(.headline)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-        .padding(.bottom, 12)
     }
 
     private func originName(_ leg: Leg) -> String {
@@ -144,19 +155,13 @@ private struct LegRow: View {
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                if let ride = leg.transit {
+                    stopsSection(ride)
+                }
                 if !steps.isEmpty {
                     DisclosureGroup(isExpanded: $expanded) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                                Label {
-                                    step.detailedInstruction
-                                } icon: {
-                                    Image(systemName: step.symbol)
-                                }
-                                .font(.subheadline)
-                            }
-                        }
-                        .padding(.top, 6)
+                        stepList
+                            .padding(.top, 6)
                     } label: {
                         Text("^[\(steps.count) step](inflect: true)")
                             .font(.subheadline)
@@ -170,8 +175,58 @@ private struct LegRow: View {
         }
     }
 
+    @ViewBuilder
+    private func stopsSection(_ ride: TransitRide) -> some View {
+        let count = Text("^[\(ride.intermediateStops.count + 1) stop](inflect: true)")
+            .font(.subheadline.weight(.medium))
+        if ride.intermediateStops.isEmpty {
+            count
+                .foregroundStyle(.secondary)
+        } else {
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(ride.intermediateStops.enumerated()), id: \.offset) { _, stop in
+                        HStack(spacing: 10) {
+                            StopDot(color: leg.kind.routeColor, size: 9, lineWidth: 2)
+                            Text(stop.name)
+                                .font(.subheadline)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
+            } label: {
+                count
+                    .foregroundStyle(.blue)
+            }
+            .tint(.secondary)
+        }
+    }
+
+    private var stepList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                Label {
+                    step.detailedInstruction
+                } icon: {
+                    Image(systemName: step.symbol)
+                }
+                .font(.subheadline)
+            }
+        }
+    }
+
+    private var walkingSummary: String {
+        let walk = String(localized: "Walk \(leg.duration.travelTime)")
+        let meters = zip(leg.path, leg.path.dropFirst()).map { $0.distance(to: $1) }.reduce(0, +)
+        guard meters >= 10 else { return walk }
+        let distance = Measurement(value: meters, unit: UnitLength.meters)
+            .formatted(.measurement(width: .abbreviated, usage: .road))
+        return "\(walk) · \(distance)"
+    }
+
     private var steps: [Guidance] {
-        if case .transit = leg.kind { return [] }
+        guard case .bikeShare = leg.kind else { return [] }
         return leg.guidance.filter { !["depart", "arrive", "bike_share"].contains($0.code) }
     }
 
@@ -191,7 +246,7 @@ private struct LegRow: View {
         switch leg.kind {
         case .walking:
             Label {
-                Text("Walk \(leg.duration.travelTime)")
+                Text(walkingSummary)
                     .font(.subheadline.weight(.semibold))
             } icon: {
                 Image(systemName: "figure.walk")

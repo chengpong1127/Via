@@ -213,6 +213,7 @@ private struct NoticeCapsule: View {
 struct NavigationSheet: View {
     let navigation: NavigationModel
     let end: () -> Void
+    let toggle: () -> Void
     let isExpanded: Bool
 
     var body: some View {
@@ -221,6 +222,10 @@ struct NavigationSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
                 .padding(.bottom, 10)
+                .contentShape(.rect)
+                .onTapGesture(perform: toggle)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint(isExpanded ? "Hides End Route" : "Shows End Route")
             if isExpanded {
                 Button(role: .destructive, action: end) {
                     Text(navigation.isFinished ? "Done" : "End Route")
