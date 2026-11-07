@@ -20,7 +20,8 @@ extension PresentationDetent {
     static let collapsed = PresentationDetent.height(92)
     static let navigationStageHeight: CGFloat = 96
     static let navigationStage = PresentationDetent.height(navigationStageHeight)
-    static let navigationEnd = PresentationDetent.height(navigationStageHeight + 64)
+    static let navigationEndHeight: CGFloat = navigationStageHeight + 64
+    static let navigationEnd = PresentationDetent.height(navigationEndHeight)
 }
 
 extension MKCoordinateRegion {
@@ -36,6 +37,8 @@ final class ExploreModel {
     var detent: PresentationDetent = .collapsed
     var camera: MapCameraPosition = .userLocation(fallback: .region(.taipei))
     var mapSelection: MapSelection<String>?
+    var cameraHeading: Double = 0
+    private(set) var followsUserInNavigation = false
     @ObservationIgnored var mapSize = CGSize(width: 402, height: 874)
     private(set) var selectedPlace: PlaceResult?
     private(set) var focusedLegID: String?
@@ -72,6 +75,11 @@ final class ExploreModel {
         case .directions, .journey, .pickEndpoint: true
         default: false
         }
+    }
+
+    var detents: Set<PresentationDetent> {
+        if isNavigating { return [.navigationStage, .navigationEnd] }
+        return [.collapsed, .medium, .large]
     }
 
     var resultMarkers: [PlaceResult] {
@@ -219,22 +227,60 @@ final class ExploreModel {
         self.navigation = navigation
         detent = .navigationStage
         navigation.start()
-        recenter()
+        zoomToUser()
     }
 
     func endNavigation() {
         navigation?.stop()
         navigation = nil
+        followsUserInNavigation = false
         detent = .medium
         if let option = directions.selectedOption {
             fit(option.overview)
         }
     }
 
+    var isFollowingUser: Bool {
+        isNavigating ? followsUserInNavigation : camera.followsUserLocation
+    }
+
     func recenter() {
-        withAnimation(.smooth) {
-            camera = .userLocation(followsHeading: false, fallback: .automatic)
+        if isNavigating {
+            zoomToUser()
+        } else {
+            withAnimation(.smooth) {
+                camera = .userLocation(followsHeading: false, fallback: .automatic)
+            }
         }
+    }
+
+    func toggleNavigationPanel() {
+        withAnimation(.smooth) {
+            detent = detent == .navigationStage ? .navigationEnd : .navigationStage
+        }
+    }
+
+    func userMoved(to coordinate: Coordinate) {
+        guard isNavigating, followsUserInNavigation else { return }
+        withAnimation(.linear(duration: 0.8)) {
+            camera = navigationCamera(at: coordinate)
+        }
+    }
+
+    func cameraChanged() {
+        if camera.positionedByUser { followsUserInNavigation = false }
+    }
+
+    private func zoomToUser() {
+        followsUserInNavigation = true
+        guard let coordinate = location.coordinate else { return }
+        withAnimation(.smooth(duration: 0.6)) {
+            camera = navigationCamera(at: coordinate)
+        }
+    }
+
+    private func navigationCamera(at coordinate: Coordinate) -> MapCameraPosition {
+        .camera(MapCamera(centerCoordinate: coordinate.clCoordinate, distance: 2500, heading: cameraHeading))
     }
 
     func handleMapSelection() async {

@@ -7,7 +7,9 @@ struct ExploreView: View {
     var body: some View {
         MapReader { proxy in
             Map(position: $model.camera, selection: $model.mapSelection) {
-                UserAnnotation()
+                UserAnnotation(anchor: .center) { _ in
+                    UserLocationDot(heading: model.location.heading.map { $0 - model.cameraHeading })
+                }
                 if let navigation = model.navigation {
                     NavigationMapContent(tracker: navigation.tracker, destination: navigation.destination)
                 } else if model.isPlanning {
@@ -42,7 +44,7 @@ struct ExploreView: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 if model.isNavigating {
-                    Button("Re-center", systemImage: model.camera.followsUserLocation ? "location.fill" : "location", action: model.recenter)
+                    Button("Re-center", systemImage: model.isFollowingUser ? "location.fill" : "location", action: model.recenter)
                         .labelStyle(.iconOnly)
                         .font(.system(size: 24, weight: .semibold))
                         .frame(width: 56, height: 56)
@@ -51,11 +53,23 @@ struct ExploreView: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(.blue)
                         .padding(.trailing, 16)
-                        .padding(.bottom, PresentationDetent.navigationStageHeight - 16)
+                        .padding(.bottom, (model.detent == .navigationEnd ? PresentationDetent.navigationEndHeight : PresentationDetent.navigationStageHeight) - 16)
+                        .animation(.smooth, value: model.detent)
                 }
             }
             .onMapCameraChange(frequency: .onEnd) { context in
                 model.search.service.region = context.region
+            }
+            .onMapCameraChange(frequency: .continuous) { context in
+                if abs(context.camera.heading - model.cameraHeading) > 1 {
+                    model.cameraHeading = context.camera.heading
+                }
+            }
+            .onChange(of: model.location.coordinate) { _, coordinate in
+                if let coordinate { model.userMoved(to: coordinate) }
+            }
+            .onChange(of: model.camera) {
+                model.cameraChanged()
             }
             .onChange(of: model.mapSelection) {
                 Task { await model.handleMapSelection() }
@@ -75,15 +89,17 @@ struct ExploreView: View {
         .sheet(isPresented: .constant(true)) {
             Group {
                 if let navigation = model.navigation {
-                    NavigationSheet(navigation: navigation, end: model.endNavigation, isExpanded: model.detent != .navigationStage)
+                    NavigationSheet(
+                        navigation: navigation,
+                        end: model.endNavigation,
+                        toggle: model.toggleNavigationPanel,
+                        isExpanded: model.detent != .navigationStage
+                    )
                 } else {
                     ExploreSheet(model: model)
                 }
             }
-            .presentationDetents(
-                model.isNavigating ? [.navigationStage, .navigationEnd] : [.collapsed, .medium, .large],
-                selection: $model.detent
-            )
+            .presentationDetents(model.detents, selection: $model.detent)
             .presentationBackgroundInteraction(.enabled(upThrough: model.isNavigating ? .navigationEnd : .medium))
             .presentationContentInteraction(.scrolls)
             .interactiveDismissDisabled()
@@ -93,11 +109,6 @@ struct ExploreView: View {
         }
         .onChange(of: model.isNavigating) { _, navigating in
             UIApplication.shared.isIdleTimerDisabled = navigating
-        }
-        .task(id: model.isNavigating) {
-            guard model.isNavigating else { return }
-            try? await Task.sleep(for: .milliseconds(500))
-            model.recenter()
         }
     }
 }
@@ -274,5 +285,52 @@ struct TransitStopsContent: MapContent {
                 }
             }
         }
+    }
+}
+
+struct UserLocationDot: View {
+    let heading: Double?
+
+    var body: some View {
+        ZStack {
+            if let heading {
+                HeadingBeam()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.blue.opacity(0.55), Color.blue.opacity(0)],
+                            center: .center,
+                            startRadius: 4,
+                            endRadius: 44
+                        )
+                    )
+                    .frame(width: 88, height: 88)
+                    .rotationEffect(.degrees(heading))
+                    .animation(.smooth(duration: 0.2), value: heading)
+            }
+            Circle()
+                .fill(.blue)
+                .stroke(.white, lineWidth: 3)
+                .frame(width: 20, height: 20)
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+        }
+        .frame(width: 88, height: 88)
+        .accessibilityHidden(true)
+    }
+}
+
+private nonisolated struct HeadingBeam: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        path.move(to: center)
+        path.addArc(
+            center: center,
+            radius: rect.width / 2,
+            startAngle: .degrees(-90 - 32),
+            endAngle: .degrees(-90 + 32),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
     }
 }

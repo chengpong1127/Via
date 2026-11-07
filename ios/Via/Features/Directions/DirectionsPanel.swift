@@ -20,6 +20,8 @@ struct DirectionsPanel: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .refreshable { await directions.plan() }
+            .opacity(model.detent == .collapsed ? 0 : 1)
+            .animation(.smooth(duration: 0.2), value: model.detent)
         }
         .sheet(isPresented: $editingModes) {
             ModePicker(modes: directions.modes) { modes in
