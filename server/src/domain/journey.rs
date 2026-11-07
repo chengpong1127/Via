@@ -99,6 +99,14 @@ pub struct Place {
 }
 
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+pub struct StopVisit {
+    #[serde(flatten)]
+    pub place: Place,
+    #[serde(with = "time::serde::rfc3339")]
+    pub arrival_time: OffsetDateTime,
+}
+
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
 pub struct Guidance {
     pub code: &'static str,
     pub parameters: BTreeMap<String, String>,
@@ -122,7 +130,7 @@ pub enum LegDetails {
         via_alighting_point_id: String,
         service_label: String,
         headsign: String,
-        intermediate_stops: Vec<Place>,
+        intermediate_stops: Vec<StopVisit>,
     },
     BikeShare {
         pickup_station_id: String,

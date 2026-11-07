@@ -140,7 +140,8 @@ nonisolated enum PlanningMapper {
         Stop(
             name: dto.displayName,
             coordinate: Coordinate(latitude: dto.coordinate.latitude, longitude: dto.coordinate.longitude),
-            viaID: dto.viaID
+            viaID: dto.viaID,
+            arrivalTime: dto.arrivalTime.flatMap(RFC3339.date(from:))
         )
     }
 

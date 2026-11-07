@@ -2,10 +2,10 @@ use time::OffsetDateTime;
 
 use crate::domain::{
     ids::EffectiveTripId,
-    journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
+    journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError, StopVisit},
     ranking::TransferEvidence,
     transit::TransitMode,
-    transit_timing::{EffectiveTrip, TimingReliability},
+    transit_timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
 };
 
 use super::{
@@ -49,10 +49,11 @@ impl ReconstructionState<'_, '_> {
             .transit_runtime
             .required_pattern(&trip.pattern_id);
         let route_data = self.reconstructor.transit_runtime.route_of(pattern_data);
-        let ride_stops = trip
+        let ride_times = trip
             .stop_times
             .get(board_index..=alight_index)
-            .ok_or(PlanningError::Internal)?
+            .ok_or(PlanningError::Internal)?;
+        let ride_stops = ride_times
             .iter()
             .map(|stop_time| {
                 self.reconstructor
@@ -76,6 +77,7 @@ impl ReconstructionState<'_, '_> {
             pattern_data,
             route_data,
             &ride_stops,
+            ride_times,
             board.departure_at,
             alight.arrival_at,
         )?);
@@ -171,6 +173,7 @@ fn transit_leg(
     service: &crate::domain::transit::TransitPattern,
     route: &crate::domain::transit::TransitRoute,
     stops: &[&crate::domain::transit::TransitStop],
+    stop_times: &[EffectiveStopTime],
     departure: OffsetDateTime,
     arrival: OffsetDateTime,
 ) -> Result<Leg, PlanningError> {
@@ -179,7 +182,11 @@ fn transit_leg(
     };
     let intermediate_stops = intermediate
         .iter()
-        .map(|stop| transit_place(stop))
+        .zip(stop_times.iter().skip(1))
+        .map(|(stop, stop_time)| StopVisit {
+            place: transit_place(stop),
+            arrival_time: stop_time.arrival_at,
+        })
         .collect::<Vec<_>>();
     let guidance_code = match route.mode {
         TransitMode::Bus => "board_bus",

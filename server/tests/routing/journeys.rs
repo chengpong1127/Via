@@ -171,6 +171,16 @@ async fn transit_legs_list_intermediate_stops_and_street_guidance_carries_geomet
     assert_eq!(stops.len(), 1);
     assert_eq!(stops[0]["via_id"], "F-M2-RED");
     assert_eq!(stops[0]["display_name"], "Fixture MRT Interchange Red");
+    let arrival = |value: &serde_json::Value| {
+        time::OffsetDateTime::parse(
+            value.as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+    };
+    let stop_arrival = arrival(&stops[0]["arrival_time"]);
+    assert!(arrival(&legs[1]["departure_time"]) < stop_arrival);
+    assert!(stop_arrival < arrival(&legs[1]["arrival_time"]));
     assert_ne!(
         legs[1]["geometry"]["points"],
         json!(""),

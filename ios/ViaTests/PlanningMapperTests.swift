@@ -66,7 +66,7 @@ struct PlanningMapperTests {
             serviceLabel: "BL",
             headsign: "Nangang Exhibition Center",
             patternID: "pattern-1",
-            intermediateStops: [Stop(name: "NTU Hospital", coordinate: Coordinate(latitude: 25.0441, longitude: 121.5161), viaID: "stop-3")]
+            intermediateStops: [Stop(name: "NTU Hospital", coordinate: Coordinate(latitude: 25.0441, longitude: 121.5161), viaID: "stop-3", arrivalTime: RFC3339.date(from: "2026-11-01T09:40:00+08:00"))]
         ))
         #expect(option.legs[1].from.viaID == "stop-1")
 
@@ -143,7 +143,7 @@ nonisolated enum Fixtures {
               "type": "transit", "transit_mode": "metro", "via_pattern_id": "pattern-1",
               "via_boarding_point_id": "stop-1", "via_alighting_point_id": "stop-2",
               "service_label": "BL", "headsign": "Nangang Exhibition Center",
-              "intermediate_stops": [{"display_name": "NTU Hospital", "coordinate": {"latitude": 25.0441, "longitude": 121.5161}, "via_id": "stop-3"}]
+              "intermediate_stops": [{"display_name": "NTU Hospital", "coordinate": {"latitude": 25.0441, "longitude": 121.5161}, "via_id": "stop-3", "arrival_time": "2026-11-01T09:40:00+08:00"}]
             },
             "attribution": []
           },

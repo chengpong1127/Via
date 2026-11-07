@@ -97,11 +97,13 @@ nonisolated struct PlaceDTO: Decodable, Sendable {
     let displayName: String
     let coordinate: CoordinateDTO
     let viaID: String?
+    let arrivalTime: String?
 
     enum CodingKeys: String, CodingKey {
         case displayName = "display_name"
         case coordinate
         case viaID = "via_id"
+        case arrivalTime = "arrival_time"
     }
 }
 
