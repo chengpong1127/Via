@@ -23,7 +23,6 @@ struct JourneyDetailPanel: View {
                     if let last = option.legs.last {
                         StopRow(name: last.to.name, time: last.arrivalTime, color: .red, wait: 0, isDestination: true)
                     }
-                    attributions
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
@@ -75,25 +74,6 @@ struct JourneyDetailPanel: View {
     private func originName(_ leg: Leg) -> String {
         model.directions.origin == .currentLocation ? String(localized: "My Location") : leg.from.name
     }
-
-    @ViewBuilder
-    private var attributions: some View {
-        let items = option.attributions
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(items, id: \.self) { attribution in
-                    if let url = attribution.url {
-                        Link("\(attribution.text) (\(attribution.licence))", destination: url)
-                    } else {
-                        Text(verbatim: "\(attribution.text) (\(attribution.licence))")
-                    }
-                }
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.top, 20)
-        }
-    }
 }
 
 private struct StopRow: View {
@@ -143,63 +123,98 @@ private struct LegRow: View {
     let isFocused: Bool
     let focus: () -> Void
     @State private var expanded = false
+    @State private var showsStops = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            connector
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 8) {
-                Button(action: focus) {
-                    content
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                if let ride = leg.transit {
-                    stopsSection(ride)
-                }
-                if !steps.isEmpty {
-                    DisclosureGroup(isExpanded: $expanded) {
-                        stepList
-                            .padding(.top, 6)
-                    } label: {
-                        Text("^[\(steps.count) step](inflect: true)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                LineSegment(color: leg.kind.routeColor)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 8) {
+                    Button(action: focus) {
+                        content
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    if !steps.isEmpty {
+                        DisclosureGroup(isExpanded: $expanded) {
+                            stepList
+                                .padding(.top, 6)
+                        } label: {
+                            Text("^[\(steps.count) step](inflect: true)")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
+                .padding(.vertical, 12)
+                .padding(.horizontal, 12)
+                .background(isFocused ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 12))
             }
-            .padding(.vertical, 12)
-            .padding(.horizontal, 12)
-            .background(isFocused ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear), in: .rect(cornerRadius: 12))
+            if let ride = leg.transit {
+                stopsSection(ride)
+            }
         }
     }
 
     @ViewBuilder
     private func stopsSection(_ ride: TransitRide) -> some View {
-        let count = Text("^[\(ride.intermediateStops.count + 1) stop](inflect: true)")
-            .font(.subheadline.weight(.medium))
+        let color = leg.kind.routeColor
+        let summary = Text("Go ^[\(ride.intermediateStops.count + 1) stop](inflect: true), \(leg.duration.travelTime)")
         if ride.intermediateStops.isEmpty {
-            count
-                .foregroundStyle(.secondary)
+            lineRow(LineSegment(color: color)) {
+                summary.foregroundStyle(.secondary)
+            }
         } else {
-            DisclosureGroup(isExpanded: $expanded) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(ride.intermediateStops.enumerated()), id: \.offset) { _, stop in
-                        HStack(spacing: 10) {
-                            StopDot(color: leg.kind.routeColor, size: 9, lineWidth: 2)
+            lineRow(LineSegment(color: color)) {
+                Button {
+                    withAnimation(.smooth(duration: 0.25)) { showsStops.toggle() }
+                } label: {
+                    Group {
+                        if showsStops {
+                            Text("Hide stops")
+                        } else {
+                            summary
+                        }
+                    }
+                    .foregroundStyle(Color.accentColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+            if showsStops {
+                ForEach(Array(ride.intermediateStops.enumerated()), id: \.offset) { _, stop in
+                    lineRow(ZStack {
+                        LineSegment(color: color)
+                        StopDot(color: color, size: 11, lineWidth: 2.5)
+                    }) {
+                        HStack {
                             Text(stop.name)
-                                .font(.subheadline)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            if let arrival = stop.arrivalTime {
+                                Text(arrival.formatted(.clockTime))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
-            } label: {
-                count
-                    .foregroundStyle(.blue)
+                .transition(.opacity)
             }
-            .tint(.secondary)
+        }
+    }
+
+    private func lineRow(_ line: some View, @ViewBuilder label: () -> some View) -> some View {
+        HStack(spacing: 14) {
+            line
+                .frame(width: 28)
+            label()
+                .font(.subheadline)
+                .padding(.leading, 12)
+                .padding(.vertical, 7)
         }
     }
 
@@ -231,17 +246,6 @@ private struct LegRow: View {
     }
 
     @ViewBuilder
-    private var connector: some View {
-        GeometryReader { proxy in
-            Path { path in
-                path.move(to: CGPoint(x: proxy.size.width / 2, y: 0))
-                path.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height))
-            }
-            .stroke(leg.kind.routeColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-        }
-    }
-
-    @ViewBuilder
     private var content: some View {
         switch leg.kind {
         case .walking:
@@ -265,9 +269,15 @@ private struct LegRow: View {
                     Text("Toward \(ride.headsign)")
                         .font(.subheadline)
                 }
-                Text("Ride \(leg.duration.travelTime) · Get off at \(leg.to.name)")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Get off at \(leg.to.name)")
+                        .font(.subheadline.weight(.semibold))
+                    if let previous = ride.intermediateStops.last {
+                        Text("After \(previous.name)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         case let .bikeShare(ride):
             VStack(alignment: .leading, spacing: 6) {
@@ -308,6 +318,20 @@ extension Guidance {
         case "u_turn": "arrow.uturn.down"
         case "enter_roundabout", "exit_roundabout": "arrow.triangle.2.circlepath"
         default: "arrow.up"
+        }
+    }
+}
+
+private struct LineSegment: View {
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            Path { path in
+                path.move(to: CGPoint(x: proxy.size.width / 2, y: 0))
+                path.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 6, lineCap: .round))
         }
     }
 }

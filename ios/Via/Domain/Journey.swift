@@ -49,6 +49,7 @@ nonisolated struct Stop: Hashable, Sendable {
     let name: String
     let coordinate: Coordinate
     let viaID: String?
+    var arrivalTime: Date? = nil
 }
 
 nonisolated struct TransitRide: Hashable, Sendable {

@@ -77,7 +77,8 @@
                   "latitude": 25.0447,
                   "longitude": 121.5232
                 },
-                "via_id": "metro-stop-3"
+                "via_id": "metro-stop-3",
+                "arrival_time": "2026-08-31T12:08:00+08:00"
               }
             ]
           },
