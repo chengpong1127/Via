@@ -106,7 +106,7 @@ impl MultimodalPlanner {
                 .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
                 .await?
         };
-        let mut query = PlanningQuery::new(
+        let query = PlanningQuery::new(
             origin,
             destination,
             context.deadline,
@@ -117,7 +117,6 @@ impl MultimodalPlanner {
         )
         .with_allowed_transit_modes(modes)
         .with_bike_share(request.bike_share);
-        query.latest_arrival = context.latest_arrival;
         Ok((query, failures))
     }
 

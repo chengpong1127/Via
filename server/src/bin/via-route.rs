@@ -25,12 +25,10 @@ struct Cli {
     to_lat: f64,
     #[arg(long)]
     to_lon: f64,
-    #[arg(long, conflicts_with_all = ["depart_at", "arrive_by"])]
-    depart_now: bool,
-    #[arg(long, conflicts_with = "arrive_by")]
-    depart_at: Option<String>,
     #[arg(long, conflicts_with = "depart_at")]
-    arrive_by: Option<String>,
+    depart_now: bool,
+    #[arg(long)]
+    depart_at: Option<String>,
     #[arg(long)]
     modes: Option<String>,
     #[arg(long)]
@@ -137,10 +135,6 @@ fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
     let selected_modes = parse_modes(cli.modes.as_deref())?;
     let departure_setting = if let Some(value) = &cli.depart_at {
         DepartureSetting::DepartAt {
-            time: parse_time(value)?,
-        }
-    } else if let Some(value) = &cli.arrive_by {
-        DepartureSetting::ArriveBy {
             time: parse_time(value)?,
         }
     } else {

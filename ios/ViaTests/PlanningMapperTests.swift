@@ -12,7 +12,7 @@ struct PlanningMapperTests {
             origin: origin,
             destination: destination,
             modes: [.bikeShare, .metro, .bus],
-            departure: .arriveBy(date)
+            departure: .departAt(date)
         )
         let data = try JSONEncoder().encode(PlanningMapper.dto(for: request))
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -23,7 +23,7 @@ struct PlanningMapperTests {
         let coordinate = try #require(originJSON["coordinate"] as? [String: Double])
         #expect(coordinate == ["latitude": 25.04776, "longitude": 121.51706])
         let departure = try #require(json["departure_setting"] as? [String: String])
-        #expect(departure == ["type": "arrive_by", "time": "2026-11-01T17:30:00+08:00"])
+        #expect(departure == ["type": "depart_at", "time": "2026-11-01T17:30:00+08:00"])
     }
 
     @Test func encodesDepartNowWithoutTime() throws {

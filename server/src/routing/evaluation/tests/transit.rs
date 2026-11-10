@@ -279,7 +279,7 @@ fn phase2_later_departure_can_have_earlier_arrival() {
 }
 
 #[test]
-fn phase2_respects_maximum_journey_duration_and_latest_arrival() {
+fn phase2_respects_maximum_journey_duration() {
     let network = network(
         vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
         &["origin", "destination"],
@@ -310,14 +310,6 @@ fn phase2_respects_maximum_journey_duration_and_latest_arrival() {
         });
     assert!(
         evaluate(&network, &corridor, &snapshot, short_duration_query)
-            .unwrap()
-            .is_empty()
-    );
-
-    let mut latest_arrival_query = corridor_query;
-    latest_arrival_query.latest_arrival = Some(datetime!(2026-09-21 10:10 UTC));
-    assert!(
-        evaluate(&network, &corridor, &snapshot, latest_arrival_query)
             .unwrap()
             .is_empty()
     );

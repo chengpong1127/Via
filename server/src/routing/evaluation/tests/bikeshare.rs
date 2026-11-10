@@ -759,7 +759,7 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
 
 #[tokio::test]
 async fn walking_and_bike_share_both_compete_on_one_transit_edge() {
-    let (result, calls) = evaluate_walking_replacement(20, None, None, false, true).await;
+    let (result, calls) = evaluate_walking_replacement(20, None, false, true).await;
     assert_eq!(calls, 1);
     let journeys = &result.as_ref().unwrap().journeys;
     assert!(journeys.iter().any(|v| {
@@ -851,7 +851,7 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
 
 #[tokio::test]
 async fn bike_actual_realization_enforces_query_time_limits() {
-    for latest_arrival in [false, true] {
+    {
         let network = network(
             vec![pattern("bus", TransitMode::Bus, &["origin", "destination"])],
             &["origin", "destination"],
@@ -859,11 +859,7 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         );
         let mut query = query(&[TransitMode::Bus], 0, 1);
         let retained = candidate_corridor(&network, &query);
-        if latest_arrival {
-            query.latest_arrival = Some(query.departure_time + Duration::seconds(30));
-        } else {
-            query.limits.max_journey_duration_seconds = 30;
-        }
+        query.limits.max_journey_duration_seconds = 30;
         let corridor =
             EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
         let snapshot = TimingSnapshot::default();
@@ -1001,7 +997,7 @@ fn pure_bike_transitions_preserve_order_and_continue_one_rental() {
     );
     assert!(bike_successors(&query, &state, Vec::new(), 0).is_empty());
     let mut limited = query.clone();
-    limited.latest_arrival = Some(query.departure_time + Duration::seconds(59));
+    limited.limits.max_journey_duration_seconds = 59;
     assert!(bike_successors(&limited, &state, vec![bike_movement(0, 1, 60)], 0).is_empty());
     assert!(state.movements.is_empty());
 }

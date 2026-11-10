@@ -4,9 +4,7 @@ use tokio::time::Instant;
 use crate::{
     domain::planning::PlanningInput,
     domain::{journey::PlanningError, normalize_to_taipei, transit::TransitMode},
-    street::{
-        ProviderFailureClass, RoutingConstraints, RoutingTime, RoutingTimeKind, StreetRoutingError,
-    },
+    street::{ProviderFailureClass, RoutingConstraints, RoutingTime, StreetRoutingError},
 };
 
 use crate::domain::{
@@ -161,7 +159,6 @@ pub(crate) struct JourneyPlanningContext<'a> {
     pub(crate) request: &'a PlanningInput,
     pub(crate) search_start: OffsetDateTime,
     pub(crate) max_journey_duration_seconds: u32,
-    pub(crate) latest_arrival: Option<OffsetDateTime>,
     pub(crate) deadline: PlanningDeadline,
 }
 
@@ -172,14 +169,10 @@ impl<'a> JourneyPlanningContext<'a> {
         max_journey_duration_seconds: u32,
         deadline: PlanningDeadline,
     ) -> Result<Self, PlanningError> {
-        let (search_start, latest_arrival) = request
-            .departure
-            .search_window(request_started_at, max_journey_duration_seconds);
         Ok(Self {
             request,
-            search_start,
+            search_start: request.departure.search_start(request_started_at),
             max_journey_duration_seconds,
-            latest_arrival,
             deadline,
         })
     }
@@ -197,28 +190,12 @@ impl<'a> JourneyPlanningContext<'a> {
         instant.date().with_time(instant.time())
     }
 
-    pub(crate) fn constraints(
-        &self,
-        instant: OffsetDateTime,
-        kind: RoutingTimeKind,
-    ) -> RoutingConstraints {
+    pub(crate) fn departure_constraints(&self) -> RoutingConstraints {
         RoutingConstraints {
             time: Some(RoutingTime {
-                kind,
-                local_date_time: self.local_time(instant),
+                local_date_time: self.local_time(self.search_start),
             }),
             max_distance: None,
-        }
-    }
-
-    pub(crate) fn access_constraints(&self) -> RoutingConstraints {
-        self.constraints(self.search_start, RoutingTimeKind::DepartAt)
-    }
-
-    pub(crate) fn direct_constraints(&self) -> RoutingConstraints {
-        match self.latest_arrival {
-            Some(latest_arrival) => self.constraints(latest_arrival, RoutingTimeKind::ArriveBy),
-            None => self.constraints(self.search_start, RoutingTimeKind::DepartAt),
         }
     }
 }
@@ -233,7 +210,6 @@ pub struct PlanningQuery {
 
     pub allow_bike_share: bool,
     pub departure_time: OffsetDateTime,
-    pub latest_arrival: Option<OffsetDateTime>,
     pub limits: PlannerLimits,
     pub deadline: PlanningDeadline,
 }
@@ -261,7 +237,6 @@ impl PlanningQuery {
             ],
             allow_bike_share: false,
             departure_time,
-            latest_arrival: None,
             limits,
             deadline,
         }

@@ -29,7 +29,7 @@ fn client_offset_is_normalized_before_service_day_lookup() {
 }
 
 #[test]
-fn depart_now_depart_at_and_arrive_by_resolve_in_taipei_time() {
+fn depart_now_and_depart_at_resolve_in_taipei_time() {
     let now = datetime!(2026-08-31 12:00 UTC);
     let depart_now = DepartureSetting::DepartNow.resolve(now, 600);
     assert_eq!(
@@ -49,18 +49,6 @@ fn depart_now_depart_at_and_arrive_by_resolve_in_taipei_time() {
         (
             datetime!(2026-08-31 20:00 +08:00),
             datetime!(2026-08-31 20:10 +08:00)
-        )
-    );
-
-    let arrive_by = DepartureSetting::ArriveBy {
-        time: datetime!(2026-08-31 12:00 UTC),
-    }
-    .resolve(now, 600);
-    assert_eq!(
-        arrive_by,
-        (
-            datetime!(2026-08-31 19:50 +08:00),
-            datetime!(2026-08-31 20:00 +08:00)
         )
     );
 }
@@ -246,20 +234,12 @@ fn domain_conversion_preserves_endpoints_modes_and_departure_intent() {
             (
                 json!({"type": "depart_now"}),
                 DepartureIntent::Now,
-                (datetime!(2026-09-01 08:00 +08:00), None),
+                datetime!(2026-09-01 08:00 +08:00),
             ),
             (
                 json!({"type": "depart_at", "time": "2026-08-31T17:30:00Z"}),
                 DepartureIntent::DepartAt(datetime!(2026-08-31 17:30 UTC)),
-                (datetime!(2026-09-01 01:30 +08:00), None),
-            ),
-            (
-                json!({"type": "arrive_by", "time": "2026-08-31T17:30:00Z"}),
-                DepartureIntent::ArriveBy(datetime!(2026-08-31 17:30 UTC)),
-                (
-                    datetime!(2026-08-31 21:30 +08:00),
-                    Some(datetime!(2026-09-01 01:30 +08:00)),
-                ),
+                datetime!(2026-09-01 01:30 +08:00),
             ),
         ] {
             let request: PlanningRequest = serde_json::from_value(json!({
@@ -280,16 +260,15 @@ fn domain_conversion_preserves_endpoints_modes_and_departure_intent() {
             assert_eq!(input.transit_modes, transit);
             assert_eq!(input.bike_share, bike);
             assert_eq!(input.departure, intent);
-            let window = input.departure.search_window(now, 14400);
-            assert_eq!(window, expected);
-            assert_eq!(window.0.offset().whole_seconds(), 8 * 3600);
+            let start = input.departure.search_start(now);
+            assert_eq!(start, expected);
+            assert_eq!(start.offset().whole_seconds(), 8 * 3600);
             if intent == DepartureIntent::Now {
                 assert_eq!(
                     input
                         .departure
-                        .search_window(now + time::Duration::minutes(1), 14400)
-                        .0,
-                    expected.0 + time::Duration::minutes(1)
+                        .search_start(now + time::Duration::minutes(1)),
+                    expected + time::Duration::minutes(1)
                 );
             }
         }

@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn competitive_walking_replaces_transit_with_matrix_metrics() {
-    let (result, calls) = evaluate_walking_replacement(20, None, None, false, false).await;
+    let (result, calls) = evaluate_walking_replacement(20, None, false, false).await;
     assert_eq!(calls, 1);
     assert!(result.as_ref().unwrap().journeys.iter().any(|v| {
         v.transit_pattern_sequence().is_empty()
@@ -21,7 +21,7 @@ async fn competitive_walking_replaces_transit_with_matrix_metrics() {
 
 #[tokio::test]
 async fn slower_walking_survives_until_transit_geometry_is_validated() {
-    let (result, calls) = evaluate_walking_replacement(1, None, None, false, false).await;
+    let (result, calls) = evaluate_walking_replacement(1, None, false, false).await;
     assert_eq!(calls, 1);
     assert_eq!(result.as_ref().unwrap().journeys.len(), 2);
     assert!(
@@ -40,7 +40,6 @@ async fn optional_walking_dependency_failure_preserves_transit() {
     let (result, calls) = evaluate_walking_replacement(
         20,
         Some(crate::street::StreetRoutingError::Timeout),
-        None,
         false,
         false,
     )
@@ -56,19 +55,9 @@ async fn optional_walking_dependency_failure_preserves_transit() {
 
 #[tokio::test]
 async fn repeated_corridor_pairs_reuse_exact_walking_routes() {
-    let (result, calls) = evaluate_walking_replacement(20, None, None, true, false).await;
+    let (result, calls) = evaluate_walking_replacement(20, None, true, false).await;
     assert_eq!(calls, 1);
     assert!(!result.as_ref().unwrap().journeys.is_empty());
-}
-
-#[tokio::test]
-async fn walking_replacement_respects_latest_arrival() {
-    let (result, calls) = evaluate_walking_replacement(20, None, Some(299), false, false).await;
-    let evaluation = result.unwrap();
-    assert!(evaluation.journeys.is_empty());
-    assert_eq!(calls, 1);
-    assert_eq!(evaluation.stats.matrix_requests, 1);
-    assert_eq!(evaluation.stats.states_expanded, 2);
 }
 
 #[tokio::test]
@@ -215,7 +204,7 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
     let origin = crate::street::Coordinate::try_new(25.0, 121.5).unwrap();
     let destination = crate::street::Coordinate::try_new(25.02, 121.5).unwrap();
     let corridor = EvaluationCorridor::direct_walking(origin, destination);
-    for latest_arrival in [false, true] {
+    {
         for actual_seconds in [29, 31] {
             let mut query = PlanningQuery::new(
                 origin,
@@ -226,11 +215,7 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
                 datetime!(2026-09-21 10:00 UTC),
                 crate::config::ViaConfig::default().planner_limits(),
             );
-            if latest_arrival {
-                query.latest_arrival = Some(query.departure_time + Duration::seconds(30));
-            } else {
-                query.limits.max_journey_duration_seconds = 30;
-            }
+            query.limits.max_journey_duration_seconds = 30;
             let street = MatrixCache::new(Arc::new(
                 crate::street::FakeStreetRouter::builder()
                     .matrix_leg(
