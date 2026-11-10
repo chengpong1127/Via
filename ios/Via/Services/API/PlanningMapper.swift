@@ -46,8 +46,6 @@ nonisolated enum PlanningMapper {
             DepartureSettingDTO(type: "depart_now", time: nil)
         case let .departAt(date):
             DepartureSettingDTO(type: "depart_at", time: RFC3339.string(from: date))
-        case let .arriveBy(date):
-            DepartureSettingDTO(type: "arrive_by", time: RFC3339.string(from: date))
         }
     }
 

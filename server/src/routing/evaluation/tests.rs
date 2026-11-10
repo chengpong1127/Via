@@ -435,7 +435,6 @@ impl crate::street::StreetRouter for CountingWalkingRouter {
 async fn evaluate_walking_replacement(
     transit_minutes: i64,
     error: Option<crate::street::StreetRoutingError>,
-    latest_seconds: Option<i64>,
     duplicate: bool,
     with_bike: bool,
 ) -> (Result<Evaluation, RoutingError>, usize) {
@@ -450,9 +449,7 @@ async fn evaluate_walking_replacement(
         longitude: 121.5,
     };
     let network = Arc::new(TransitRuntime::new(Arc::new(static_network)));
-    let mut query = query(&[TransitMode::Bus], 0, 10);
-    query.latest_arrival =
-        latest_seconds.map(|seconds| query.departure_time + Duration::seconds(seconds));
+    let query = query(&[TransitMode::Bus], 0, 10);
     let retained = candidate_corridor(&network, &query);
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(

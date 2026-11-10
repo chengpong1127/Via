@@ -428,7 +428,6 @@ fn within_query_bounds(query: &PlanningQuery, time: OffsetDateTime) -> bool {
     time >= query.departure_time
         && time - query.departure_time
             <= Duration::seconds(i64::from(query.limits.max_journey_duration_seconds))
-        && query.latest_arrival.is_none_or(|latest| time <= latest)
 }
 
 fn transit_ready_at(state: &EvaluationState, transfer_seconds: u32) -> OffsetDateTime {

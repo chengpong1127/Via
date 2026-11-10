@@ -94,7 +94,7 @@ async fn identical_misses_and_every_failure_are_shared_and_reused() {
             async move {
                 stream::iter(0..10)
                     .map(|_| resolver.matrix(query()))
-                    .buffer_unordered(10)
+                    .buffer_unordered(9)
                     .collect::<Vec<_>>()
                     .await
             }
@@ -133,15 +133,10 @@ async fn exact_keys_allow_distinct_queries_to_overlap_and_requests_are_isolated(
     let mut q = base.clone();
     q.constraints.max_distance = Some(Metres(0));
     queries.push(q);
-    for (kind, nanos) in [
-        (RoutingTimeKind::DepartAt, 0),
-        (RoutingTimeKind::ArriveBy, 0),
-        (RoutingTimeKind::DepartAt, 1),
-    ] {
+    for nanos in [0, 1] {
         let mut q = base.clone();
         let instant = datetime!(2026-09-21 10:00 UTC) + time::Duration::nanoseconds(nanos);
         q.constraints.time = Some(RoutingTime {
-            kind,
             local_date_time: instant.date().with_time(instant.time()),
         });
         queries.push(q);
@@ -158,14 +153,14 @@ async fn exact_keys_allow_distinct_queries_to_overlap_and_requests_are_isolated(
                 .await
         }
     });
-    provider.wait_started(10).await;
-    assert_eq!(provider.peak.load(Ordering::SeqCst), 10);
-    provider.release.add_permits(10);
+    provider.wait_started(9).await;
+    assert_eq!(provider.peak.load(Ordering::SeqCst), 9);
+    provider.release.add_permits(9);
     assert!(work.await.unwrap().iter().all(Result::is_ok));
     let second = MatrixCache::new(provider.clone());
     provider.release.add_permits(1);
     second.matrix(base).await.unwrap();
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 11);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 10);
 }
 
 #[tokio::test]

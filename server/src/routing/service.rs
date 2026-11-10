@@ -31,8 +31,6 @@ use super::{
     },
 };
 
-const ARRIVE_BY_MIN_SLACK_SECONDS: i64 = 600;
-
 #[derive(Clone)]
 pub struct RoutingService {
     planner: MultimodalPlanner,
@@ -128,18 +126,7 @@ impl RoutingService {
             deadline,
         )?;
         context.ensure_before_deadline()?;
-        let (mut candidates, mut failures) = self.collect_candidates(&context).await?;
-        if let Some(search_start) = arrive_by_search_start(&context, &candidates) {
-            let refined = JourneyPlanningContext {
-                search_start,
-                ..context.clone()
-            };
-            let (refined_candidates, refined_failures) = self.collect_candidates(&refined).await?;
-            if !refined_candidates.is_empty() {
-                candidates = refined_candidates;
-                failures = refined_failures;
-            }
-        }
+        let (candidates, failures) = self.collect_candidates(&context).await?;
         self.finalize_plan(request_started_at, &context, candidates, failures)
     }
 
@@ -290,22 +277,6 @@ impl RoutingService {
             journey_options,
         }))
     }
-}
-
-fn arrive_by_search_start(
-    context: &JourneyPlanningContext<'_>,
-    candidates: &[JourneyCandidate],
-) -> Option<OffsetDateTime> {
-    let latest_arrival = context.latest_arrival?;
-    let shortest = candidates
-        .iter()
-        .map(|candidate| {
-            candidate.ranking.arrival_epoch_seconds - candidate.ranking.departure_epoch_seconds
-        })
-        .min()?;
-    let slack = ARRIVE_BY_MIN_SLACK_SECONDS.max(shortest / 4);
-    let search_start = latest_arrival - time::Duration::seconds(shortest + slack);
-    (search_start > context.search_start).then_some(search_start)
 }
 
 #[cfg(test)]

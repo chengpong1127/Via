@@ -9,7 +9,6 @@ nonisolated struct DemoJourneyPlanner: JourneyPlanner {
         let start: Date = switch request.departure {
         case .now: now()
         case let .departAt(date): date
-        case let .arriveBy(date): date.addingTimeInterval(-40 * 60)
         }
         var options: [JourneyOption] = []
         if request.modes.contains(.metro) {

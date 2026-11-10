@@ -193,7 +193,7 @@ impl AccessDiscovery {
             .discover_access_points(
                 request.origin.coordinate,
                 context.search_start,
-                context.access_constraints(),
+                context.departure_constraints(),
                 modes,
                 limits,
             )
@@ -202,7 +202,7 @@ impl AccessDiscovery {
         let egress = self
             .discover_egress_points(
                 request.destination.coordinate,
-                context.direct_constraints(),
+                context.departure_constraints(),
                 modes,
                 limits,
             )

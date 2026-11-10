@@ -111,12 +111,6 @@ impl JourneyReconstructor {
         let Some(assembled) = assembler::assemble(self, journey, context).await? else {
             return Ok(None);
         };
-        if context
-            .latest_arrival
-            .is_some_and(|latest| assembled.arrival_time > latest)
-        {
-            return Ok(None);
-        }
         let duration_seconds =
             transit::seconds_between(journey.departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;

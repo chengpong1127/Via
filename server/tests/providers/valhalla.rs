@@ -22,8 +22,8 @@ use via_server::{
     providers::{OperationalEvent, OperationalEventObserver, ValhallaConfig, ValhallaProvider},
     street::{
         Coordinate, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
-        RoutingConstraints, RoutingTime, RoutingTimeKind, Seconds, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
+        RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
+        StreetTravelMode,
     },
 };
 
@@ -140,7 +140,6 @@ async fn valhalla_adapter_normalizes_the_provider_contract() {
             orientation: MatrixOrientation::OneToMany,
             constraints: RoutingConstraints {
                 time: Some(RoutingTime {
-                    kind: RoutingTimeKind::DepartAt,
                     local_date_time: datetime!(2026-08-30 08:15),
                 }),
                 max_distance: Some(via_server::street::Metres(5_000)),

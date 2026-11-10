@@ -65,14 +65,7 @@ pub struct Seconds(pub u32);
 pub struct Metres(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum RoutingTimeKind {
-    DepartAt,
-    ArriveBy,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RoutingTime {
-    pub kind: RoutingTimeKind,
     pub local_date_time: PrimitiveDateTime,
 }
 

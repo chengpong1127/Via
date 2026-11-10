@@ -257,7 +257,6 @@ fn record_request_fields(request: &PlanningRequest) {
         match request.departure_setting {
             crate::api::DepartureSetting::DepartNow => "depart_now",
             crate::api::DepartureSetting::DepartAt { .. } => "depart_at",
-            crate::api::DepartureSetting::ArriveBy { .. } => "arrive_by",
         },
     );
 }

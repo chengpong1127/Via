@@ -43,7 +43,6 @@ impl From<PlanningRequest> for crate::domain::planning::PlanningInput {
             departure: match request.departure_setting {
                 DepartureSetting::DepartNow => DepartureIntent::Now,
                 DepartureSetting::DepartAt { time } => DepartureIntent::DepartAt(time),
-                DepartureSetting::ArriveBy { time } => DepartureIntent::ArriveBy(time),
             },
         }
     }
@@ -172,21 +171,13 @@ pub enum DepartureSetting {
         #[serde(with = "time::serde::rfc3339")]
         time: OffsetDateTime,
     },
-    ArriveBy {
-        #[serde(with = "time::serde::rfc3339")]
-        time: OffsetDateTime,
-    },
 }
 
 impl DepartureSetting {
     fn validate(&self) -> Result<(), RequestValidationError> {
         match self {
             Self::DepartNow => Ok(()),
-            Self::DepartAt { time } | Self::ArriveBy { time }
-                if time.offset().whole_seconds().abs() <= 86_399 =>
-            {
-                Ok(())
-            }
+            Self::DepartAt { time } if time.offset().whole_seconds().abs() <= 86_399 => Ok(()),
             _ => Err(RequestValidationError::new(
                 "invalid_departure_setting",
                 "/departure_setting/time",
@@ -197,7 +188,7 @@ impl DepartureSetting {
     pub fn effective_search_time(&self, now: OffsetDateTime) -> OffsetDateTime {
         match self {
             Self::DepartNow => normalize_to_taipei(now),
-            Self::DepartAt { time } | Self::ArriveBy { time } => normalize_to_taipei(*time),
+            Self::DepartAt { time } => normalize_to_taipei(*time),
         }
     }
 
@@ -229,10 +220,6 @@ impl DepartureSetting {
             Self::DepartAt { time } => {
                 let time = normalize_to_taipei(*time);
                 (time, time + duration)
-            }
-            Self::ArriveBy { time } => {
-                let time = normalize_to_taipei(*time);
-                (time - duration, time)
             }
         }
     }

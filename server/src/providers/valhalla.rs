@@ -21,8 +21,8 @@ use crate::{
     health::DependencyHealth,
     street::{
         Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixLimits, MatrixQuery,
-        MatrixResult, Metres, RouteQuery, RoutingConstraints, RoutingTimeKind, Seconds, StreetPath,
-        StreetRouter, StreetRoutingError, StreetTravelMode,
+        MatrixResult, Metres, RouteQuery, RoutingConstraints, Seconds, StreetPath, StreetRouter,
+        StreetRoutingError, StreetTravelMode,
     },
 };
 
@@ -514,6 +514,7 @@ fn costing(travel_mode: StreetTravelMode) -> &'static str {
     }
 }
 
+const VALHALLA_DEPART_AT: u8 = 1;
 const VALHALLA_LOCAL_TIME_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]");
 
@@ -530,10 +531,7 @@ fn wire_time(
                     reason: "street-routing time could not be formatted".into(),
                 })?;
             Ok(DateTimeRequest {
-                kind: match routing_time.kind {
-                    RoutingTimeKind::DepartAt => 1,
-                    RoutingTimeKind::ArriveBy => 2,
-                },
+                kind: VALHALLA_DEPART_AT,
                 value,
             })
         })

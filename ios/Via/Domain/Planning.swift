@@ -13,7 +13,6 @@ nonisolated enum PlanningMode: String, CaseIterable, Hashable, Identifiable, Sen
 nonisolated enum DepartureSetting: Hashable, Sendable {
     case now
     case departAt(Date)
-    case arriveBy(Date)
 }
 
 nonisolated struct PlanningRequest: Hashable, Sendable {
