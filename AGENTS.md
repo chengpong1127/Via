@@ -49,3 +49,8 @@ tests. `Features/Navigation` follows a selected `JourneyOption` on-device:
 `NavigationTracker` snaps location fixes to leg geometry and transit stops, and
 `NavigationModel` re-routes through `JourneyPlanner` with at most one plan per
 minute. There is no separate navigation backend.
+
+Keep `ios/Via/Resources/Localizable.xcstrings` in step with the code. Any change
+that adds, renames, or removes a user-facing string updates the catalog in the same
+commit: add the key with its zh-Hant translation and delete keys the code no longer
+uses. Format-only keys such as `%@ %@` and the app name need no translation.
