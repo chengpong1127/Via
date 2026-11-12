@@ -44,8 +44,8 @@
 /* Begin PBXFileReference section */
 		A10000000000000000000201 /* Via.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Via.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000202 /* ViaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ViaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A10000000000000000000204 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		A10000000000000000000203 /* ViaLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ViaLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000204 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -108,14 +108,6 @@
 			);
 			sourceTree = "<group>";
 		};
-		A10000000000000000000803 /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000204 /* Debug.xcconfig */,
-			);
-			path = Config;
-			sourceTree = "<group>";
-		};
 		A10000000000000000000802 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -124,6 +116,14 @@
 				A10000000000000000000203 /* ViaLiveActivity.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000803 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000204 /* Debug.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -347,8 +347,8 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
-				VIA_BUNDLE_ID = org.via.journey;
 				VALIDATE_PRODUCT = YES;
+				VIA_BUNDLE_ID = org.via.journey;
 			};
 			name = Release;
 		};
