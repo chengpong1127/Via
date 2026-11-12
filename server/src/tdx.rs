@@ -5,7 +5,6 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use moka::future::Cache;
 use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -146,11 +145,6 @@ pub enum TdxClientError {
     DownloadWrite(#[source] std::io::Error),
 }
 
-pub struct RealtimeResponse<T> {
-    pub value: T,
-    pub cached: bool,
-}
-
 #[derive(Clone)]
 pub struct TdxClient {
     client: Client,
@@ -159,7 +153,6 @@ pub struct TdxClient {
     api_base_url: Url,
     token_url: Url,
     token: Arc<Mutex<Option<CachedToken>>>,
-    realtime_responses: Cache<String, bytes::Bytes>,
     pub(crate) settings: TdxSettings,
 }
 
@@ -207,13 +200,12 @@ impl TdxClient {
             api_base_url,
             token_url,
             token: Arc::new(Mutex::new(None)),
-            realtime_responses: Cache::builder()
-                .max_capacity(settings.realtime.cache_max_bytes)
-                .weigher(|_url, body: &bytes::Bytes| u32::try_from(body.len()).unwrap_or(u32::MAX))
-                .time_to_live(Duration::from_secs(settings.realtime.cache_ttl_seconds))
-                .build(),
             settings,
         })
+    }
+
+    pub fn settings(&self) -> &TdxSettings {
+        &self.settings
     }
 
     async fn access_token(&self) -> Result<String, TdxClientError> {
@@ -346,25 +338,6 @@ impl TdxClient {
         serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
     }
 
-    pub async fn get_realtime_json<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> Result<RealtimeResponse<T>, TdxClientError> {
-        let url = self.api_url(path, query)?;
-        let key = url.as_str().to_owned();
-        let (body, cached) = if let Some(body) = self.realtime_responses.get(&key).await {
-            ::metrics::counter!("via_tdx_realtime_cache_hits_total").increment(1);
-            (body, true)
-        } else {
-            let body = self.get_url_bytes(url, 0).await?;
-            self.realtime_responses.insert(key, body.clone()).await;
-            (body, false)
-        };
-        let value = serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)?;
-        Ok(RealtimeResponse { value, cached })
-    }
-
     pub async fn download_url_to_path(
         &self,
         url: &str,
@@ -430,9 +403,19 @@ pub struct TdxSettings {
     pub minimum_token_lifetime_seconds: u64,
     pub token_refresh_margin_seconds: u64,
     pub bike_catalog_page_size: usize,
+    pub rate_limit_backoff_seconds: u64,
     pub batch: TdxBatchSettings,
     pub realtime: RealtimeSettings,
     pub bikeshare: BikeAvailabilitySettings,
+    pub gateway: TdxGatewaySettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TdxGatewaySettings {
+    pub url: Option<String>,
+    pub port: u16,
+    pub max_ids_per_request: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -612,9 +595,7 @@ mod tests {
         )
         .unwrap();
 
-        let realtime = client
-            .get_realtime_json::<serde_json::Value>("live", &[])
-            .await;
+        let realtime = client.get_json::<serde_json::Value>("live", &[]).await;
 
         assert!(matches!(
             realtime,
@@ -622,75 +603,6 @@ mod tests {
                 | super::TdxClientError::RateLimited)
         ));
         assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
-
-    async fn counted_response(
-        State(requests): State<Arc<AtomicUsize>>,
-        request: Request<Body>,
-    ) -> Response<Body> {
-        if request.uri().path() == "/token" {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"access_token":"mock-token","expires_in":300}"#,
-                ))
-                .unwrap();
-        }
-        let count = requests.fetch_add(1, Ordering::SeqCst) + 1;
-        Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::from(format!("{count}")))
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn realtime_responses_are_reused_for_the_same_url_only() {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let app = Router::new()
-            .fallback(any(counted_response))
-            .with_state(requests.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
-        let stop_a = [("$filter", "StopUID in ('A')")];
-        let stop_b = [("$filter", "StopUID in ('B')")];
-
-        let first = client
-            .get_realtime_json::<u32>("live", &stop_a)
-            .await
-            .unwrap();
-        let repeated = client
-            .get_realtime_json::<u32>("live", &stop_a)
-            .await
-            .unwrap();
-        let other = client
-            .get_realtime_json::<u32>("live", &stop_b)
-            .await
-            .unwrap();
-        let uncached: u32 = client.get_json("live", &stop_a).await.unwrap();
-
-        assert_eq!(
-            (first.value, repeated.value, other.value, uncached),
-            (1, 1, 2, 3)
-        );
-        assert_eq!(
-            (first.cached, repeated.cached, other.cached),
-            (false, true, false)
-        );
-        assert_eq!(requests.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

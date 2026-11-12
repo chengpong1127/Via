@@ -4,7 +4,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
@@ -20,33 +19,12 @@ use crate::{
             TimingReliability,
         },
     },
-    tdx::{TdxClient, TdxClientError},
+    live::{CachedLiveData, DirectLiveData, LiveDataSource, TraDelay},
+    tdx::{RealtimeSettings, TdxClient},
 };
 
-use super::source::TransitDepartureSource;
+use super::{live_error::departure_error, source::TransitDepartureSource};
 use crate::providers::tdx_bindings::TdxProviderBindings;
-
-const DEFAULT_TRAIN_LIVE_BOARD_PATH: &str = "v3/Rail/TRA/TrainLiveBoard";
-
-#[derive(Debug, Deserialize)]
-struct TdxTraTrainLiveBoardResponse {
-    #[serde(rename = "UpdateTime")]
-    update_time: String,
-    #[serde(rename = "SrcUpdateTime")]
-    source_update_time: String,
-    #[serde(rename = "TrainLiveBoards")]
-    train_live_boards: Vec<TdxTraTrainLiveBoard>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TdxTraTrainLiveBoard {
-    #[serde(rename = "TrainNo")]
-    train_no: Option<String>,
-    #[serde(rename = "DelayTime")]
-    delay_minutes: i64,
-    #[serde(rename = "UpdateTime")]
-    update_time: String,
-}
 
 #[derive(Clone, Copy)]
 struct TraDelayObservation {
@@ -57,8 +35,7 @@ struct TraDelayObservation {
 pub struct TraDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
-    tdx: Arc<TdxClient>,
-    realtime_path: String,
+    live: Arc<dyn LiveDataSource>,
     freshness_policy: FreshnessPolicy,
     max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
@@ -66,24 +43,34 @@ pub struct TraDepartureSource {
 
 impl TraDepartureSource {
     pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
+        let settings = tdx.settings.clone();
+        Self::with_live_data(
+            network,
+            Arc::new(CachedLiveData::new(
+                Arc::new(DirectLiveData::new(tdx)),
+                (&settings).into(),
+            )),
+            &settings.realtime,
+        )
+    }
+
+    pub fn with_live_data(
+        network: Arc<TransitRuntime>,
+        live: Arc<dyn LiveDataSource>,
+        realtime: &RealtimeSettings,
+    ) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx: tdx.clone(),
-            realtime_path: DEFAULT_TRAIN_LIVE_BOARD_PATH.into(),
-            freshness_policy: tdx.settings.realtime.freshness_policy(),
-            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
+            live,
+            freshness_policy: realtime.freshness_policy(),
+            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
 
     pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
         self.bindings = bindings;
-        self
-    }
-
-    pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
-        self.realtime_path = path.into();
         self
     }
 
@@ -146,21 +133,18 @@ impl TraDepartureSource {
                 .collect();
         }
 
-        let filter = train_filter(&requested_train_numbers);
-        let request = [("$filter", filter.as_str()), ("$format", "JSON")];
-        let payload = self
-            .tdx
-            .get_realtime_json::<TdxTraTrainLiveBoardResponse>(&self.realtime_path, &request)
-            .await
-            .map(|response| response.value);
-        let observations = match payload {
-            Ok(payload) => parse_realtime_payload(
-                payload,
+        let train_numbers = requested_train_numbers.iter().cloned().collect::<Vec<_>>();
+        let batch = self.live.tra_delays(&train_numbers).await;
+        let observations = match batch.unavailable.first() {
+            Some(unavailable) if batch.records.is_empty() => {
+                Err(departure_error(unavailable.reason))
+            }
+            _ => parse_tra_delays(
+                batch.records,
                 &requested_train_numbers,
                 &self.freshness_policy,
                 self.max_clock_skew_seconds,
             ),
-            Err(error) => Err(map_tdx_error(error)),
         };
 
         match observations {
@@ -313,51 +297,30 @@ impl TransitDepartureSource for TraDepartureSource {
     }
 }
 
-fn train_filter(train_numbers: &BTreeSet<String>) -> String {
-    train_numbers
-        .iter()
-        .map(|train_no| format!("TrainNo eq '{}'", train_no.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(" or ")
-}
-
-fn parse_realtime_payload(
-    payload: TdxTraTrainLiveBoardResponse,
+fn parse_tra_delays(
+    delays: Vec<TraDelay>,
     requested_train_numbers: &BTreeSet<String>,
     freshness_policy: &FreshnessPolicy,
     max_clock_skew_seconds: u32,
 ) -> Result<BTreeMap<String, TraDelayObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
-    let platform_update = parse_timestamp(&payload.update_time)?;
-    let source_update = parse_timestamp(&payload.source_update_time)?;
-    reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
-    reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
-    let wrapper_evidence_at = platform_update.min(source_update);
-    let wrapper_freshness = freshness_policy.evaluate(
-        LiveStatusTimes {
-            published_at: Some(wrapper_evidence_at),
-            received_at,
-        },
-        received_at,
-    );
-    if wrapper_freshness != FreshnessState::Fresh {
-        return Ok(BTreeMap::new());
-    }
-
     let mut observations = BTreeMap::new();
-    for board in payload.train_live_boards {
-        let Some(train_no) = board.train_no.as_deref().map(str::trim) else {
-            continue;
-        };
+    for delay in delays {
+        let platform_update = parse_timestamp(&delay.board_update_time)?;
+        let source_update = parse_timestamp(&delay.board_source_update_time)?;
+        reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
+        reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
+        let board_evidence_at = platform_update.min(source_update);
+        let train_no = delay.train_no.trim();
         if train_no.is_empty() || !requested_train_numbers.contains(train_no) {
             continue;
         }
-        if board.delay_minutes < 0 {
+        if delay.delay_minutes < 0 {
             continue;
         }
-        let observed_at = parse_timestamp(&board.update_time)?;
+        let observed_at = parse_timestamp(&delay.update_time)?;
         reject_future_timestamp(observed_at, received_at, max_clock_skew_seconds)?;
-        let evidence_at = observed_at.min(wrapper_evidence_at);
+        let evidence_at = observed_at.min(board_evidence_at);
         let freshness = freshness_policy.evaluate(
             LiveStatusTimes {
                 published_at: Some(evidence_at),
@@ -368,7 +331,7 @@ fn parse_realtime_payload(
         if freshness != FreshnessState::Fresh {
             continue;
         }
-        let delay_seconds = board
+        let delay_seconds = delay
             .delay_minutes
             .checked_mul(60)
             .ok_or(DepartureError::InvalidResponse)?;
@@ -399,26 +362,4 @@ fn reject_future_timestamp(
         return Err(DepartureError::InvalidResponse);
     }
     Ok(())
-}
-
-fn map_tdx_error(error: TdxClientError) -> DepartureError {
-    match error {
-        TdxClientError::InvalidConfiguration => DepartureError::InvalidConfiguration,
-        TdxClientError::RateLimited | TdxClientError::RateLimitedWithRetryAfter(_) => {
-            DepartureError::RateLimited
-        }
-        TdxClientError::OAuthRequest(error) | TdxClientError::ApiRequest(error)
-            if error.is_timeout() =>
-        {
-            DepartureError::TimedOut
-        }
-        TdxClientError::OAuthRequest(_)
-        | TdxClientError::InvalidOAuthResponse(_)
-        | TdxClientError::ApiRequest(_)
-        | TdxClientError::DownloadWrite(_)
-        | TdxClientError::Credentials(_) => DepartureError::TemporarilyUnavailable,
-        TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
-            DepartureError::InvalidResponse
-        }
-    }
 }

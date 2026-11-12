@@ -72,6 +72,7 @@ max_rate_limit_retries = 2
 minimum_token_lifetime_seconds = 60
 token_refresh_margin_seconds = 30
 bike_catalog_page_size = 1000
+rate_limit_backoff_seconds = 30
 
 [tdx.batch]
 bike_stations = 300
@@ -92,6 +93,10 @@ cache_capacity = 50000
 max_concurrent_cities = 4
 max_age_seconds = 180
 max_clock_skew_seconds = 300
+
+[tdx.gateway]
+port = 3100
+max_ids_per_request = 2000
 
 [valhalla]
 base_url = "http://127.0.0.1:8002/"

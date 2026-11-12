@@ -196,8 +196,8 @@ fn query(train_no: &str) -> DepartureQuery {
 
 fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
     let tra = Arc::new(
-        TraDepartureSource::new(network.clone(), tdx)
-            .with_bindings(Arc::new(TdxProviderBindings {
+        TraDepartureSource::new(network.clone(), tdx).with_bindings(Arc::new(
+            TdxProviderBindings {
                 tra_trips: network
                     .network()
                     .trips
@@ -216,8 +216,8 @@ fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Depa
                     })
                     .collect(),
                 ..Default::default()
-            }))
-            .with_realtime_endpoint("v3/Rail/TRA/TrainLiveBoard"),
+            },
+        )),
     );
     DepartureResolver::new(network, vec![tra as Arc<dyn TransitDepartureSource>])
 }

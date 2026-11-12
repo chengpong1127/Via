@@ -4,6 +4,7 @@ pub mod config;
 pub mod data;
 pub mod domain;
 pub mod health;
+pub mod live;
 pub mod metrics;
 pub mod nearby;
 pub mod profiling;

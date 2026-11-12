@@ -54,6 +54,17 @@ candidate selection and Matrix realization behind one request-local cache. The
 shared `cache` module holds the request-local Matrix cache used by walking and
 BikeShare, and the Route cache used by reconstruction with its own retry policy.
 
+Request-time TDX reads go through the `live` module's `LiveDataSource`: Bus
+arrivals by stop and scope, BikeShare availability by station, Metro boards by
+line/station pair and TRA delays by train number. `DirectLiveData` calls TDX,
+`CachedLiveData` caches records per entity (including empty results), serves
+cached entities during a rate limit and stops calling TDX until it clears, and
+`GatewayLiveData` reads the same interface over HTTP from the `via-tdx-gateway`
+binary. With `tdx.gateway.url` set, server replicas hold no TDX credentials or
+live cache; the single gateway owns both. The `live` module knows TDX records
+only: providers keep the GTFS-to-TDX bindings, schedule fallback and freshness
+policy, and the gateway never loads the static artifact.
+
 `via-data build` consumes local GTFS and optional TDX station snapshots; it does
 not download them. `via-data fetch` can create source snapshots. Sparse Bus stop
 times never become fabricated scheduled trips; derived segment costs support

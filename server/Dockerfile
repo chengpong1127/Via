@@ -10,7 +10,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY config ./config
 
-RUN cargo build --release --locked --bin via-server
+RUN cargo build --release --locked --bin via-server --bin via-tdx-gateway
 
 FROM debian:trixie-slim AS runtime
 
@@ -22,6 +22,7 @@ RUN apt-get update \
 WORKDIR /app/server
 
 COPY --from=builder /build/server/target/release/via-server /usr/local/bin/via-server
+COPY --from=builder /build/server/target/release/via-tdx-gateway /usr/local/bin/via-tdx-gateway
 
 COPY config/via.toml /etc/via/via.toml
 ENV VIA_CONFIG=/etc/via/via.toml

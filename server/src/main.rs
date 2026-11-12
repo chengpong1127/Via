@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use via_server::{
-    app::build_router,
+    app::{build_router, shutdown_signal},
     config::{RuntimeConfig, ServerConfig, ViaConfig, load_dotenv},
     data::load_static_artifact,
     metrics,
@@ -41,24 +41,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
-}
-
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => {
-                result.expect("wait for Ctrl-C signal");
-            }
-            _ = terminate.recv() => {}
-        }
-    }
-
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c()
-        .await
-        .expect("wait for Ctrl-C signal");
 }

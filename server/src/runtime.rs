@@ -8,6 +8,7 @@ use crate::{
         bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
     },
     health::{DependencyHealth, Health},
+    live::{CachedLiveData, DirectLiveData, GatewayLiveData, LiveDataSource},
     nearby::NearbyService,
     providers::tdx_bindings::TdxProviderBindings,
     providers::{
@@ -17,7 +18,7 @@ use crate::{
     },
     routing::{JourneyPlanningLimits, RoutingService},
     street::StreetRouter,
-    tdx::TdxClient,
+    tdx::{RealtimeSettings, TdxClient},
 };
 
 pub struct ViaRuntime {
@@ -33,7 +34,8 @@ pub struct ViaRuntimeDependencies {
     pub bike_share_network: Arc<BikeShareNetwork>,
     pub street: Arc<dyn StreetRouter>,
     pub street_health: Arc<dyn DependencyHealth>,
-    pub tdx: Arc<TdxClient>,
+    pub live: Arc<dyn LiveDataSource>,
+    pub realtime: RealtimeSettings,
     pub bike_availability: Arc<dyn BikeAvailabilitySource>,
     pub limits: JourneyPlanningLimits,
 }
@@ -49,16 +51,28 @@ impl ViaRuntime {
         let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
         let provider_bindings = Arc::new(dependencies.provider_bindings);
         let bus = Arc::new(
-            BusDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
-                .with_bindings(provider_bindings.clone()),
+            BusDepartureSource::with_live_data(
+                transit_runtime.clone(),
+                dependencies.live.clone(),
+                &dependencies.realtime,
+            )
+            .with_bindings(provider_bindings.clone()),
         );
         let metro = Arc::new(
-            MetroDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
-                .with_bindings(provider_bindings.clone()),
+            MetroDepartureSource::with_live_data(
+                transit_runtime.clone(),
+                dependencies.live.clone(),
+                &dependencies.realtime,
+            )
+            .with_bindings(provider_bindings.clone()),
         );
         let tra = Arc::new(
-            TraDepartureSource::new(transit_runtime.clone(), dependencies.tdx.clone())
-                .with_bindings(provider_bindings),
+            TraDepartureSource::with_live_data(
+                transit_runtime.clone(),
+                dependencies.live,
+                &dependencies.realtime,
+            )
+            .with_bindings(provider_bindings),
         );
         let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
         let departure_resolver = Arc::new(DepartureResolver::new(
@@ -111,16 +125,12 @@ pub async fn build_runtime(
         return Err("Valhalla is not healthy".into());
     }
 
-    let tdx = Arc::new(TdxClient::new(
-        config.tdx.credentials,
-        config.settings.tdx.clone(),
-    )?);
+    let live = live_data_source(config.tdx, &config.settings.tdx)?;
     let bindings = via_static.provider_bindings.clone();
     let bike_share_network = Arc::new(via_static.bike_share);
     let bike_availability: Arc<dyn BikeAvailabilitySource> =
-        Arc::new(TdxBikeAvailabilitySource::new(
-            tdx.clone(),
-            config.settings.tdx.batch.bike_stations,
+        Arc::new(TdxBikeAvailabilitySource::with_live_data(
+            live.clone(),
             config.settings.tdx.bikeshare.clone(),
         ));
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
@@ -130,13 +140,29 @@ pub async fn build_runtime(
         bike_share_network,
         street: street.clone(),
         street_health: street.clone(),
-        tdx,
+        live,
+        realtime: config.settings.tdx.realtime.clone(),
         bike_availability,
         limits: options
             .limits
             .unwrap_or_else(|| config.settings.journey_limits()),
     });
     Ok(runtime)
+}
+
+pub fn live_data_source(
+    tdx: Option<crate::config::TdxRuntimeConfig>,
+    settings: &crate::tdx::TdxSettings,
+) -> Result<Arc<dyn LiveDataSource>, Box<dyn Error>> {
+    if let Some(url) = &settings.gateway.url {
+        return Ok(Arc::new(GatewayLiveData::new(url, settings)?));
+    }
+    let tdx = tdx.ok_or("TDX credentials are required when tdx.gateway.url is not set")?;
+    let client = Arc::new(TdxClient::new(tdx.credentials, settings.clone())?);
+    Ok(Arc::new(CachedLiveData::new(
+        Arc::new(DirectLiveData::new(client)),
+        settings.into(),
+    )))
 }
 
 #[cfg(test)]
@@ -195,7 +221,7 @@ mod tests {
             bike_share_network: Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("test")),
             street: street.clone(),
             street_health: street,
-            tdx: Arc::new(
+            live: Arc::new(DirectLiveData::new(Arc::new(
                 TdxClient::new(
                     TdxCredentials::from_client_credentials("test", "test"),
                     crate::tdx::TdxSettings {
@@ -205,7 +231,8 @@ mod tests {
                     },
                 )
                 .unwrap(),
-            ),
+            ))),
+            realtime: crate::config::ViaConfig::default().tdx.realtime,
             bike_availability: Arc::new(UnavailableBikeAvailabilitySource),
             limits: JourneyPlanningLimits::default(),
         })

@@ -7,10 +7,8 @@ use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::{
-    metro_realtime::{
-        DEFAULT_LIVE_BOARD_PATH, MetroObservation, TdxMetroLiveBoard, map_tdx_error,
-        parse_realtime_payload,
-    },
+    live_error::departure_error,
+    metro_realtime::{MetroObservation, parse_metro_boards},
     source::TransitDepartureSource,
 };
 use crate::providers::tdx_bindings::TdxProviderBindings;
@@ -27,18 +25,16 @@ use crate::{
             TimingBasis, TimingReliability,
         },
     },
-    tdx::TdxClient,
+    live::{CachedLiveData, DirectLiveData, LiveDataSource, MetroPair},
+    tdx::{RealtimeSettings, TdxClient},
 };
 
 #[derive(Clone)]
 pub struct MetroDepartureSource {
     network: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
-    tdx: Arc<TdxClient>,
-    realtime_path: String,
+    live: Arc<dyn LiveDataSource>,
     freshness_policy: FreshnessPolicy,
-    batch_size: usize,
-    response_limit: usize,
     max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
 }
@@ -52,26 +48,34 @@ struct MetroRealtimeMatch {
 
 impl MetroDepartureSource {
     pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
+        let settings = tdx.settings.clone();
+        Self::with_live_data(
+            network,
+            Arc::new(CachedLiveData::new(
+                Arc::new(DirectLiveData::new(tdx)),
+                (&settings).into(),
+            )),
+            &settings.realtime,
+        )
+    }
+
+    pub fn with_live_data(
+        network: Arc<TransitRuntime>,
+        live: Arc<dyn LiveDataSource>,
+        realtime: &RealtimeSettings,
+    ) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx: tdx.clone(),
-            realtime_path: DEFAULT_LIVE_BOARD_PATH.into(),
-            freshness_policy: tdx.settings.realtime.freshness_policy(),
-            batch_size: tdx.settings.batch.metro_pairs,
-            response_limit: tdx.settings.batch.metro_response_limit,
-            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
+            live,
+            freshness_policy: realtime.freshness_policy(),
+            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
 
     pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
         self.bindings = bindings;
-        self
-    }
-
-    pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
-        self.realtime_path = path.into();
         self
     }
 
@@ -215,7 +219,7 @@ impl MetroDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
-        let mut requested_pairs = BTreeMap::<(String, String), Vec<usize>>::new();
+        let mut requested_pairs = BTreeMap::<MetroPair, Vec<usize>>::new();
         let mut matches = vec![None; queries.len()];
         let mut invalid_queries = HashSet::new();
         for (index, query) in queries.iter().enumerate() {
@@ -230,10 +234,10 @@ impl MetroDepartureSource {
                 continue;
             };
             requested_pairs
-                .entry((
-                    realtime_match.line_id.clone(),
-                    realtime_match.station_id.clone(),
-                ))
+                .entry(MetroPair {
+                    line_id: realtime_match.line_id.clone(),
+                    station_id: realtime_match.station_id.clone(),
+                })
                 .or_default()
                 .push(index);
             matches[index] = Some(realtime_match);
@@ -254,43 +258,28 @@ impl MetroDepartureSource {
         }
 
         let request_keys = requested_pairs.keys().cloned().collect::<Vec<_>>();
-        let mut observations = Vec::new();
+        let batch = self.live.metro_boards(&request_keys).await;
         let mut errors_by_query = HashMap::new();
-        for pairs in request_keys.chunks(self.batch_size) {
-            let filter = metro_filter(pairs);
-            let response_limit = self.response_limit.to_string();
-            let request = [
-                ("$filter", filter.as_str()),
-                ("$top", response_limit.as_str()),
-                ("$format", "JSON"),
-            ];
-            let payload = self
-                .tdx
-                .get_realtime_json::<Vec<TdxMetroLiveBoard>>(&self.realtime_path, &request)
-                .await
-                .map(|response| response.value);
-            let parsed = match payload {
-                Ok(payload) if payload.len() < self.response_limit => parse_realtime_payload(
-                    payload,
-                    &self.freshness_policy,
-                    self.max_clock_skew_seconds,
-                ),
-                Ok(_) => Err(DepartureError::InvalidResponse),
-                Err(error) => Err(map_tdx_error(error)),
-            };
-            match parsed {
-                Ok(values) => observations.extend(values),
-                Err(error) => {
-                    for pair in pairs {
-                        if let Some(indexes) = requested_pairs.get(pair) {
-                            for index in indexes {
-                                errors_by_query.insert(*index, error.clone());
-                            }
-                        }
-                    }
-                }
+        for unavailable in &batch.unavailable {
+            for index in requested_pairs.get(&unavailable.id).into_iter().flatten() {
+                errors_by_query.insert(*index, departure_error(unavailable.reason));
             }
         }
+        let observations = match parse_metro_boards(
+            batch.records,
+            &self.freshness_policy,
+            self.max_clock_skew_seconds,
+        ) {
+            Ok(observations) => observations,
+            Err(error) => {
+                for index in requested_pairs.values().flatten() {
+                    errors_by_query
+                        .entry(*index)
+                        .or_insert_with(|| error.clone());
+                }
+                Vec::new()
+            }
+        };
 
         queries
             .into_iter()
@@ -370,22 +359,4 @@ fn local_station_id(stop_id: &BoardingPointId) -> Option<&str> {
         .unwrap_or(station_id)
         .trim();
     (!local.is_empty()).then_some(local)
-}
-
-fn metro_filter(pairs: &[(String, String)]) -> String {
-    pairs
-        .iter()
-        .map(|(line_id, station_id)| {
-            format!(
-                "(LineID eq '{}' and StationID eq '{}')",
-                escape_odata_literal(line_id),
-                escape_odata_literal(station_id)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" or ")
-}
-
-fn escape_odata_literal(value: &str) -> String {
-    value.replace('\'', "''")
 }

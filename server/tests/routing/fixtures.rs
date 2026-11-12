@@ -254,13 +254,17 @@ pub(crate) async fn route_body_inner(
     }
     .unwrap_or_else(failing_tdx_client);
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx.clone())
-            .with_bindings(Arc::new(bindings))
-            .with_realtime_endpoint("feed")
-            .with_freshness_policy(FreshnessPolicy {
-                fresh_through: time::Duration::days(30),
-                degraded_through: time::Duration::days(31),
-            }),
+        BusDepartureSource::with_live_data(
+            network.clone(),
+            crate::support::tdx::bus_feed(tdx.clone(), "feed"),
+            &tdx.settings().realtime,
+        )
+        .with_bindings(Arc::new(bindings))
+        .with_unscoped_realtime()
+        .with_freshness_policy(FreshnessPolicy {
+            fresh_through: time::Duration::days(30),
+            degraded_through: time::Duration::days(31),
+        }),
     );
     let metro = Arc::new(MetroDepartureSource::new(network.clone(), tdx.clone()));
     let tra = Arc::new(TraDepartureSource::new(network.clone(), tdx));

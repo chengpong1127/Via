@@ -209,6 +209,32 @@ fn tdx_client_remains_transport_agnostic() {
 }
 
 #[test]
+fn live_data_layer_knows_tdx_records_but_not_the_transit_network() {
+    let live = source_tree("src/live");
+    for forbidden in [
+        "crate::domain",
+        "crate::providers",
+        "crate::routing",
+        "crate::api",
+        "crate::data",
+        "TransitRuntime",
+        "TdxProviderBindings",
+    ] {
+        assert!(
+            !live.contains(forbidden),
+            "live data layer depends on {forbidden}"
+        );
+    }
+    let gateway = source("src/bin/via-tdx-gateway.rs");
+    for forbidden in ["load_static_artifact", "build_runtime", "ValhallaProvider"] {
+        assert!(
+            !gateway.contains(forbidden),
+            "TDX gateway must not load {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn realized_journey_is_the_only_realized_path_representation() {
     let realized = source_tree("src/routing/journey");
     assert!(realized.contains("pub struct RealizedJourney {"));

@@ -203,8 +203,8 @@ async fn resolver(
 ) -> (DepartureResolver, FixtureStats) {
     let (tdx, stats) = fixture_client(payload, status).await;
     let metro = Arc::new(
-        MetroDepartureSource::new(network.clone(), tdx)
-            .with_bindings(Arc::new(TdxProviderBindings {
+        MetroDepartureSource::new(network.clone(), tdx).with_bindings(Arc::new(
+            TdxProviderBindings {
                 metro_patterns: [(
                     TransitPatternId::new("metro:BL::direction=0"),
                     MetroPatternBinding {
@@ -214,8 +214,8 @@ async fn resolver(
                 )]
                 .into(),
                 ..Default::default()
-            }))
-            .with_realtime_endpoint("v2/Rail/Metro/LiveBoard/TRTC"),
+            },
+        )),
     );
     (
         DepartureResolver::new(network, vec![metro as Arc<dyn TransitDepartureSource>]),

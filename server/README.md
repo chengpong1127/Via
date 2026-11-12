@@ -69,6 +69,7 @@ Configuration:
 | `VIA_VALHALLA_URL` | Valhalla base URL. |
 | `VALHALLA_TILE_URL` | OSM PBF URL used by the local scripted Valhalla container. |
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
+| `VIA_TDX_GATEWAY_URL` | Optional `via-tdx-gateway` base URL; when set the server needs no TDX credentials. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
 | `PORT` | Axum port; default 3000. |
 

@@ -87,7 +87,9 @@ pub struct PreprocessingSettings {
 
 pub use crate::data::static_transfers::TransferSettings;
 
-pub use crate::tdx::{BikeAvailabilitySettings, RealtimeSettings, TdxBatchSettings, TdxSettings};
+pub use crate::tdx::{
+    BikeAvailabilitySettings, RealtimeSettings, TdxBatchSettings, TdxGatewaySettings, TdxSettings,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +141,9 @@ impl ViaConfig {
         let port = std::env::var("PORT").ok();
         let tdx = std::env::var("VIA_TDX_BASE_URL").ok();
         let valhalla = std::env::var("VIA_VALHALLA_URL").ok();
+        if let Ok(gateway) = std::env::var("VIA_TDX_GATEWAY_URL") {
+            self.tdx.gateway.url = (!gateway.trim().is_empty()).then_some(gateway);
+        }
         self.apply_environment_values(port.as_deref(), tdx.as_deref(), valhalla.as_deref())
     }
 
@@ -347,6 +352,15 @@ impl ViaConfig {
                 self.tdx.bike_catalog_page_size as u64,
             ),
             (
+                "tdx.rate_limit_backoff_seconds",
+                self.tdx.rate_limit_backoff_seconds,
+            ),
+            (
+                "tdx.gateway.max_ids_per_request",
+                self.tdx.gateway.max_ids_per_request as u64,
+            ),
+            ("tdx.gateway.port", u64::from(self.tdx.gateway.port)),
+            (
                 "tdx.batch.bike_stations",
                 self.tdx.batch.bike_stations as u64,
             ),
@@ -433,10 +447,14 @@ impl ViaConfig {
             )));
         }
         for (key, value) in [
-            ("tdx.api_base_url", &self.tdx.api_base_url),
-            ("tdx.token_url", &self.tdx.token_url),
-            ("valhalla.base_url", &self.valhalla.base_url),
+            ("tdx.api_base_url", Some(&self.tdx.api_base_url)),
+            ("tdx.token_url", Some(&self.tdx.token_url)),
+            ("tdx.gateway.url", self.tdx.gateway.url.as_ref()),
+            ("valhalla.base_url", Some(&self.valhalla.base_url)),
         ] {
+            let Some(value) = value else {
+                continue;
+            };
             let url = super::parse_url(key, value)?;
             if !matches!(url.scheme(), "http" | "https")
                 || url.host_str().is_none()

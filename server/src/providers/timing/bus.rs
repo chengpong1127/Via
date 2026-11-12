@@ -7,9 +7,8 @@ use std::{
 use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use super::bus_realtime::{
-    DEFAULT_ARRIVAL_PATH, map_tdx_error, odata_in_filter, parse_bus_realtime_payload,
-};
+use super::bus_realtime::parse_bus_arrivals;
+use super::live_error::departure_error;
 use super::source::TransitDepartureSource;
 use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
@@ -23,7 +22,8 @@ use crate::{
             TimingReliability,
         },
     },
-    tdx::TdxClient,
+    live::{CachedLiveData, DirectLiveData, LiveDataSource, UnavailableReason},
+    tdx::{RealtimeSettings, TdxClient},
 };
 
 struct RealtimeRequestPlan {
@@ -44,25 +44,39 @@ struct RealtimeDepartureResults {
 
 pub struct BusDepartureSource {
     network: Arc<TransitRuntime>,
-    tdx: Arc<TdxClient>,
+    live: Arc<dyn LiveDataSource>,
     schedule: ScheduleTiming,
-    realtime_path: String,
+    unscoped_realtime: bool,
     freshness_policy: FreshnessPolicy,
-    batch_size: usize,
     max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
 }
 
 impl BusDepartureSource {
     pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
+        let settings = tdx.settings.clone();
+        Self::with_live_data(
+            network,
+            Arc::new(CachedLiveData::new(
+                Arc::new(DirectLiveData::new(tdx)),
+                (&settings).into(),
+            )),
+            &settings.realtime,
+        )
+    }
+
+    pub fn with_live_data(
+        network: Arc<TransitRuntime>,
+        live: Arc<dyn LiveDataSource>,
+        realtime: &RealtimeSettings,
+    ) -> Self {
         Self {
             schedule: ScheduleTiming::new(network.clone()),
             network,
-            tdx: tdx.clone(),
-            realtime_path: DEFAULT_ARRIVAL_PATH.into(),
-            freshness_policy: tdx.settings.realtime.freshness_policy(),
-            batch_size: tdx.settings.batch.bus_stops,
-            max_clock_skew_seconds: tdx.settings.realtime.max_clock_skew_seconds,
+            live,
+            unscoped_realtime: false,
+            freshness_policy: realtime.freshness_policy(),
+            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -72,8 +86,8 @@ impl BusDepartureSource {
         self
     }
 
-    pub fn with_realtime_endpoint(mut self, path: impl Into<String>) -> Self {
-        self.realtime_path = path.into();
+    pub fn with_unscoped_realtime(mut self) -> Self {
+        self.unscoped_realtime = true;
         self
     }
 
@@ -204,16 +218,12 @@ impl BusDepartureSource {
 
         let plan = self.build_realtime_request_plan(&active_queries);
         let relevant_stop_count: usize = plan.stops_by_scope.values().map(HashSet::len).sum();
-        let batch_count: usize = plan
-            .stops_by_scope
-            .values()
-            .map(|stops| stops.len().div_ceil(self.batch_size))
-            .sum();
         ::metrics::counter!("via_bus_timing_logical_departure_needs_total")
             .increment(active_queries.len() as u64);
         ::metrics::counter!("via_bus_timing_realtime_stops_requested_total")
             .increment(relevant_stop_count as u64);
-        ::metrics::counter!("via_bus_timing_realtime_batches_total").increment(batch_count as u64);
+        ::metrics::counter!("via_bus_timing_realtime_batches_total")
+            .increment(plan.stops_by_scope.len() as u64);
 
         let mut results = RealtimeDepartureResults::default();
         let scope_count = plan.stops_by_scope.len();
@@ -291,7 +301,7 @@ impl BusDepartureSource {
                 .bus_patterns
                 .get(&pattern.id)
                 .map(|binding| binding.realtime_scope.clone())
-                .or_else(|| (self.realtime_path != DEFAULT_ARRIVAL_PATH).then(String::new));
+                .or_else(|| self.unscoped_realtime.then(String::new));
             let Some(scope) = scope else {
                 unscoped_queries += 1;
                 continue;
@@ -321,8 +331,11 @@ impl BusDepartureSource {
         plan: &RealtimeRequestPlan,
         results: &mut RealtimeDepartureResults,
     ) {
-        let mut unique_stops = unique_stops.iter().cloned().collect::<Vec<_>>();
-        unique_stops.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let mut stop_uids = unique_stops
+            .iter()
+            .map(|stop| stop.as_str().to_owned())
+            .collect::<Vec<_>>();
+        stop_uids.sort();
         let mut requested_services = HashMap::<String, Vec<TransitPatternId>>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
             if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
@@ -333,137 +346,58 @@ impl BusDepartureSource {
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
-        let mut completed_stops = HashSet::new();
-        let mut rate_limited = false;
-        for stops in unique_stops.chunks(self.batch_size) {
-            if rate_limited {
-                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                    results
-                        .errors_by_pair
-                        .insert(pair.clone(), DepartureError::RateLimited);
-                }
-                continue;
-            }
-            if self
-                .fetch_stop_batch(
-                    scope,
-                    stops,
-                    &requested_services,
-                    &scope_pairs,
-                    &mut completed_stops,
-                    results,
-                )
-                .await
-            {
-                rate_limited = true;
-            }
+        let batch = self.live.bus_arrivals(scope, &stop_uids).await;
+        ::metrics::counter!("via_bus_timing_realtime_http_requests_total")
+            .increment(batch.upstream_requests as u64);
+        results.http_requests += batch.upstream_requests;
+        if !batch.unavailable.is_empty() {
+            ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
         }
-        if rate_limited {
-            for pair in scope_pairs
-                .into_iter()
-                .filter(|(_, stop)| !completed_stops.contains(stop))
-            {
+        if batch.is_rate_limited() {
+            ::metrics::counter!("via_bus_timing_rate_limited_requests_total").increment(1);
+        }
+        let failed_stops = batch
+            .unavailable
+            .iter()
+            .map(|unavailable| (unavailable.id.as_str(), unavailable.reason))
+            .collect::<HashMap<&str, UnavailableReason>>();
+        for pair in &scope_pairs {
+            if let Some(reason) = failed_stops.get(pair.1.as_str()) {
                 results
                     .errors_by_pair
-                    .entry(pair)
-                    .or_insert(DepartureError::RateLimited);
+                    .insert(pair.clone(), departure_error(*reason));
             }
         }
-    }
-
-    async fn fetch_stop_batch(
-        &self,
-        scope: &str,
-        stops: &[BoardingPointId],
-        requested_services: &HashMap<String, Vec<TransitPatternId>>,
-        scope_pairs: &HashSet<(TransitPatternId, BoardingPointId)>,
-        completed_stops: &mut HashSet<BoardingPointId>,
-        results: &mut RealtimeDepartureResults,
-    ) -> bool {
-        let requested_stops = stops.iter().cloned().collect::<HashSet<_>>();
-        let path = match self.realtime_path_for_scope(Some(scope)) {
-            Ok(path) => path,
+        let values = match parse_bus_arrivals(
+            &batch.records,
+            &requested_services,
+            &self.freshness_policy,
+            self.max_clock_skew_seconds,
+        ) {
+            Ok(values) => values,
             Err(error) => {
-                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                    results.errors_by_pair.insert(pair.clone(), error.clone());
+                ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
+                for pair in scope_pairs {
+                    results
+                        .errors_by_pair
+                        .entry(pair)
+                        .or_insert_with(|| error.clone());
                 }
-                return false;
+                return;
             }
         };
-        let boarding_point_ids = stops
-            .iter()
-            .map(|stop| stop.as_str().to_owned())
-            .collect::<Vec<_>>();
-        let filter = odata_in_filter("StopUID", &boarding_point_ids);
-        let query = [("$filter", filter.as_str())];
-        let payload = self
-            .tdx
-            .get_realtime_json::<serde_json::Value>(&path, &query)
-            .await;
-        if !payload.as_ref().is_ok_and(|response| response.cached) {
-            ::metrics::counter!("via_bus_timing_realtime_http_requests_total").increment(1);
-            results.http_requests += 1;
-        }
-        let payload = payload.map(|response| response.value);
-        let values = match payload {
-            Ok(payload) => parse_bus_realtime_payload(
-                &payload,
-                requested_services,
-                &self.freshness_policy,
-                self.max_clock_skew_seconds,
-            ),
-            Err(error) => Err(map_tdx_error(error)),
-        };
-        if let Err(error) = &values {
-            ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
-            if matches!(error, DepartureError::RateLimited) {
-                ::metrics::counter!("via_bus_timing_rate_limited_requests_total").increment(1);
-            }
-        }
-        let values = match values {
-            Ok(values) => {
-                completed_stops.extend(requested_stops.iter().cloned());
-                results.rows_received += values.len();
-                values
-            }
-            Err(error) => {
-                let rate_limited = matches!(error, DepartureError::RateLimited);
-                for pair in scope_pairs.iter().filter(|(_, stop)| stops.contains(stop)) {
-                    results.errors_by_pair.insert(pair.clone(), error.clone());
-                }
-                return rate_limited;
-            }
-        };
+        results.rows_received += values.len();
         for value in values {
             let arrival = &value.value;
             let pair = (
                 arrival.transit_pattern_id.clone(),
                 arrival.boarding_point_id.clone(),
             );
-            if requested_stops.contains(&arrival.boarding_point_id) && scope_pairs.contains(&pair) {
+            if scope_pairs.contains(&pair) && !results.errors_by_pair.contains_key(&pair) {
                 results.rows_relevant += 1;
                 results.values_by_pair.entry(pair).or_default().push(value);
             }
         }
-        false
-    }
-
-    fn realtime_path_for_scope(&self, scope: Option<&str>) -> Result<String, DepartureError> {
-        if self.realtime_path != DEFAULT_ARRIVAL_PATH {
-            return Ok(self.realtime_path.clone());
-        }
-        let scope = scope.ok_or(DepartureError::InvalidConfiguration)?;
-        if scope.is_empty()
-            || !scope
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric())
-        {
-            return Err(DepartureError::InvalidConfiguration);
-        }
-        Ok(format!(
-            "{}/{scope}",
-            self.realtime_path.trim_end_matches('/')
-        ))
     }
 }
 
