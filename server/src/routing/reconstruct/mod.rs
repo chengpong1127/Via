@@ -15,7 +15,7 @@ use crate::{
         bikeshare::BikeShareNetwork,
         ids::BikeStationId,
         journey::{JourneyOption, Place, PlanningError},
-        ranking::{RankedJourney, RankingCandidate},
+        ranking::RankingCandidate,
         transit_runtime::TransitRuntime,
     },
     street::StreetRouter,
@@ -122,7 +122,6 @@ impl JourneyReconstructor {
         let option = JourneyOption {
             id: "candidate".into(),
             matching_key: matching_key.clone(),
-            label: None,
             departure_time: journey.departure_at(),
             arrival_time: assembled.arrival_time,
             duration_seconds,
@@ -206,10 +205,6 @@ fn journey_matching_key(journey: &RealizedJourney) -> String {
         BIKE_MATCHING_KEY_VERSION
     };
     geometry::short_digest(&format!("{version}:{}", journey.signature()))
-}
-
-pub(super) fn apply_ranked_journey(option: &mut JourneyOption, ranked: &RankedJourney) {
-    option.label = ranked.label;
 }
 
 pub(super) fn assign_result_local_ids(option: &mut JourneyOption, index: usize) {

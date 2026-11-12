@@ -128,7 +128,7 @@ final class NavigationModel {
         else { return }
         let key = "\(option.id)-\(tracker.legIndex)-\(maneuver.distanceAlong)"
         guard announcedManeuvers.insert(key).inserted else { return }
-        send(.maneuver(maneuver.guidance.spokenInstruction))
+        send(.maneuver(maneuver.guidance.instruction))
     }
 
     private func send(_ cue: NavigationCue) {
@@ -145,8 +145,7 @@ final class NavigationModel {
         let request = PlanningRequest(
             origin: Place(id: "current-location", name: String(localized: "My Location"), coordinate: coordinate),
             destination: destination,
-            modes: modes,
-            departure: .now
+            modes: modes
         )
         do {
             let plan = try await planner.plan(request)

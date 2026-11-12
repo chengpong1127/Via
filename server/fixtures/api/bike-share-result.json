@@ -4,7 +4,6 @@
     {
       "id": "option_fixture_bikeshare",
       "matching_key": "match_fixture_bikeshare",
-      "label": "best_now",
       "departure_time": "2026-08-31T12:00:00+08:00",
       "arrival_time": "2026-08-31T12:10:00+08:00",
       "duration_seconds": 600,

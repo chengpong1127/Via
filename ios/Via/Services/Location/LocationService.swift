@@ -10,8 +10,6 @@ enum LocationError: Error, Equatable {
 nonisolated struct LocationFix: Hashable, Sendable {
     let coordinate: Coordinate
     let horizontalAccuracy: Double
-    let course: Double?
-    let speed: Double?
     let timestamp: Date
 }
 
@@ -22,8 +20,6 @@ protocol LocationTracking: AnyObject {
 }
 
 protocol LocationProviding: AnyObject {
-    var coordinate: Coordinate? { get }
-    func requestAuthorizationIfNeeded()
     func currentCoordinate() async throws -> Coordinate
 }
 
@@ -150,8 +146,6 @@ extension LocationService: CLLocationManagerDelegate {
         let fix = LocationFix(
             coordinate: coordinate,
             horizontalAccuracy: location.horizontalAccuracy,
-            course: location.course >= 0 ? location.course : nil,
-            speed: location.speed >= 0 ? location.speed : nil,
             timestamp: location.timestamp
         )
         MainActor.assumeIsolated {

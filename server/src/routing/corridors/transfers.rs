@@ -29,7 +29,6 @@ impl TransferShortcut {
 #[derive(Clone, Debug, Default)]
 pub struct TransferShortcutIndex {
     by_from: HashMap<BoardingPointId, Vec<TransferShortcut>>,
-    by_to: HashMap<BoardingPointId, Vec<TransferShortcut>>,
 }
 
 impl TransferShortcutIndex {
@@ -56,20 +55,12 @@ impl TransferShortcutIndex {
     fn insert_unsorted(&mut self, shortcut: TransferShortcut) {
         let outgoing = self.by_from.entry(shortcut.from.clone()).or_default();
         if !outgoing.contains(&shortcut) {
-            outgoing.push(shortcut.clone());
-            self.by_to
-                .entry(shortcut.to.clone())
-                .or_default()
-                .push(shortcut);
+            outgoing.push(shortcut);
         }
     }
 
     pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
         self.by_from.get(stop).map(Vec::as_slice).unwrap_or(&[])
-    }
-
-    pub fn transfers_to(&self, stop: &BoardingPointId) -> &[TransferShortcut] {
-        self.by_to.get(stop).map(Vec::as_slice).unwrap_or(&[])
     }
 
     fn sort(&mut self) {
@@ -78,14 +69,6 @@ impl TransferShortcutIndex {
                 left.to
                     .as_str()
                     .cmp(right.to.as_str())
-                    .then(left.duration_seconds.cmp(&right.duration_seconds))
-            });
-        }
-        for incoming in self.by_to.values_mut() {
-            incoming.sort_by(|left, right| {
-                left.from
-                    .as_str()
-                    .cmp(right.from.as_str())
                     .then(left.duration_seconds.cmp(&right.duration_seconds))
             });
         }
@@ -142,14 +125,6 @@ mod tests {
         assert_eq!(
             index.transfers_from(&BoardingPointId::new("b"))[0].to,
             BoardingPointId::new("a")
-        );
-        assert_eq!(
-            index.transfers_to(&BoardingPointId::new("b"))[0].from,
-            BoardingPointId::new("a")
-        );
-        assert_eq!(
-            index.transfers_to(&BoardingPointId::new("a"))[0].from,
-            BoardingPointId::new("b")
         );
     }
 }

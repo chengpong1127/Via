@@ -168,15 +168,6 @@ struct CachedToken {
     expires_at: Instant,
 }
 
-impl TdxClientError {
-    pub fn retry_after(&self) -> Option<Duration> {
-        match self {
-            Self::RateLimitedWithRetryAfter(retry_after) => Some(*retry_after),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,

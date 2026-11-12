@@ -5,8 +5,6 @@ use time::OffsetDateTime;
 
 use super::{location::GeoCoordinate, realtime::FreshnessState, transit::TransitMode};
 
-pub use super::ranking::JourneyLabel;
-
 #[derive(
     Clone,
     Copy,
@@ -54,7 +52,6 @@ pub struct EmptyResult {
 pub struct JourneyOption {
     pub id: String,
     pub matching_key: String,
-    pub label: Option<JourneyLabel>,
     #[serde(with = "time::serde::rfc3339")]
     pub departure_time: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]

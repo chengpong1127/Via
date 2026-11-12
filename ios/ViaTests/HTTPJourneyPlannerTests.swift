@@ -7,8 +7,7 @@ struct HTTPJourneyPlannerTests {
     let request = PlanningRequest(
         origin: Place(name: "A", coordinate: Coordinate(latitude: 25.04, longitude: 121.51)),
         destination: Place(name: "B", coordinate: Coordinate(latitude: 25.03, longitude: 121.56)),
-        modes: [.metro],
-        departure: .now
+        modes: [.metro]
     )
 
     @Test func postsToJourneyPlansAndMapsOptions() async throws {

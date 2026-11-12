@@ -6,7 +6,7 @@ nonisolated enum PlanningMapper {
             origin: selectedPlace(request.origin),
             destination: selectedPlace(request.destination),
             selectedModes: PlanningMode.allCases.filter(request.modes.contains).map(\.rawValue),
-            departureSetting: departureSetting(request.departure)
+            departureSetting: DepartureSettingDTO(type: "depart_now")
         )
     }
 
@@ -40,15 +40,6 @@ nonisolated enum PlanningMapper {
         )
     }
 
-    private static func departureSetting(_ setting: DepartureSetting) -> DepartureSettingDTO {
-        switch setting {
-        case .now:
-            DepartureSettingDTO(type: "depart_now", time: nil)
-        case let .departAt(date):
-            DepartureSettingDTO(type: "depart_at", time: RFC3339.string(from: date))
-        }
-    }
-
     private static func option(_ dto: JourneyOptionDTO) throws -> JourneyOption {
         guard let departure = RFC3339.date(from: dto.departureTime),
               let arrival = RFC3339.date(from: dto.arrivalTime),
@@ -60,7 +51,6 @@ nonisolated enum PlanningMapper {
         return JourneyOption(
             id: dto.id,
             matchingKey: dto.matchingKey,
-            label: dto.label.flatMap(JourneyLabel.init(rawValue:)),
             departureTime: departure,
             arrivalTime: arrival,
             duration: TimeInterval(dto.durationSeconds),
@@ -150,15 +140,6 @@ nonisolated enum PlanningMapper {
 }
 
 nonisolated enum RFC3339 {
-    static let taipei = TimeZone(identifier: "Asia/Taipei")!
-
-    static func string(from date: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        formatter.timeZone = taipei
-        return formatter.string(from: date)
-    }
-
     static func date(from string: String) -> Date? {
         if let date = try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(string) {
             return date

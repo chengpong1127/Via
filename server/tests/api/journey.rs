@@ -73,7 +73,6 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert!(body["generated_at"].is_string());
     assert_eq!(body["journey_options"].as_array().unwrap().len(), 1);
-    assert_eq!(body["journey_options"][0]["label"], "best_now");
     assert_eq!(body["journey_options"][0]["legs"][0]["mode"], "walking");
     assert!(response_request_id.starts_with("req_"));
     let serialized = body.to_string();

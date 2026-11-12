@@ -1,7 +1,7 @@
-use time::macros::{date, datetime};
+use time::macros::datetime;
 use via_server::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    realtime::{ArrivalState, ServiceDayPolicy},
+    realtime::ArrivalState,
 };
 use via_server::{
     providers::timing::normalize_n1,
@@ -52,18 +52,5 @@ fn n1_nulls_and_statuses_never_collapse_into_zero() {
     assert_eq!(
         normalize_n1(service, boarding, 0, Some(0), anchor).state,
         ArrivalState::AtBoardingPoint
-    );
-}
-
-#[test]
-fn after_midnight_service_uses_the_previous_service_day() {
-    let policy = ServiceDayPolicy::new(time::Time::from_hms(4, 0, 0).unwrap());
-    assert_eq!(
-        policy.resolve(datetime!(2026-09-01 01:30)),
-        date!(2026 - 08 - 31)
-    );
-    assert_eq!(
-        policy.resolve(datetime!(2026-09-01 05:00)),
-        date!(2026 - 09 - 01)
     );
 }

@@ -73,8 +73,6 @@ pub enum ViaStaticValidationError {
     InvalidProviderBindings(String),
     #[error("Bike access link references an unknown transit boarding point {0}")]
     UnknownTransitBoardingPoint(String),
-    #[error("Bike access link references an unknown station {0}")]
-    UnknownBikeStation(String),
     #[error("transit network is invalid: {0}")]
     InvalidTransitNetwork(String),
     #[error("BikeShare network is invalid: {0}")]

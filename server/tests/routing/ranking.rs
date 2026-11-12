@@ -1,7 +1,5 @@
 use via_server::domain::{
-    ranking::{
-        JourneyClass, JourneyLabel, RankingCandidate, RankingPolicy, TransferEvidence, TransferKind,
-    },
+    ranking::{JourneyClass, RankingCandidate, RankingPolicy, TransferEvidence, TransferKind},
     realtime::FreshnessState,
     transit_timing::{TimingBasis, TimingReliability},
 };
@@ -104,7 +102,7 @@ fn transfer_safety_boundaries_classify_exactly() {
 }
 
 #[test]
-fn dominance_near_duplicates_and_labels_are_server_owned() {
+fn dominance_and_near_duplicates_keep_distinct_tradeoffs() {
     let best = candidate("blue-line", 2_000);
     let mut duplicate = candidate("blue-line", 2_240);
     duplicate.walking_seconds = 400;
@@ -118,9 +116,8 @@ fn dominance_near_duplicates_and_labels_are_server_owned() {
 
     assert_eq!(ranked.len(), 3);
     assert_eq!(ranked[0].stable_key, "blue-line");
-    assert_eq!(ranked[0].label, Some(JourneyLabel::BestNow));
-    assert_eq!(ranked[1].label, Some(JourneyLabel::FewerTransfers));
-    assert_eq!(ranked[2].label, Some(JourneyLabel::LessWalking));
+    assert_eq!(ranked[1].stable_key, "307");
+    assert_eq!(ranked[2].stable_key, "green-line");
 }
 
 #[test]
@@ -179,7 +176,6 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
     let ranked = RankingPolicy::default().rank(vec![walking, metro]);
 
     assert_eq!(ranked[0].stable_key, "schedule-only-metro");
-    assert_eq!(ranked[0].label, Some(JourneyLabel::BestNow));
 }
 
 #[test]
@@ -408,42 +404,8 @@ fn much_later_alternatives_need_a_real_tradeoff() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| (value.stable_key.as_str(), value.label))
+            .map(|value| value.stable_key.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            ("metro-change", Some(JourneyLabel::BestNow)),
-            ("direct-bus", Some(JourneyLabel::FewerTransfers)),
-        ]
-    );
-}
-
-#[test]
-fn each_tradeoff_label_is_given_once_and_only_for_a_material_saving() {
-    let mut best = candidate("best", 2_000);
-    best.walking_seconds = 900;
-    let mut slight = candidate("slightly-less-walking", 2_010);
-    slight.walking_seconds = 840;
-    let mut less = candidate("less-walking", 2_020);
-    less.walking_seconds = 400;
-    let mut least = candidate("least-walking", 2_030);
-    least.walking_seconds = 100;
-
-    let ranked = RankingPolicy {
-        result_limit: 4,
-        ..RankingPolicy::default()
-    }
-    .rank(vec![least, less, slight, best]);
-
-    assert_eq!(
-        ranked
-            .iter()
-            .map(|value| (value.stable_key.as_str(), value.label))
-            .collect::<Vec<_>>(),
-        vec![
-            ("best", Some(JourneyLabel::BestNow)),
-            ("slightly-less-walking", None),
-            ("less-walking", Some(JourneyLabel::LessWalking)),
-            ("least-walking", None),
-        ]
+        vec!["metro-change", "direct-bus"]
     );
 }

@@ -464,13 +464,8 @@ mod tests {
         );
         let index = TransferShortcutIndex::from_network(&network);
         assert_eq!(index.transfers_from(&BoardingPointId::new("a")).len(), 1);
-        assert_eq!(index.transfers_to(&BoardingPointId::new("b")).len(), 1);
         assert_eq!(
             index.transfers_from(&BoardingPointId::new("a"))[0].distance_metres,
-            90
-        );
-        assert_eq!(
-            index.transfers_to(&BoardingPointId::new("b"))[0].distance_metres,
             90
         );
         network.static_network_revision = "fixture".to_owned();

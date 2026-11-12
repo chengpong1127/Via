@@ -10,16 +10,10 @@ nonisolated enum PlanningMode: String, CaseIterable, Hashable, Identifiable, Sen
     var id: Self { self }
 }
 
-nonisolated enum DepartureSetting: Hashable, Sendable {
-    case now
-    case departAt(Date)
-}
-
 nonisolated struct PlanningRequest: Hashable, Sendable {
     var origin: Place
     var destination: Place
     var modes: Set<PlanningMode>
-    var departure: DepartureSetting
 }
 
 nonisolated enum JourneyPlanningError: Error, Equatable, Sendable {

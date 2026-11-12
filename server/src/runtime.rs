@@ -103,7 +103,6 @@ pub async fn build_runtime(
     if let Some(timeout) = options.valhalla_request_timeout {
         valhalla_config.request_timeout = timeout;
     }
-    valhalla_config.base_url = config.valhalla.base_url;
     let street = Arc::new(ValhallaProvider::with_observer(
         valhalla_config,
         Arc::new(TracingOperationalEventObserver),

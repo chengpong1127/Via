@@ -37,7 +37,7 @@ extension NavigationAlert {
         case .leaveNow: String(localized: "Time to leave")
         case .hurry: String(localized: "Hurry to make your connection")
         case let .stopsLeft(count): String(localized: "\(count) stops left")
-        case let .nextStop(name): String(localized: "Next stop: \(name). Get ready to get off.")
+        case let .nextStop(name): String(localized: "Next stop: \(name)")
         case let .getOff(name): String(localized: "Get off at \(name)")
         case .arrived: String(localized: "You've arrived")
         }
@@ -45,7 +45,7 @@ extension NavigationAlert {
 }
 
 extension Guidance {
-    nonisolated var spokenInstruction: String {
+    nonisolated var instruction: String {
         let action = switch code {
         case "continue": String(localized: "Continue straight")
         case "turn_left": String(localized: "Turn left")
@@ -59,78 +59,63 @@ extension Guidance {
         guard let streetName, code != "arrive" else { return action }
         return String(localized: "\(action) onto \(streetName)")
     }
+
+    nonisolated var symbol: String {
+        switch code {
+        case "turn_left": "arrow.turn.up.left"
+        case "turn_right": "arrow.turn.up.right"
+        case "u_turn": "arrow.uturn.down"
+        case "enter_roundabout", "exit_roundabout": "arrow.triangle.2.circlepath"
+        case "arrive": "mappin.and.ellipse"
+        default: "arrow.up"
+        }
+    }
 }
 
 extension NavigationModel {
     var status: NavigationStatus {
         let leg = currentLeg.leg
-        let arrival = estimatedArrival
+        func status(_ title: String, _ detail: String, _ symbol: String) -> NavigationStatus {
+            NavigationStatus(title: title, detail: detail, symbol: symbol, arrival: estimatedArrival, isFinished: isFinished)
+        }
         if isFinished {
-            return NavigationStatus(
-                title: String(localized: "You've arrived"),
-                detail: destination.name,
-                symbol: "mappin.circle.fill",
-                arrival: arrival,
-                isFinished: true
+            return status(String(localized: "You've arrived"), destination.name, "mappin.circle.fill")
+        }
+        if case let .transit(ride) = leg.kind {
+            guard tracker.boarded else {
+                let time = leg.departureTime.formatted(.clockTime)
+                return status(
+                    String(localized: "Board \(ride.serviceLabel) at \(leg.from.name)"),
+                    ride.headsign.isEmpty
+                        ? String(localized: "Departs \(time)")
+                        : String(localized: "Toward \(ride.headsign) · \(time)"),
+                    ride.mode.symbol
+                )
+            }
+            let stops = tracker.stopsRemaining ?? 0
+            return status(
+                stops <= 1
+                    ? String(localized: "Get off at \(leg.to.name)")
+                    : String(localized: "\(stops) stops to \(leg.to.name)"),
+                String(localized: "\(ride.serviceLabel) · arrives \(leg.arrivalTime.formatted(.clockTime))"),
+                ride.mode.symbol
             )
         }
-        switch leg.kind {
-        case let .transit(ride):
-            if tracker.boarded {
-                let stops = tracker.stopsRemaining ?? 0
-                return NavigationStatus(
-                    title: stops <= 1
-                        ? String(localized: "Get off at \(leg.to.name)")
-                        : String(localized: "\(stops) stops to \(leg.to.name)"),
-                    detail: String(localized: "\(ride.serviceLabel) · arrives \(leg.arrivalTime.formatted(.clockTime))"),
-                    symbol: ride.mode.symbol,
-                    arrival: arrival,
-                    isFinished: false
-                )
-            }
-            return NavigationStatus(
-                title: String(localized: "Board \(ride.serviceLabel) at \(leg.from.name)"),
-                detail: String(localized: "Departs \(leg.departureTime.formatted(.clockTime))"),
-                symbol: ride.mode.symbol,
-                arrival: arrival,
-                isFinished: false
-            )
-        case let .bikeShare(ride):
-            if let maneuver = tracker.nextManeuver, maneuver.guidance.code != "arrive",
-               let distance = tracker.distanceToManeuver {
-                return NavigationStatus(
-                    title: maneuver.guidance.spokenInstruction,
-                    detail: distance.navigationDistance,
-                    symbol: maneuver.guidance.navigationSymbol,
-                    arrival: arrival,
-                    isFinished: false
-                )
-            }
-            return NavigationStatus(
-                title: String(localized: "Return the bike at \(ride.dropoffStationName)"),
-                detail: String(localized: "Return by \(leg.arrivalTime.formatted(.clockTime))"),
-                symbol: "bicycle",
-                arrival: arrival,
-                isFinished: false
-            )
-        case .walking:
-            if let maneuver = tracker.nextManeuver, maneuver.guidance.code != "arrive",
-               let distance = tracker.distanceToManeuver {
-                return NavigationStatus(
-                    title: maneuver.guidance.spokenInstruction,
-                    detail: distance.navigationDistance,
-                    symbol: maneuver.guidance.navigationSymbol,
-                    arrival: arrival,
-                    isFinished: false
-                )
-            }
-            return NavigationStatus(
-                title: String(localized: "Walk to \(leg.to.name)"),
-                detail: tracker.remainingLegDistance.navigationDistance,
-                symbol: "figure.walk",
-                arrival: arrival,
-                isFinished: false
+        if let maneuver = tracker.nextManeuver, maneuver.guidance.code != "arrive",
+           let distance = tracker.distanceToManeuver {
+            return status(maneuver.guidance.instruction, distance.navigationDistance, maneuver.guidance.symbol)
+        }
+        if case let .bikeShare(ride) = leg.kind {
+            return status(
+                String(localized: "Return the bike at \(ride.dropoffStationName)"),
+                String(localized: "Return by \(leg.arrivalTime.formatted(.clockTime))"),
+                "bicycle"
             )
         }
+        return status(
+            String(localized: "Walk to \(leg.to.name)"),
+            tracker.remainingLegDistance.navigationDistance,
+            "figure.walk"
+        )
     }
 }

@@ -453,3 +453,30 @@ fn phase2_corridor_concurrency_accepts_one_through_eight_and_defaults_to_eight()
         8
     );
 }
+
+#[test]
+fn result_limit_defaults_to_five_and_cannot_exceed_five() {
+    assert_eq!(
+        ViaConfig::from_toml(TOML)
+            .unwrap()
+            .routing
+            .ranking
+            .result_limit,
+        5
+    );
+    for value in [1, 3, 5] {
+        let body = TOML.replace("result_limit = 5", &format!("result_limit = {value}"));
+        assert_eq!(
+            ViaConfig::from_toml(&body)
+                .unwrap()
+                .routing
+                .ranking
+                .result_limit,
+            value
+        );
+    }
+    for value in [0, 6] {
+        let body = TOML.replace("result_limit = 5", &format!("result_limit = {value}"));
+        assert!(ViaConfig::from_toml(&body).is_err());
+    }
+}

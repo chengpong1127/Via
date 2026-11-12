@@ -35,16 +35,11 @@ struct DirectionsPanel: View {
     }
 
     private var controls: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ModeButton(modes: directions.modes) {
-                    editingModes = true
-                }
-            }
-            .padding(.vertical, 2)
+        ModeButton(modes: directions.modes) {
+            editingModes = true
         }
-        .scrollIndicators(.hidden)
-        .scrollClipDisabled()
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -178,19 +173,9 @@ struct JourneyOptionRow: View {
         Button(action: isSelected ? showDetails : select) {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(option.duration.travelTime)
-                            .font(.title2.bold())
-                            .monospacedDigit()
-                        if let label = option.label {
-                            Text(label.title)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 2)
-                                .foregroundStyle(.green)
-                                .background(.green.opacity(0.15), in: .capsule)
-                        }
-                    }
+                    Text(option.duration.travelTime)
+                        .font(.title2.bold())
+                        .monospacedDigit()
                     if let boarding = firstRide {
                         boardingText(boarding)
                     }

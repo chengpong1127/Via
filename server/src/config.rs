@@ -96,12 +96,6 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let mut settings = ViaConfig::load(None)?;
-        settings.apply_environment()?;
-        Self::from_settings(&settings)
-    }
-
     pub fn from_settings(settings: &ViaConfig) -> Result<Self, ConfigError> {
         let environment = Environment::required_from_env()?;
         settings.validate_environment(environment)?;
@@ -136,33 +130,11 @@ impl TdxRuntimeConfig {
             ),
         })
     }
-
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let mut settings = ViaConfig::load(None)?;
-        settings.apply_environment()?;
-        Self::from_settings(&settings.tdx)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ValhallaRuntimeConfig {
-    pub base_url: Url,
-}
-
-impl ValhallaRuntimeConfig {
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let mut settings = ViaConfig::load(None)?;
-        settings.apply_environment()?;
-        Ok(Self {
-            base_url: parse_url("valhalla.base_url", &settings.valhalla.base_url)?,
-        })
-    }
 }
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub(crate) environment: Environment,
-    pub(crate) valhalla: ValhallaRuntimeConfig,
     pub(crate) tdx: TdxRuntimeConfig,
     pub(crate) settings: ViaConfig,
 }
@@ -174,21 +146,12 @@ impl RuntimeConfig {
     ) -> Result<Self, ConfigError> {
         settings.validate_environment(environment)?;
         let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
-        let valhalla = ValhallaRuntimeConfig {
-            base_url: parse_url("valhalla.base_url", &settings.valhalla.base_url)?,
-        };
+        parse_url("valhalla.base_url", &settings.valhalla.base_url)?;
         Ok(Self {
             environment,
             tdx,
-            valhalla,
             settings,
         })
-    }
-
-    pub fn from_env(environment: Environment) -> Result<Self, ConfigError> {
-        let mut settings = ViaConfig::load(None)?;
-        settings.apply_environment()?;
-        Self::from_settings(environment, settings)
     }
 }
 
@@ -211,33 +174,8 @@ fn parse_port(value: Option<&str>) -> Result<u16, ConfigError> {
 }
 
 #[cfg(test)]
-fn validate_transport_security(
-    environment: Environment,
-    valhalla: &ValhallaRuntimeConfig,
-    tdx: &TdxRuntimeConfig,
-) -> Result<(), ConfigError> {
-    if !environment.is_production() {
-        return Ok(());
-    }
-    if valhalla.base_url.scheme() != "https" {
-        return Err(ConfigError::InsecureProductionUrl {
-            setting: "VIA_VALHALLA_URL",
-        });
-    }
-    if tdx.api_base_url.scheme() != "https" {
-        return Err(ConfigError::InsecureProductionUrl {
-            setting: "VIA_TDX_BASE_URL",
-        });
-    }
-    Ok(())
-}
-
-#[cfg(test)]
 mod tests {
-    use super::{
-        ConfigError, Environment, TdxRuntimeConfig, ValhallaRuntimeConfig, parse_port,
-        validate_transport_security,
-    };
+    use super::{ConfigError, Environment, TdxRuntimeConfig, parse_port};
     use crate::tdx::TdxCredentials;
     use url::Url;
 
@@ -269,49 +207,6 @@ mod tests {
             parse_port(Some("65536")),
             Err(ConfigError::InvalidPort(_))
         ));
-    }
-
-    #[test]
-    fn production_requires_https_for_both_upstream_urls() {
-        let credentials = TdxCredentials::from_client_credentials("client", "secret");
-        let valhalla = ValhallaRuntimeConfig {
-            base_url: Url::parse("http://valhalla:8002/").unwrap(),
-        };
-        let tdx = TdxRuntimeConfig {
-            api_base_url: Url::parse("https://tdx.example/api/").unwrap(),
-            credentials,
-        };
-        assert!(matches!(
-            validate_transport_security(Environment::Production, &valhalla, &tdx),
-            Err(ConfigError::InsecureProductionUrl {
-                setting: "VIA_VALHALLA_URL"
-            })
-        ));
-        let secure_valhalla = ValhallaRuntimeConfig {
-            base_url: Url::parse("https://valhalla.example/").unwrap(),
-        };
-        let insecure_tdx = TdxRuntimeConfig {
-            api_base_url: Url::parse("http://tdx.example/api/").unwrap(),
-            credentials: TdxCredentials::from_client_credentials("client", "secret"),
-        };
-        assert!(matches!(
-            validate_transport_security(Environment::Production, &secure_valhalla, &insecure_tdx),
-            Err(ConfigError::InsecureProductionUrl {
-                setting: "VIA_TDX_BASE_URL"
-            })
-        ));
-        assert!(validate_transport_security(Environment::Development, &valhalla, &tdx).is_ok());
-        assert!(
-            validate_transport_security(
-                Environment::Production,
-                &secure_valhalla,
-                &TdxRuntimeConfig {
-                    api_base_url: Url::parse("https://tdx.example/api/").unwrap(),
-                    credentials: TdxCredentials::from_client_credentials("client", "secret"),
-                }
-            )
-            .is_ok()
-        );
     }
 
     #[test]

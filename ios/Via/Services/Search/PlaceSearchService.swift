@@ -22,7 +22,6 @@ struct PlaceResult: Identifiable, Hashable {
 @Observable
 final class PlaceSearchService: NSObject {
     private(set) var completions: [MKLocalSearchCompletion] = []
-    private(set) var completionFailed = false
 
     @ObservationIgnored private let completer = MKLocalSearchCompleter()
     @ObservationIgnored var region = MKCoordinateRegion(
@@ -44,7 +43,6 @@ final class PlaceSearchService: NSObject {
         if trimmed.isEmpty {
             completer.cancel()
             completions = []
-            completionFailed = false
         } else {
             completer.queryFragment = trimmed
         }
@@ -110,14 +108,12 @@ extension PlaceSearchService: MKLocalSearchCompleterDelegate {
     nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
         MainActor.assumeIsolated {
             completions = self.completer.results
-            completionFailed = false
         }
     }
 
     nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
         MainActor.assumeIsolated {
             completions = []
-            completionFailed = true
         }
     }
 }

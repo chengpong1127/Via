@@ -259,12 +259,6 @@ pub struct TransitNetwork {
     pub schedule_revision: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
-pub struct NetworkRevision {
-    pub static_network_revision: String,
-    pub schedule_revision: String,
-}
-
 impl Default for TransitNetwork {
     fn default() -> Self {
         Self::new(
@@ -558,13 +552,6 @@ impl TransitNetwork {
 
     pub fn revisions(&self) -> (&str, &str) {
         (&self.static_network_revision, &self.schedule_revision)
-    }
-
-    pub fn revision(&self) -> NetworkRevision {
-        NetworkRevision {
-            static_network_revision: self.static_network_revision.clone(),
-            schedule_revision: self.schedule_revision.clone(),
-        }
     }
 }
 
