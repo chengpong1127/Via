@@ -67,9 +67,6 @@ impl ReconstructionState<'_, '_> {
             .iter()
             .map(evidence::from_realtime_value)
             .collect::<Vec<_>>();
-        self.assembly
-            .required_states
-            .extend(trip.evidence.iter().map(|status| status.freshness));
         self.assembly.live_evidence.extend(live_evidence);
         let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
         self.assembly.legs.push(transit_leg(
@@ -111,7 +108,6 @@ impl ReconstructionState<'_, '_> {
             mode: route_data.mode,
         });
         self.assembly.arrival_time = alight.arrival_at;
-        self.assembly.timing_bases.push(trip.timing_basis);
         if trip.timing_reliability == TimingReliability::Fallback {
             self.assembly.timing_reliability = TimingReliability::Fallback;
         }

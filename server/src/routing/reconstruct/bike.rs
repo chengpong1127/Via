@@ -260,7 +260,6 @@ mod tests {
             legs: Vec::new(),
             arrival_time: departure,
             live_evidence: Vec::new(),
-            required_states: Vec::new(),
             travel_modes: Vec::new(),
             main_pattern_sequence: Vec::new(),
             transfer_evidence: Vec::new(),
@@ -268,7 +267,6 @@ mod tests {
             bicycle_seconds: 0,
             bike_share_uses: 0,
             bike_reuse_available_at: None,
-            timing_bases: Vec::new(),
             timing_reliability: TimingReliability::Reliable,
             walking_tail: None,
         };

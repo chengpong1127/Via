@@ -25,7 +25,6 @@ max_walking_seconds = 1800
 [routing.ranking]
 metro_transfer_buffer_seconds = 180
 bus_transfer_buffer_seconds = 300
-near_duplicate_arrival_seconds = 300
 material_walking_difference_seconds = 300
 max_sequence_only_option_delay_seconds = 900
 reliability_preference_window_seconds = 300

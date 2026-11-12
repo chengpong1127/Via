@@ -147,11 +147,8 @@ impl JourneyReconstructor {
                 bike_share_uses: assembled.bike_share_uses,
                 transfer_count,
                 main_pattern_sequence: assembled.main_pattern_sequence,
-                timing_bases: assembled.timing_bases,
                 timing_reliability: assembled.timing_reliability,
-                required_live_status: assembled.required_states,
                 transfers: assembled.transfer_evidence,
-                blocking_condition: false,
             },
             option,
         }))

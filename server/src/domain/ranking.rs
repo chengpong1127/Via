@@ -1,9 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::domain::{
-    realtime::FreshnessState,
-    transit_timing::{TimingBasis, TimingReliability},
-};
+use crate::domain::transit_timing::TimingReliability;
 
 pub const MAX_RESULT_LIMIT: usize = 5;
 
@@ -36,11 +33,8 @@ pub struct RankingCandidate {
     pub bike_share_uses: u32,
     pub transfer_count: u32,
     pub main_pattern_sequence: Vec<String>,
-    pub timing_bases: Vec<TimingBasis>,
     pub timing_reliability: TimingReliability,
-    pub required_live_status: Vec<FreshnessState>,
     pub transfers: Vec<TransferEvidence>,
-    pub blocking_condition: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +55,6 @@ pub struct RankedJourney {
 pub struct RankingPolicy {
     pub metro_transfer_buffer_seconds: u32,
     pub bus_transfer_buffer_seconds: u32,
-    pub near_duplicate_arrival_seconds: i64,
     pub material_walking_difference_seconds: u32,
     pub max_sequence_only_option_delay_seconds: i64,
 
@@ -74,7 +67,6 @@ impl Default for RankingPolicy {
         Self {
             metro_transfer_buffer_seconds: 180,
             bus_transfer_buffer_seconds: 300,
-            near_duplicate_arrival_seconds: 300,
             material_walking_difference_seconds: 300,
             max_sequence_only_option_delay_seconds: 900,
             reliability_preference_window_seconds: 300,
@@ -92,7 +84,6 @@ impl RankingPolicy {
 
         eligible = remove_dominated(self, eligible);
         eligible.sort_by(|left, right| self.compare_ranked(left, right));
-        eligible = self.remove_near_duplicates(eligible);
 
         let mut selected = Vec::with_capacity(self.result_limit);
         for candidate in eligible {
@@ -110,15 +101,6 @@ impl RankingPolicy {
     }
 
     fn classify(&self, candidate: RankingCandidate) -> Option<RankedJourney> {
-        if candidate.blocking_condition
-            || candidate
-                .required_live_status
-                .iter()
-                .any(|state| *state != FreshnessState::Fresh)
-        {
-            return None;
-        }
-
         let mut class = if candidate.timing_reliability == TimingReliability::Fallback {
             JourneyClass::Feasible
         } else {
@@ -148,25 +130,6 @@ impl RankingPolicy {
             transfer_count: candidate.transfer_count,
             main_pattern_sequence: candidate.main_pattern_sequence,
         })
-    }
-
-    fn remove_near_duplicates(&self, candidates: Vec<RankedJourney>) -> Vec<RankedJourney> {
-        let mut kept = Vec::new();
-        for candidate in candidates {
-            let duplicate = kept.iter().any(|current: &RankedJourney| {
-                current.main_pattern_sequence == candidate.main_pattern_sequence
-                    && current.transfer_count == candidate.transfer_count
-                    && (current.arrival_epoch_seconds - candidate.arrival_epoch_seconds).abs()
-                        <= self.near_duplicate_arrival_seconds
-                    && current.walking_seconds.abs_diff(candidate.walking_seconds)
-                        < self.material_walking_difference_seconds
-                    && self.same_bicycle_use(current, &candidate)
-            });
-            if !duplicate {
-                kept.push(candidate);
-            }
-        }
-        kept
     }
 
     fn materially_different(&self, current: &RankedJourney, candidate: &RankedJourney) -> bool {

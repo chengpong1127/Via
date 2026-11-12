@@ -794,11 +794,10 @@ impl via_server::street::StreetRouter for RankingStreet {
     }
 }
 
-async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) {
+async fn ranking_corridor_fixture(iterations: usize) {
     use time::{Duration, macros::datetime};
     use via_server::domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::{ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
     };
     use via_server::routing::{JourneyPlanningLimits, RoutingService};
@@ -857,20 +856,6 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
                 path(egress, destination, walk),
             );
         let arrival = departure + Duration::seconds(if index == 0 { 720 } else { 760 });
-        let evidence = if rejected_by_ranking {
-            vec![NormalizedRealtimeValue {
-                freshness: FreshnessState::Degraded,
-                value: ArrivalEstimate {
-                    transit_pattern_id: pattern.id.clone(),
-                    boarding_point_id: pattern.stops[0].clone(),
-                    predicted_arrival_at: Some(departure + Duration::minutes(2)),
-                    state: ArrivalState::Predicted,
-                    transmitted_at: departure,
-                },
-            }]
-        } else {
-            Vec::new()
-        };
         snapshot.insert(
             pattern.id.clone(),
             0,
@@ -894,7 +879,7 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
                 timing_reliability: TimingReliability::Fallback,
                 observed_at: None,
                 uncertainty_seconds: None,
-                evidence,
+                evidence: Vec::new(),
             }],
         );
     }
@@ -960,7 +945,7 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
     assert_eq!(street.route_calls.load(Ordering::Relaxed), 5 * iterations);
     latency_us.sort_unstable();
     eprintln!(
-        "ranking fixture: reject={rejected_by_ranking} iterations={iterations} median_us={} p95_us={} routes_per_request={} matrices_per_request={} hydration_routes_per_request={} reconstructed_per_request=3",
+        "ranking fixture: iterations={iterations} median_us={} p95_us={} routes_per_request={} matrices_per_request={} hydration_routes_per_request={} reconstructed_per_request=3",
         latency_us[iterations / 2],
         latency_us[iterations * 95 / 100],
         street.route_calls.load(Ordering::Relaxed) / iterations,
@@ -971,9 +956,7 @@ async fn ranking_corridor_fixture(rejected_by_ranking: bool, iterations: usize) 
 
 #[tokio::test]
 async fn ranking_considers_three_corridors_before_applying_a_one_result_limit() {
-    for rejected_by_ranking in [false, true] {
-        ranking_corridor_fixture(rejected_by_ranking, 2).await;
-    }
+    ranking_corridor_fixture(2).await;
 }
 
 #[tokio::test]
@@ -989,9 +972,7 @@ async fn ranking_reconstruction_benchmark() {
                 .with_test_writer()
                 .finish(),
         );
-        ranking_corridor_fixture(false, 1).await;
+        ranking_corridor_fixture(1).await;
     }
-    for rejected_by_ranking in [false, true] {
-        ranking_corridor_fixture(rejected_by_ranking, 1000).await;
-    }
+    ranking_corridor_fixture(1000).await;
 }

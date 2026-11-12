@@ -228,10 +228,6 @@ impl ViaConfig {
                 self.routing.ranking.bus_transfer_buffer_seconds as u64,
             ),
             (
-                "routing.ranking.near_duplicate_arrival_seconds",
-                self.routing.ranking.near_duplicate_arrival_seconds as u64,
-            ),
-            (
                 "routing.ranking.material_walking_difference_seconds",
                 self.routing.ranking.material_walking_difference_seconds as u64,
             ),
@@ -460,16 +456,10 @@ impl ViaConfig {
                 "tdx.realtime.cache_ttl_seconds must be less than fresh_seconds".into(),
             ));
         }
-        for (key, value) in [
-            (
-                "routing.ranking.near_duplicate_arrival_seconds",
-                self.routing.ranking.near_duplicate_arrival_seconds,
-            ),
-            (
-                "routing.ranking.max_sequence_only_option_delay_seconds",
-                self.routing.ranking.max_sequence_only_option_delay_seconds,
-            ),
-        ] {
+        for (key, value) in [(
+            "routing.ranking.max_sequence_only_option_delay_seconds",
+            self.routing.ranking.max_sequence_only_option_delay_seconds,
+        )] {
             if value <= 0 || value > i64::from(u32::MAX) {
                 return Err(ConfigError::Invalid(format!(
                     "{key} must be positive and fit supported duration range"
