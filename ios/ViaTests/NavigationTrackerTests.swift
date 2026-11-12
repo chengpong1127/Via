@@ -51,8 +51,7 @@ struct NavigationTrackerTests {
     @Test func advancesToTheNextLegNearTheEnd() {
         var tracker = makeTracker()
         _ = tracker.update(fix(north: 0, east: 200, at: 10))
-        let update = tracker.update(fix(north: 190, east: 200, at: 20))
-        #expect(update.legChanged)
+        _ = tracker.update(fix(north: 190, east: 200, at: 20))
         #expect(tracker.legIndex == 1)
     }
 
@@ -128,8 +127,6 @@ enum NavigationFixture {
         LocationFix(
             coordinate: point(north: north, east: east),
             horizontalAccuracy: accuracy,
-            course: nil,
-            speed: nil,
             timestamp: t0.addingTimeInterval(TimeInterval(second))
         )
     }
@@ -167,7 +164,7 @@ enum NavigationFixture {
             ),
         ]
         return JourneyOption(
-            id: key, matchingKey: key, label: nil,
+            id: key, matchingKey: key,
             departureTime: t0, arrivalTime: t0.addingTimeInterval(1200), duration: 1200,
             walkingDuration: 500, transferCount: 0, liveStatus: .notApplicable, liveObservedAt: nil,
             overview: legs.flatMap(\.path), legs: legs

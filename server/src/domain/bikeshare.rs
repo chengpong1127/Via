@@ -104,10 +104,6 @@ impl BikeStationAvailability {
         }
     }
 
-    pub fn is_fresh(&self, now: OffsetDateTime, max_age: Duration) -> bool {
-        self.is_fresh_with_skew(now, max_age, MAX_BIKE_AVAILABILITY_CLOCK_SKEW)
-    }
-
     pub fn is_fresh_with_skew(
         &self,
         now: OffsetDateTime,

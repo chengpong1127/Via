@@ -90,8 +90,7 @@ struct DirectionsModelTests {
         let model = DirectionsModel(planner: StubPlanner(plans: []), location: StubLocation(), defaults: defaults)
         #expect(model.modes == Set(PlanningMode.allCases))
 
-        model.toggle(.bus)
-        model.toggle(.thsr)
+        model.modes.subtract([.bus, .thsr])
 
         let restored = DirectionsModel(planner: StubPlanner(plans: []), location: StubLocation(), defaults: defaults)
         #expect(restored.modes == [.metro, .tra, .bikeShare])
@@ -119,7 +118,6 @@ struct DirectionsModelTests {
             JourneyOption(
                 id: key,
                 matchingKey: key,
-                label: nil,
                 departureTime: now,
                 arrivalTime: now.addingTimeInterval(600),
                 duration: 600,
@@ -156,7 +154,6 @@ actor StubPlanner: JourneyPlanner {
             JourneyOption(
                 id: "\(call)-\(option.id)",
                 matchingKey: option.matchingKey,
-                label: option.label,
                 departureTime: option.departureTime,
                 arrivalTime: option.arrivalTime,
                 duration: option.duration,
@@ -174,13 +171,10 @@ actor StubPlanner: JourneyPlanner {
 final class StubLocation: LocationProviding {
     static let taipeiMain = Coordinate(latitude: 25.04776, longitude: 121.51706)
     let error: LocationError?
-    var coordinate: Coordinate? { error == nil ? Self.taipeiMain : nil }
 
     init(error: LocationError? = nil) {
         self.error = error
     }
-
-    func requestAuthorizationIfNeeded() {}
 
     func currentCoordinate() async throws -> Coordinate {
         if let error { throw error }

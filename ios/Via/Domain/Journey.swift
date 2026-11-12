@@ -5,12 +5,6 @@ nonisolated struct JourneyPlan: Sendable {
     let options: [JourneyOption]
 }
 
-nonisolated enum JourneyLabel: String, Sendable {
-    case bestNow = "best_now"
-    case fewerTransfers = "fewer_transfers"
-    case lessWalking = "less_walking"
-}
-
 nonisolated enum TransitMode: String, Sendable {
     case bus
     case metro
@@ -28,7 +22,6 @@ nonisolated enum LiveStatus: String, Sendable {
 nonisolated struct JourneyOption: Identifiable, Sendable {
     let id: String
     let matchingKey: String
-    let label: JourneyLabel?
     let departureTime: Date
     let arrivalTime: Date
     let duration: TimeInterval

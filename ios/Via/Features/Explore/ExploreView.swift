@@ -216,15 +216,9 @@ private struct RouteTimeLabel: View {
 
     var body: some View {
         Button(action: select) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(option.duration.travelTime)
-                    .font(.subheadline.bold())
-                    .monospacedDigit()
-                if isSelected, let label = option.label {
-                    Text(label.title)
-                        .font(.caption.weight(.semibold))
-                }
-            }
+            Text(option.duration.travelTime)
+                .font(.subheadline.bold())
+                .monospacedDigit()
             .foregroundStyle(isSelected ? Color.white : Color.accentColor)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)

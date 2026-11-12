@@ -1,7 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
+use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::domain::transit::TransitMode as DomainTransitMode;
@@ -9,8 +9,6 @@ use crate::domain::transit::TransitMode as DomainTransitMode;
 pub use crate::domain::location::GeoCoordinate;
 
 pub const API_VERSION: &str = "1.0";
-
-pub use crate::domain::{normalize_to_taipei, taipei_offset};
 
 pub fn new_request_id() -> String {
     format!("req_{}", uuid::Uuid::new_v4().simple())
@@ -126,8 +124,6 @@ impl SelectedPlace {
     }
 }
 
-pub use crate::domain::journey::LegMode;
-
 #[derive(
     Clone,
     Copy,
@@ -182,45 +178,6 @@ impl DepartureSetting {
                 "invalid_departure_setting",
                 "/departure_setting/time",
             )),
-        }
-    }
-
-    pub fn effective_search_time(&self, now: OffsetDateTime) -> OffsetDateTime {
-        match self {
-            Self::DepartNow => normalize_to_taipei(now),
-            Self::DepartAt { time } => normalize_to_taipei(*time),
-        }
-    }
-
-    pub fn local_search_time(&self, now: OffsetDateTime) -> PrimitiveDateTime {
-        let effective = self.effective_search_time(now);
-        effective.date().with_time(effective.time())
-    }
-
-    pub fn service_day(&self, now: OffsetDateTime, boundary: Time) -> Date {
-        let local = self.local_search_time(now);
-        if local.time() < boundary {
-            local.date().previous_day().unwrap_or(local.date())
-        } else {
-            local.date()
-        }
-    }
-
-    pub fn resolve(
-        &self,
-        now: OffsetDateTime,
-        duration_seconds: u32,
-    ) -> (OffsetDateTime, OffsetDateTime) {
-        let duration = time::Duration::seconds(i64::from(duration_seconds));
-        match self {
-            Self::DepartNow => {
-                let now = normalize_to_taipei(now);
-                (now, now + duration)
-            }
-            Self::DepartAt { time } => {
-                let time = normalize_to_taipei(*time);
-                (time, time + duration)
-            }
         }
     }
 }

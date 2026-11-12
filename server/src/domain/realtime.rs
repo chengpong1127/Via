@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use time::{Date, Duration, OffsetDateTime, PrimitiveDateTime, Time};
+use time::{Duration, OffsetDateTime};
 
 use super::ids::{BoardingPointId, TransitPatternId};
 
@@ -81,26 +81,4 @@ pub struct ArrivalEstimate {
 pub struct NormalizedRealtimeValue {
     pub freshness: FreshnessState,
     pub value: ArrivalEstimate,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ServiceDayPolicy {
-    boundary: Time,
-}
-
-impl ServiceDayPolicy {
-    pub fn new(boundary: Time) -> Self {
-        Self { boundary }
-    }
-
-    pub fn resolve(self, local_time: PrimitiveDateTime) -> Date {
-        if local_time.time() < self.boundary {
-            local_time
-                .date()
-                .previous_day()
-                .unwrap_or(local_time.date())
-        } else {
-            local_time.date()
-        }
-    }
 }

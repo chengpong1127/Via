@@ -53,14 +53,6 @@ final class DirectionsModel {
         options.first { $0.id == selectedOptionID } ?? options.first
     }
 
-    func toggle(_ mode: PlanningMode) {
-        if modes.contains(mode) {
-            modes.remove(mode)
-        } else {
-            modes.insert(mode)
-        }
-    }
-
     func swapEndpoints() {
         guard let destination else { return }
         self.destination = origin
@@ -90,8 +82,7 @@ final class DirectionsModel {
             let request = PlanningRequest(
                 origin: try await resolve(origin),
                 destination: try await resolve(destination),
-                modes: modes,
-                departure: .now
+                modes: modes
             )
             guard request.origin.coordinate.distance(to: request.destination.coordinate) > 1 else {
                 throw DirectionsFailure.sameEndpoints

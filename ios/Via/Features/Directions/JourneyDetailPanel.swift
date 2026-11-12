@@ -222,7 +222,7 @@ private struct LegRow: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
                 Label {
-                    step.detailedInstruction
+                    Text(step.instruction)
                 } icon: {
                     Image(systemName: step.symbol)
                 }
@@ -292,32 +292,6 @@ private struct LegRow: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-        }
-    }
-}
-
-extension Guidance {
-    var instruction: LocalizedStringKey {
-        switch code {
-        case "continue": "Continue straight"
-        case "turn_left": "Turn left"
-        case "turn_right": "Turn right"
-        case "u_turn": "Make a U-turn"
-        case "enter_roundabout": "Enter the roundabout"
-        case "exit_roundabout": "Exit the roundabout"
-        case "depart": "Start walking"
-        case "arrive": "Arrive"
-        default: LocalizedStringKey(code.replacingOccurrences(of: "_", with: " ").capitalized)
-        }
-    }
-
-    var symbol: String {
-        switch code {
-        case "turn_left": "arrow.turn.up.left"
-        case "turn_right": "arrow.turn.up.right"
-        case "u_turn": "arrow.uturn.down"
-        case "enter_roundabout", "exit_roundabout": "arrow.triangle.2.circlepath"
-        default: "arrow.up"
         }
     }
 }

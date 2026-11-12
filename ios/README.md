@@ -35,7 +35,7 @@ so either configuration can be pointed elsewhere, for example
 | `App` | App entry point and dependency wiring |
 | `Domain` | Places, planning requests and journey results; the `JourneyPlanner` interface |
 | `Services/API` | `APIClient`, DTOs matching the server OpenAPI schema, and mapping |
-| `Services/Planning` | `HTTPJourneyPlanner` for production, `DemoJourneyPlanner` for previews and offline tests |
+| `Services/Planning` | `HTTPJourneyPlanner`, the production planner |
 | `Services/Location`, `Services/Search` | Core Location and MapKit search (`MKLocalSearchCompleter`, `MKLocalSearch`, POI lookup) |
 | `Features/Explore` | Map screen, sheet routing and route overlays |
 | `Features/Search`, `Features/Place`, `Features/Directions` | Sheet panels |

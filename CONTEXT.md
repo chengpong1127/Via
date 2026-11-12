@@ -60,8 +60,8 @@ times never become fabricated scheduled trips; derived segment costs support
 static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
 
-Production iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient`;
-`DemoJourneyPlanner` supports previews and offline tests.
+iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient` and always
+requests a journey departing now.
 
 iOS navigation runs on-device against the selected journey. Walking and cycling
 guidance carries `geometry_index` (into the leg geometry) and `street_name`

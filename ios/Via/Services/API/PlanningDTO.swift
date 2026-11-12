@@ -31,7 +31,6 @@ nonisolated struct CoordinateDTO: Codable, Equatable, Sendable {
 
 nonisolated struct DepartureSettingDTO: Encodable, Equatable, Sendable {
     let type: String
-    let time: String?
 }
 
 nonisolated struct PlanningOutcomeDTO: Decodable, Sendable {
@@ -53,7 +52,6 @@ nonisolated struct EmptyReasonDTO: Decodable, Sendable {
 nonisolated struct JourneyOptionDTO: Decodable, Sendable {
     let id: String
     let matchingKey: String
-    let label: String?
     let departureTime: String
     let arrivalTime: String
     let durationSeconds: Int
@@ -66,7 +64,6 @@ nonisolated struct JourneyOptionDTO: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id
         case matchingKey = "matching_key"
-        case label
         case departureTime = "departure_time"
         case arrivalTime = "arrival_time"
         case durationSeconds = "duration_seconds"

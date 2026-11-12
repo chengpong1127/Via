@@ -17,12 +17,10 @@ nonisolated enum RerouteReason: Hashable, Sendable {
 nonisolated struct NavigationUpdate: Equatable, Sendable {
     var alerts: [NavigationAlert] = []
     var reroute: RerouteReason?
-    var legChanged = false
 
     mutating func merge(_ other: NavigationUpdate) {
         alerts += other.alerts
         reroute = reroute ?? other.reroute
-        legChanged = legChanged || other.legChanged
     }
 }
 
@@ -157,7 +155,6 @@ nonisolated struct NavigationTracker: Sendable {
             let fromBoarding = fix.coordinate.distance(to: leg.leg.from.coordinate)
             guard fromBoarding > Self.boardingRadius, projection.distanceAlong > Self.boardingRadius else { return }
             boarded = true
-            update.legChanged = true
         }
         distanceAlong = max(distanceAlong, projection.distanceAlong)
         announceStops(&update)
@@ -201,7 +198,6 @@ nonisolated struct NavigationTracker: Sendable {
         if !boarded, now > leg.departureTime.addingTimeInterval(Self.missedGrace) {
             if stale {
                 boarded = true
-                update.legChanged = true
             } else if let fix = lastFix, fix.coordinate.distance(to: leg.from.coordinate) <= Self.boardingRadius {
                 update.reroute = .missedConnection
             }
@@ -218,7 +214,6 @@ nonisolated struct NavigationTracker: Sendable {
     }
 
     private mutating func advance(_ update: inout NavigationUpdate) {
-        update.legChanged = true
         offRouteFixes = 0
         boarded = false
         distanceAlong = 0

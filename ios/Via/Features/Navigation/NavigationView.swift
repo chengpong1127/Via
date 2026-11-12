@@ -94,7 +94,7 @@ struct NavigationBanner: View {
         case let .transit(ride):
             return tracker.boarded ? ride.mode.symbol : "figure.walk.arrival"
         case .walking, .bikeShare:
-            return tracker.nextManeuver?.guidance.navigationSymbol ?? "arrow.up"
+            return tracker.nextManeuver?.guidance.symbol ?? "arrow.up"
         }
     }
 
@@ -104,50 +104,30 @@ struct NavigationBanner: View {
 
     @ViewBuilder
     private var headline: some View {
-        if navigation.isFinished {
-            Text("You've arrived")
-        } else if navigation.isRerouting {
+        if navigation.isRerouting, !navigation.isFinished {
             Text("Rerouting…")
-        } else {
-            switch leg.kind {
-            case let .transit(ride):
-                if !tracker.boarded {
-                    Text("Board \(ride.serviceLabel)")
-                } else if let stops = tracker.stopsRemaining, stops <= 1 {
-                    Text("Get off next stop")
-                } else if let stops = tracker.stopsRemaining {
-                    Text("^[\(stops) stop](inflect: true) left")
-                }
-            case .walking, .bikeShare:
-                if let distance = tracker.distanceToManeuver {
-                    Text(distance.navigationDistance)
-                }
-            }
+        } else if showsStatus {
+            Text(navigation.status.title)
+        } else if let distance = tracker.distanceToManeuver {
+            Text(distance.navigationDistance)
         }
     }
 
     @ViewBuilder
     private var subtitle: some View {
-        if navigation.isFinished {
-            Text(navigation.destination.name)
-        } else if navigation.rerouteFailed {
+        if navigation.rerouteFailed, !navigation.isFinished {
             Text("Couldn't update the route. Keep following the current one.")
-        } else {
-            switch leg.kind {
-            case let .transit(ride):
-                if tracker.boarded {
-                    Text("Get off at \(leg.to.name)")
-                } else if ride.headsign.isEmpty {
-                    Text("At \(leg.from.name) · \(leg.departureTime.formatted(.clockTime))")
-                } else {
-                    Text("Toward \(ride.headsign) · \(leg.from.name) · \(leg.departureTime.formatted(.clockTime))")
-                }
-            case .walking, .bikeShare:
-                if let maneuver = tracker.nextManeuver {
-                    maneuver.guidance.code == "arrive" ? arrival : maneuver.guidance.detailedInstruction
-                }
-            }
+        } else if showsStatus {
+            Text(navigation.status.detail)
+        } else if let maneuver = tracker.nextManeuver {
+            maneuver.guidance.code == "arrive" ? arrival : Text(maneuver.guidance.instruction)
         }
+    }
+
+    private var showsStatus: Bool {
+        if navigation.isFinished { return true }
+        if case .transit = leg.kind { return true }
+        return false
     }
 
     private var arrival: Text {
@@ -169,7 +149,7 @@ private struct NoticeCapsule: View {
 
     var body: some View {
         Label {
-            message
+            Text(alert.message)
                 .font(.headline)
         } icon: {
             Image(systemName: symbol)
@@ -178,17 +158,6 @@ private struct NoticeCapsule: View {
         .padding(.vertical, 10)
         .foregroundStyle(.white)
         .background(color, in: .capsule)
-    }
-
-    private var message: Text {
-        switch alert {
-        case .leaveNow: Text("Time to leave")
-        case .hurry: Text("Hurry to make your connection")
-        case let .stopsLeft(count): Text("^[\(count) stop](inflect: true) left")
-        case let .nextStop(name): Text("Next stop: \(name)")
-        case let .getOff(name): Text("Get off at \(name)")
-        case .arrived: Text("You've arrived")
-        }
     }
 
     private var symbol: String {
@@ -494,17 +463,6 @@ private struct NavigationStepRow<Extra: View>: View {
         .padding(.top, 14)
         .background(state == .current ? AnyShapeStyle(.fill.quaternary) : AnyShapeStyle(.clear))
         .opacity(state == .done ? 0.45 : 1)
-    }
-}
-
-extension Guidance {
-    var detailedInstruction: Text {
-        guard let street = streetName, code != "arrive", code != "depart" else { return Text(instruction) }
-        return Text("\(Text(instruction)) onto \(street)")
-    }
-
-    var navigationSymbol: String {
-        code == "arrive" ? "mappin.and.ellipse" : symbol
     }
 }
 

@@ -25,10 +25,7 @@ use super::{
         PlanningQuery, RoutingError,
     },
     planner::MultimodalPlanner,
-    reconstruct::{
-        JourneyCandidate, JourneyReconstructor, apply_ranked_journey, assign_result_local_ids,
-        taipei_now,
-    },
+    reconstruct::{JourneyCandidate, JourneyReconstructor, assign_result_local_ids, taipei_now},
 };
 
 #[derive(Clone)]
@@ -260,7 +257,6 @@ impl RoutingService {
                 );
                 return Err(PlanningError::Internal);
             };
-            apply_ranked_journey(&mut candidate.option, &ranked_journey);
             assign_result_local_ids(&mut candidate.option, index);
             journey_options.push(candidate.option);
         }

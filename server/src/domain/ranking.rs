@@ -1,24 +1,16 @@
 use std::cmp::Ordering;
 
-use serde::{Deserialize, Serialize};
-
 use crate::domain::{
     realtime::FreshnessState,
     transit_timing::{TimingBasis, TimingReliability},
 };
 
+pub const MAX_RESULT_LIMIT: usize = 5;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum JourneyClass {
     Reliable,
     Feasible,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum JourneyLabel {
-    BestNow,
-    FewerTransfers,
-    LessWalking,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +47,6 @@ pub struct RankingCandidate {
 pub struct RankedJourney {
     pub stable_key: String,
     pub class: JourneyClass,
-    pub label: Option<JourneyLabel>,
     pub departure_epoch_seconds: i64,
     pub arrival_epoch_seconds: i64,
     pub walking_seconds: u32,
@@ -87,7 +78,7 @@ impl Default for RankingPolicy {
             material_walking_difference_seconds: 300,
             max_sequence_only_option_delay_seconds: 900,
             reliability_preference_window_seconds: 300,
-            result_limit: 3,
+            result_limit: MAX_RESULT_LIMIT,
         }
     }
 }
@@ -115,7 +106,6 @@ impl RankingPolicy {
                 selected.push(candidate);
             }
         }
-        apply_labels(self, &mut selected);
         selected
     }
 
@@ -150,7 +140,6 @@ impl RankingPolicy {
         Some(RankedJourney {
             stable_key: candidate.stable_key,
             class,
-            label: None,
             departure_epoch_seconds: candidate.departure_epoch_seconds,
             arrival_epoch_seconds: candidate.arrival_epoch_seconds,
             walking_seconds: candidate.walking_seconds,
@@ -287,25 +276,4 @@ fn class_is_strictly_better(
     right: &RankedJourney,
 ) -> bool {
     left.class != right.class && compare_primary_preference(policy, left, right) == Ordering::Less
-}
-
-fn apply_labels(policy: &RankingPolicy, options: &mut [RankedJourney]) {
-    let Some((best, alternatives)) = options.split_first_mut() else {
-        return;
-    };
-    best.label = Some(JourneyLabel::BestNow);
-    let mut fewer_transfers_labelled = false;
-    let mut less_walking_labelled = false;
-    for option in alternatives {
-        if !fewer_transfers_labelled && option.transfer_count < best.transfer_count {
-            option.label = Some(JourneyLabel::FewerTransfers);
-            fewer_transfers_labelled = true;
-        } else if !less_walking_labelled
-            && best.walking_seconds.saturating_sub(option.walking_seconds)
-                >= policy.material_walking_difference_seconds
-        {
-            option.label = Some(JourneyLabel::LessWalking);
-            less_walking_labelled = true;
-        }
-    }
 }

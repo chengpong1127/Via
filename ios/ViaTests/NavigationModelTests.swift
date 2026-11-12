@@ -15,7 +15,6 @@ struct NavigationModelTests {
         #expect(request.origin.coordinate == NavigationFixture.point(north: 100, east: 100))
         #expect(request.destination == destination)
         #expect(request.modes == [.metro])
-        #expect(request.departure == .now)
         #expect(model.option.id == "1-fixture")
         #expect(!model.rerouteFailed)
     }

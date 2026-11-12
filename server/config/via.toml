@@ -29,7 +29,7 @@ near_duplicate_arrival_seconds = 300
 material_walking_difference_seconds = 300
 max_sequence_only_option_delay_seconds = 900
 reliability_preference_window_seconds = 300
-result_limit = 3
+result_limit = 5
 
 [bikeshare]
 max_pickup_stations_per_anchor = 3

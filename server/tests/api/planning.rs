@@ -1,57 +1,9 @@
 use serde_json::json;
-use time::macros::{date, datetime};
+use time::macros::datetime;
 use via_server::{
-    api::{
-        DepartureSetting, PlanningMode, PlanningRequest, RequestValidationError,
-        normalize_to_taipei,
-    },
+    api::{PlanningMode, PlanningRequest, RequestValidationError},
     domain::realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
 };
-
-#[test]
-fn client_offset_is_normalized_before_service_day_lookup() {
-    let setting = DepartureSetting::DepartAt {
-        time: datetime!(2026-08-31 17:30 UTC),
-    };
-    let effective = setting.effective_search_time(datetime!(2026-09-01 00:00 UTC));
-    assert_eq!(effective, datetime!(2026-09-01 01:30 +08:00));
-    assert_eq!(
-        setting.service_day(
-            datetime!(2026-09-01 00:00 UTC),
-            time::Time::from_hms(4, 0, 0).unwrap()
-        ),
-        date!(2026 - 08 - 31)
-    );
-    assert_eq!(
-        normalize_to_taipei(datetime!(2026-08-31 17:30 UTC)).offset(),
-        time::UtcOffset::from_hms(8, 0, 0).unwrap()
-    );
-}
-
-#[test]
-fn depart_now_and_depart_at_resolve_in_taipei_time() {
-    let now = datetime!(2026-08-31 12:00 UTC);
-    let depart_now = DepartureSetting::DepartNow.resolve(now, 600);
-    assert_eq!(
-        depart_now,
-        (
-            datetime!(2026-08-31 20:00 +08:00),
-            datetime!(2026-08-31 20:10 +08:00)
-        )
-    );
-
-    let depart_at = DepartureSetting::DepartAt {
-        time: datetime!(2026-08-31 12:00 UTC),
-    }
-    .resolve(now, 600);
-    assert_eq!(
-        depart_at,
-        (
-            datetime!(2026-08-31 20:00 +08:00),
-            datetime!(2026-08-31 20:10 +08:00)
-        )
-    );
-}
 
 #[test]
 fn planning_request_accepts_the_provider_neutral_contract() {

@@ -540,10 +540,6 @@ fn frontier_cap_preserves_complete_journeys_and_ranked_journey_options() {
                     .enumerate()
                     .map(|(index, ranked)| {
                         let mut candidate = candidates_by_key.remove(&ranked.stable_key).unwrap();
-                        super::super::super::reconstruct::apply_ranked_journey(
-                            &mut candidate.option,
-                            &ranked,
-                        );
                         super::super::super::reconstruct::assign_result_local_ids(
                             &mut candidate.option,
                             index,

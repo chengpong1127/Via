@@ -92,37 +92,11 @@ extension PlanningMode {
 }
 
 extension LegKind {
-    var symbol: String {
-        switch self {
-        case .walking: "figure.walk"
-        case let .transit(ride): ride.mode.symbol
-        case .bikeShare: "bicycle"
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .walking: .secondary
-        case let .transit(ride): ride.mode.color
-        case .bikeShare: .bikeShare
-        }
-    }
-
     var routeColor: Color {
         switch self {
         case .walking: .blue
         case let .transit(ride): ride.lineStyle.background
         case .bikeShare: .bikeShare
-        }
-    }
-}
-
-extension JourneyLabel {
-    var title: LocalizedStringResource {
-        switch self {
-        case .bestNow: "Best now"
-        case .fewerTransfers: "Fewer transfers"
-        case .lessWalking: "Less walking"
         }
     }
 }

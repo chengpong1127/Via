@@ -426,6 +426,12 @@ impl ViaConfig {
                 )));
             }
         }
+        if self.routing.ranking.result_limit > crate::domain::ranking::MAX_RESULT_LIMIT {
+            return Err(ConfigError::Invalid(format!(
+                "routing.ranking.result_limit must be at most {}",
+                crate::domain::ranking::MAX_RESULT_LIMIT
+            )));
+        }
         for (key, value) in [
             ("tdx.api_base_url", &self.tdx.api_base_url),
             ("tdx.token_url", &self.tdx.token_url),

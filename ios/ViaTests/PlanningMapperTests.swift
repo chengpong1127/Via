@@ -7,13 +7,7 @@ struct PlanningMapperTests {
     let destination = Place(name: "Taipei 101", coordinate: Coordinate(latitude: 25.03396, longitude: 121.56447))
 
     @Test func encodesRequestInServerShape() throws {
-        let date = try #require(RFC3339.date(from: "2026-11-01T09:30:00Z"))
-        let request = PlanningRequest(
-            origin: origin,
-            destination: destination,
-            modes: [.bikeShare, .metro, .bus],
-            departure: .departAt(date)
-        )
+        let request = PlanningRequest(origin: origin, destination: destination, modes: [.bikeShare, .metro, .bus])
         let data = try JSONEncoder().encode(PlanningMapper.dto(for: request))
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
@@ -23,14 +17,13 @@ struct PlanningMapperTests {
         let coordinate = try #require(originJSON["coordinate"] as? [String: Double])
         #expect(coordinate == ["latitude": 25.04776, "longitude": 121.51706])
         let departure = try #require(json["departure_setting"] as? [String: String])
-        #expect(departure == ["type": "depart_at", "time": "2026-11-01T17:30:00+08:00"])
+        #expect(departure == ["type": "depart_now"])
     }
 
-    @Test func encodesDepartNowWithoutTime() throws {
-        let request = PlanningRequest(origin: origin, destination: destination, modes: [], departure: .now)
+    @Test func encodesEmptyModeSelection() throws {
+        let request = PlanningRequest(origin: origin, destination: destination, modes: [])
         let data = try JSONEncoder().encode(PlanningMapper.dto(for: request))
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(json["departure_setting"] as? [String: String] == ["type": "depart_now"])
         #expect(json["selected_modes"] as? [String] == [])
     }
 
@@ -45,7 +38,6 @@ struct PlanningMapperTests {
         let plan = try PlanningMapper.plan(from: outcome)
 
         let option = try #require(plan.options.first)
-        #expect(option.label == .bestNow)
         #expect(option.duration == 1_560)
         #expect(option.transferCount == 1)
         #expect(option.liveStatus == .fresh)
@@ -110,7 +102,6 @@ nonisolated enum Fixtures {
       "journey_options": [{
         "id": "opt_1",
         "matching_key": "key-1",
-        "label": "best_now",
         "departure_time": "2026-11-01T09:31:00+08:00",
         "arrival_time": "2026-11-01T09:57:00+08:00",
         "duration_seconds": 1560,

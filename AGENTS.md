@@ -44,8 +44,8 @@ Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not a
 a database or identity-reconciliation layer.
 
 Keep iOS feature-oriented. Production planning flows through `JourneyPlanner →
-HTTPJourneyPlanner → APIClient`; retain `DemoJourneyPlanner` for previews and offline
-tests. `Features/Navigation` follows a selected `JourneyOption` on-device:
+HTTPJourneyPlanner → APIClient`, and the app always plans for departing now.
+`Features/Navigation` follows a selected `JourneyOption` on-device:
 `NavigationTracker` snaps location fixes to leg geometry and transit stops, and
 `NavigationModel` re-routes through `JourneyPlanner` with at most one plan per
 minute. There is no separate navigation backend.
