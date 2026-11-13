@@ -82,7 +82,7 @@ pub enum ConfigError {
         #[source]
         source: url::ParseError,
     },
-    #[error("{setting} must use HTTPS in production")]
+    #[error("{setting} must use HTTPS in production unless it is an internal address")]
     InsecureProductionUrl { setting: &'static str },
     #[error(transparent)]
     TdxCredentials(#[from] TdxCredentialsError),
@@ -135,7 +135,7 @@ impl TdxRuntimeConfig {
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub(crate) environment: Environment,
-    pub(crate) tdx: TdxRuntimeConfig,
+    pub(crate) tdx: Option<TdxRuntimeConfig>,
     pub(crate) settings: ViaConfig,
 }
 
@@ -145,7 +145,10 @@ impl RuntimeConfig {
         settings: ViaConfig,
     ) -> Result<Self, ConfigError> {
         settings.validate_environment(environment)?;
-        let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
+        let tdx = match settings.tdx.gateway.url {
+            Some(_) => None,
+            None => Some(TdxRuntimeConfig::from_settings(&settings.tdx)?),
+        };
         parse_url("valhalla.base_url", &settings.valhalla.base_url)?;
         Ok(Self {
             environment,

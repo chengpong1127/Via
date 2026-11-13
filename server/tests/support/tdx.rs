@@ -1,7 +1,19 @@
 use std::sync::Arc;
 
 use axum::Router;
-use via_server::tdx::{TdxClient, TdxCredentials};
+use via_server::{
+    live::{CachedLiveData, DirectLiveData, LiveDataSource},
+    tdx::{TdxClient, TdxCredentials},
+};
+
+#[allow(dead_code)]
+pub fn bus_feed(tdx: Arc<TdxClient>, path: &str) -> Arc<dyn LiveDataSource> {
+    let cache = tdx.settings().into();
+    Arc::new(CachedLiveData::new(
+        Arc::new(DirectLiveData::new(tdx).with_bus_arrival_path(path)),
+        cache,
+    ))
+}
 
 pub async fn spawn_tdx_fixture(app: Router) -> Arc<TdxClient> {
     spawn_tdx_fixture_with_settings(app, via_server::config::ViaConfig::default().tdx).await

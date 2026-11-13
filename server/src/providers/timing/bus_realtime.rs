@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use serde::Deserialize;
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
@@ -12,49 +11,22 @@ use crate::{
         },
         transit_timing::DepartureError,
     },
+    live::BusArrival,
     tdx::{
-        TdxClientError, boarding_point_id, tdx_sub_route_uid, transit_service_id,
-        transit_service_id_for_direction,
+        boarding_point_id, tdx_sub_route_uid, transit_service_id, transit_service_id_for_direction,
     },
 };
 
-pub(super) const DEFAULT_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
-
-#[derive(Debug, Deserialize)]
-struct TdxBusEstimatedArrival {
-    #[serde(rename = "StopUID")]
-    stop_uid: String,
-    #[serde(rename = "SubRouteUID", default)]
-    sub_route_uid: Option<String>,
-    #[serde(rename = "RouteUID", default)]
-    route_uid: Option<String>,
-    #[serde(rename = "Direction", default)]
-    direction: Option<u8>,
-    #[serde(rename = "StopStatus", default)]
-    stop_status: Option<u8>,
-    #[serde(rename = "EstimateTime", default)]
-    estimate_seconds: Option<i64>,
-    #[serde(rename = "UpdateTime")]
-    update_time: String,
-}
-
-pub(super) fn parse_bus_realtime_payload(
-    payload: &serde_json::Value,
+pub(super) fn parse_bus_arrivals(
+    records: &[BusArrival],
     requested_services: &HashMap<String, Vec<TransitPatternId>>,
     freshness_policy: &FreshnessPolicy,
     max_clock_skew_seconds: u32,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
-    let records = payload
-        .as_array()
-        .or_else(|| payload.get("value").and_then(serde_json::Value::as_array))
-        .ok_or(DepartureError::InvalidResponse)?;
     let received_at = OffsetDateTime::now_utc();
     let parent_services = parent_route_services(requested_services);
     let mut normalized = Vec::new();
     for record in records {
-        let Ok(record) = serde_json::from_value::<TdxBusEstimatedArrival>(record.clone()) else {
-            continue;
-        };
         let Ok(published_at) = OffsetDateTime::parse(&record.update_time, &Rfc3339) else {
             continue;
         };
@@ -131,30 +103,6 @@ fn parent_route_services(
     parents
 }
 
-pub(super) fn map_tdx_error(error: TdxClientError) -> DepartureError {
-    match error {
-        TdxClientError::InvalidConfiguration => DepartureError::InvalidConfiguration,
-        TdxClientError::RateLimited | TdxClientError::RateLimitedWithRetryAfter(_) => {
-            DepartureError::RateLimited
-        }
-        TdxClientError::OAuthRequest(error) | TdxClientError::ApiRequest(error)
-            if error.is_timeout() =>
-        {
-            DepartureError::TimedOut
-        }
-        TdxClientError::OAuthRequest(_)
-        | TdxClientError::InvalidOAuthResponse(_)
-        | TdxClientError::ApiRequest(_)
-        | TdxClientError::DownloadWrite(_)
-        | TdxClientError::Credentials(_) => DepartureError::TemporarilyUnavailable,
-        TdxClientError::ResponseTooLarge | TdxClientError::InvalidJson(_) => {
-            DepartureError::InvalidResponse
-        }
-    }
-}
-
-pub(super) use crate::tdx::odata_in_filter;
-
 pub fn normalize_n1(
     transit_pattern_id: TransitPatternId,
     boarding_point_id: BoardingPointId,
@@ -207,8 +155,9 @@ mod tests {
             "UpdateTime": update_time,
         }]);
 
-        let values = parse_bus_realtime_payload(
-            &payload,
+        let records = serde_json::from_value::<Vec<BusArrival>>(payload).unwrap();
+        let values = parse_bus_arrivals(
+            &records,
             &requested_services,
             &FreshnessPolicy::tdx_default(),
             300,
@@ -269,8 +218,9 @@ mod tests {
             }
         ]);
 
-        let values = parse_bus_realtime_payload(
-            &payload,
+        let records = serde_json::from_value::<Vec<BusArrival>>(payload).unwrap();
+        let values = parse_bus_arrivals(
+            &records,
             &requested_services,
             &FreshnessPolicy::tdx_default(),
             300,

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valhalla
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: valhalla
+  template:
+    metadata:
+      labels:
+        app: valhalla
+    spec:
+      containers:
+        - name: valhalla
+          image: ghcr.io/valhalla/valhalla-scripted:3.9.0
+          command: ["valhalla_service", "/custom_files/valhalla.json", "2"]
+          ports:
+            - name: http
+              containerPort: 8002
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          volumeMounts:
+            - name: tiles
+              mountPath: /custom_files
+              readOnly: true
+      volumes:
+        - name: tiles
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valhalla
+spec:
+  selector:
+    app: valhalla
+  ports:
+    - name: http
+      port: 8002
+      targetPort: http

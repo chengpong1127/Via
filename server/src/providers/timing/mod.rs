@@ -2,6 +2,7 @@ mod source;
 
 mod bus;
 mod bus_realtime;
+mod live_error;
 mod metro;
 mod metro_realtime;
 mod thsr;

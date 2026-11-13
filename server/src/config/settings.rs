@@ -87,7 +87,9 @@ pub struct PreprocessingSettings {
 
 pub use crate::data::static_transfers::TransferSettings;
 
-pub use crate::tdx::{BikeAvailabilitySettings, RealtimeSettings, TdxBatchSettings, TdxSettings};
+pub use crate::tdx::{
+    BikeAvailabilitySettings, RealtimeSettings, TdxBatchSettings, TdxGatewaySettings, TdxSettings,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +141,9 @@ impl ViaConfig {
         let port = std::env::var("PORT").ok();
         let tdx = std::env::var("VIA_TDX_BASE_URL").ok();
         let valhalla = std::env::var("VIA_VALHALLA_URL").ok();
+        if let Ok(gateway) = std::env::var("VIA_TDX_GATEWAY_URL") {
+            self.tdx.gateway.url = (!gateway.trim().is_empty()).then_some(gateway);
+        }
         self.apply_environment_values(port.as_deref(), tdx.as_deref(), valhalla.as_deref())
     }
 
@@ -163,12 +168,17 @@ impl ViaConfig {
     pub fn validate_environment(&self, environment: Environment) -> Result<(), ConfigError> {
         self.validate()?;
         if environment.is_production() {
-            for (key, value) in [
-                ("tdx.api_base_url", &self.tdx.api_base_url),
-                ("tdx.token_url", &self.tdx.token_url),
-                ("valhalla.base_url", &self.valhalla.base_url),
+            for (key, value, internal_allowed) in [
+                ("tdx.api_base_url", Some(&self.tdx.api_base_url), false),
+                ("tdx.token_url", Some(&self.tdx.token_url), false),
+                ("tdx.gateway.url", self.tdx.gateway.url.as_ref(), true),
+                ("valhalla.base_url", Some(&self.valhalla.base_url), true),
             ] {
-                if super::parse_url(key, value)?.scheme() != "https" {
+                let Some(value) = value else {
+                    continue;
+                };
+                let url = super::parse_url(key, value)?;
+                if url.scheme() != "https" && !(internal_allowed && is_internal_host(&url)) {
                     return Err(ConfigError::InsecureProductionUrl { setting: key });
                 }
             }
@@ -343,6 +353,15 @@ impl ViaConfig {
                 self.tdx.bike_catalog_page_size as u64,
             ),
             (
+                "tdx.rate_limit_backoff_seconds",
+                self.tdx.rate_limit_backoff_seconds,
+            ),
+            (
+                "tdx.gateway.max_ids_per_request",
+                self.tdx.gateway.max_ids_per_request as u64,
+            ),
+            ("tdx.gateway.port", u64::from(self.tdx.gateway.port)),
+            (
                 "tdx.batch.bike_stations",
                 self.tdx.batch.bike_stations as u64,
             ),
@@ -429,10 +448,14 @@ impl ViaConfig {
             )));
         }
         for (key, value) in [
-            ("tdx.api_base_url", &self.tdx.api_base_url),
-            ("tdx.token_url", &self.tdx.token_url),
-            ("valhalla.base_url", &self.valhalla.base_url),
+            ("tdx.api_base_url", Some(&self.tdx.api_base_url)),
+            ("tdx.token_url", Some(&self.tdx.token_url)),
+            ("tdx.gateway.url", self.tdx.gateway.url.as_ref()),
+            ("valhalla.base_url", Some(&self.valhalla.base_url)),
         ] {
+            let Some(value) = value else {
+                continue;
+            };
             let url = super::parse_url(key, value)?;
             if !matches!(url.scheme(), "http" | "https")
                 || url.host_str().is_none()
@@ -581,6 +604,19 @@ impl ViaConfig {
             metro_transfer_penalty_seconds: self.routing.ranking.metro_transfer_buffer_seconds,
             bus_transfer_penalty_seconds: self.routing.ranking.bus_transfer_buffer_seconds,
         }
+    }
+}
+
+fn is_internal_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        Some(url::Host::Ipv6(address)) => address.is_loopback() || address.is_unique_local(),
+        Some(url::Host::Domain(name)) => {
+            !name.contains('.') || name.ends_with(".svc") || name.ends_with(".svc.cluster.local")
+        }
+        None => false,
     }
 }
 

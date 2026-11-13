@@ -118,7 +118,7 @@ async fn scoped_fixture_client(
             calls.fetch_add(1, Ordering::Relaxed);
             requests.lock().unwrap().push(uri.to_string());
             if uri.path().contains(failing_scope) {
-                return StatusCode::TOO_MANY_REQUESTS.into_response();
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
             (StatusCode::OK, Json(payload)).into_response()
         }
@@ -326,9 +326,13 @@ fn query(pattern_id: &str, board_stop_id: &str, after: OffsetDateTime) -> Depart
 
 fn bus_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
     let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx)
-            .with_bindings(bindings(network.network(), &[]))
-            .with_realtime_endpoint("feed"),
+        BusDepartureSource::with_live_data(
+            network.clone(),
+            crate::support::tdx::bus_feed(tdx.clone(), "feed"),
+            &tdx.settings().realtime,
+        )
+        .with_bindings(bindings(network.network(), &[]))
+        .with_unscoped_realtime(),
     );
     DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }

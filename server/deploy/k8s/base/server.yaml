@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+        - name: server
+          image: via-server
+          env:
+            - name: VIA_ENV
+              value: production
+            - name: VIA_STATIC
+              value: /data/static/.via-static.json
+            - name: VIA_VALHALLA_URL
+              value: http://valhalla:8002/
+            - name: VIA_TDX_GATEWAY_URL
+              value: http://tdx-gateway:3100/
+          ports:
+            - name: http
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: static
+              mountPath: /data/static
+              readOnly: true
+      volumes:
+        - name: static
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+spec:
+  selector:
+    app: server
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

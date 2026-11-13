@@ -49,6 +49,38 @@ certificates must be enabled for the tailnet); the API is then at
 `https://<machine>.<tailnet>.ts.net`. Alternatively, set `VIA_BIND_ADDRESS` to an
 address the phone can reach, such as the Mac's Tailscale IP (`tailscale ip -4`).
 
+### Run on OrbStack Kubernetes
+
+[deploy/k8s](deploy/k8s) holds a kustomize base (two servers, two Valhalla pods
+and one `via-tdx-gateway`) and an `overlays/orbstack` overlay for the local
+cluster. The overlay mounts the Valhalla tiles and one static build from this
+machine, so it needs a local, git-ignored `volumes.yaml`. From the repository
+root:
+
+```sh
+cp server/deploy/k8s/overlays/orbstack/volumes.example.yaml \
+  server/deploy/k8s/overlays/orbstack/volumes.yaml
+```
+
+Set its two paths to the absolute `server/var/valhalla` directory and to the
+`server/data/build/<build-id>` directory that contains `.via-static.json`.
+Update the second path after each `via-data build`. Then build the image,
+create the credentials secret and deploy:
+
+```sh
+docker build -t via-server:dev -f server/Dockerfile server
+kubectl --context orbstack apply -f server/deploy/k8s/base/namespace.yaml
+kubectl --context orbstack -n via create secret generic tdx-credentials \
+  --from-literal=TDX_CLIENT_ID="$TDX_CLIENT_ID" \
+  --from-literal=TDX_CLIENT_SECRET="$TDX_CLIENT_SECRET"
+kubectl --context orbstack apply -k server/deploy/k8s/overlays/orbstack
+```
+
+The API is then at `http://localhost:3000`; the gateway and Valhalla are
+reachable only inside the cluster. After rebuilding the image, restart the pods
+with `kubectl --context orbstack -n via rollout restart deploy/server deploy/tdx-gateway`.
+Remove everything with `kubectl --context orbstack delete namespace via`.
+
 The server exposes `POST /v1/journey-plans`, `GET /v1/nearby-stops`,
 `GET /openapi.json`, and `GET /health/street-routing`. Responses are not cached.
 
@@ -69,6 +101,7 @@ Configuration:
 | `VIA_VALHALLA_URL` | Valhalla base URL. |
 | `VALHALLA_TILE_URL` | OSM PBF URL used by the local scripted Valhalla container. |
 | `VIA_TDX_BASE_URL` | TDX API base URL. |
+| `VIA_TDX_GATEWAY_URL` | Optional `via-tdx-gateway` base URL; when set the server needs no TDX credentials. |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | TDX OAuth credentials. |
 | `PORT` | Axum port; default 3000. |
 

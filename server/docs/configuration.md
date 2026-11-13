@@ -15,6 +15,7 @@ Setting precedence is explicit CLI override, then supported environment override
 | `PORT` | `server.port` |
 | `VIA_TDX_BASE_URL` | `tdx.api_base_url` |
 | `VIA_VALHALLA_URL` | `valhalla.base_url` |
+| `VIA_TDX_GATEWAY_URL` | `tdx.gateway.url`; the server reads live data from `via-tdx-gateway` and needs no TDX credentials |
 | `VIA_STATIC` | `server.static_path`; selects an existing artifact |
 | `VIA_ENV` | Deployment selector: `development` or `production` |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | Secrets; never put these in TOML |
@@ -22,7 +23,9 @@ Setting precedence is explicit CLI override, then supported environment override
 
 The existing dotenv loading order is retained: process environment wins over discovered `.env`, then `server/.env`, then repository `.env`. Old nonsecret entries in `.env` override TOML; remove them when moving ownership to the file. Compose retains its network-specific Valhalla URL override. `VALHALLA_TILE_URL` configures the external Valhalla image rather than Via.
 
-The server still requires explicit `VIA_ENV`. Both CLIs default to development when it is absent. Production requires HTTPS for the TDX API, OAuth token endpoint, and Valhalla. Development disables the existing overall planning and HTTP deadlines; provider timeouts remain active. TOML cannot disable production deadlines.
+`via-tdx-gateway` is the only process that needs TDX credentials when `tdx.gateway.url` is set. It owns the OAuth token, the live cache and the rate-limit backoff, and serves `POST /live/bus/arrivals`, `/live/bike/availability`, `/live/metro/boards` and `/live/tra/delays` plus `/health/live`, `/health/ready` and `/metrics`. Run exactly one replica so the cache and the TDX quota stay in one place. Without `tdx.gateway.url` the server keeps the same cache in-process and calls TDX directly. The gateway requires explicit `VIA_ENV` and ignores `tdx.gateway.url` and `VIA_STATIC`. It logs one `live data request` line per call and exports `via_tdx_gateway_requests_total`, `via_tdx_gateway_request_seconds`, `via_live_entities_requested_total`, `via_live_upstream_requests_total`, `via_live_entities_unavailable_total` and `via_live_rate_limit_blocks_total`, labelled by dataset.
+
+The server still requires explicit `VIA_ENV`. Both CLIs default to development when it is absent. Production requires HTTPS for the TDX API and OAuth token endpoint. Valhalla and `tdx.gateway.url` also require HTTPS unless the host is internal: a loopback or private IP address, a single-label name such as `valhalla`, or a name ending in `.svc` or `.svc.cluster.local`. Development disables the existing overall planning and HTTP deadlines; provider timeouts remain active. TOML cannot disable production deadlines.
 
 `via-route --max-static-corridors`, `--max-departures-per-query`, and `--valhalla-timeout-ms` override their corresponding settings. The existing timeout flag also sets the overall planning deadline to five times that timeout. Zero CLI limits fail validation instead of being silently clamped.
 
@@ -40,10 +43,11 @@ The tracked file lists every key and its default in one place. Durations use the
 | `bikeshare.preprocessing` | `max_geometric_radius_metres`, `max_walking_duration_seconds`, `max_walking_distance_metres`, `max_geometric_candidates_per_boarding_point`, `max_access_stations_per_boarding_point`, `max_matrix_concurrency` | Build-time station access policy; geometric candidates must fit both Matrix dimensions and cover retained access count |
 | `preprocessing` | `same_stop_transfer_seconds` | Build-time same-stop transit transfer buffer embedded in the artifact |
 | `preprocessing.transfers` | `radius_metres`, `max_duration_seconds`, `max_distance_metres`, `max_outgoing`, `max_concurrency`, `source_group_size` | Build-time walking transfers and bounded preprocessing work |
-| `tdx` | `api_base_url`, `token_url`, `connect_timeout_ms`, `request_timeout_ms`, `download_timeout_seconds`, `max_response_bytes`, `max_rate_limit_retries`, `minimum_token_lifetime_seconds`, `token_refresh_margin_seconds`, `bike_catalog_page_size` | HTTP/OAuth resources, existing Retry-After behavior and static station catalog fetch pagination |
+| `tdx` | `api_base_url`, `token_url`, `connect_timeout_ms`, `request_timeout_ms`, `download_timeout_seconds`, `max_response_bytes`, `max_rate_limit_retries`, `minimum_token_lifetime_seconds`, `token_refresh_margin_seconds`, `bike_catalog_page_size`, `rate_limit_backoff_seconds` | HTTP/OAuth resources, existing Retry-After behavior and static station catalog fetch pagination; after a live-data 429, no further live TDX call is made for the `Retry-After` duration, or `rate_limit_backoff_seconds` when the header is absent |
 | `tdx.batch` | `bike_stations`, `bus_stops`, `metro_pairs`, `metro_response_limit` | City-scoped BikeShare/Bus batches and unique Metro line/station pairs; no TRA batch cap |
-| `tdx.realtime` | `fresh_seconds`, `degraded_seconds`, `max_clock_skew_seconds`, `cache_ttl_seconds`, `cache_max_bytes` | Shared Bus/Metro/TRA timing freshness and future-timestamp tolerance; Bus/Metro/TRA live responses are reused across requests by exact TDX URL for `cache_ttl_seconds` (less than `fresh_seconds`), up to `cache_max_bytes` |
-| `tdx.bikeshare` | `cache_ttl_seconds`, `cache_capacity`, `max_concurrent_cities`, `max_age_seconds`, `max_clock_skew_seconds` | Availability cache, city concurrency and shared provider/planner freshness checks |
+| `tdx.realtime` | `fresh_seconds`, `degraded_seconds`, `max_clock_skew_seconds`, `cache_ttl_seconds`, `cache_max_bytes` | Shared Bus/Metro/TRA timing freshness and future-timestamp tolerance; Bus/Metro/TRA live records are reused across requests per Bus stop and scope, Metro line/station pair, or TRA train number for `cache_ttl_seconds` (less than `fresh_seconds`), up to `cache_max_bytes`; an entity with no records is cached as empty |
+| `tdx.bikeshare` | `cache_ttl_seconds`, `cache_capacity`, `max_concurrent_cities`, `max_age_seconds`, `max_clock_skew_seconds` | Per-station availability cache, city concurrency and shared provider/planner freshness checks |
+| `tdx.gateway` | `url` (optional), `port`, `max_ids_per_request` | `url` selects gateway mode for the server and `via-route`; `port` and `max_ids_per_request` configure the `via-tdx-gateway` listener |
 | `valhalla` | `base_url`, `request_timeout_ms`, `build_request_timeout_ms`, `max_concurrency`, `max_sources`, `max_targets`, `max_response_bytes` | Runtime/build provider limits and Matrix capacity |
 
 BikeShare batching is city-specific for every supported city and `$top` equals the requested station count.

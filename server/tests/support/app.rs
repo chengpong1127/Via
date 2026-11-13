@@ -87,7 +87,8 @@ where
         ),
         street,
         street_health,
-        tdx: failing_tdx_client(),
+        live: Arc::new(via_server::live::DirectLiveData::new(failing_tdx_client())),
+        realtime: via_server::config::ViaConfig::default().tdx.realtime,
         bike_availability: bike_availability_source,
         limits: JourneyPlanningLimits::default(),
     });
