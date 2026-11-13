@@ -58,21 +58,25 @@ impl CachedLiveData {
         Self {
             inner,
             bus: EntityCache::weighted(
+                "bus",
                 "via_tdx_realtime_cache_hits_total",
                 settings.realtime_ttl,
                 realtime_bytes,
             ),
             metro: EntityCache::weighted(
+                "metro",
                 "via_tdx_realtime_cache_hits_total",
                 settings.realtime_ttl,
                 realtime_bytes,
             ),
             tra: EntityCache::weighted(
+                "tra",
                 "via_tdx_realtime_cache_hits_total",
                 settings.realtime_ttl,
                 realtime_bytes,
             ),
             bike: EntityCache::counted(
+                "bike",
                 "via_bike_availability_station_cache_hits_total",
                 settings.bike_ttl,
                 settings.bike_capacity,
@@ -102,6 +106,13 @@ impl CachedLiveData {
         if duration.is_zero() {
             return;
         }
+        ::metrics::counter!("via_live_rate_limit_blocks_total").increment(1);
+        tracing::warn!(
+            target: "via_server::live",
+            pause_seconds = duration.as_secs(),
+            retry_after_known = retry_after.is_some(),
+            "TDX rate limit reached; live calls are paused and cached entities stay available"
+        );
         let until = Instant::now() + duration;
         let mut blocked_until = self.blocked_until.lock().expect("rate limit block lock");
         if blocked_until.is_none_or(|current| current < until) {
@@ -126,6 +137,26 @@ impl CachedLiveData {
         let mut ids = ids.to_vec();
         ids.sort();
         ids.dedup();
+        let requested = ids.len();
+        let batch = self.load_missing(cache, scope, ids, key_of, fetch).await;
+        cache.observe(scope, requested, &batch);
+        batch
+    }
+
+    async fn load_missing<K, T, F, Fut>(
+        &self,
+        cache: &EntityCache<K, T>,
+        scope: &str,
+        ids: Vec<K>,
+        key_of: impl Fn(&T) -> Option<K>,
+        fetch: F,
+    ) -> LiveBatch<T, K>
+    where
+        K: Clone + Eq + Hash + Ord + Send + Sync + 'static,
+        T: Clone + Send + Sync + 'static,
+        F: FnOnce(Vec<K>) -> Fut,
+        Fut: Future<Output = LiveBatch<T, K>>,
+    {
         let mut batch = LiveBatch::default();
         let missing = cache.take_cached(scope, ids, &mut batch.records).await;
         if missing.is_empty() {
@@ -243,6 +274,7 @@ type Reusable<T> = Box<dyn Fn(&T) -> bool + Send + Sync>;
 struct EntityCache<K, T> {
     entries: Cache<(String, K), Arc<Vec<T>>>,
     refreshes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    dataset: &'static str,
     hit_metric: &'static str,
     reusable: Option<Reusable<T>>,
 }
@@ -252,8 +284,14 @@ where
     K: Clone + Eq + Hash + Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
 {
-    fn weighted(hit_metric: &'static str, ttl: Duration, max_bytes: u64) -> Self {
+    fn weighted(
+        dataset: &'static str,
+        hit_metric: &'static str,
+        ttl: Duration,
+        max_bytes: u64,
+    ) -> Self {
         Self::build(
+            dataset,
             hit_metric,
             Cache::builder()
                 .max_capacity(max_bytes)
@@ -266,8 +304,14 @@ where
         )
     }
 
-    fn counted(hit_metric: &'static str, ttl: Duration, capacity: u64) -> Self {
+    fn counted(
+        dataset: &'static str,
+        hit_metric: &'static str,
+        ttl: Duration,
+        capacity: u64,
+    ) -> Self {
         Self::build(
+            dataset,
             hit_metric,
             Cache::builder()
                 .max_capacity(capacity)
@@ -276,10 +320,15 @@ where
         )
     }
 
-    fn build(hit_metric: &'static str, entries: Cache<(String, K), Arc<Vec<T>>>) -> Self {
+    fn build(
+        dataset: &'static str,
+        hit_metric: &'static str,
+        entries: Cache<(String, K), Arc<Vec<T>>>,
+    ) -> Self {
         Self {
             entries,
             refreshes: Mutex::new(HashMap::new()),
+            dataset,
             hit_metric,
             reusable: None,
         }
@@ -315,6 +364,32 @@ where
             ::metrics::counter!(self.hit_metric).increment(hits);
         }
         missing
+    }
+
+    fn observe(&self, scope: &str, requested: usize, batch: &LiveBatch<T, K>) {
+        let dataset = self.dataset;
+        ::metrics::counter!("via_live_entities_requested_total", "dataset" => dataset)
+            .increment(requested as u64);
+        ::metrics::counter!("via_live_upstream_requests_total", "dataset" => dataset)
+            .increment(batch.upstream_requests as u64);
+        for unavailable in &batch.unavailable {
+            ::metrics::counter!(
+                "via_live_entities_unavailable_total",
+                "dataset" => dataset,
+                "reason" => unavailable.reason.as_str()
+            )
+            .increment(1);
+        }
+        tracing::debug!(
+            target: "via_server::live",
+            dataset,
+            scope,
+            requested,
+            records = batch.records.len(),
+            unavailable = batch.unavailable.len(),
+            upstream_requests = batch.upstream_requests,
+            "live data batch"
+        );
     }
 
     fn refresh_lock(&self, scope: &str) -> Arc<tokio::sync::Mutex<()>> {

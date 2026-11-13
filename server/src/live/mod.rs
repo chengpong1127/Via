@@ -22,6 +22,18 @@ pub enum UnavailableReason {
     InvalidConfiguration,
 }
 
+impl UnavailableReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimited => "rate_limited",
+            Self::TimedOut => "timed_out",
+            Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::InvalidResponse => "invalid_response",
+            Self::InvalidConfiguration => "invalid_configuration",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Unavailable<K> {
     pub id: K,

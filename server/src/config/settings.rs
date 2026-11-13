@@ -168,12 +168,17 @@ impl ViaConfig {
     pub fn validate_environment(&self, environment: Environment) -> Result<(), ConfigError> {
         self.validate()?;
         if environment.is_production() {
-            for (key, value) in [
-                ("tdx.api_base_url", &self.tdx.api_base_url),
-                ("tdx.token_url", &self.tdx.token_url),
-                ("valhalla.base_url", &self.valhalla.base_url),
+            for (key, value, internal_allowed) in [
+                ("tdx.api_base_url", Some(&self.tdx.api_base_url), false),
+                ("tdx.token_url", Some(&self.tdx.token_url), false),
+                ("tdx.gateway.url", self.tdx.gateway.url.as_ref(), true),
+                ("valhalla.base_url", Some(&self.valhalla.base_url), true),
             ] {
-                if super::parse_url(key, value)?.scheme() != "https" {
+                let Some(value) = value else {
+                    continue;
+                };
+                let url = super::parse_url(key, value)?;
+                if url.scheme() != "https" && !(internal_allowed && is_internal_host(&url)) {
                     return Err(ConfigError::InsecureProductionUrl { setting: key });
                 }
             }
@@ -609,6 +614,19 @@ impl ViaConfig {
             metro_transfer_penalty_seconds: self.routing.ranking.metro_transfer_buffer_seconds,
             bus_transfer_penalty_seconds: self.routing.ranking.bus_transfer_buffer_seconds,
         }
+    }
+}
+
+fn is_internal_host(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        Some(url::Host::Ipv6(address)) => address.is_loopback() || address.is_unique_local(),
+        Some(url::Host::Domain(name)) => {
+            !name.contains('.') || name.ends_with(".svc") || name.ends_with(".svc.cluster.local")
+        }
+        None => false,
     }
 }
 

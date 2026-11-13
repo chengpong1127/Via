@@ -82,7 +82,7 @@ pub enum ConfigError {
         #[source]
         source: url::ParseError,
     },
-    #[error("{setting} must use HTTPS in production")]
+    #[error("{setting} must use HTTPS in production unless it is an internal address")]
     InsecureProductionUrl { setting: &'static str },
     #[error(transparent)]
     TdxCredentials(#[from] TdxCredentialsError),

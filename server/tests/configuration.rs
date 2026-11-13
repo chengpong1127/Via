@@ -104,12 +104,33 @@ fn production_requires_https_for_api_token_and_matrix_urls() {
             .validate_environment(Environment::Development)
             .is_ok()
     );
+    assert!(config.validate_environment(Environment::Production).is_ok());
+    for internal in [
+        "http://valhalla:8002/",
+        "http://valhalla.via.svc.cluster.local:8002/",
+        "http://10.0.3.7:8002/",
+    ] {
+        config.valhalla.base_url = internal.into();
+        config.tdx.gateway.url = Some(internal.into());
+        assert!(
+            config.validate_environment(Environment::Production).is_ok(),
+            "{internal}"
+        );
+    }
+    config.valhalla.base_url = "http://router.example.com/".into();
     assert!(
         config
             .validate_environment(Environment::Production)
             .is_err()
     );
     config.valhalla.base_url = "https://router.example.com/".into();
+    config.tdx.gateway.url = Some("http://gateway.example.com/".into());
+    assert!(
+        config
+            .validate_environment(Environment::Production)
+            .is_err()
+    );
+    config.tdx.gateway.url = None;
     assert!(config.validate_environment(Environment::Production).is_ok());
     config.tdx.token_url = "http://tokens.example.com/".into();
     assert!(

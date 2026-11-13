@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -9,9 +9,8 @@ use axum::{
 };
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
-use tower_http::trace::TraceLayer;
 
-use super::{LiveDataSource, MetroPair};
+use super::{LiveBatch, LiveDataSource, MetroPair};
 
 pub const BUS_ARRIVALS_PATH: &str = "live/bus/arrivals";
 pub const BIKE_AVAILABILITY_PATH: &str = "live/bike/availability";
@@ -57,53 +56,83 @@ pub fn router(
             max_ids_per_request,
         })
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(TraceLayer::new_for_http())
 }
 
 async fn bus_arrivals(
     State(state): State<GatewayState>,
     Json(request): Json<LiveRequest>,
 ) -> Response {
-    if let Some(rejection) = state.reject(&request.ids) {
+    if let Some(rejection) = state.reject("bus", &request.ids) {
         return rejection;
     }
-    Json(state.live.bus_arrivals(&request.scope, &request.ids).await).into_response()
+    let started = Instant::now();
+    let batch = state.live.bus_arrivals(&request.scope, &request.ids).await;
+    respond("bus", &request.scope, request.ids.len(), started, batch)
 }
 
 async fn bike_availability(
     State(state): State<GatewayState>,
     Json(request): Json<LiveRequest>,
 ) -> Response {
-    if let Some(rejection) = state.reject(&request.ids) {
+    if let Some(rejection) = state.reject("bike", &request.ids) {
         return rejection;
     }
-    Json(
-        state
-            .live
-            .bike_availability(&request.scope, &request.ids)
-            .await,
-    )
-    .into_response()
+    let started = Instant::now();
+    let batch = state
+        .live
+        .bike_availability(&request.scope, &request.ids)
+        .await;
+    respond("bike", &request.scope, request.ids.len(), started, batch)
 }
 
 async fn metro_boards(
     State(state): State<GatewayState>,
     Json(request): Json<LiveRequest<MetroPair>>,
 ) -> Response {
-    if let Some(rejection) = state.reject(&request.ids) {
+    if let Some(rejection) = state.reject("metro", &request.ids) {
         return rejection;
     }
-    Json(state.live.metro_boards(&request.ids).await).into_response()
+    let started = Instant::now();
+    let batch = state.live.metro_boards(&request.ids).await;
+    respond("metro", &request.scope, request.ids.len(), started, batch)
 }
 
 async fn tra_delays(
     State(state): State<GatewayState>,
     Json(request): Json<LiveRequest>,
 ) -> Response {
-    if let Some(rejection) = state.reject(&request.ids) {
+    if let Some(rejection) = state.reject("tra", &request.ids) {
         return rejection;
     }
-    Json(state.live.tra_delays(&request.ids).await).into_response()
+    let started = Instant::now();
+    let batch = state.live.tra_delays(&request.ids).await;
+    respond("tra", &request.scope, request.ids.len(), started, batch)
+}
+
+fn respond<T: Serialize, K: Clone + Serialize>(
+    dataset: &'static str,
+    scope: &str,
+    requested: usize,
+    started: Instant,
+    batch: LiveBatch<T, K>,
+) -> Response {
+    let elapsed = started.elapsed();
+    ::metrics::counter!("via_tdx_gateway_requests_total", "dataset" => dataset).increment(1);
+    ::metrics::histogram!("via_tdx_gateway_request_seconds", "dataset" => dataset)
+        .record(elapsed.as_secs_f64());
+    tracing::info!(
+        target: "via_server::live::gateway",
+        dataset,
+        scope,
+        requested,
+        records = batch.records.len(),
+        unavailable = batch.unavailable.len(),
+        rate_limited = batch.is_rate_limited(),
+        upstream_requests = batch.upstream_requests,
+        elapsed_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+        "live data request"
+    );
+    Json(batch).into_response()
 }
 
 async fn health() -> Response {
@@ -123,8 +152,17 @@ async fn metrics_endpoint(State(state): State<GatewayState>) -> Response {
 }
 
 impl GatewayState {
-    fn reject<K>(&self, ids: &[K]) -> Option<Response> {
+    fn reject<K>(&self, dataset: &'static str, ids: &[K]) -> Option<Response> {
         (ids.len() > self.max_ids_per_request).then(|| {
+            ::metrics::counter!("via_tdx_gateway_rejected_requests_total", "dataset" => dataset)
+                .increment(1);
+            tracing::warn!(
+                target: "via_server::live::gateway",
+                dataset,
+                requested = ids.len(),
+                limit = self.max_ids_per_request,
+                "live data request rejected for too many ids"
+            );
             (
                 StatusCode::BAD_REQUEST,
                 format!(
