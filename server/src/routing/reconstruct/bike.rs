@@ -114,6 +114,7 @@ async fn append_bike_share(
         &bike_movement.pickup_station_id,
         &bike_movement.dropoff_station_id,
         bicycle,
+        reconstructor.rental_handling_seconds,
         assembly,
     );
 
@@ -141,10 +142,12 @@ fn append_bicycle(
     pickup_station_id: &crate::domain::ids::BikeStationId,
     dropoff_station_id: &crate::domain::ids::BikeStationId,
     path: StreetPath,
+    rental_handling_seconds: u32,
     assembly: &mut JourneyAssembly,
 ) {
     let departure = assembly.arrival_time;
-    let arrival = departure + Duration::seconds(i64::from(path.duration.0));
+    let duration_seconds = path.duration.0.saturating_add(rental_handling_seconds);
+    let arrival = departure + Duration::seconds(i64::from(duration_seconds));
     let leg_id = format!("candidate_leg_{}", assembly.legs.len());
     assembly.legs.push(Leg {
         id: leg_id,
@@ -153,7 +156,7 @@ fn append_bicycle(
         to: dropoff.clone(),
         departure_time: departure,
         arrival_time: arrival,
-        duration_seconds: path.duration.0,
+        duration_seconds,
         geometry: Geometry {
             encoding: "polyline6",
             points: geometry::encode_polyline6(&path.geometry),
@@ -175,7 +178,7 @@ fn append_bicycle(
         },
         attribution: path.attribution.clone(),
     });
-    assembly.bicycle_seconds = assembly.bicycle_seconds.saturating_add(path.duration.0);
+    assembly.bicycle_seconds = assembly.bicycle_seconds.saturating_add(duration_seconds);
     assembly.arrival_time = arrival;
     evidence::push_unique_mode(&mut assembly.travel_modes, LegMode::Bicycle);
 }
@@ -244,7 +247,8 @@ mod tests {
             Arc::new(street.build()),
             Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
             Arc::new(BikeShareNetwork::new(stations.to_vec())),
-        );
+        )
+        .with_rental_handling_seconds(60);
         let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({
             "origin": {"coordinate": place(0).coordinate, "display_text": "origin"},
             "destination": {"coordinate": place(6).coordinate, "display_text": "destination"},
@@ -297,7 +301,8 @@ mod tests {
             .await
             .unwrap()
         );
-        assert_eq!(assembly.arrival_time, departure + Duration::seconds(360));
+        assert_eq!(assembly.legs[1].duration_seconds, 100);
+        assert_eq!(assembly.arrival_time, departure + Duration::seconds(420));
         let second = movement(1, 2, "4", "5").with_rental_wait(900).unwrap();
         assert!(
             append_bike_share(
@@ -313,11 +318,11 @@ mod tests {
         );
         assert_eq!(
             assembly.legs[3].departure_time,
-            departure + Duration::seconds(960)
+            departure + Duration::seconds(1020)
         );
-        assert_eq!(assembly.arrival_time, departure + Duration::seconds(1020));
+        assert_eq!(assembly.arrival_time, departure + Duration::seconds(1140));
         assert_eq!(assembly.bike_share_uses, 2);
         assert_eq!(assembly.walking_seconds, 350);
-        assert_eq!(assembly.bicycle_seconds, 70);
+        assert_eq!(assembly.bicycle_seconds, 190);
     }
 }

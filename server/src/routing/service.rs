@@ -57,7 +57,8 @@ impl RoutingService {
             limits.bike.clone(),
         );
         let reconstructor =
-            JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network);
+            JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network)
+                .with_rental_handling_seconds(limits.bike.rental_handling_seconds);
         let limits = limits.normalized();
         Self {
             planner,

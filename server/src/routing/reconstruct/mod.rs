@@ -37,6 +37,7 @@ pub(super) struct JourneyReconstructor {
     street_routing: Arc<dyn StreetRouter>,
     transit_runtime: Arc<TransitRuntime>,
     bike_share_network: Arc<BikeShareNetwork>,
+    rental_handling_seconds: u32,
 }
 
 pub(super) struct JourneyCandidate {
@@ -54,7 +55,13 @@ impl JourneyReconstructor {
             street_routing,
             transit_runtime,
             bike_share_network,
+            rental_handling_seconds: 0,
         }
+    }
+
+    pub(super) fn with_rental_handling_seconds(mut self, seconds: u32) -> Self {
+        self.rental_handling_seconds = seconds;
+        self
     }
 
     #[tracing::instrument(target = "via_profile", name = "Reconstruction", skip_all, fields(candidate_count = journeys.len()))]
@@ -100,6 +107,7 @@ impl JourneyReconstructor {
             street_routing: Arc::new(RouteCache::new(self.street_routing.clone())),
             transit_runtime: self.transit_runtime.clone(),
             bike_share_network: self.bike_share_network.clone(),
+            rental_handling_seconds: self.rental_handling_seconds,
         }
     }
 
