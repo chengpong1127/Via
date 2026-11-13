@@ -22,3 +22,4 @@ perf.data.*
 /benchmark-output/
 /server/benchmark-output/
 /ios/Config/Local.xcconfig
+/server/deploy/k8s/overlays/orbstack/volumes.yaml

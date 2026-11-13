@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valhalla
+spec:
+  template:
+    spec:
+      volumes:
+        - name: tiles
+          emptyDir: null
+          hostPath:
+            path: /absolute/path/to/Via/server/var/valhalla
+            type: Directory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  template:
+    spec:
+      volumes:
+        - name: static
+          emptyDir: null
+          hostPath:
+            path: /absolute/path/to/Via/server/data/build/<build-id>
+            type: Directory

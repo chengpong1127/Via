@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tdx-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tdx-gateway
+  template:
+    metadata:
+      labels:
+        app: tdx-gateway
+    spec:
+      containers:
+        - name: tdx-gateway
+          image: via-server
+          command: ["/usr/local/bin/via-tdx-gateway"]
+          env:
+            - name: VIA_ENV
+              value: production
+            - name: TDX_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: tdx-credentials
+                  key: TDX_CLIENT_ID
+            - name: TDX_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: tdx-credentials
+                  key: TDX_CLIENT_SECRET
+          ports:
+            - name: http
+              containerPort: 3100
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tdx-gateway
+spec:
+  selector:
+    app: tdx-gateway
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http

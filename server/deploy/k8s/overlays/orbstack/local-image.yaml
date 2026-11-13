@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          imagePullPolicy: Never
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tdx-gateway
+spec:
+  template:
+    spec:
+      containers:
+        - name: tdx-gateway
+          imagePullPolicy: Never

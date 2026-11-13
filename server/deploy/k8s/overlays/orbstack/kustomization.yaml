@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: via-server
+    newName: via-server
+    newTag: dev
+patches:
+  - path: local-image.yaml
+  - path: volumes.yaml
+  - target:
+      kind: Service
+      name: server
+    patch: |-
+      - op: add
+        path: /spec/type
+        value: LoadBalancer
+      - op: replace
+        path: /spec/ports/0/port
+        value: 3000
