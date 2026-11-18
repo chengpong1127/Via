@@ -52,8 +52,31 @@ struct Boarded {
     board_cost_seconds: u32,
     penalty_seconds: u32,
     ride_seconds: u32,
-    first_source: Option<SegmentTimeSource>,
-    mixed_source: bool,
+    cost_source: CostSourceTracker,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CostSourceTracker(Option<StaticCostSource>);
+
+impl CostSourceTracker {
+    fn push(&mut self, source: StaticCostSource) {
+        self.0 = Some(match self.0 {
+            Some(known) if known != source => StaticCostSource::Mixed,
+            _ => source,
+        });
+    }
+
+    fn push_segment(&mut self, source: SegmentTimeSource) {
+        self.push(match source {
+            SegmentTimeSource::Schedule => StaticCostSource::ExactSchedule,
+            SegmentTimeSource::Derived => StaticCostSource::DerivedBus,
+            SegmentTimeSource::Estimated => StaticCostSource::OptimisticEstimate,
+        });
+    }
+
+    fn finish(self) -> StaticCostSource {
+        self.0.unwrap_or(StaticCostSource::OptimisticEstimate)
+    }
 }
 
 struct Candidate {
@@ -124,20 +147,20 @@ pub fn generate(
             access_stop_id: access.stop_id.clone(),
             step: None,
         });
-        let label = Label {
-            cost_seconds: access.walking_seconds,
-            penalty_seconds: 0,
-            last_mode: None,
-            node,
-            structure: fingerprint(0, &access.stop_id),
-            last_line_id: None,
-            after_ride: false,
-        };
-        if search.insert(&access.stop_id, &label) {
+        let structure = fingerprint(0, &access.stop_id);
+        if search.insert(&access.stop_id, access.walking_seconds, structure, None) {
             current
                 .entry(access.stop_id.clone())
                 .or_default()
-                .push(label);
+                .push(Label {
+                    cost_seconds: access.walking_seconds,
+                    penalty_seconds: 0,
+                    last_mode: None,
+                    node,
+                    structure,
+                    last_line_id: None,
+                    after_ride: false,
+                });
         }
     }
     search.relax_transfers(&mut current);
@@ -242,7 +265,7 @@ impl Search<'_> {
             }
             TransitMode::Bus | TransitMode::Metro => self
                 .network
-                .required_pattern(&group.pattern_id)
+                .required_pattern(group.pattern_id)
                 .route_id
                 .clone(),
         };
@@ -253,47 +276,45 @@ impl Search<'_> {
                 let segment = &group.segments[stop_index - 1];
                 for entry in &mut boarded {
                     entry.ride_seconds = entry.ride_seconds.saturating_add(segment.seconds);
-                    entry.mixed_source |= entry
-                        .first_source
-                        .is_some_and(|first| first != segment.source);
-                    entry.first_source.get_or_insert(segment.source);
+                    entry.cost_source.push_segment(segment.source);
                 }
                 boarded.retain(|entry| {
                     entry.board_cost_seconds.saturating_add(entry.ride_seconds)
-                        <= self.target_seconds.min(self.max_seconds)
+                        <= self.target_seconds
                 });
                 for entry in &boarded {
-                    let leg = StaticTransitLeg {
-                        pattern_id: group.pattern_id.clone(),
-                        board_stop_id: group.stops[entry.board_index].clone(),
-                        board_index: entry.board_index,
-                        alight_stop_id: stop_id.clone(),
-                        alight_index: stop_index,
-                        cost_source: leg_cost_source(entry.first_source, entry.mixed_source),
-                    };
+                    let board_stop_id = &group.stops[entry.board_index];
                     let structure = fingerprint(
                         entry.label.structure,
-                        &(group.mode as u8, &leg.board_stop_id, stop_id),
+                        &(group.mode as u8, board_stop_id, stop_id),
                     );
+                    let cost_seconds = entry.board_cost_seconds.saturating_add(entry.ride_seconds);
+                    if !self.insert(stop_id, cost_seconds, structure, Some(&line_id)) {
+                        continue;
+                    }
                     let node = self.nodes.len();
-                    let label = Label {
-                        cost_seconds: entry.board_cost_seconds.saturating_add(entry.ride_seconds),
+                    self.nodes.push(Node {
+                        parent: Some(entry.label.node),
+                        access_stop_id: self.nodes[entry.label.node].access_stop_id.clone(),
+                        step: Some(StaticCorridorStep::Transit(StaticTransitLeg {
+                            pattern_id: group.pattern_id.clone(),
+                            board_stop_id: board_stop_id.clone(),
+                            board_index: entry.board_index,
+                            alight_stop_id: stop_id.clone(),
+                            alight_index: stop_index,
+                            cost_source: entry.cost_source.finish(),
+                        })),
+                    });
+                    self.stats.states_expanded += 1;
+                    next.entry(stop_id.clone()).or_default().push(Label {
+                        cost_seconds,
                         penalty_seconds: entry.penalty_seconds,
                         last_mode: Some(group.mode),
                         node,
                         structure,
                         last_line_id: Some(line_id.clone()),
                         after_ride: true,
-                    };
-                    if self.insert(stop_id, &label) {
-                        self.nodes.push(Node {
-                            parent: Some(entry.label.node),
-                            access_stop_id: self.nodes[entry.label.node].access_stop_id.clone(),
-                            step: Some(StaticCorridorStep::Transit(leg)),
-                        });
-                        self.stats.states_expanded += 1;
-                        next.entry(stop_id.clone()).or_default().push(label);
-                    }
+                    });
                 }
             }
             let Some(labels) = current.get(stop_id) else {
@@ -302,6 +323,7 @@ impl Search<'_> {
             if stop_index + 1 >= group.stops.len() {
                 continue;
             }
+            let already_boarded = boarded.len();
             for label in labels {
                 if label.last_line_id.as_ref() == Some(&line_id) {
                     continue;
@@ -329,14 +351,26 @@ impl Search<'_> {
                         .penalty_seconds
                         .saturating_add(transfer_penalty_seconds),
                     ride_seconds: 0,
-                    first_source: None,
-                    mixed_source: false,
+                    cost_source: CostSourceTracker::default(),
                 });
+            }
+            if boarded.len() == already_boarded {
+                continue;
             }
             boarded
                 .sort_by_key(|entry| entry.board_cost_seconds.saturating_add(entry.ride_seconds));
-            let mut seen = HashSet::new();
-            boarded.retain(|entry| seen.insert(entry.label.structure));
+            let mut index = 0;
+            while index < boarded.len() {
+                let structure = boarded[index].label.structure;
+                if boarded[..index]
+                    .iter()
+                    .any(|entry| entry.label.structure == structure)
+                {
+                    boarded.remove(index);
+                } else {
+                    index += 1;
+                }
+            }
             boarded.truncate(LABELS_PER_STOP);
         }
     }
@@ -350,35 +384,35 @@ impl Search<'_> {
                 }
                 for shortcut in self.transfers.transfers_from(stop_id) {
                     let cost_seconds = label.cost_seconds.saturating_add(shortcut.duration_seconds);
-                    if cost_seconds > self.target_seconds.min(self.max_seconds) {
+                    let structure = fingerprint(label.structure, &(&shortcut.from, &shortcut.to));
+                    if !self.insert(
+                        &shortcut.to,
+                        cost_seconds,
+                        structure,
+                        label.last_line_id.as_ref(),
+                    ) {
                         continue;
                     }
                     let node = self.nodes.len();
-                    let transferred = Label {
+                    self.nodes.push(Node {
+                        parent: Some(label.node),
+                        access_stop_id: self.nodes[label.node].access_stop_id.clone(),
+                        step: Some(StaticCorridorStep::SurfaceTransfer {
+                            from: shortcut.from.clone(),
+                            to: shortcut.to.clone(),
+                            walking_duration_seconds: shortcut.duration_seconds,
+                            walking_distance_metres: shortcut.distance_metres,
+                        }),
+                    });
+                    walked.entry(shortcut.to.clone()).or_default().push(Label {
                         cost_seconds,
                         penalty_seconds: label.penalty_seconds,
                         last_mode: label.last_mode,
                         node,
-                        structure: fingerprint(label.structure, &(&shortcut.from, &shortcut.to)),
+                        structure,
                         last_line_id: label.last_line_id.clone(),
                         after_ride: false,
-                    };
-                    if self.insert(&shortcut.to, &transferred) {
-                        self.nodes.push(Node {
-                            parent: Some(label.node),
-                            access_stop_id: self.nodes[label.node].access_stop_id.clone(),
-                            step: Some(StaticCorridorStep::SurfaceTransfer {
-                                from: shortcut.from.clone(),
-                                to: shortcut.to.clone(),
-                                walking_duration_seconds: shortcut.duration_seconds,
-                                walking_distance_metres: shortcut.distance_metres,
-                            }),
-                        });
-                        walked
-                            .entry(shortcut.to.clone())
-                            .or_default()
-                            .push(transferred);
-                    }
+                    });
                 }
             }
         }
@@ -387,59 +421,77 @@ impl Search<'_> {
         }
     }
 
-    fn insert(&mut self, stop_id: &BoardingPointId, label: &Label) -> bool {
-        if label.cost_seconds > self.target_seconds.min(self.max_seconds) {
+    fn insert(
+        &mut self,
+        stop_id: &BoardingPointId,
+        cost_seconds: u32,
+        structure: u64,
+        last_line_id: Option<&TransitRouteId>,
+    ) -> bool {
+        if cost_seconds > self.target_seconds {
             return false;
         }
-        let bag = self.best.entry(stop_id.clone()).or_default();
+        if !self.best.contains_key(stop_id) {
+            self.best.insert(stop_id.clone(), Vec::new());
+        }
+        let Some(bag) = self.best.get_mut(stop_id) else {
+            return false;
+        };
         if let Some(index) = bag.iter().position(|known| {
-            known.structure == label.structure && known.last_line_id == label.last_line_id
+            known.structure == structure && known.last_line_id.as_ref() == last_line_id
         }) {
-            if bag[index].cost_seconds <= label.cost_seconds {
+            if bag[index].cost_seconds <= cost_seconds {
                 return false;
             }
             bag.remove(index);
         }
-        if bag
-            .iter()
-            .filter(|known| {
-                known.structure == label.structure && known.cost_seconds <= label.cost_seconds
-            })
-            .count()
-            >= ROUTE_VARIANTS_PER_STRUCTURE
-        {
-            return false;
-        }
-        let better_structures = bag
-            .iter()
-            .filter(|known| {
-                known.structure != label.structure && known.cost_seconds <= label.cost_seconds
-            })
-            .map(|known| known.structure)
-            .collect::<HashSet<_>>();
-        if better_structures.len() >= LABELS_PER_STOP {
-            return false;
-        }
-        bag.push(BagEntry {
-            cost_seconds: label.cost_seconds,
-            structure: label.structure,
-            last_line_id: label.last_line_id.clone(),
-        });
-        bag.sort_by_key(|known| known.cost_seconds);
-        let mut structures = Vec::new();
-        let mut variants = HashMap::<u64, usize>::new();
-        bag.retain(|known| {
-            let count = variants.entry(known.structure).or_default();
-            *count += 1;
-            if !structures.contains(&known.structure) {
-                structures.push(known.structure);
+        let mut same_structure = 0;
+        let mut better_structures = 0;
+        for (index, known) in bag.iter().enumerate() {
+            if known.cost_seconds > cost_seconds {
+                break;
             }
-            *count <= ROUTE_VARIANTS_PER_STRUCTURE
-                && structures
-                    .iter()
-                    .position(|structure| *structure == known.structure)
-                    .is_some_and(|rank| rank < LABELS_PER_STOP)
-        });
+            if known.structure == structure {
+                same_structure += 1;
+            } else if !bag[..index]
+                .iter()
+                .any(|earlier| earlier.structure == known.structure)
+            {
+                better_structures += 1;
+            }
+        }
+        if same_structure >= ROUTE_VARIANTS_PER_STRUCTURE || better_structures >= LABELS_PER_STOP {
+            return false;
+        }
+        let position = bag.partition_point(|known| known.cost_seconds <= cost_seconds);
+        bag.insert(
+            position,
+            BagEntry {
+                cost_seconds,
+                structure,
+                last_line_id: last_line_id.cloned(),
+            },
+        );
+        let mut structures = 0;
+        let mut index = 0;
+        while index < bag.len() {
+            let structure = bag[index].structure;
+            let variants = bag[..index]
+                .iter()
+                .filter(|known| known.structure == structure)
+                .count();
+            let keep = if variants == 0 {
+                structures < LABELS_PER_STOP
+            } else {
+                variants < ROUTE_VARIANTS_PER_STRUCTURE
+            };
+            if keep {
+                structures += usize::from(variants == 0);
+                index += 1;
+            } else {
+                bag.remove(index);
+            }
+        }
         true
     }
 
@@ -486,17 +538,6 @@ fn fingerprint(parent: u64, value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
-fn leg_cost_source(first: Option<SegmentTimeSource>, mixed: bool) -> StaticCostSource {
-    if mixed {
-        return StaticCostSource::Mixed;
-    }
-    match first {
-        Some(SegmentTimeSource::Schedule) => StaticCostSource::ExactSchedule,
-        Some(SegmentTimeSource::Derived) => StaticCostSource::DerivedBus,
-        Some(SegmentTimeSource::Estimated) | None => StaticCostSource::OptimisticEstimate,
-    }
-}
-
 fn select(
     network: &TransitRuntime,
     candidates: Vec<Candidate>,
@@ -511,13 +552,14 @@ fn select(
             egress_stop_id: candidate.corridor.egress_stop_id.clone(),
         };
         let replace = unique.get(&structure).is_none_or(|known| {
-            (
-                candidate.search_cost_seconds,
-                corridor_order_key(&candidate.corridor),
-            ) < (
-                known.search_cost_seconds,
-                corridor_order_key(&known.corridor),
-            )
+            candidate
+                .search_cost_seconds
+                .cmp(&known.search_cost_seconds)
+                .then_with(|| {
+                    corridor_order_key(&candidate.corridor)
+                        .cmp(&corridor_order_key(&known.corridor))
+                })
+                .is_lt()
         });
         if replace {
             unique.insert(structure, candidate);
@@ -525,13 +567,15 @@ fn select(
     }
     stats.unique_corridors_found = unique.len();
     let mut candidates = unique.into_values().collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        left.search_cost_seconds
-            .cmp(&right.search_cost_seconds)
-            .then(left.rides.cmp(&right.rides))
-            .then_with(|| {
-                corridor_order_key(&left.corridor).cmp(&corridor_order_key(&right.corridor))
-            })
+    candidates.sort_by_cached_key(|candidate| {
+        let (access, egress, steps) = corridor_order_key(&candidate.corridor);
+        (
+            candidate.search_cost_seconds,
+            candidate.rides,
+            access.to_owned(),
+            egress.to_owned(),
+            steps,
+        )
     });
     let mut chosen = HashSet::new();
     let mut best_with_fewer_rides = u32::MAX;
@@ -618,11 +662,9 @@ fn equivalent_legs_for(
                 continue;
             };
             let alight_index = position.stop_index + 1 + offset;
-            let mut first = None;
-            let mut mixed = false;
+            let mut cost_source = CostSourceTracker::default();
             for segment in &group.segments[position.stop_index..alight_index] {
-                mixed |= first.is_some_and(|known| known != segment.source);
-                first.get_or_insert(segment.source);
+                cost_source.push_segment(segment.source);
             }
             legs.push(StaticTransitLeg {
                 pattern_id: group.pattern_id.clone(),
@@ -630,7 +672,7 @@ fn equivalent_legs_for(
                 board_index: position.stop_index,
                 alight_stop_id: leg.alight_stop_id.clone(),
                 alight_index,
-                cost_source: leg_cost_source(first, mixed),
+                cost_source: cost_source.finish(),
             });
         }
         if !legs.iter().any(|known| known == leg) {
@@ -664,24 +706,11 @@ fn corridor_order_key(corridor: &StaticCorridor) -> (&str, &str, String) {
 }
 
 fn cost_source(steps: &[StaticCorridorStep]) -> StaticCostSource {
-    let sources = steps
-        .iter()
-        .filter_map(|step| match step {
-            StaticCorridorStep::Transit(leg) => Some(leg.cost_source),
-            StaticCorridorStep::SurfaceTransfer { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    if sources.contains(&StaticCostSource::Mixed) {
-        return StaticCostSource::Mixed;
+    let mut cost_source = CostSourceTracker::default();
+    for step in steps {
+        if let StaticCorridorStep::Transit(leg) = step {
+            cost_source.push(leg.cost_source);
+        }
     }
-    match (
-        sources.contains(&StaticCostSource::ExactSchedule),
-        sources.contains(&StaticCostSource::DerivedBus),
-        sources.contains(&StaticCostSource::OptimisticEstimate),
-    ) {
-        (true, false, false) => StaticCostSource::ExactSchedule,
-        (false, true, false) => StaticCostSource::DerivedBus,
-        (false, false, _) => StaticCostSource::OptimisticEstimate,
-        _ => StaticCostSource::Mixed,
-    }
+    cost_source.finish()
 }

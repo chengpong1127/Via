@@ -10,23 +10,23 @@ use crate::routing::model::PlanningDeadline;
 
 use super::types::CorridorSearchStats;
 
-#[derive(Clone, Debug)]
-pub(super) struct PatternRideCache {
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PatternRideCache<'a> {
     pub(super) mode: TransitMode,
-    pub(super) pattern_id: TransitPatternId,
-    pub(super) stops: Vec<BoardingPointId>,
-    pub(super) segments: Vec<SegmentTravelTime>,
+    pub(super) pattern_id: &'a TransitPatternId,
+    pub(super) stops: &'a [BoardingPointId],
+    pub(super) segments: &'a [SegmentTravelTime],
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct CorridorPatternIndex {
-    pub(super) groups: Vec<PatternRideCache>,
-    pub(super) group_index_by_pattern: HashMap<TransitPatternId, usize>,
+pub(super) struct CorridorPatternIndex<'a> {
+    pub(super) groups: Vec<PatternRideCache<'a>>,
+    pub(super) group_index_by_pattern: HashMap<&'a TransitPatternId, usize>,
 }
 
-impl CorridorPatternIndex {
+impl<'a> CorridorPatternIndex<'a> {
     pub(super) fn new(
-        network: &TransitRuntime,
+        network: &'a TransitRuntime,
         allowed_modes: &[TransitMode],
         stats: &mut CorridorSearchStats,
         deadline: PlanningDeadline,
@@ -44,12 +44,12 @@ impl CorridorPatternIndex {
             let group_index = index.groups.len();
             index
                 .group_index_by_pattern
-                .insert(pattern.id.clone(), group_index);
+                .insert(&pattern.id, group_index);
             index.groups.push(PatternRideCache {
                 mode,
-                pattern_id: pattern.id.clone(),
-                stops: pattern.stops.clone(),
-                segments: pattern.static_profile.segments.clone(),
+                pattern_id: &pattern.id,
+                stops: &pattern.stops,
+                segments: &pattern.static_profile.segments,
             });
         }
         index
@@ -59,7 +59,7 @@ impl CorridorPatternIndex {
         self.group_index_by_pattern.get(pattern_id).copied()
     }
 
-    pub(super) fn group(&self, group_index: usize) -> &PatternRideCache {
-        &self.groups[group_index]
+    pub(super) fn group(&self, group_index: usize) -> PatternRideCache<'a> {
+        self.groups[group_index]
     }
 }
