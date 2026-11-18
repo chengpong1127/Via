@@ -133,7 +133,6 @@ async fn measured_corridors_case(
                         kind: WalkingMovementKind::Access,
                         duration_seconds: 0,
                         distance_metres: 0,
-                        access_available_at: Some(query.departure_time),
                     },
                     PlannedMovement::Transit(
                         retained.retained()[0]

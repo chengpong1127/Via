@@ -18,7 +18,6 @@ pub(crate) enum PlannedMovement {
         kind: WalkingMovementKind,
         duration_seconds: u32,
         distance_metres: u32,
-        access_available_at: Option<time::OffsetDateTime>,
     },
 }
 
@@ -100,7 +99,6 @@ impl EvaluationCorridor {
             kind: WalkingMovementKind::Access,
             duration_seconds: access.walking_seconds,
             distance_metres: access.distance_metres,
-            access_available_at: Some(access.available_at),
         }];
         edges.extend(retained.steps.iter().map(|step| match step {
             StaticCorridorStep::Transit(leg) => PlannedMovement::Transit(leg.clone()),
@@ -112,7 +110,6 @@ impl EvaluationCorridor {
                 kind: WalkingMovementKind::Transfer,
                 duration_seconds: *walking_duration_seconds,
                 distance_metres: *walking_distance_metres,
-                access_available_at: None,
             },
         }));
         let egress = query
@@ -126,7 +123,6 @@ impl EvaluationCorridor {
             kind: WalkingMovementKind::Egress,
             duration_seconds: egress.walking_seconds,
             distance_metres: egress.distance_metres,
-            access_available_at: None,
         });
         Self::new(anchors, edges).ok_or_else(|| {
             RoutingError::Internal("retained corridor has inconsistent anchors and edges".into())

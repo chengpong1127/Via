@@ -250,12 +250,7 @@ fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
     let mut query = query(&[], 0, 1);
     query.limits.max_journey_duration_seconds = 60;
     let state = EvaluationState::initial(&query);
-    for (seconds, available_at, succeeds) in [
-        (60, None, true),
-        (61, None, false),
-        (1, Some(query.departure_time - Duration::seconds(1)), false),
-        (20, Some(query.departure_time + Duration::seconds(40)), true),
-    ] {
+    for (seconds, succeeds) in [(60, true), (61, false)] {
         let next = walking_successor(
             &query,
             &state,
@@ -263,7 +258,6 @@ fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
                 kind: WalkingMovementKind::Access,
                 duration_seconds: seconds,
                 distance_metres: 123,
-                access_available_at: available_at,
             },
             0,
         );
@@ -271,8 +265,7 @@ fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
         if let Some(next) = next {
             assert_eq!(
                 next.ready_at,
-                available_at
-                    .unwrap_or(query.departure_time + Duration::seconds(i64::from(seconds)))
+                query.departure_time + Duration::seconds(i64::from(seconds))
             );
             assert!(
                 matches!(next.movements[0].kind, JourneyMovementKind::Walking { duration_seconds, distance_metres: 123, .. } if duration_seconds == seconds)

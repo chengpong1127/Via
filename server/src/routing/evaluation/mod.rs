@@ -292,12 +292,10 @@ impl<'e, 'a> Run<'e, 'a> {
                 kind,
                 duration_seconds,
                 distance_metres,
-                access_available_at,
             } => Walking {
                 kind: *kind,
                 duration_seconds: *duration_seconds,
                 distance_metres: *distance_metres,
-                access_available_at: *access_available_at,
             },
             PlannedMovement::Transit(_) | PlannedMovement::WalkingToResolve => {
                 let from = &corridor.anchors()[index];
@@ -309,7 +307,6 @@ impl<'e, 'a> Run<'e, 'a> {
                         kind: walking_kind(from, to),
                         duration_seconds: duration.0,
                         distance_metres: distance.0,
-                        access_available_at: None,
                     },
                     Ok(MatrixCell::Unreachable) => return Ok(None),
                     Err(error) => {
@@ -467,7 +464,6 @@ struct Walking {
     kind: WalkingMovementKind,
     duration_seconds: u32,
     distance_metres: u32,
-    access_available_at: Option<OffsetDateTime>,
 }
 
 fn walking_successor(
@@ -476,9 +472,7 @@ fn walking_successor(
     walking: Walking,
     index: usize,
 ) -> Option<EvaluationState> {
-    let arrival = walking
-        .access_available_at
-        .unwrap_or(state.ready_at + Duration::seconds(i64::from(walking.duration_seconds)));
+    let arrival = state.ready_at + Duration::seconds(i64::from(walking.duration_seconds));
     within_query_bounds(query, arrival).then(|| {
         state.after_movement(JourneyMovement {
             from_anchor: index,

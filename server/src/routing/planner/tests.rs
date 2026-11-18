@@ -23,7 +23,7 @@ use crate::{
             EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot,
         },
     },
-    routing::{AccessPoint, EgressPoint},
+    routing::EndpointStop,
     street::{Coordinate, FakeStreetRouter},
 };
 
@@ -225,14 +225,8 @@ fn query(k: usize) -> PlanningQuery {
         Coordinate::try_new(25.0, 121.5).unwrap(),
         Coordinate::try_new(25.0, 121.5).unwrap(),
         super::super::model::PlanningDeadline::after(std::time::Duration::from_secs(60)),
-        vec![AccessPoint::new(
-            BoardingPointId::new("origin"),
-            datetime!(2026-09-21 10:00 UTC),
-            datetime!(2026-09-21 10:00 UTC),
-            0,
-            0,
-        )],
-        vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("origin"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     )
@@ -248,11 +242,11 @@ fn query(k: usize) -> PlanningQuery {
 }
 
 #[tokio::test]
-async fn conflicting_duplicates_and_inconsistent_access_times_are_rejected() {
+async fn conflicting_duplicate_endpoint_stops_are_rejected() {
     let loader = Arc::new(RecordingTimingLoader::default());
     let planner = test_planner(network(), loader.clone());
     for modes in [vec![TransitMode::Bus], Vec::new()] {
-        for case in 0..4 {
+        for case in 0..2 {
             let mut invalid = query(1).with_allowed_transit_modes(modes.iter().copied());
             match case {
                 0 => {
@@ -260,13 +254,11 @@ async fn conflicting_duplicates_and_inconsistent_access_times_are_rejected() {
                     duplicate.distance_metres += 1;
                     invalid.origin_access.push(duplicate);
                 }
-                1 => {
+                _ => {
                     let mut duplicate = invalid.destination_egress[0].clone();
                     duplicate.walking_seconds += 1;
                     invalid.destination_egress.push(duplicate);
                 }
-                2 => invalid.origin_access[0].available_at += Duration::seconds(1),
-                _ => invalid.origin_access[0].departure_at -= Duration::seconds(1),
             }
             assert!(matches!(
                 planner.plan_with_stats(invalid).await,

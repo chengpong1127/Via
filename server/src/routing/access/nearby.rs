@@ -6,7 +6,7 @@ use crate::{
 
 use crate::routing::{
     corridors::TransitTopologyIndex,
-    model::{AccessPoint, EgressPoint, JourneyPlanningLimits},
+    model::{EndpointStop, JourneyPlanningLimits},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,39 +22,20 @@ struct NearbyStopCandidate {
     modes: Vec<TransitMode>,
 }
 
-pub(super) fn prune_access_coverage(
+pub(super) fn prune_coverage(
     topology: &TransitTopologyIndex,
-    points: Vec<AccessPoint>,
+    stops: Vec<EndpointStop>,
     limit: usize,
-) -> Vec<AccessPoint> {
-    let mut retained = Vec::with_capacity(points.len());
-    for point in points {
-        if retained.iter().any(|existing: &AccessPoint| {
-            existing.walking_seconds <= point.walking_seconds
-                && stop_coverage_dominates(topology, &existing.stop_id, &point.stop_id)
+) -> Vec<EndpointStop> {
+    let mut retained = Vec::with_capacity(stops.len());
+    for stop in stops {
+        if retained.iter().any(|existing: &EndpointStop| {
+            existing.walking_seconds <= stop.walking_seconds
+                && stop_coverage_dominates(topology, &existing.stop_id, &stop.stop_id)
         }) {
             continue;
         }
-        retained.push(point);
-    }
-    retained.truncate(limit.max(1));
-    retained
-}
-
-pub(super) fn prune_egress_coverage(
-    topology: &TransitTopologyIndex,
-    points: Vec<EgressPoint>,
-    limit: usize,
-) -> Vec<EgressPoint> {
-    let mut retained = Vec::with_capacity(points.len());
-    for point in points {
-        if retained.iter().any(|existing: &EgressPoint| {
-            existing.walking_seconds <= point.walking_seconds
-                && stop_coverage_dominates(topology, &existing.stop_id, &point.stop_id)
-        }) {
-            continue;
-        }
-        retained.push(point);
+        retained.push(stop);
     }
     retained.truncate(limit.max(1));
     retained

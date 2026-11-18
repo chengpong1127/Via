@@ -57,12 +57,8 @@ fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
         TOML.replace("degraded_seconds = 360", "degraded_seconds = 119"),
         TOML.replace("max_targets = 64", "max_targets = 8"),
         TOML.replace(
-            "max_transit_access_stops = 64",
-            "max_transit_access_stops = 65",
-        ),
-        TOML.replace(
-            "max_transit_egress_stops = 64",
-            "max_transit_egress_stops = 65",
+            "max_transit_endpoint_stops = 64",
+            "max_transit_endpoint_stops = 65",
         ),
         TOML.replace(
             "endpoint_radius_metres = 1500",

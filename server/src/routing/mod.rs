@@ -20,8 +20,8 @@ pub use journey::{
     WalkingMovementKind,
 };
 pub use model::{
-    AccessPoint, EgressPoint, JourneyPlanningLimits, PlannerLimits, PlanningDeadline,
-    PlanningQuery, RoutingError,
+    EndpointStop, JourneyPlanningLimits, PlannerLimits, PlanningDeadline, PlanningQuery,
+    RoutingError,
 };
 pub use planner::{MultimodalPlanner, MultimodalPlannerStats};
 pub use service::RoutingService;

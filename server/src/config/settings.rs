@@ -57,8 +57,7 @@ pub struct RoutingSettings {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccessSettings {
-    pub max_transit_access_stops: usize,
-    pub max_transit_egress_stops: usize,
+    pub max_transit_endpoint_stops: usize,
     pub max_walking_radius_metres: u32,
     pub max_walking_seconds: u32,
 }
@@ -214,12 +213,8 @@ impl ViaConfig {
                 self.routing.max_journey_duration_seconds as u64,
             ),
             (
-                "routing.access.max_transit_access_stops",
-                self.routing.access.max_transit_access_stops as u64,
-            ),
-            (
-                "routing.access.max_transit_egress_stops",
-                self.routing.access.max_transit_egress_stops as u64,
+                "routing.access.max_transit_endpoint_stops",
+                self.routing.access.max_transit_endpoint_stops as u64,
             ),
             (
                 "routing.access.max_walking_radius_metres",
@@ -495,10 +490,10 @@ impl ViaConfig {
         {
             return Err(ConfigError::Invalid("bikeshare.preprocessing.max_geometric_candidates_per_boarding_point must fit both valhalla.max_sources and valhalla.max_targets".into()));
         }
-        if self.routing.access.max_transit_access_stops > self.valhalla.max_targets
-            || self.routing.access.max_transit_egress_stops > self.valhalla.max_sources
+        if self.routing.access.max_transit_endpoint_stops > self.valhalla.max_targets
+            || self.routing.access.max_transit_endpoint_stops > self.valhalla.max_sources
         {
-            return Err(ConfigError::Invalid("routing.access.max_transit_access_stops must fit valhalla.max_targets and max_transit_egress_stops must fit valhalla.max_sources".into()));
+            return Err(ConfigError::Invalid("routing.access.max_transit_endpoint_stops must fit both valhalla.max_sources and valhalla.max_targets".into()));
         }
         if self
             .valhalla
@@ -585,8 +580,7 @@ impl ViaConfig {
             max_concurrent_reconstruction_candidates: self
                 .routing
                 .max_concurrent_reconstruction_candidates,
-            max_transit_access_stops: self.routing.access.max_transit_access_stops,
-            max_transit_egress_stops: self.routing.access.max_transit_egress_stops,
+            max_transit_endpoint_stops: self.routing.access.max_transit_endpoint_stops,
             max_walking_radius_metres: self.routing.access.max_walking_radius_metres,
             max_walking_seconds: self.routing.access.max_walking_seconds,
         }

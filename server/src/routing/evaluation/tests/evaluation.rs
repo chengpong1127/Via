@@ -12,14 +12,12 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
-        vec![AccessPoint::new(
+        vec![EndpointStop::new(
             BoardingPointId::new(&stop_names[0]),
-            departure_at,
-            departure_at,
             0,
             0,
         )],
-        vec![EgressPoint::new(
+        vec![EndpointStop::new(
             BoardingPointId::new(stop_names.last().unwrap()),
             0,
             0,

@@ -13,9 +13,7 @@ use crate::{
         },
         transit_runtime::TransitRuntime,
     },
-    routing::{
-        AccessPoint, EgressPoint, TransferShortcutIndex, TransitTopologyIndex, model::PlanningQuery,
-    },
+    routing::{EndpointStop, TransferShortcutIndex, TransitTopologyIndex, model::PlanningQuery},
 };
 
 fn id(value: &str) -> BoardingPointId {
@@ -89,14 +87,8 @@ fn query(
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::street::Coordinate::try_new(25.001, 121.501).unwrap(),
         crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
-        vec![AccessPoint::new(
-            id(origin),
-            datetime!(2026-09-21 10:00 UTC),
-            datetime!(2026-09-21 10:00 UTC),
-            0,
-            0,
-        )],
-        vec![EgressPoint::new(id(destination), 0, 0)],
+        vec![EndpointStop::new(id(origin), 0, 0)],
+        vec![EndpointStop::new(id(destination), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     )
@@ -599,8 +591,8 @@ fn direct_egress_is_retained_over_a_faster_surface_transfer_to_egress() {
     for k in [1, 10] {
         let mut query = query("o", "alight", &[TransitMode::Metro, TransitMode::Bus], 1, k);
         query.destination_egress = vec![
-            EgressPoint::new(id("alight"), 32, 100),
-            EgressPoint::new(id("nearby"), 0, 0),
+            EndpointStop::new(id("alight"), 32, 100),
+            EndpointStop::new(id("nearby"), 0, 0),
         ];
 
         let retained_corridors = run(&network, &query);
@@ -864,15 +856,7 @@ fn retained_corridors_prefer_distinct_ride_sequences_over_stop_variants() {
     query.origin_access = ["o1", "o2", "o3", "x"]
         .into_iter()
         .enumerate()
-        .map(|(index, stop)| {
-            AccessPoint::new(
-                id(stop),
-                datetime!(2026-09-21 10:00 UTC),
-                datetime!(2026-09-21 10:00 UTC),
-                60 * index as u32,
-                0,
-            )
-        })
+        .map(|(index, stop)| EndpointStop::new(id(stop), 60 * index as u32, 0))
         .collect();
 
     let corridors = run(&network, &query);

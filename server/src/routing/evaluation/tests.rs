@@ -20,7 +20,7 @@ use crate::{
         transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
     },
     routing::{
-        AccessPoint, EgressPoint,
+        EndpointStop,
         corridors::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
         corridors::{TransferShortcutIndex, TransitTopologyIndex},
     },
@@ -71,14 +71,8 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
-        vec![AccessPoint::new(
-            BoardingPointId::new("origin"),
-            datetime!(2026-09-21 10:00 UTC),
-            datetime!(2026-09-21 10:00 UTC),
-            0,
-            0,
-        )],
-        vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("origin"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     )

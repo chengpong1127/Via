@@ -11,8 +11,8 @@ use via_server::{
         TraDepartureSource, TransitDepartureSource, UnavailableBikeAvailabilitySource,
     },
     routing::{
-        AccessPoint, EgressPoint, MultimodalPlanner, PlanningDeadline, PlanningQuery,
-        TransferShortcutIndex, TransitTopologyIndex, generate_static_corridors,
+        EndpointStop, MultimodalPlanner, PlanningDeadline, PlanningQuery, TransferShortcutIndex,
+        TransitTopologyIndex, generate_static_corridors,
     },
 };
 
@@ -99,14 +99,8 @@ async fn deterministic_routing_benchmark() {
                 .try_into()
                 .unwrap(),
             PlanningDeadline::after(std::time::Duration::from_secs(60)),
-            vec![AccessPoint::new(
-                BoardingPointId::new(origin),
-                departure,
-                departure,
-                0,
-                0,
-            )],
-            vec![EgressPoint::new(BoardingPointId::new(destination), 0, 0)],
+            vec![EndpointStop::new(BoardingPointId::new(origin), 0, 0)],
+            vec![EndpointStop::new(BoardingPointId::new(destination), 0, 0)],
             departure,
             via_server::config::ViaConfig::default().planner_limits(),
         )

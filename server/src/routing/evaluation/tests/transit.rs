@@ -592,7 +592,6 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
             kind: WalkingMovementKind::Access,
             duration_seconds: 0,
             distance_metres: 0,
-            access_available_at: Some(_)
         }
     ));
     assert!(
@@ -604,7 +603,6 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
             kind: WalkingMovementKind::Transfer,
             duration_seconds: 60,
             distance_metres: 100,
-            access_available_at: None
         }
     ));
     assert!(
@@ -616,7 +614,6 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
             kind: WalkingMovementKind::Egress,
             duration_seconds: 0,
             distance_metres: 0,
-            access_available_at: None
         }
     ));
 }

@@ -7,14 +7,8 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
-        vec![AccessPoint::new(
-            BoardingPointId::new("a"),
-            datetime!(2026-09-21 10:00 UTC),
-            datetime!(2026-09-21 10:00 UTC),
-            0,
-            0,
-        )],
-        vec![EgressPoint::new(BoardingPointId::new("b"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("a"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("b"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
@@ -86,22 +80,10 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         crate::street::Coordinate::try_new(25.0, 121.5).unwrap(),
         crate::routing::model::PlanningDeadline::after(std::time::Duration::from_secs(3600)),
         vec![
-            AccessPoint::new(
-                BoardingPointId::new("a"),
-                datetime!(2026-09-21 10:00 UTC),
-                datetime!(2026-09-21 10:02 UTC),
-                120,
-                600,
-            ),
-            AccessPoint::new(
-                BoardingPointId::new("x"),
-                datetime!(2026-09-21 10:00 UTC),
-                datetime!(2026-09-21 10:00 UTC),
-                0,
-                0,
-            ),
+            EndpointStop::new(BoardingPointId::new("a"), 120, 600),
+            EndpointStop::new(BoardingPointId::new("x"), 0, 0),
         ],
-        vec![EgressPoint::new(BoardingPointId::new("destination"), 0, 0)],
+        vec![EndpointStop::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );

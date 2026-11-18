@@ -1,4 +1,4 @@
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::time::Instant;
 
 use crate::{
@@ -49,40 +49,13 @@ impl PlanningDeadline {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccessPoint {
-    pub stop_id: BoardingPointId,
-    pub departure_at: OffsetDateTime,
-    pub available_at: OffsetDateTime,
-    pub walking_seconds: u32,
-    pub distance_metres: u32,
-}
-
-impl AccessPoint {
-    pub fn new(
-        stop_id: BoardingPointId,
-        departure_at: OffsetDateTime,
-        available_at: OffsetDateTime,
-        walking_seconds: u32,
-        distance_metres: u32,
-    ) -> Self {
-        Self {
-            stop_id,
-            departure_at,
-            available_at,
-            walking_seconds,
-            distance_metres,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EgressPoint {
+pub struct EndpointStop {
     pub stop_id: BoardingPointId,
     pub walking_seconds: u32,
     pub distance_metres: u32,
 }
 
-impl EgressPoint {
+impl EndpointStop {
     pub fn new(stop_id: BoardingPointId, walking_seconds: u32, distance_metres: u32) -> Self {
         Self {
             stop_id,
@@ -129,8 +102,7 @@ pub struct JourneyPlanningLimits {
     pub request_timeout: std::time::Duration,
     pub max_concurrent_requests: usize,
     pub max_concurrent_reconstruction_candidates: usize,
-    pub max_transit_access_stops: usize,
-    pub max_transit_egress_stops: usize,
+    pub max_transit_endpoint_stops: usize,
     pub max_walking_radius_metres: u32,
     pub max_walking_seconds: u32,
 }
@@ -146,8 +118,7 @@ impl JourneyPlanningLimits {
             max_concurrent_reconstruction_candidates: self
                 .max_concurrent_reconstruction_candidates
                 .clamp(1, 16),
-            max_transit_access_stops: self.max_transit_access_stops.max(1),
-            max_transit_egress_stops: self.max_transit_egress_stops.max(1),
+            max_transit_endpoint_stops: self.max_transit_endpoint_stops.max(1),
             max_walking_radius_metres: self.max_walking_radius_metres.max(1),
             max_walking_seconds: self.max_walking_seconds.max(1),
         }
@@ -204,8 +175,8 @@ impl<'a> JourneyPlanningContext<'a> {
 pub struct PlanningQuery {
     pub origin: crate::street::Coordinate,
     pub destination: crate::street::Coordinate,
-    pub origin_access: Vec<AccessPoint>,
-    pub destination_egress: Vec<EgressPoint>,
+    pub origin_access: Vec<EndpointStop>,
+    pub destination_egress: Vec<EndpointStop>,
     pub allowed_transit_modes: Vec<TransitMode>,
 
     pub allow_bike_share: bool,
@@ -219,8 +190,8 @@ impl PlanningQuery {
         origin: crate::street::Coordinate,
         destination: crate::street::Coordinate,
         deadline: PlanningDeadline,
-        origin_access: Vec<AccessPoint>,
-        destination_egress: Vec<EgressPoint>,
+        origin_access: Vec<EndpointStop>,
+        destination_egress: Vec<EndpointStop>,
         departure_time: OffsetDateTime,
         limits: PlannerLimits,
     ) -> Self {
@@ -243,26 +214,10 @@ impl PlanningQuery {
     }
 
     pub(crate) fn validate_access_egress(&self) -> Result<(), RoutingError> {
-        let mut access = std::collections::HashMap::new();
-        for point in &self.origin_access {
-            if point.departure_at != self.departure_time
-                || point.available_at - point.departure_at
-                    != Duration::seconds(i64::from(point.walking_seconds))
-                || access
-                    .insert(&point.stop_id, point)
-                    .is_some_and(|known| known != point)
-            {
-                return Err(RoutingError::InvalidQuery);
-            }
-        }
-        let mut egress = std::collections::HashMap::new();
-        for point in &self.destination_egress {
-            if egress
-                .insert(&point.stop_id, point)
-                .is_some_and(|known| known != point)
-            {
-                return Err(RoutingError::InvalidQuery);
-            }
+        if has_conflicting_stops(&self.origin_access)
+            || has_conflicting_stops(&self.destination_egress)
+        {
+            return Err(RoutingError::InvalidQuery);
         }
         Ok(())
     }
@@ -350,6 +305,15 @@ impl FailureSummary {
         self.transient |= other.transient;
         self.internal |= other.internal;
     }
+}
+
+fn has_conflicting_stops(stops: &[EndpointStop]) -> bool {
+    let mut known = std::collections::HashMap::new();
+    stops.iter().any(|stop| {
+        known
+            .insert(&stop.stop_id, stop)
+            .is_some_and(|previous| previous != stop)
+    })
 }
 
 #[cfg(test)]

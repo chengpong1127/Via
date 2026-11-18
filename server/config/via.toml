@@ -17,8 +17,7 @@ max_departures_per_query = 3
 max_journey_duration_seconds = 14400
 
 [routing.access]
-max_transit_access_stops = 64
-max_transit_egress_stops = 64
+max_transit_endpoint_stops = 64
 max_walking_radius_metres = 2000
 max_walking_seconds = 1800
 
