@@ -320,9 +320,8 @@ mod limits_tests {
             Vec::new(),
             Vec::new(),
             OffsetDateTime::now_utc(),
-            crate::config::ViaConfig::default().planner_limits(),
-        )
-        .with_limits(limits);
+            limits,
+        );
         assert_eq!(query.limits.max_static_corridors, 0);
         assert_eq!(
             JourneyPlanningLimits {

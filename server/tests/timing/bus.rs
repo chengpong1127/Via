@@ -331,8 +331,7 @@ fn bus_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureR
             crate::support::tdx::bus_feed(tdx.clone(), "feed"),
             &tdx.settings().realtime,
         )
-        .with_bindings(bindings(network.network(), &[]))
-        .with_unscoped_realtime(),
+        .with_bindings(bindings(network.network(), &[])),
     );
     DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }

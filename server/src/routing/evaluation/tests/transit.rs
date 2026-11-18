@@ -299,15 +299,14 @@ fn phase2_respects_maximum_journey_duration() {
         )],
     );
 
-    let short_duration_query = corridor_query
-        .clone()
-        .with_limits(crate::routing::PlannerLimits {
-            max_transfers: 0,
-            max_candidates: 16,
-            max_departures_per_query: 3,
-            max_journey_duration_seconds: 10 * 60,
-            ..crate::routing::PlannerLimits::default()
-        });
+    let mut short_duration_query = corridor_query.clone();
+    short_duration_query.limits = crate::routing::PlannerLimits {
+        max_transfers: 0,
+        max_candidates: 16,
+        max_departures_per_query: 3,
+        max_journey_duration_seconds: 10 * 60,
+        ..crate::routing::PlannerLimits::default()
+    };
     assert!(
         evaluate(&network, &corridor, &snapshot, short_duration_query)
             .unwrap()

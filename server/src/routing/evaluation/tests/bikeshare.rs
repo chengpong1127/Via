@@ -551,16 +551,15 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         vec![EndpointStop::new(BoardingPointId::new("a"), 0, 0)],
         vec![EndpointStop::new(BoardingPointId::new("d"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
-        crate::config::ViaConfig::default().planner_limits(),
+        crate::routing::PlannerLimits {
+            max_transfers: 2,
+            max_candidates: 16,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        },
     )
-    .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
-    .with_limits(crate::routing::PlannerLimits {
-        max_transfers: 2,
-        max_candidates: 16,
-        max_departures_per_query: 3,
-        max_journey_duration_seconds: 4 * 60 * 60,
-        ..crate::routing::PlannerLimits::default()
-    });
+    .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro]);
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
         vec![StaticCorridor {

@@ -46,7 +46,6 @@ pub struct BusDepartureSource {
     network: Arc<TransitRuntime>,
     live: Arc<dyn LiveDataSource>,
     schedule: ScheduleTiming,
-    unscoped_realtime: bool,
     freshness_policy: FreshnessPolicy,
     max_clock_skew_seconds: u32,
     bindings: Arc<TdxProviderBindings>,
@@ -74,7 +73,6 @@ impl BusDepartureSource {
             schedule: ScheduleTiming::new(network.clone()),
             network,
             live,
-            unscoped_realtime: false,
             freshness_policy: realtime.freshness_policy(),
             max_clock_skew_seconds: realtime.max_clock_skew_seconds,
             bindings: Arc::new(TdxProviderBindings::default()),
@@ -83,11 +81,6 @@ impl BusDepartureSource {
 
     pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
         self.bindings = bindings;
-        self
-    }
-
-    pub fn with_unscoped_realtime(mut self) -> Self {
-        self.unscoped_realtime = true;
         self
     }
 
@@ -300,8 +293,7 @@ impl BusDepartureSource {
                 .bindings
                 .bus_patterns
                 .get(&pattern.id)
-                .map(|binding| binding.realtime_scope.clone())
-                .or_else(|| self.unscoped_realtime.then(String::new));
+                .map(|binding| binding.realtime_scope.clone());
             let Some(scope) = scope else {
                 unscoped_queries += 1;
                 continue;

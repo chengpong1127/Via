@@ -302,6 +302,7 @@ impl TransitNetwork {
         self
     }
 
+    #[cfg(test)]
     pub fn with_transfer_edges(mut self, transfer_edges: Vec<TransferEdge>) -> Self {
         self.transfer_edges = transfer_edges;
         self

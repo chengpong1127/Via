@@ -260,7 +260,6 @@ pub(crate) async fn route_body_inner(
             &tdx.settings().realtime,
         )
         .with_bindings(Arc::new(bindings))
-        .with_unscoped_realtime()
         .with_freshness_policy(FreshnessPolicy {
             fresh_through: time::Duration::days(30),
             degraded_through: time::Duration::days(31),

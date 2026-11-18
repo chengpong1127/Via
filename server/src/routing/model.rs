@@ -237,11 +237,7 @@ impl PlanningQuery {
         self
     }
 
-    pub fn with_limits(mut self, limits: PlannerLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-
+    #[cfg(test)]
     pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
         self.limits.max_static_corridors = max_static_corridors.max(1);
         self

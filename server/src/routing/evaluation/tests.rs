@@ -74,16 +74,15 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
         vec![EndpointStop::new(BoardingPointId::new("origin"), 0, 0)],
         vec![EndpointStop::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
-        crate::config::ViaConfig::default().planner_limits(),
+        crate::routing::PlannerLimits {
+            max_transfers,
+            max_candidates: 16,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        },
     )
     .with_allowed_transit_modes(modes.iter().copied())
-    .with_limits(crate::routing::PlannerLimits {
-        max_transfers,
-        max_candidates: 16,
-        max_departures_per_query: 3,
-        max_journey_duration_seconds: 4 * 60 * 60,
-        ..crate::routing::PlannerLimits::default()
-    })
     .with_max_static_corridors(max_corridors)
 }
 

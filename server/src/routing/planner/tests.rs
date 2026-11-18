@@ -228,16 +228,15 @@ fn query(k: usize) -> PlanningQuery {
         vec![EndpointStop::new(BoardingPointId::new("origin"), 0, 0)],
         vec![EndpointStop::new(BoardingPointId::new("destination"), 0, 0)],
         datetime!(2026-09-21 10:00 UTC),
-        crate::config::ViaConfig::default().planner_limits(),
+        crate::routing::PlannerLimits {
+            max_transfers: 0,
+            max_candidates: 16,
+            max_departures_per_query: 3,
+            max_journey_duration_seconds: 4 * 60 * 60,
+            ..crate::routing::PlannerLimits::default()
+        },
     )
     .with_allowed_transit_modes([TransitMode::Bus])
-    .with_limits(crate::routing::PlannerLimits {
-        max_transfers: 0,
-        max_candidates: 16,
-        max_departures_per_query: 3,
-        max_journey_duration_seconds: 4 * 60 * 60,
-        ..crate::routing::PlannerLimits::default()
-    })
     .with_max_static_corridors(k)
 }
 
@@ -477,14 +476,14 @@ async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
     );
     let mut bike_query = query(2)
         .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
-        .with_limits(crate::routing::PlannerLimits {
-            max_transfers: 1,
-            max_candidates: 16,
-            max_departures_per_query: 3,
-            max_journey_duration_seconds: 4 * 60 * 60,
-            ..crate::routing::PlannerLimits::default()
-        })
         .with_bike_share(true);
+    bike_query.limits = crate::routing::PlannerLimits {
+        max_transfers: 1,
+        max_candidates: 16,
+        max_departures_per_query: 3,
+        max_journey_duration_seconds: 4 * 60 * 60,
+        ..crate::routing::PlannerLimits::default()
+    };
 
     bike_query.destination = Coordinate::try_new(25.1, 121.5).unwrap();
     let (_, stats) = planner.plan_with_stats(bike_query).await.unwrap();
