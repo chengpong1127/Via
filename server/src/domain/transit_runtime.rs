@@ -44,15 +44,21 @@ impl TransitRuntime {
         radius_metres: u32,
     ) -> Vec<&TransitStop> {
         self.indexes
-            .stops_within_radius(&self.network, coordinate, radius_metres)
+            .spatial
+            .within_radius(&self.network.stops, coordinate, f64::from(radius_metres))
+            .into_iter()
+            .map(|index| &self.network.stops[index])
+            .collect()
     }
 
     pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
-        self.indexes.stop(&self.network, id)
+        let index = *self.indexes.lookup.stop_by_id.get(id)?;
+        self.network.stops.get(index)
     }
 
     pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
-        self.indexes.pattern(&self.network, id)
+        let index = *self.indexes.lookup.pattern_by_id.get(id)?;
+        self.network.patterns.get(index)
     }
 
     pub(crate) fn required_pattern(&self, id: &TransitPatternId) -> &TransitPattern {
@@ -60,23 +66,27 @@ impl TransitRuntime {
     }
 
     pub fn route_for_pattern(&self, pattern: &TransitPattern) -> Option<&TransitRoute> {
-        self.indexes.route_for_pattern(&self.network, pattern)
+        let index = *self.indexes.lookup.route_by_id.get(&pattern.route_id)?;
+        self.network.routes.get(index)
     }
 
     pub fn route_of(&self, pattern: &TransitPattern) -> &TransitRoute {
-        self.indexes.route_of(&self.network, pattern)
+        self.route_for_pattern(pattern)
+            .expect("validated pattern route")
     }
 
     pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
-        self.indexes.calendar(&self.network, id)
+        let index = *self.indexes.lookup.calendar_by_id.get(id)?;
+        self.network.calendars.get(index)
     }
 
     pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
-        self.indexes.scheduled_trip(&self.network, id)
+        let index = *self.indexes.lookup.trip_by_id.get(id)?;
+        self.network.trips.get(index)
     }
 
     pub fn scheduled_trip_at(&self, index: usize) -> Option<&TransitTrip> {
-        self.indexes.scheduled_trip_at(&self.network, index)
+        self.network.trips.get(index)
     }
 
     pub fn scheduled_trip_indices(
@@ -84,7 +94,13 @@ impl TransitRuntime {
         pattern_id: &TransitPatternId,
         board_index: usize,
     ) -> &[usize] {
-        self.indexes.scheduled_trip_indices(pattern_id, board_index)
+        self.indexes
+            .schedule
+            .trip_indices_by_pattern_stop
+            .get(pattern_id)
+            .and_then(|by_stop| by_stop.get(board_index))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn frequency_at(&self, index: usize) -> Option<&TransitFrequency> {
@@ -92,7 +108,12 @@ impl TransitRuntime {
     }
 
     pub fn frequency_indices(&self, pattern_id: &TransitPatternId) -> &[usize] {
-        self.indexes.frequency_indices(pattern_id)
+        self.indexes
+            .schedule
+            .frequency_indices_by_pattern
+            .get(pattern_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn same_stop_transfer_seconds(&self) -> u32 {
@@ -188,102 +209,6 @@ impl TransitRuntimeIndexes {
                 .push(index);
         }
         indexes
-    }
-
-    fn stops_within_radius<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        coordinate: GeoCoordinate,
-        radius_metres: u32,
-    ) -> Vec<&'a TransitStop> {
-        self.spatial
-            .within_radius(&network.stops, coordinate, f64::from(radius_metres))
-            .into_iter()
-            .map(|index| &network.stops[index])
-            .collect()
-    }
-
-    fn stop<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        id: &BoardingPointId,
-    ) -> Option<&'a TransitStop> {
-        let index = self.lookup.stop_by_id.get(id).copied()?;
-        network.stops.get(index)
-    }
-
-    fn pattern<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        id: &TransitPatternId,
-    ) -> Option<&'a TransitPattern> {
-        let index = self.lookup.pattern_by_id.get(id).copied()?;
-        network.patterns.get(index)
-    }
-
-    fn route_for_pattern<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        pattern: &TransitPattern,
-    ) -> Option<&'a TransitRoute> {
-        let index = self.lookup.route_by_id.get(&pattern.route_id).copied()?;
-        network.routes.get(index)
-    }
-
-    fn route_of<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        pattern: &TransitPattern,
-    ) -> &'a TransitRoute {
-        self.route_for_pattern(network, pattern)
-            .expect("validated pattern route")
-    }
-
-    fn calendar<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        id: &ServiceCalendarId,
-    ) -> Option<&'a ServiceCalendar> {
-        let index = self.lookup.calendar_by_id.get(id).copied()?;
-        network.calendars.get(index)
-    }
-
-    fn scheduled_trip<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        id: &TransitTripId,
-    ) -> Option<&'a TransitTrip> {
-        let index = self.lookup.trip_by_id.get(id).copied()?;
-        network.trips.get(index)
-    }
-
-    fn scheduled_trip_at<'a>(
-        &self,
-        network: &'a TransitNetwork,
-        index: usize,
-    ) -> Option<&'a TransitTrip> {
-        network.trips.get(index)
-    }
-
-    fn scheduled_trip_indices(
-        &self,
-        pattern_id: &TransitPatternId,
-        board_index: usize,
-    ) -> &[usize] {
-        self.schedule
-            .trip_indices_by_pattern_stop
-            .get(pattern_id)
-            .and_then(|by_stop| by_stop.get(board_index))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    fn frequency_indices(&self, pattern_id: &TransitPatternId) -> &[usize] {
-        self.schedule
-            .frequency_indices_by_pattern
-            .get(pattern_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
     }
 }
 
