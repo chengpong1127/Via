@@ -93,10 +93,8 @@ impl MultimodalPlanner {
     ) -> Result<(PlanningQuery, FailureSummary), PlanningError> {
         let request = context.request;
         let modes = request.transit_modes.clone();
-        let origin =
-            to_street_coordinate(request.origin.coordinate).map_err(|_| PlanningError::Internal)?;
-        let destination = to_street_coordinate(request.destination.coordinate)
-            .map_err(|_| PlanningError::Internal)?;
+        let origin = to_street_coordinate(request.origin.coordinate)?;
+        let destination = to_street_coordinate(request.destination.coordinate)?;
         let mut failures = FailureSummary::default();
         let (access, egress) = if modes.is_empty() {
             (Vec::new(), Vec::new())

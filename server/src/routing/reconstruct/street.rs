@@ -11,8 +11,8 @@ use crate::{
         model::JourneyPlanningContext,
     },
     street::{
-        Coordinate, ManeuverKind, Metres, ProviderFailureClass, RouteQuery, RoutingConstraints,
-        Seconds, StreetPath, StreetTravelMode,
+        ManeuverKind, Metres, ProviderFailureClass, RouteQuery, RoutingConstraints, Seconds,
+        StreetPath, StreetTravelMode,
     },
 };
 
@@ -180,8 +180,8 @@ pub(super) async fn hydrate_path(
     mode: StreetTravelMode,
 ) -> Result<Option<StreetPath>, PlanningError> {
     context.ensure_before_deadline()?;
-    let from = Coordinate::try_from(from.coordinate).map_err(|_| PlanningError::Internal)?;
-    let to = Coordinate::try_from(to.coordinate).map_err(|_| PlanningError::Internal)?;
+    let from = geometry::to_street_coordinate(from.coordinate)?;
+    let to = geometry::to_street_coordinate(to.coordinate)?;
     let result = reconstructor
         .street_routing
         .route(RouteQuery {
@@ -239,7 +239,7 @@ mod tests {
             transit_runtime::TransitRuntime,
         },
         routing::{JourneyAnchor, JourneyMovementKind, PlanningDeadline, WalkingMovementKind},
-        street::{FakeStreetRouter, Metres, Seconds},
+        street::{Coordinate, FakeStreetRouter, Metres, Seconds},
     };
     use std::sync::Arc;
     use time::macros::datetime;
