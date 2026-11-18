@@ -96,14 +96,11 @@ impl MultimodalPlanner {
         let origin = to_street_coordinate(request.origin.coordinate)?;
         let destination = to_street_coordinate(request.destination.coordinate)?;
         let mut failures = FailureSummary::default();
-        let (access, egress) = if modes.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            self.access
-                .discover(context, limits, &modes, &mut failures)
-                .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
-                .await?
-        };
+        let (access, egress) = self
+            .access
+            .discover(context, limits, &modes, &mut failures)
+            .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
+            .await?;
         let query = PlanningQuery::new(
             origin,
             destination,
