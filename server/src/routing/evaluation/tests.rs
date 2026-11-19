@@ -196,25 +196,19 @@ impl BikeMovementSource for TestBikeSource {
         &self,
         from: &CorridorAnchor,
         to: &CorridorAnchor,
-        from_anchor: usize,
-        to_anchor: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let (Some(from), Some(to), Some(corridor_from), Some(corridor_to)) = (
-            from.boarding_point(),
-            to.boarding_point(),
-            from_anchor.checked_sub(1),
-            to_anchor.checked_sub(1),
-        ) else {
+        let (Some(from), Some(to)) = (from.boarding_point(), to.boarding_point()) else {
             return Ok(Vec::new());
         };
-        let movement = CorridorMovement {
-            from_anchor: corridor_from,
-            to_anchor: corridor_to,
-            from: from.clone(),
-            to: to.clone(),
-        };
-        let Some(options) = self.routes.get(&movement).filter(|items| !items.is_empty()) else {
+        let Some(options) = self
+            .routes
+            .iter()
+            .find(|(movement, items)| {
+                movement.from == *from && movement.to == *to && !items.is_empty()
+            })
+            .map(|(_, items)| items)
+        else {
             return Ok(Vec::new());
         };
         self.realizations
@@ -223,15 +217,7 @@ impl BikeMovementSource for TestBikeSource {
             .lock()
             .unwrap()
             .insert((from.clone(), to.clone()));
-        Ok(options
-            .iter()
-            .cloned()
-            .map(|mut movement| {
-                movement.from_anchor = from_anchor;
-                movement.to_anchor = to_anchor;
-                movement
-            })
-            .collect())
+        Ok(options.clone())
     }
 }
 
@@ -358,8 +344,6 @@ fn prune_states_reference(mut states: Vec<EvaluationState>, limit: usize) -> Vec
 
 fn bike_movement(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShareMovement {
     BikeShareMovement::new(
-        from_anchor,
-        to_anchor,
         BikeStationId::new(format!("pickup-{from_anchor}")),
         BikeStationId::new(format!("dropoff-{to_anchor}")),
         BikeWalkingAccess::new(0, 0),
@@ -504,8 +488,6 @@ impl BikeMovementSource for DirectBikePlanner {
         &self,
         from: &CorridorAnchor,
         to: &CorridorAnchor,
-        _: usize,
-        _: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         Ok((matches!(from.kind, JourneyAnchorKind::Origin)
             && matches!(to.kind, JourneyAnchorKind::Destination))
@@ -555,8 +537,6 @@ impl BikeMovementSource for OutcomeBikeProvider {
         &self,
         _: &CorridorAnchor,
         _: &CorridorAnchor,
-        from_anchor: usize,
-        to_anchor: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.expire_deadline {
@@ -565,7 +545,7 @@ impl BikeMovementSource for OutcomeBikeProvider {
         if let Some(error) = &self.error {
             return Err(error.clone());
         }
-        Ok(vec![bike_movement(from_anchor, to_anchor, 60)])
+        Ok(vec![bike_movement(0, 1, 60)])
     }
 }
 

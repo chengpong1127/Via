@@ -508,7 +508,7 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
         now,
         street.clone(),
     );
-    let movements = session.movements(&from, &to, 3, 4).await.unwrap();
+    let movements = session.movements(&from, &to).await.unwrap();
     let bike_movement = &movements[0];
     assert_eq!(
         bike_movement.total_seconds,
@@ -516,11 +516,8 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
             .bikeshare
             .rental_handling_seconds
     );
-    assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (3, 4));
     assert_eq!(street.requests(), 2);
-    let remapped = session.movements(&from, &to, 0, 1).await.unwrap();
-    let bike_movement = &remapped[0];
-    assert_eq!((bike_movement.from_anchor, bike_movement.to_anchor), (0, 1));
+    session.movements(&from, &to).await.unwrap();
     assert_eq!((session.requests(), session.hits()), (1, 1));
     assert_eq!(street.requests(), 2);
     let unavailable = BikeShareSession::new(
@@ -529,13 +526,7 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
         now,
         street.clone(),
     );
-    assert!(
-        unavailable
-            .movements(&from, &to, 3, 4)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(unavailable.movements(&from, &to).await.unwrap().is_empty());
 }
 
 #[test]
@@ -586,7 +577,7 @@ async fn concurrent_candidate_discovery_caches_none_once() {
                 );
                 barrier.wait().await;
                 let movements = session
-                    .movements(&corridor.anchors()[0], &corridor.anchors()[1], 0, 1)
+                    .movements(&corridor.anchors()[0], &corridor.anchors()[1])
                     .await
                     .unwrap();
                 assert!(movements.is_empty());

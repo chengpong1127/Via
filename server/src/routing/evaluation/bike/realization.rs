@@ -79,7 +79,6 @@ impl BikeShareMovementPlanner {
                             continue;
                         }
                         if let Some(bike_movement) = bike_movement_from_cell(
-                            (0, 1),
                             &pickup_chunk[pickup_index].station_id,
                             &dropoff_chunk[dropoff_index].station_id,
                             pickup_chunk[pickup_index].walking,
@@ -193,7 +192,6 @@ fn matrix_has_shape(matrix: &MatrixResult, expected_rows: usize, expected_column
 }
 
 fn bike_movement_from_cell(
-    anchors: (usize, usize),
     pickup_station_id: &BikeStationId,
     dropoff_station_id: &BikeStationId,
     walk_to_pickup: BikeWalkingAccess,
@@ -201,7 +199,6 @@ fn bike_movement_from_cell(
     walk_from_dropoff: BikeWalkingAccess,
     settings: &BikeMovementPolicy,
 ) -> Option<BikeShareMovement> {
-    let (from_anchor, to_anchor) = anchors;
     let MatrixCell::Reachable { duration, distance } = cell else {
         return None;
     };
@@ -211,8 +208,6 @@ fn bike_movement_from_cell(
         return None;
     }
     BikeShareMovement::new(
-        from_anchor,
-        to_anchor,
         pickup_station_id.clone(),
         dropoff_station_id.clone(),
         walk_to_pickup,

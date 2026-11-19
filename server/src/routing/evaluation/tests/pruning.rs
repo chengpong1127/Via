@@ -28,8 +28,6 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
         .unwrap(),
     ];
     let bike = BikeShareMovement::new(
-        0,
-        1,
         BikeStationId::new("pickup"),
         BikeStationId::new("dropoff"),
         BikeWalkingAccess::new(30, 15),

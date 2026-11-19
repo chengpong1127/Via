@@ -97,11 +97,6 @@ impl RealizedJourney {
                 JourneyMovementKind::BikeShare {
                     movement: bike_movement,
                 } => {
-                    if bike_movement.from_anchor != movement.from_anchor
-                        || bike_movement.to_anchor != movement.to_anchor
-                    {
-                        return Err(JourneyTimingError::InvalidBikeShareMovement);
-                    }
                     current_time += Duration::seconds(i64::from(bike_movement.total_seconds));
                     timing.walking_seconds = timing
                         .walking_seconds
@@ -146,8 +141,6 @@ impl RealizedJourney {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BikeShareMovement {
-    pub from_anchor: usize,
-    pub to_anchor: usize,
     pub pickup_station_id: BikeStationId,
     pub dropoff_station_id: BikeStationId,
     pub walk_to_pickup: BikeWalkingAccess,
@@ -160,15 +153,13 @@ pub struct BikeShareMovement {
 
 impl BikeShareMovement {
     pub fn new(
-        from_anchor: usize,
-        to_anchor: usize,
         pickup_station_id: BikeStationId,
         dropoff_station_id: BikeStationId,
         walk_to_pickup: BikeWalkingAccess,
         bicycle: BikeRide,
         walk_from_dropoff: BikeWalkingAccess,
     ) -> Option<Self> {
-        if pickup_station_id == dropoff_station_id || to_anchor <= from_anchor {
+        if pickup_station_id == dropoff_station_id {
             return None;
         }
         let total_seconds = walk_to_pickup
@@ -176,8 +167,6 @@ impl BikeShareMovement {
             .checked_add(bicycle.duration_seconds)?
             .checked_add(walk_from_dropoff.duration_seconds)?;
         Some(Self {
-            from_anchor,
-            to_anchor,
             pickup_station_id,
             dropoff_station_id,
             walk_to_pickup,
@@ -221,6 +210,4 @@ pub enum JourneyTimingError {
     IncompletePath,
     #[error("realized journey misses realized transit movement {movement_index}")]
     MissedTransit { movement_index: usize },
-    #[error("realized journey contains an invalid BikeShare movement")]
-    InvalidBikeShareMovement,
 }

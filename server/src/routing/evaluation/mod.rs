@@ -311,12 +311,7 @@ impl<'e, 'a> Run<'e, 'a> {
         let (start_anchor, _) = state.bike_departure(index);
         let anchors = corridor.anchors();
         let result = bike_movements
-            .movements(
-                &anchors[start_anchor],
-                &anchors[index + 1],
-                start_anchor,
-                index + 1,
-            )
+            .movements(&anchors[start_anchor], &anchors[index + 1])
             .await;
         self.check_deadline()?;
         let movements = result.unwrap_or_else(|error| {

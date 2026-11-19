@@ -51,8 +51,6 @@ pub(crate) trait BikeMovementSource: Send + Sync {
         &self,
         from: &CorridorAnchor,
         to: &CorridorAnchor,
-        from_anchor: usize,
-        to_anchor: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
 }
 

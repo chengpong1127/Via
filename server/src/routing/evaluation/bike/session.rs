@@ -42,11 +42,8 @@ impl BikeMovementSource for BikeShareSession {
         &self,
         from: &CorridorAnchor,
         to: &CorridorAnchor,
-        from_anchor: usize,
-        to_anchor: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
-        let movements = self
-            .movements
+        self.movements
             .get_or_init((from.cache_key(), to.cache_key()), || async {
                 match self
                     .planner
@@ -60,14 +57,6 @@ impl BikeMovementSource for BikeShareSession {
                     None => Ok(Vec::new()),
                 }
             })
-            .await?;
-        Ok(movements
-            .into_iter()
-            .map(|mut movement| {
-                movement.from_anchor = from_anchor;
-                movement.to_anchor = to_anchor;
-                movement
-            })
-            .collect())
+            .await
     }
 }

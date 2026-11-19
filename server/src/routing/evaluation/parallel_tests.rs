@@ -370,32 +370,26 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
         coordinate: Coordinate::try_new(25.002, 121.5).unwrap(),
     };
     let results = stream::iter(0..10)
-        .map(|i| {
+        .map(|_| {
             let session = &session;
             let from = &from;
             let to = &to;
-            async move { session.movements(from, to, i, i + 1).await.unwrap() }
+            async move { session.movements(from, to).await.unwrap() }
         })
         .buffer_unordered(10)
         .collect::<Vec<_>>()
         .await;
     assert_eq!((session.requests(), session.hits()), (1, 9));
     assert_eq!(provider.calls.load(Ordering::Relaxed), 3);
-    let mut anchors = results
-        .iter()
-        .map(|movements| {
-            assert_eq!(movements.len(), 1);
-            assert_eq!(
-                movements[0].total_seconds,
-                720 + crate::config::ViaConfig::default()
-                    .bikeshare
-                    .rental_handling_seconds
-            );
-            (movements[0].from_anchor, movements[0].to_anchor)
-        })
-        .collect::<Vec<_>>();
-    anchors.sort_unstable();
-    assert_eq!(anchors, (0..10).map(|i| (i, i + 1)).collect::<Vec<_>>());
+    for movements in &results {
+        assert_eq!(movements.len(), 1);
+        assert_eq!(
+            movements[0].total_seconds,
+            720 + crate::config::ViaConfig::default()
+                .bikeshare
+                .rental_handling_seconds
+        );
+    }
     let hits_before = matrix.hits();
     for ids in [("origin", "destination"), ("a", "b")] {
         let from = CorridorAnchor {
@@ -407,7 +401,7 @@ async fn real_bike_cache_deduplicates_concurrent_pairs_and_remaps_anchors() {
             ..boarding_anchor(ids.1)
         };
         assert_eq!(
-            session.movements(&from, &to, 0, 1).await.unwrap()[0].total_seconds,
+            session.movements(&from, &to).await.unwrap()[0].total_seconds,
             140 + crate::config::ViaConfig::default()
                 .bikeshare
                 .rental_handling_seconds
@@ -432,13 +426,11 @@ async fn real_bike_failures_are_cached_with_their_classification() {
             Coordinate::try_new(25.002, 121.5).unwrap(),
         );
         let (from, to) = (&corridor.anchors()[0], &corridor.anchors()[1]);
-        let (first, second) = tokio::join!(
-            session.movements(from, to, 0, 1),
-            session.movements(from, to, 0, 1)
-        );
+        let (first, second) =
+            tokio::join!(session.movements(from, to), session.movements(from, to));
         assert_eq!(first, Err(error.clone()));
         assert_eq!(second, Err(error.clone()));
-        assert_eq!(session.movements(from, to, 0, 1).await, Err(error));
+        assert_eq!(session.movements(from, to).await, Err(error));
         assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
         assert_eq!(session.hits(), 2);
     }
@@ -489,6 +481,21 @@ async fn simultaneous_planning_requests_have_independent_caches() {
     }
 }
 
+fn gate_anchor(template: &CorridorAnchor, index: usize) -> CorridorAnchor {
+    CorridorAnchor {
+        coordinate: Coordinate::try_new(
+            template.coordinate.latitude() + index as f64 * 0.001,
+            template.coordinate.longitude(),
+        )
+        .unwrap(),
+        ..template.clone()
+    }
+}
+
+fn gate_index(anchor: &CorridorAnchor) -> usize {
+    ((anchor.coordinate.latitude() - 25.0) / 0.001).round() as usize
+}
+
 struct ReverseBikePlanner {
     started: Arc<tokio::sync::Semaphore>,
     completed: Arc<tokio::sync::Semaphore>,
@@ -499,11 +506,10 @@ struct ReverseBikePlanner {
 impl BikeMovementSource for ReverseBikePlanner {
     async fn movements(
         &self,
+        from: &CorridorAnchor,
         _: &CorridorAnchor,
-        _: &CorridorAnchor,
-        from_anchor: usize,
-        _: usize,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError> {
+        let from_anchor = gate_index(from);
         self.started.add_permits(1);
         self.gates[from_anchor].acquire().await.unwrap().forget();
         self.completed.add_permits(1);
@@ -520,7 +526,9 @@ async fn forced_reverse_completion_preserves_successor_order() {
         let mut query = query(&[], 0, 1);
         query.limits.max_concurrent_phase2_states = concurrency;
         let direct = Corridor::direct_walking(query.origin, query.destination);
-        let anchors = vec![direct.anchors()[0].clone(); 6];
+        let anchors = (0..6)
+            .map(|index| gate_anchor(&direct.anchors()[0], index))
+            .collect::<Vec<_>>();
         let edges = (0..5).map(|_| PlannedMovement::WalkingToResolve).collect();
         let corridor = Corridor::new(anchors, edges).unwrap();
         let street = MatrixCache::new(Arc::new(DelayedMatrix::new(0, None)));
@@ -632,8 +640,8 @@ async fn distinct_bike_movement_keys_share_one_inflight_bicycle_query() {
     );
     let work = async {
         tokio::join!(
-            session.movements(&from1, &to1, 1, 2),
-            session.movements(&from2, &to2, 3, 4),
+            session.movements(&from1, &to1),
+            session.movements(&from2, &to2),
             async {
                 started.acquire().await.unwrap().forget();
                 tokio::task::yield_now().await;
@@ -644,8 +652,8 @@ async fn distinct_bike_movement_keys_share_one_inflight_bicycle_query() {
     let (a, b, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), work)
         .await
         .unwrap();
-    assert_eq!(a.unwrap()[0].from_anchor, 1);
-    assert_eq!(b.unwrap()[0].from_anchor, 3);
+    assert_eq!(a.unwrap().len(), 1);
+    assert_eq!(b.unwrap().len(), 1);
     assert_eq!(session.requests(), 2);
     assert_eq!(provider.calls.load(Ordering::Relaxed), 1);
     assert_eq!((matrix.requests(), matrix.hits()), (1, 1));
@@ -685,7 +693,7 @@ async fn cross_anchor_transient_retry_is_suppressed_only_within_the_shared_reque
     );
     for (from, to) in [("origin", "destination"), ("a", "b")] {
         let result = session
-            .movements(&boarding_anchor(from), &boarding_anchor(to), 0, 1)
+            .movements(&boarding_anchor(from), &boarding_anchor(to))
             .await;
         assert_eq!(result, Err(StreetRoutingError::Timeout));
     }
@@ -696,12 +704,7 @@ async fn cross_anchor_transient_retry_is_suppressed_only_within_the_shared_reque
     );
     assert!(
         !fresh
-            .movements(
-                &boarding_anchor("origin"),
-                &boarding_anchor("destination"),
-                0,
-                1
-            )
+            .movements(&boarding_anchor("origin"), &boarding_anchor("destination"))
             .await
             .unwrap()
             .is_empty()

@@ -62,8 +62,6 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         to: BoardingPointId::new("transfer-to"),
     };
     let bike = BikeShareMovement::new(
-        1,
-        2,
         BikeStationId::new("pickup"),
         BikeStationId::new("dropoff"),
         BikeWalkingAccess::new(60, 50),
@@ -583,8 +581,6 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         vec![trip("third-trip", "third", &["c", "d"], &[30, 50])],
     );
     let first_bike = BikeShareMovement::new(
-        0,
-        1,
         BikeStationId::new("pickup-a"),
         BikeStationId::new("dropoff-b"),
         BikeWalkingAccess::new(0, 0),
@@ -842,9 +838,7 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
     let retained = candidate_corridor(&network, &query);
     let direct = Corridor::direct_walking(query.origin, query.destination);
     let transit = retained[0].clone();
-    let mut bike = bike_movement(0, 1, 240);
-    bike.from_anchor = 0;
-    bike.to_anchor = 1;
+    let bike = bike_movement(0, 1, 240);
     let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         error: None,

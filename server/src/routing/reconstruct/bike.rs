@@ -274,10 +274,8 @@ mod tests {
             timing_reliability: TimingReliability::Reliable,
             walking_tail: None,
         };
-        let movement = |from, to, pickup: &str, dropoff: &str| {
+        let movement = |pickup: &str, dropoff: &str| {
             BikeShareMovement::new(
-                from,
-                to,
                 BikeStationId::new(pickup),
                 BikeStationId::new(dropoff),
                 BikeWalkingAccess::new(0, 0),
@@ -295,7 +293,7 @@ mod tests {
                 &context,
                 &place(0),
                 &place(3),
-                &movement(0, 1, "1", "2"),
+                &movement("1", "2"),
                 &mut assembly
             )
             .await
@@ -303,7 +301,7 @@ mod tests {
         );
         assert_eq!(assembly.legs[1].duration_seconds, 100);
         assert_eq!(assembly.arrival_time, departure + Duration::seconds(420));
-        let second = movement(1, 2, "4", "5").with_rental_wait(900).unwrap();
+        let second = movement("4", "5").with_rental_wait(900).unwrap();
         assert!(
             append_bike_share(
                 &reconstructor,
