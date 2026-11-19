@@ -659,11 +659,10 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
     query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
-    let (corridors, stats) = generate(&runtime, &query).unwrap();
-
-    assert!(stats.deadline_exceeded);
-    assert_eq!(stats.states_expanded, 0);
-    assert!(corridors.is_empty());
+    assert!(matches!(
+        generate(&runtime, &query),
+        Err(crate::routing::model::RoutingError::DeadlineExceeded)
+    ));
 }
 
 #[test]

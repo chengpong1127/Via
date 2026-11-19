@@ -206,7 +206,7 @@ impl MultimodalPlanner {
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
-        if stats.deadline_exceeded || query.deadline.is_elapsed() {
+        if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
         tracing::debug!(

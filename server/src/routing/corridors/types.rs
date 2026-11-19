@@ -113,5 +113,4 @@ pub struct CorridorSearchStats {
     pub unique_corridors_found: usize,
     pub corridors_retained: usize,
     pub search_latency_ms: u64,
-    pub deadline_exceeded: bool,
 }

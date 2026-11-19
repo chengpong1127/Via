@@ -181,8 +181,7 @@ pub fn generate(
             break;
         }
         if query.deadline.is_elapsed() {
-            search.stats.deadline_exceeded = true;
-            return Ok((Vec::new(), search.stats));
+            return Err(RoutingError::DeadlineExceeded);
         }
         let mut boardable_by_pattern =
             HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
