@@ -20,7 +20,6 @@ fn effective_trip_keeps_an_optional_scheduled_trip_origin() {
         timing_basis: TimingBasis::Schedule,
         timing_reliability: TimingReliability::Reliable,
         observed_at: None,
-        uncertainty_seconds: None,
         evidence: Vec::new(),
     };
     let dynamic = EffectiveTrip {
@@ -31,7 +30,6 @@ fn effective_trip_keeps_an_optional_scheduled_trip_origin() {
         timing_basis: TimingBasis::FrequencyEstimate,
         timing_reliability: TimingReliability::Fallback,
         observed_at: None,
-        uncertainty_seconds: None,
         evidence: Vec::new(),
     };
 

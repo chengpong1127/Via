@@ -61,7 +61,6 @@ impl TransitDepartureSource for RecordingSource {
             timing_basis: TimingBasis::Schedule,
             timing_reliability: TimingReliability::Reliable,
             observed_at: None,
-            uncertainty_seconds: None,
             evidence: Vec::new(),
         }])
     }

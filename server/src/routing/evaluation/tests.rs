@@ -109,7 +109,6 @@ fn trip(id: &str, pattern_id: &str, stops: &[&str], minute_offsets: &[i64]) -> E
         timing_basis: TimingBasis::RealtimePrediction,
         timing_reliability: TimingReliability::Reliable,
         observed_at: None,
-        uncertainty_seconds: None,
         evidence: Vec::new(),
     }
 }

@@ -130,7 +130,6 @@ fn effective_trip(value: &str, pattern_id: &str, arrival_minute: i64) -> Effecti
         timing_basis: TimingBasis::RealtimePrediction,
         timing_reliability: TimingReliability::Reliable,
         observed_at: None,
-        uncertainty_seconds: None,
         evidence: Vec::new(),
     }
 }

@@ -250,7 +250,6 @@ impl TraDepartureSource {
         trip.timing_reliability = TimingReliability::Reliable;
         trip.scheduled_trip_id = scheduled_trip_id;
         trip.observed_at = Some(observation.observed_at);
-        trip.uncertainty_seconds = None;
         trip.evidence = vec![NormalizedRealtimeValue {
             freshness: FreshnessState::Fresh,
             value: ArrivalEstimate {

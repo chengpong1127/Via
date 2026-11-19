@@ -878,7 +878,6 @@ async fn ranking_corridor_fixture(iterations: usize) {
                 timing_basis: TimingBasis::FrequencyEstimate,
                 timing_reliability: TimingReliability::Fallback,
                 observed_at: None,
-                uncertainty_seconds: None,
                 evidence: Vec::new(),
             }],
         );

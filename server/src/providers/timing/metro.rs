@@ -158,7 +158,6 @@ impl MetroDepartureSource {
             timing_basis: TimingBasis::RealtimePrediction,
             timing_reliability: TimingReliability::Reliable,
             observed_at: Some(observed_at),
-            uncertainty_seconds: None,
             evidence: vec![NormalizedRealtimeValue {
                 freshness: FreshnessState::Fresh,
                 value: ArrivalEstimate {

@@ -307,7 +307,6 @@ pub struct EffectiveTrip {
     pub timing_basis: TimingBasis,
     pub timing_reliability: TimingReliability,
     pub observed_at: Option<OffsetDateTime>,
-    pub uncertainty_seconds: Option<u32>,
     pub evidence: Vec<NormalizedRealtimeValue>,
 }
 
@@ -351,7 +350,6 @@ impl EffectiveTrip {
             timing_basis: TimingBasis::Schedule,
             timing_reliability: TimingReliability::Reliable,
             observed_at: None,
-            uncertainty_seconds: None,
             evidence: Vec::new(),
         })
     }
@@ -420,7 +418,6 @@ impl EffectiveTrip {
             timing_basis,
             timing_reliability: TimingReliability::Fallback,
             observed_at: None,
-            uncertainty_seconds: (!frequency.exact_times).then_some(frequency.headway_seconds),
             evidence: Vec::new(),
         })
     }
@@ -685,7 +682,6 @@ mod tests {
             timing_basis: TimingBasis::Schedule,
             timing_reliability: TimingReliability::Fallback,
             observed_at: None,
-            uncertainty_seconds: None,
             evidence: Vec::new(),
         }
     }

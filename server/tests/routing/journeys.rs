@@ -913,7 +913,6 @@ async fn matrix_route_mismatch_preserves_a_later_feasible_transit_departure() {
                 timing_basis: TimingBasis::RealtimePrediction,
                 timing_reliability: TimingReliability::Reliable,
                 observed_at: None,
-                uncertainty_seconds: None,
                 evidence: Vec::new(),
             })
             .collect(),

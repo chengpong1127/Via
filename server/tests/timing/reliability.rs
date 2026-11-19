@@ -69,7 +69,6 @@ fn trip(basis: TimingBasis, reliability: TimingReliability) -> EffectiveTrip {
         timing_basis: basis,
         timing_reliability: reliability,
         observed_at: None,
-        uncertainty_seconds: None,
         evidence: Vec::new(),
     }
 }

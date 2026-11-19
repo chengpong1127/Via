@@ -139,7 +139,6 @@ impl BusDepartureSource {
             timing_basis: crate::domain::transit::timing::TimingBasis::RealtimePrediction,
             timing_reliability: TimingReliability::Reliable,
             observed_at: Some(observed_at),
-            uncertainty_seconds: None,
             evidence: vec![evidence],
         })
     }
