@@ -131,7 +131,6 @@ impl JourneyPlanningLimits {
 pub(crate) struct JourneyPlanningContext<'a> {
     pub(crate) request: &'a PlanningInput,
     pub(crate) search_start: OffsetDateTime,
-    pub(crate) max_journey_duration_seconds: u32,
     pub(crate) deadline: PlanningDeadline,
 }
 
@@ -139,15 +138,13 @@ impl<'a> JourneyPlanningContext<'a> {
     pub(crate) fn new(
         request: &'a PlanningInput,
         request_started_at: OffsetDateTime,
-        max_journey_duration_seconds: u32,
         deadline: PlanningDeadline,
-    ) -> Result<Self, PlanningError> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             request,
             search_start: request.departure.search_start(request_started_at),
-            max_journey_duration_seconds,
             deadline,
-        })
+        }
     }
 
     pub(crate) fn ensure_before_deadline(&self) -> Result<(), PlanningError> {

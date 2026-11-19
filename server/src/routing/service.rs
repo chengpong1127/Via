@@ -46,6 +46,7 @@ impl RoutingService {
         limits: JourneyPlanningLimits,
         request_timeouts_enabled: bool,
     ) -> Self {
+        let limits = limits.normalized();
         let planner = MultimodalPlanner::new(
             transit.clone(),
             timing_loader,
@@ -56,8 +57,8 @@ impl RoutingService {
             limits.bike_availability,
         );
         let reconstructor = JourneyReconstructor::new(street_router.clone(), transit, bike_share)
-            .with_rental_handling_seconds(limits.bike_policy.rental_handling_seconds);
-        let limits = limits.normalized();
+            .with_rental_handling_seconds(limits.bike_policy.rental_handling_seconds)
+            .with_max_journey_duration_seconds(limits.planner.max_journey_duration_seconds);
         Self {
             street_router,
             planner,
@@ -116,12 +117,7 @@ impl RoutingService {
         deadline: PlanningDeadline,
     ) -> Result<PlanningOutcome, PlanningError> {
         let request_started_at = taipei_now();
-        let context = JourneyPlanningContext::new(
-            &request,
-            request_started_at,
-            self.limits.planner.max_journey_duration_seconds,
-            deadline,
-        )?;
+        let context = JourneyPlanningContext::new(&request, request_started_at, deadline);
         context.ensure_before_deadline()?;
         let (candidates, failures) = self.collect_candidates(&context).await?;
         self.finalize_plan(request_started_at, &context, candidates, failures)

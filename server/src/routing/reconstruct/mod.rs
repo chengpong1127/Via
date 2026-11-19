@@ -38,6 +38,7 @@ pub(super) struct JourneyReconstructor {
     transit: Arc<TransitRuntime>,
     bike_share: Arc<BikeShareNetwork>,
     rental_handling_seconds: u32,
+    max_journey_duration_seconds: u32,
 }
 
 pub(super) struct JourneyCandidate {
@@ -62,11 +63,17 @@ impl JourneyReconstructor {
             transit,
             bike_share,
             rental_handling_seconds: 0,
+            max_journey_duration_seconds: u32::MAX,
         }
     }
 
     pub(super) fn with_rental_handling_seconds(mut self, seconds: u32) -> Self {
         self.rental_handling_seconds = seconds;
+        self
+    }
+
+    pub(super) fn with_max_journey_duration_seconds(mut self, seconds: u32) -> Self {
+        self.max_journey_duration_seconds = seconds;
         self
     }
 
@@ -115,6 +122,7 @@ impl JourneyReconstructor {
             transit: self.transit.clone(),
             bike_share: self.bike_share.clone(),
             rental_handling_seconds: self.rental_handling_seconds,
+            max_journey_duration_seconds: self.max_journey_duration_seconds,
         }
     }
 
@@ -129,7 +137,7 @@ impl JourneyReconstructor {
         let duration_seconds =
             transit::seconds_between(journey.departure_at(), assembled.arrival_time)
                 .ok_or(PlanningError::Internal)?;
-        if duration_seconds > context.max_journey_duration_seconds {
+        if duration_seconds > self.max_journey_duration_seconds {
             return Ok(None);
         }
         let transfer_count = assembled.transfer_evidence.len() as u32;
@@ -273,9 +281,7 @@ mod tests {
         };
         let request = serde_json::from_value::<crate::api::PlanningRequest>(serde_json::json!({"origin":{"coordinate":geo(origin),"display_text":"origin"},"destination":{"coordinate":geo(destination),"display_text":"destination"},"selected_modes":[],"departure_setting":{"type":"depart_now"}})).unwrap();
         let request: crate::domain::planning::PlanningInput = request.into();
-        let context =
-            JourneyPlanningContext::new(&request, start, 14400, PlanningDeadline::disabled())
-                .unwrap();
+        let context = JourneyPlanningContext::new(&request, start, PlanningDeadline::disabled());
         let street = FakeStreetRouter::builder()
             .path(
                 StreetTravelMode::Walking,

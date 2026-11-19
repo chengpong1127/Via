@@ -258,8 +258,7 @@ mod tests {
         .unwrap();
         let request: crate::domain::planning::PlanningInput = request.into();
         let context =
-            JourneyPlanningContext::new(&request, departure, 14400, PlanningDeadline::disabled())
-                .unwrap();
+            JourneyPlanningContext::new(&request, departure, PlanningDeadline::disabled());
         let mut assembly = JourneyAssembly {
             legs: Vec::new(),
             arrival_time: departure,

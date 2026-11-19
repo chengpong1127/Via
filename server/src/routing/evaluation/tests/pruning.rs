@@ -479,10 +479,8 @@ fn frontier_cap_preserves_complete_journeys_and_ranked_journey_options() {
     let context = super::super::super::model::JourneyPlanningContext::new(
         &request,
         departure_at,
-        4 * 60 * 60,
         super::super::super::model::PlanningDeadline::disabled(),
-    )
-    .unwrap();
+    );
     let reconstructor = super::super::super::reconstruct::JourneyReconstructor::new(
         Arc::new(crate::street::StraightLineStreetRouter::default()),
         runtime,
