@@ -58,10 +58,11 @@ async fn discover_endpoint_stops(
         .into_iter()
         .zip(stops)
         .filter_map(|(cell, (stop_id, _))| {
-            let metric = nearby::street_metric(cell?)?;
-            (metric.duration_seconds <= limits.max_walking_seconds).then(|| {
-                EndpointStop::new(stop_id, metric.duration_seconds, metric.distance_metres)
-            })
+            let MatrixCell::Reachable { duration, distance } = cell? else {
+                return None;
+            };
+            (duration.0 <= limits.max_walking_seconds)
+                .then(|| EndpointStop::new(stop_id, duration.0, distance.0))
         })
         .collect::<Vec<_>>();
     walks.sort_by(|left, right| {

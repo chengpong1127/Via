@@ -266,27 +266,21 @@ impl<'e, 'a> Run<'e, 'a> {
         index: usize,
     ) -> Result<Option<EvaluationState>, RoutingError> {
         self.check_deadline()?;
-        let walking = match edge {
+        let (kind, duration_seconds, distance_metres) = match edge {
             PlannedMovement::RetainedWalking {
                 kind,
                 duration_seconds,
                 distance_metres,
-            } => Walking {
-                kind: *kind,
-                duration_seconds: *duration_seconds,
-                distance_metres: *distance_metres,
-            },
+            } => (*kind, *duration_seconds, *distance_metres),
             PlannedMovement::Transit { .. } | PlannedMovement::WalkingToResolve => {
                 let from = &corridor.anchors()[index];
                 let to = &corridor.anchors()[index + 1];
                 let cell = walking_cell(self.evaluator.matrix_cache, from, to).await;
                 self.check_deadline()?;
                 match cell {
-                    Ok(MatrixCell::Reachable { duration, distance }) => Walking {
-                        kind: walking_kind(from, to),
-                        duration_seconds: duration.0,
-                        distance_metres: distance.0,
-                    },
+                    Ok(MatrixCell::Reachable { duration, distance }) => {
+                        (walking_kind(from, to), duration.0, distance.0)
+                    }
                     Ok(MatrixCell::Unreachable) => return Ok(None),
                     Err(error) => {
                         self.record_failure(&error);
@@ -295,7 +289,17 @@ impl<'e, 'a> Run<'e, 'a> {
                 }
             }
         };
-        Ok(walking_successor(self.query(), state, walking, index))
+        Ok(walking_successor(
+            self.query(),
+            state,
+            JourneyMovementKind::Walking {
+                kind,
+                duration_seconds,
+                distance_metres,
+            },
+            duration_seconds,
+            index,
+        ))
     }
 
     async fn bike_successors(
@@ -429,30 +433,21 @@ fn transit_successor(
     })
 }
 
-struct Walking {
-    kind: WalkingMovementKind,
-    duration_seconds: u32,
-    distance_metres: u32,
-}
-
 fn walking_successor(
     query: &PlanningQuery,
     state: &EvaluationState,
-    walking: Walking,
+    walking: JourneyMovementKind,
+    duration_seconds: u32,
     index: usize,
 ) -> Option<EvaluationState> {
-    let arrival = state.ready_at + Duration::seconds(i64::from(walking.duration_seconds));
+    let arrival = state.ready_at + Duration::seconds(i64::from(duration_seconds));
     within_query_bounds(query, arrival).then(|| {
         state.after_movement(JourneyMovement {
             from_anchor: index,
             to_anchor: index + 1,
             departure_at: state.ready_at,
             arrival_at: arrival,
-            kind: JourneyMovementKind::Walking {
-                kind: walking.kind,
-                duration_seconds: walking.duration_seconds,
-                distance_metres: walking.distance_metres,
-            },
+            kind: walking,
         })
     })
 }

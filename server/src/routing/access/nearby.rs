@@ -1,16 +1,10 @@
 use crate::{
     domain::location::GeoCoordinate,
     domain::{transit::network::TransitMode, transit::runtime::TransitRuntime},
-    street::{Coordinate, MatrixCell},
+    street::Coordinate,
 };
 
 use crate::routing::model::{EndpointStop, JourneyPlanningLimits};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct StreetMetric {
-    pub duration_seconds: u32,
-    pub distance_metres: u32,
-}
 
 #[derive(Clone)]
 struct NearbyStopCandidate {
@@ -145,16 +139,6 @@ pub(crate) fn modes_at_stop(
     modes.sort_unstable();
     modes.dedup();
     modes
-}
-
-pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
-    match cell {
-        MatrixCell::Reachable { duration, distance } => Some(StreetMetric {
-            duration_seconds: duration.0,
-            distance_metres: distance.0,
-        }),
-        MatrixCell::Unreachable => None,
-    }
 }
 
 #[cfg(test)]

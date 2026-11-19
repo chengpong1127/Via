@@ -241,11 +241,12 @@ fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
         let next = walking_successor(
             &query,
             &state,
-            Walking {
+            JourneyMovementKind::Walking {
                 kind: WalkingMovementKind::Access,
                 duration_seconds: seconds,
                 distance_metres: 123,
             },
+            seconds,
             0,
         );
         assert_eq!(next.is_some(), succeeds);
