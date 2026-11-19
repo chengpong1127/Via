@@ -52,10 +52,10 @@ impl EvaluationCorridor {
 
     pub fn from_transit(
         transit: &TransitRuntime,
-        retained: &StaticCorridor,
+        corridor: &StaticCorridor,
         query: &PlanningQuery,
     ) -> Result<Self, RoutingError> {
-        let stops = retained
+        let stops = corridor
             .anchors()
             .ok_or_else(|| RoutingError::Internal("retained corridor has no anchors".into()))?
             .stops()
@@ -91,7 +91,7 @@ impl EvaluationCorridor {
         let access = query
             .origin_access
             .iter()
-            .find(|a| a.stop_id == retained.access_stop_id)
+            .find(|a| a.stop_id == corridor.access_stop_id)
             .ok_or_else(|| {
                 RoutingError::Internal("retained corridor has no matching access point".into())
             })?;
@@ -100,7 +100,7 @@ impl EvaluationCorridor {
             duration_seconds: access.walking_seconds,
             distance_metres: access.distance_metres,
         }];
-        edges.extend(retained.steps.iter().map(|step| match step {
+        edges.extend(corridor.steps.iter().map(|step| match step {
             StaticCorridorStep::Transit(leg) => PlannedMovement::Transit(leg.clone()),
             StaticCorridorStep::SurfaceTransfer {
                 walking_duration_seconds,
@@ -115,7 +115,7 @@ impl EvaluationCorridor {
         let egress = query
             .destination_egress
             .iter()
-            .find(|e| e.stop_id == retained.egress_stop_id)
+            .find(|e| e.stop_id == corridor.egress_stop_id)
             .ok_or_else(|| {
                 RoutingError::Internal("retained corridor has no matching egress point".into())
             })?;
