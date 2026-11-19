@@ -421,12 +421,7 @@ impl Search<'_> {
         if cost_seconds > self.target_seconds {
             return false;
         }
-        if !self.entries_by_stop.contains_key(stop_id) {
-            self.entries_by_stop.insert(stop_id.clone(), Vec::new());
-        }
-        let Some(entries) = self.entries_by_stop.get_mut(stop_id) else {
-            return false;
-        };
+        let entries = self.entries_by_stop.entry(stop_id.clone()).or_default();
         if let Some(index) = entries
             .iter()
             .position(|known| known.structure == structure && known.last_line.as_ref() == last_line)
