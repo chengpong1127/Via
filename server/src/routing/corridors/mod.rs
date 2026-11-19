@@ -1,4 +1,3 @@
-mod pattern_index;
 mod retention;
 mod search;
 #[cfg(test)]

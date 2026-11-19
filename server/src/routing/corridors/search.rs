@@ -6,14 +6,13 @@ use std::{
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId, TransitRouteId},
-    transit::network::{SegmentTimeSource, TransitMode},
+    transit::network::{SegmentTimeSource, TransitMode, TransitPattern},
     transit::runtime::TransitRuntime,
 };
 
 use crate::routing::model::PlanningQuery;
 
 use super::{
-    pattern_index::{CorridorPatternIndex, IndexedPattern},
     retention::RetainedCorridorSet,
     types::{
         CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
@@ -114,13 +113,6 @@ pub fn generate(
     query: &PlanningQuery,
 ) -> (RetainedCorridorSet, CorridorSearchStats) {
     let started = Instant::now();
-    let mut stats = CorridorSearchStats::default();
-    let pattern_index = CorridorPatternIndex::new(
-        transit,
-        &query.allowed_transit_modes,
-        &mut stats,
-        query.deadline,
-    );
     let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
     for egress in &query.destination_egress {
         egress_by_stop
@@ -136,7 +128,7 @@ pub fn generate(
         target_seconds: query.limits.max_journey_duration_seconds,
         metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
         bus_transfer_penalty_seconds: query.limits.bus_transfer_penalty_seconds,
-        stats,
+        stats: CorridorSearchStats::default(),
     };
     let mut current = RoundLabels::new();
     for access in &query.origin_access {
@@ -175,24 +167,28 @@ pub fn generate(
             search.stats.deadline_exceeded = true;
             return (RetainedCorridorSet::default(), search.stats);
         }
-        let mut boardable = HashMap::<&TransitPatternId, (IndexedPattern, usize)>::new();
+        let mut boardable =
+            HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
         for stop_id in current.keys() {
             for position in transit.pattern_positions_at(stop_id) {
-                if let Some(pattern) = pattern_index.get(&position.pattern_id) {
-                    let (_, first_board_index) = boardable
-                        .entry(&position.pattern_id)
-                        .or_insert((pattern, position.stop_index));
-                    *first_board_index = (*first_board_index).min(position.stop_index);
-                }
+                let Some((pattern, mode)) =
+                    pattern_with_mode(transit, &position.pattern_id, &query.allowed_transit_modes)
+                else {
+                    continue;
+                };
+                let (_, _, first_board_index) = boardable.entry(&position.pattern_id).or_insert((
+                    pattern,
+                    mode,
+                    position.stop_index,
+                ));
+                *first_board_index = (*first_board_index).min(position.stop_index);
             }
         }
         let mut boardable = boardable.into_values().collect::<Vec<_>>();
-        boardable.sort_unstable_by(|left, right| {
-            left.0.pattern_id.as_str().cmp(right.0.pattern_id.as_str())
-        });
+        boardable.sort_unstable_by(|left, right| left.0.id.as_str().cmp(right.0.id.as_str()));
         let mut next = RoundLabels::new();
-        for (pattern, first_board_index) in boardable {
-            search.scan_pattern(pattern, first_board_index, &current, &mut next);
+        for (pattern, mode, first_board_index) in boardable {
+            search.scan_pattern(pattern, mode, first_board_index, &current, &mut next);
         }
         for stop_id in sorted_stops(&next) {
             let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
@@ -241,7 +237,7 @@ pub fn generate(
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs = equivalent_legs_for(transit, &pattern_index, &selected);
+    let equivalent_legs = equivalent_legs_for(transit, &selected);
     let (retained, pattern_count, bus_stop_count) =
         RetainedCorridorSet::from_retained(transit, &equivalent_legs, selected);
     stats.corridors_retained = retained.retained().len();
@@ -255,27 +251,22 @@ pub fn generate(
 impl Search<'_> {
     fn scan_pattern(
         &mut self,
-        pattern: IndexedPattern,
+        pattern: &TransitPattern,
+        mode: TransitMode,
         first_board_index: usize,
         current: &RoundLabels,
         next: &mut RoundLabels,
     ) {
-        let line = match pattern.mode {
-            TransitMode::Rail | TransitMode::HighSpeedRail => {
-                LineKey::Pattern(pattern.pattern_id.clone())
-            }
-            TransitMode::Bus | TransitMode::Metro => LineKey::Route(
-                self.transit
-                    .required_pattern(pattern.pattern_id)
-                    .route_id
-                    .clone(),
-            ),
+        let line = match mode {
+            TransitMode::Rail | TransitMode::HighSpeedRail => LineKey::Pattern(pattern.id.clone()),
+            TransitMode::Bus | TransitMode::Metro => LineKey::Route(pattern.route_id.clone()),
         };
+        let segments = &pattern.static_profile.segments;
         let mut boarded = Vec::<Boarded>::new();
         for stop_index in first_board_index..pattern.stops.len() {
             let stop_id = &pattern.stops[stop_index];
             if stop_index > first_board_index {
-                let segment = &pattern.segments[stop_index - 1];
+                let segment = &segments[stop_index - 1];
                 for entry in &mut boarded {
                     entry.ride_seconds = entry.ride_seconds.saturating_add(segment.seconds);
                     entry.cost_source.push_segment(segment.source);
@@ -286,10 +277,8 @@ impl Search<'_> {
                 });
                 for entry in &boarded {
                     let board_stop_id = &pattern.stops[entry.board_index];
-                    let structure = fingerprint(
-                        entry.label.structure,
-                        &(pattern.mode as u8, board_stop_id, stop_id),
-                    );
+                    let structure =
+                        fingerprint(entry.label.structure, &(mode as u8, board_stop_id, stop_id));
                     let cost_seconds = entry.board_cost_seconds.saturating_add(entry.ride_seconds);
                     if !self.insert(stop_id, cost_seconds, structure, Some(&line)) {
                         continue;
@@ -299,7 +288,7 @@ impl Search<'_> {
                         parent: Some(entry.label.node),
                         access_stop_id: self.nodes[entry.label.node].access_stop_id.clone(),
                         step: Some(StaticCorridorStep::Transit(StaticTransitLeg {
-                            pattern_id: pattern.pattern_id.clone(),
+                            pattern_id: pattern.id.clone(),
                             board_stop_id: board_stop_id.clone(),
                             board_index: entry.board_index,
                             alight_stop_id: stop_id.clone(),
@@ -311,7 +300,7 @@ impl Search<'_> {
                     next.entry(stop_id.clone()).or_default().push(Label {
                         cost_seconds,
                         penalty_seconds: entry.penalty_seconds,
-                        last_mode: Some(pattern.mode),
+                        last_mode: Some(mode),
                         node,
                         structure,
                         last_line: Some(line.clone()),
@@ -332,7 +321,7 @@ impl Search<'_> {
                 }
                 let transfer_penalty_seconds = match label.last_mode {
                     None => 0,
-                    Some(TransitMode::Metro) if pattern.mode == TransitMode::Metro => {
+                    Some(TransitMode::Metro) if mode == TransitMode::Metro => {
                         self.metro_transfer_penalty_seconds
                     }
                     Some(_) => self.bus_transfer_penalty_seconds,
@@ -639,7 +628,6 @@ fn select(
 
 fn equivalent_legs_for(
     transit: &TransitRuntime,
-    pattern_index: &CorridorPatternIndex,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
@@ -650,12 +638,10 @@ fn equivalent_legs_for(
         }
         let mut legs = Vec::new();
         for position in transit.pattern_positions_at(&leg.board_stop_id) {
-            let Some(pattern) = pattern_index.get(&position.pattern_id) else {
+            let Some((pattern, _)) = pattern_with_mode(transit, &position.pattern_id, &[key.mode])
+            else {
                 continue;
             };
-            if pattern.mode != key.mode {
-                continue;
-            }
             let Some(offset) = pattern.stops[position.stop_index + 1..]
                 .iter()
                 .position(|stop_id| *stop_id == leg.alight_stop_id)
@@ -664,11 +650,11 @@ fn equivalent_legs_for(
             };
             let alight_index = position.stop_index + 1 + offset;
             let mut cost_source = CostSourceTracker::default();
-            for segment in &pattern.segments[position.stop_index..alight_index] {
+            for segment in &pattern.static_profile.segments[position.stop_index..alight_index] {
                 cost_source.push_segment(segment.source);
             }
             legs.push(StaticTransitLeg {
-                pattern_id: pattern.pattern_id.clone(),
+                pattern_id: pattern.id.clone(),
                 board_stop_id: leg.board_stop_id.clone(),
                 board_index: position.stop_index,
                 alight_stop_id: leg.alight_stop_id.clone(),
@@ -682,6 +668,16 @@ fn equivalent_legs_for(
         equivalent_legs.insert(key, legs);
     }
     equivalent_legs
+}
+
+fn pattern_with_mode<'a>(
+    transit: &'a TransitRuntime,
+    pattern_id: &TransitPatternId,
+    allowed_modes: &[TransitMode],
+) -> Option<(&'a TransitPattern, TransitMode)> {
+    let pattern = transit.pattern(pattern_id)?;
+    let mode = transit.required_route(&pattern.route_id).mode;
+    allowed_modes.contains(&mode).then_some((pattern, mode))
 }
 
 fn corridor_modes(transit: &TransitRuntime, corridor: &StaticCorridor) -> Vec<TransitMode> {
