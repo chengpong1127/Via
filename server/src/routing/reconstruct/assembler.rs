@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 use crate::{
     domain::{
         ids::BoardingPointId,
-        journey::{Leg, LegMode, LiveStatusEvidence, PlanningError},
+        journey::{Leg, LegMode, LiveStatusSummary, PlanningError},
         ranking::TransferEvidence,
         transit::network::TransitMode,
         transit::timing::TimingReliability,
@@ -19,7 +19,7 @@ use super::{JourneyReconstructor, transit::PreviousTransit};
 pub(super) struct JourneyAssembly {
     pub(super) legs: Vec<Leg>,
     pub(super) arrival_time: OffsetDateTime,
-    pub(super) live_evidence: Vec<LiveStatusEvidence>,
+    pub(super) live_evidence: Vec<LiveStatusSummary>,
     pub(super) travel_modes: Vec<LegMode>,
     pub(super) main_pattern_sequence: Vec<String>,
     pub(super) transfer_evidence: Vec<TransferEvidence>,

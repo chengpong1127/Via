@@ -1,12 +1,12 @@
 use crate::domain::{
-    journey::{LegMode, LiveStatusEvidence, LiveStatusSummary},
+    journey::{LegMode, LiveStatusSummary},
     ranking::TransferKind,
     realtime::{FreshnessState, NormalizedRealtimeValue},
     transit::network::TransitMode,
 };
 
-pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {
-    LiveStatusEvidence {
+pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusSummary {
+    LiveStatusSummary {
         state: status.freshness,
         observed_at: Some(status.value.transmitted_at),
     }
@@ -26,7 +26,7 @@ pub(super) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) 
     }
 }
 
-pub(super) fn summary_from_evidence(evidence: &[LiveStatusEvidence]) -> LiveStatusSummary {
+pub(super) fn summary_from_evidence(evidence: &[LiveStatusSummary]) -> LiveStatusSummary {
     if evidence.is_empty() {
         return LiveStatusSummary {
             state: FreshnessState::NotApplicable,

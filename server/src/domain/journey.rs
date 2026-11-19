@@ -109,7 +109,7 @@ pub struct Guidance {
     pub parameters: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct LiveStatusSummary {
     pub state: FreshnessState,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -135,12 +135,6 @@ pub enum LegDetails {
         dropoff_station_id: String,
         dropoff_station_name: String,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LiveStatusEvidence {
-    pub state: FreshnessState,
-    pub observed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
