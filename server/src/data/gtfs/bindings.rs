@@ -17,7 +17,7 @@ use super::GtfsBuildDiagnostics;
 
 pub(super) struct BindingInputs {
     pub(super) routes: Vec<Route>,
-    pub(super) route_modes: HashMap<String, TransitMode>,
+    pub(super) mode_by_route: HashMap<String, TransitMode>,
     pub(super) trips: Vec<RawTrip>,
 }
 
@@ -88,7 +88,7 @@ pub(super) fn build(
     let mut route_by_via_id = HashMap::<String, &Route>::new();
     let mut route_by_via_direction = HashMap::<(String, u8), &Route>::new();
     for route in &inputs.routes {
-        let Some(mode) = inputs.route_modes.get(&route.id) else {
+        let Some(mode) = inputs.mode_by_route.get(&route.id) else {
             continue;
         };
         let via_id = via_route_id(route, *mode);
@@ -109,7 +109,7 @@ pub(super) fn build(
         let Some(route) = route else {
             continue;
         };
-        let mode = inputs.route_modes[route.id.as_str()];
+        let mode = inputs.mode_by_route[route.id.as_str()];
         match mode {
             TransitMode::Bus => {
                 let positions = pattern
@@ -147,7 +147,7 @@ pub(super) fn build(
         .collect::<HashSet<_>>();
     let mut usable_trip_ids = HashSet::new();
     for trip in &inputs.trips {
-        if !inputs.route_modes.contains_key(trip.route_id.as_str())
+        if !inputs.mode_by_route.contains_key(trip.route_id.as_str())
             || !usable_trip_ids.insert(trip.id.as_str())
             || !scheduled_ids.contains(trip.id.as_str())
         {
@@ -156,7 +156,7 @@ pub(super) fn build(
         let Some(route) = routes_by_id.get(trip.route_id.as_str()).copied() else {
             continue;
         };
-        if inputs.route_modes.get(&route.id) == Some(&TransitMode::Rail)
+        if inputs.mode_by_route.get(&route.id) == Some(&TransitMode::Rail)
             && let Some(train_number) = route
                 .id
                 .strip_prefix("TRA_")
@@ -175,7 +175,7 @@ pub(super) fn build(
         .iter()
         .filter(|pattern| {
             let route = route_by_via_id[pattern.route_id.as_str()];
-            inputs.route_modes[route.id.as_str()] == TransitMode::Bus
+            inputs.mode_by_route[route.id.as_str()] == TransitMode::Bus
                 && bus_realtime_scope(
                     route,
                     &pattern
@@ -209,7 +209,7 @@ pub(super) fn build(
                 && !bindings.metro_patterns.contains_key(&pattern.id)
                 && !matches!(
                     inputs
-                        .route_modes
+                        .mode_by_route
                         .get(route_by_via_id[pattern.route_id.as_str()].id.as_str()),
                     Some(TransitMode::Rail | TransitMode::HighSpeedRail)
                 )

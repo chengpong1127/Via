@@ -284,7 +284,7 @@ fn transit_corridors(
     query: &PlanningQuery,
 ) -> Result<Vec<EvaluationCorridor>, RoutingError> {
     retained
-        .retained()
+        .retained_corridors()
         .iter()
         .map(|corridor| EvaluationCorridor::from_transit(network, corridor, query))
         .collect()
@@ -494,8 +494,10 @@ async fn evaluate_walking_replacement(
             vec![bike_movement(0, 1, 240)],
         )]))
     });
-    let make_corridor =
-        || EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+    let make_corridor = || {
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap()
+    };
     let corridors = if duplicate {
         vec![make_corridor(), make_corridor()]
     } else {

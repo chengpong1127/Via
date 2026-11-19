@@ -409,7 +409,10 @@ fn phase2_allows_equivalent_pattern_substitution() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let corridor = candidate_corridor(&network, &query);
-    let retained_leg = corridor.retained()[0].transit_legs().next().unwrap();
+    let retained_leg = corridor.retained_corridors()[0]
+        .transit_legs()
+        .next()
+        .unwrap();
     let equivalent_legs = corridor.equivalent_legs_for(&network, retained_leg);
     assert_eq!(equivalent_legs.len(), 2);
     let equivalent_leg = equivalent_legs
@@ -559,7 +562,8 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         .push(query.destination_egress[0].clone());
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let expected = [
         JourneyAnchorKind::Origin,
         JourneyAnchorKind::BoardingPoint {
@@ -626,7 +630,10 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    let leg = retained.retained()[0].transit_legs().next().unwrap();
+    let leg = retained.retained_corridors()[0]
+        .transit_legs()
+        .next()
+        .unwrap();
     let state = EvaluationState::initial(&query);
     let ride = trip("ride", "bus", &["origin", "destination"], &[1, 5]);
     let next = transit_successor(&network, &query, &state, &ride, leg, 1, state.ready_at).unwrap();

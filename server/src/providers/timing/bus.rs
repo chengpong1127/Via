@@ -328,10 +328,10 @@ impl BusDepartureSource {
             .map(|stop| stop.as_str().to_owned())
             .collect::<Vec<_>>();
         stop_uids.sort();
-        let mut requested_services = HashMap::<String, Vec<TransitPatternId>>::new();
+        let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
             if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
-                requested_services
+                patterns_by_service
                     .entry(binding.tdx_service_id.clone())
                     .or_default()
                     .push(pattern_id.clone());
@@ -362,7 +362,7 @@ impl BusDepartureSource {
         }
         let values = match parse_bus_arrivals(
             &batch.records,
-            &requested_services,
+            &patterns_by_service,
             &self.freshness_policy,
             self.max_clock_skew_seconds,
         ) {

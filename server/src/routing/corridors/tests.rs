@@ -160,9 +160,9 @@ fn consecutive_different_routes_of_the_same_mode_are_allowed() {
 
         let corridors = run(&network, &query("o", "d", &[mode], 1, 10));
 
-        assert_eq!(corridors.retained().len(), 1);
+        assert_eq!(corridors.retained_corridors().len(), 1);
         assert_eq!(
-            corridors.retained()[0].pattern_sequence(),
+            corridors.retained_corridors()[0].pattern_sequence(),
             vec![
                 TransitPatternId::new("first"),
                 TransitPatternId::new("second")
@@ -193,9 +193,9 @@ fn consecutive_different_transit_modes_are_allowed() {
             &query("o", "d", &[first_mode, second_mode], 1, 10),
         );
 
-        assert_eq!(corridors.retained().len(), 1);
+        assert_eq!(corridors.retained_corridors().len(), 1);
         assert_eq!(
-            corridors.retained()[0].pattern_sequence(),
+            corridors.retained_corridors()[0].pattern_sequence(),
             vec![
                 TransitPatternId::new("first"),
                 TransitPatternId::new("second")
@@ -224,9 +224,9 @@ fn arrivals_on_different_routes_keep_their_legal_continuations() {
 
     let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 1, 1));
 
-    assert_eq!(corridors.retained().len(), 1);
+    assert_eq!(corridors.retained_corridors().len(), 1);
     assert_eq!(
-        corridors.retained()[0].pattern_sequence(),
+        corridors.retained_corridors()[0].pattern_sequence(),
         vec![
             TransitPatternId::new("blue"),
             TransitPatternId::new("red-b")
@@ -252,9 +252,9 @@ fn one_global_k_is_shared_across_bus_and_metro() {
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 1),
     );
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(
-        retained_corridors.retained()[0].pattern_sequence(),
+        retained_corridors.retained_corridors()[0].pattern_sequence(),
         vec![TransitPatternId::new("bus")]
     );
 }
@@ -279,14 +279,14 @@ fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
     );
 
     assert_eq!(
-        retained_corridors.retained()[0].pattern_sequence(),
+        retained_corridors.retained_corridors()[0].pattern_sequence(),
         vec![
             TransitPatternId::new("connector"),
             TransitPatternId::new("metro")
         ]
     );
     assert_eq!(
-        retained_corridors.retained()[0].cost_source,
+        retained_corridors.retained_corridors()[0].cost_source,
         StaticCostSource::Mixed
     );
 }
@@ -313,7 +313,7 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 2),
     );
 
-    assert_eq!(retained_corridors.retained().len(), 2);
+    assert_eq!(retained_corridors.retained_corridors().len(), 2);
     assert_eq!(stats.corridor_patterns, 4);
 }
 
@@ -331,7 +331,7 @@ fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timi
     let (retained_corridors, stats) =
         generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
     let timing_patterns = retained_corridors
         .timing_positions()
@@ -362,7 +362,7 @@ fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
     let (retained_corridors, stats) =
         generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
     let timing_patterns = retained_corridors
         .timing_positions()
@@ -397,7 +397,7 @@ fn competitive_metro_to_bus_corridor_is_retained() {
     );
 
     let mode_sequences = retained_corridors
-        .retained()
+        .retained_corridors()
         .iter()
         .map(|corridor| {
             corridor
@@ -423,7 +423,7 @@ fn multiple_departures_of_one_structure_consume_one_slot() {
 
     let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 100));
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
 }
 
 #[test]
@@ -442,7 +442,7 @@ fn much_slower_detour_is_excluded_when_k_is_full() {
     let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
     assert_eq!(
-        retained_corridors.retained()[0].pattern_sequence(),
+        retained_corridors.retained_corridors()[0].pattern_sequence(),
         vec![TransitPatternId::new("direct")]
     );
 }
@@ -456,9 +456,9 @@ fn bus_without_exact_schedule_uses_optimistic_geometry() {
 
     let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(
-        retained_corridors.retained()[0].cost_source,
+        retained_corridors.retained_corridors()[0].cost_source,
         StaticCostSource::OptimisticEstimate
     );
 }
@@ -478,9 +478,9 @@ fn selected_mode_filtering_is_applied_before_retention() {
 
     let retained_corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 0, 10));
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(
-        retained_corridors.retained()[0].pattern_sequence(),
+        retained_corridors.retained_corridors()[0].pattern_sequence(),
         vec![TransitPatternId::new("metro")]
     );
 }
@@ -502,8 +502,8 @@ fn maximum_transfer_count_is_respected() {
     let allowed = run(&network, &query("o", "d", &[TransitMode::Bus], 1, 10));
 
     assert!(blocked.is_empty());
-    assert_eq!(allowed.retained().len(), 1);
-    assert_eq!(allowed.retained()[0].pattern_sequence().len(), 2);
+    assert_eq!(allowed.retained_corridors().len(), 1);
+    assert_eq!(allowed.retained_corridors()[0].pattern_sequence().len(), 2);
 }
 
 #[test]
@@ -528,9 +528,9 @@ fn static_walking_transfer_can_connect_access_to_first_boarding() {
         &query("access", "d", &[TransitMode::Metro], 0, 10),
     );
 
-    assert_eq!(retained_corridors.retained().len(), 1);
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert!(matches!(
-        retained_corridors.retained()[0].steps.first(),
+        retained_corridors.retained_corridors()[0].steps.first(),
         Some(StaticCorridorStep::SurfaceTransfer { .. })
     ));
 }
@@ -580,8 +580,8 @@ fn direct_egress_is_retained_over_a_faster_surface_transfer_to_egress() {
 
         let retained_corridors = run(&network, &query);
 
-        assert_eq!(retained_corridors.retained().len(), 1);
-        let corridor = &retained_corridors.retained()[0];
+        assert_eq!(retained_corridors.retained_corridors().len(), 1);
+        let corridor = &retained_corridors.retained_corridors()[0];
         assert_eq!(corridor.steps.len(), 1);
         assert!(matches!(
             corridor.steps.last(),
@@ -609,8 +609,8 @@ fn static_walking_transfer_can_connect_transit_rides() {
         &query("o", "d", &[TransitMode::Metro, TransitMode::Bus], 1, 10),
     );
 
-    assert_eq!(retained_corridors.retained().len(), 1);
-    let corridor = &retained_corridors.retained()[0];
+    assert_eq!(retained_corridors.retained_corridors().len(), 1);
+    let corridor = &retained_corridors.retained_corridors()[0];
     assert_eq!(
         corridor.pattern_sequence(),
         vec![TransitPatternId::new("metro"), TransitPatternId::new("bus")]
@@ -664,10 +664,10 @@ fn best_corridor_for_each_ride_count_survives_a_full_cap_of_faster_transfers() {
         &query("o", "d", &[TransitMode::Bus, TransitMode::Rail], 1, 2),
     );
 
-    assert_eq!(retained_corridors.retained().len(), 2);
+    assert_eq!(retained_corridors.retained_corridors().len(), 2);
     assert!(
         retained_corridors
-            .retained()
+            .retained_corridors()
             .iter()
             .any(|corridor| corridor.pattern_sequence()
                 == vec![TransitPatternId::new("direct-rail")])
@@ -697,7 +697,7 @@ fn cheapest_corridor_of_each_mode_set_survives_a_full_cap_of_faster_bus_corridor
     );
 
     let sequences = retained_corridors
-        .retained()
+        .retained_corridors()
         .iter()
         .map(|corridor| corridor.pattern_sequence())
         .collect::<Vec<_>>();
@@ -729,7 +729,7 @@ fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
 
     assert_eq!(
         retained_corridors
-            .retained()
+            .retained_corridors()
             .iter()
             .map(StaticCorridor::pattern_sequence)
             .collect::<Vec<_>>(),
@@ -756,7 +756,7 @@ fn target_bound_drops_much_slower_corridors_when_the_cap_is_not_full() {
 
     assert_eq!(
         retained_corridors
-            .retained()
+            .retained_corridors()
             .iter()
             .map(StaticCorridor::pattern_sequence)
             .collect::<Vec<_>>(),
@@ -780,7 +780,7 @@ fn equal_cost_walking_transfers_are_kept_in_stop_order() {
     let query = query("o", "d", &[TransitMode::Bus, TransitMode::Rail], 1, 24);
     let feeders = || {
         run(&network, &query)
-            .retained()
+            .retained_corridors()
             .iter()
             .map(|corridor| corridor.pattern_sequence()[0].as_str().to_owned())
             .collect::<Vec<_>>()
@@ -810,9 +810,9 @@ fn rail_patterns_sharing_one_route_can_be_connected() {
 
         let corridors = run(&network, &query("o", "d", &[mode], 1, 10));
 
-        assert_eq!(corridors.retained().len(), 1, "{mode:?}");
+        assert_eq!(corridors.retained_corridors().len(), 1, "{mode:?}");
         assert_eq!(
-            corridors.retained()[0].pattern_sequence(),
+            corridors.retained_corridors()[0].pattern_sequence(),
             vec![
                 TransitPatternId::new("main-line"),
                 TransitPatternId::new("branch-line")
@@ -843,10 +843,10 @@ fn retained_corridors_prefer_distinct_ride_sequences_over_stop_variants() {
     let corridors = run(&network, &query);
 
     let sequences = corridors
-        .retained()
+        .retained_corridors()
         .iter()
         .map(|corridor| corridor.pattern_sequence())
         .collect::<HashSet<_>>();
-    assert_eq!(corridors.retained().len(), 2);
+    assert_eq!(corridors.retained_corridors().len(), 2);
     assert!(sequences.contains(&vec![TransitPatternId::new("other")]));
 }

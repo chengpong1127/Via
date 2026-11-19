@@ -50,7 +50,7 @@ impl TimingSnapshotLoader for ScheduleSnapshots {
                 query.pattern_id,
                 query.board_index.unwrap(),
                 SnapshotDepartures {
-                    fallback: trips,
+                    fallback_trips: trips,
                     ..Default::default()
                 },
             );

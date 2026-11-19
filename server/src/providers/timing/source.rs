@@ -156,8 +156,8 @@ pub trait TransitDepartureSource: Send + Sync {
                     Err(_) => (Vec::new(), None),
                 };
                 SnapshotDepartures {
-                    preferred,
-                    fallback,
+                    preferred_trips: preferred,
+                    fallback_trips: fallback,
                     failure,
                 }
             })
@@ -168,7 +168,7 @@ pub trait TransitDepartureSource: Send + Sync {
 #[derive(Clone)]
 pub struct DepartureResolver {
     transit: Arc<TransitRuntime>,
-    sources: HashMap<TransitMode, Arc<dyn TransitDepartureSource>>,
+    source_by_mode: HashMap<TransitMode, Arc<dyn TransitDepartureSource>>,
 }
 
 impl DepartureResolver {
@@ -176,11 +176,14 @@ impl DepartureResolver {
         transit: Arc<TransitRuntime>,
         sources: impl IntoIterator<Item = Arc<dyn TransitDepartureSource>>,
     ) -> Self {
-        let sources = sources
+        let source_by_mode = sources
             .into_iter()
             .map(|source| (source.mode(), source))
             .collect();
-        Self { transit, sources }
+        Self {
+            transit,
+            source_by_mode,
+        }
     }
 }
 
@@ -204,20 +207,20 @@ impl DepartureResolver {
         }
 
         let mut results = vec![None; queries.len()];
-        let mut grouped = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
+        let mut queries_by_mode = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
         for (index, query) in queries.into_iter().enumerate() {
             let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
                 results[index] = Some(Err(DepartureError::InvalidQuery));
                 continue;
             };
-            grouped
+            queries_by_mode
                 .entry(self.transit.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push((index, query));
         }
 
-        for (mode, entries) in grouped {
-            let Some(source) = self.sources.get(&mode) else {
+        for (mode, entries) in queries_by_mode {
+            let Some(source) = self.source_by_mode.get(&mode) else {
                 for (index, _) in entries {
                     results[index] = Some(Err(DepartureError::InvalidConfiguration));
                 }
@@ -250,28 +253,26 @@ impl DepartureResolver {
 impl TimingSnapshotLoader for DepartureResolver {
     async fn load_snapshot(&self, queries: Vec<DepartureQuery>) -> TimingSnapshot {
         let mut snapshot = TimingSnapshot::default();
-        let mut grouped = BTreeMap::<TransitMode, Vec<DepartureQuery>>::new();
+        let mut queries_by_mode = BTreeMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
             let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
                 snapshot.record_failure(DepartureError::InvalidQuery);
                 continue;
             };
-            grouped
+            queries_by_mode
                 .entry(self.transit.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push(query);
         }
-        let batches = join_all(
-            grouped
-                .into_iter()
-                .map(|(mode, source_queries)| async move {
-                    let entries = match self.sources.get(&mode) {
-                        Some(source) => Some(source.snapshot_batch(source_queries.clone()).await),
-                        None => None,
-                    };
-                    (source_queries, entries)
-                }),
-        )
+        let batches = join_all(queries_by_mode.into_iter().map(
+            |(mode, source_queries)| async move {
+                let entries = match self.source_by_mode.get(&mode) {
+                    Some(source) => Some(source.snapshot_batch(source_queries.clone()).await),
+                    None => None,
+                };
+                (source_queries, entries)
+            },
+        ))
         .await;
         for (source_queries, entries) in batches {
             let Some(entries) = entries else {

@@ -92,7 +92,8 @@ async fn transit_expansion_emits_multiple_departures_before_pruning() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -133,7 +134,8 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -194,7 +196,8 @@ async fn surface_realization_completes_alongside_transit() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -246,7 +249,8 @@ async fn direct_corridor_has_observable_constant_work() {
             error: None,
         }));
         let mut corridors = vec![
-            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap(),
+            EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+                .unwrap(),
         ];
         if include_direct {
             corridors.insert(
@@ -424,7 +428,7 @@ async fn fatal_transit_outcome_skips_both_surface_operations() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let snapshot = TimingSnapshot::default();
-    let mut leg = retained.retained()[0]
+    let mut leg = retained.retained_corridors()[0]
         .transit_legs()
         .next()
         .unwrap()
@@ -475,7 +479,8 @@ async fn fatal_walking_outcome_skips_bike() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -540,7 +545,8 @@ async fn evaluator_propagates_a_fatal_walking_error() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     let retained = candidate_corridor(&network, &query);
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),

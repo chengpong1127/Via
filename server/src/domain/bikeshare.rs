@@ -314,7 +314,7 @@ impl BikeShareNetwork {
 
     pub fn access_to_boarding_point(&self, id: &BoardingPointId) -> Vec<&BikeStationAccess> {
         self.indexes()
-            .access_to_boarding_point
+            .inbound_access_by_boarding_point
             .get(id)
             .map(|indices| {
                 indices
@@ -491,7 +491,7 @@ struct BikeShareIndexes {
     station_positions: super::spatial::SpatialPointIndex,
     station_by_id: HashMap<BikeStationId, usize>,
     access_by_boarding_point: HashMap<BoardingPointId, Vec<usize>>,
-    access_to_boarding_point: HashMap<BoardingPointId, Vec<usize>>,
+    inbound_access_by_boarding_point: HashMap<BoardingPointId, Vec<usize>>,
 }
 
 impl BikeShareIndexes {
@@ -511,7 +511,7 @@ impl BikeShareIndexes {
                 .push(index);
             if link.walk_from_station.is_some() {
                 indexes
-                    .access_to_boarding_point
+                    .inbound_access_by_boarding_point
                     .entry(link.boarding_point_id.clone())
                     .or_default()
                     .push(index);

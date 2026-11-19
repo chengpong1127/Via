@@ -118,7 +118,7 @@ async fn deterministic_routing_benchmark() {
             let planner_ns = started.elapsed().as_nanos();
             last_evaluation = Some(planner_stats.evaluation);
             let counters = (
-                corridors.retained().len(),
+                corridors.retained_corridors().len(),
                 static_stats.states_expanded,
                 realized_journeys.len(),
                 planner_stats.evaluation.transit_departure_lookups,

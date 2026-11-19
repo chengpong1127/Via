@@ -88,6 +88,11 @@ respect the TDX rate limit.
 
 Names follow the type they hold: a `TransitRuntime` is `transit`, a raw
 `TransitNetwork` is `network`, and a `BikeShareNetwork` is `bike_share`.
+Collections are plural (`stops`, `selected_corridors`). Maps are named
+`<value>_by_<key>` when each key holds one value (`position_by_stop_id`) and
+`<values>_by_<key>` when it holds a collection (`trips_by_pattern`). Words that
+already name a whole, such as `bag`, `sequence` or `matrix`, and mass nouns such
+as `evidence` stay singular. Serialized field names follow their format.
 
 See [server/README.md](server/README.md) for local development and verification,
 [configuration](server/docs/configuration.md) for runtime settings, and the

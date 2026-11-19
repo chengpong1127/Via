@@ -219,7 +219,7 @@ impl MetroDepartureSource {
         &self,
         queries: Vec<DepartureQuery>,
     ) -> Vec<Result<Vec<EffectiveTrip>, DepartureError>> {
-        let mut requested_pairs = BTreeMap::<MetroPair, Vec<usize>>::new();
+        let mut query_indices_by_pair = BTreeMap::<MetroPair, Vec<usize>>::new();
         let mut matches = vec![None; queries.len()];
         let mut invalid_queries = HashSet::new();
         for (index, query) in queries.iter().enumerate() {
@@ -233,7 +233,7 @@ impl MetroDepartureSource {
             let Some(realtime_match) = self.realtime_match(query) else {
                 continue;
             };
-            requested_pairs
+            query_indices_by_pair
                 .entry(MetroPair {
                     line_id: realtime_match.line_id.clone(),
                     station_id: realtime_match.station_id.clone(),
@@ -243,7 +243,7 @@ impl MetroDepartureSource {
             matches[index] = Some(realtime_match);
         }
 
-        if requested_pairs.is_empty() {
+        if query_indices_by_pair.is_empty() {
             return queries
                 .into_iter()
                 .enumerate()
@@ -257,11 +257,15 @@ impl MetroDepartureSource {
                 .collect();
         }
 
-        let request_keys = requested_pairs.keys().cloned().collect::<Vec<_>>();
+        let request_keys = query_indices_by_pair.keys().cloned().collect::<Vec<_>>();
         let batch = self.live.metro_boards(&request_keys).await;
         let mut errors_by_query = HashMap::new();
         for unavailable in &batch.unavailable {
-            for index in requested_pairs.get(&unavailable.id).into_iter().flatten() {
+            for index in query_indices_by_pair
+                .get(&unavailable.id)
+                .into_iter()
+                .flatten()
+            {
                 errors_by_query.insert(*index, departure_error(unavailable.reason));
             }
         }
@@ -272,7 +276,7 @@ impl MetroDepartureSource {
         ) {
             Ok(observations) => observations,
             Err(error) => {
-                for index in requested_pairs.values().flatten() {
+                for index in query_indices_by_pair.values().flatten() {
                     errors_by_query
                         .entry(*index)
                         .or_insert_with(|| error.clone());

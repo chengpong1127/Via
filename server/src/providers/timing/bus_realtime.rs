@@ -19,12 +19,12 @@ use crate::{
 
 pub(super) fn parse_bus_arrivals(
     records: &[BusArrival],
-    requested_services: &HashMap<String, Vec<TransitPatternId>>,
+    patterns_by_service: &HashMap<String, Vec<TransitPatternId>>,
     freshness_policy: &FreshnessPolicy,
     max_clock_skew_seconds: u32,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
-    let parent_services = parent_route_services(requested_services);
+    let parent_services = parent_route_services(patterns_by_service);
     let mut normalized = Vec::new();
     for record in records {
         let Ok(published_at) = OffsetDateTime::parse(&record.update_time, &Rfc3339) else {
@@ -53,8 +53,8 @@ pub(super) fn parse_bus_arrivals(
         let base_id = transit_service_id(service_uid);
         let ids = directional_id
             .as_ref()
-            .and_then(|id| requested_services.get(id.as_str()))
-            .or_else(|| requested_services.get(base_id.as_str()))
+            .and_then(|id| patterns_by_service.get(id.as_str()))
+            .or_else(|| patterns_by_service.get(base_id.as_str()))
             .or_else(|| {
                 if record.sub_route_uid.is_some() {
                     return None;
@@ -82,10 +82,10 @@ pub(super) fn parse_bus_arrivals(
 }
 
 fn parent_route_services(
-    requested_services: &HashMap<String, Vec<TransitPatternId>>,
+    patterns_by_service: &HashMap<String, Vec<TransitPatternId>>,
 ) -> HashMap<String, Vec<TransitPatternId>> {
-    let mut parents = HashMap::<String, Vec<TransitPatternId>>::new();
-    for (service_id, patterns) in requested_services {
+    let mut patterns_by_parent_service = HashMap::<String, Vec<TransitPatternId>>::new();
+    for (service_id, patterns) in patterns_by_service {
         let service = TransitPatternId::new(service_id.as_str());
         let sub_route_uid = tdx_sub_route_uid(&service);
         let direction_suffix = &service_id[sub_route_uid.len()..];
@@ -95,12 +95,12 @@ fn parent_route_services(
         else {
             continue;
         };
-        parents
+        patterns_by_parent_service
             .entry(format!("{route_uid}{direction_suffix}"))
             .or_default()
             .extend(patterns.iter().cloned());
     }
-    parents
+    patterns_by_parent_service
 }
 
 pub fn normalize_n1(
@@ -143,7 +143,7 @@ mod tests {
     fn route_uid_fallback_maps_tdx_bus_estimates_without_subroute_uid() {
         let pattern_id = TransitPatternId::new("pattern:TPE11871::direction=0::variant=0");
         let service_id = transit_service_id_for_direction("TPE11871", 0);
-        let requested_services =
+        let patterns_by_service =
             HashMap::from([(service_id.as_str().to_owned(), vec![pattern_id.clone()])]);
         let update_time = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
         let payload = serde_json::json!([{
@@ -158,7 +158,7 @@ mod tests {
         let records = serde_json::from_value::<Vec<BusArrival>>(payload).unwrap();
         let values = parse_bus_arrivals(
             &records,
-            &requested_services,
+            &patterns_by_service,
             &FreshnessPolicy::tdx_default(),
             300,
         )
@@ -175,7 +175,7 @@ mod tests {
     fn route_level_estimates_reach_sub_routes_named_after_their_route() {
         let pattern_id = TransitPatternId::new("pattern:TPE153340::direction=0::variant=0");
         let other_direction = TransitPatternId::new("pattern:TPE153340::direction=1::variant=0");
-        let requested_services = HashMap::from([
+        let patterns_by_service = HashMap::from([
             (
                 transit_service_id_for_direction("TPE153340", 0)
                     .as_str()
@@ -221,7 +221,7 @@ mod tests {
         let records = serde_json::from_value::<Vec<BusArrival>>(payload).unwrap();
         let values = parse_bus_arrivals(
             &records,
-            &requested_services,
+            &patterns_by_service,
             &FreshnessPolicy::tdx_default(),
             300,
         )

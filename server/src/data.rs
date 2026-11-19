@@ -158,14 +158,14 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
         .iter()
         .all(|filename| actual_files.contains(*filename))
     {
-        let missing = required_files
+        let missing_files = required_files
             .iter()
             .filter(|filename| !actual_files.contains(**filename))
             .copied()
             .collect::<Vec<_>>();
         return Err(DataError::InvalidFetchSnapshot(format!(
             "snapshot is missing required files: {}",
-            missing.join(", ")
+            missing_files.join(", ")
         )));
     }
 

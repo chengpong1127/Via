@@ -85,7 +85,7 @@ pub(super) fn station_choices<'a>(
     pickup: bool,
     settings: &BikeMovementPolicy,
 ) -> Vec<StationChoice> {
-    let mut choices = HashMap::<BikeStationId, BikeWalkingAccess>::new();
+    let mut access_by_station = HashMap::<BikeStationId, BikeWalkingAccess>::new();
     for access in accesses {
         let Some(walking) = (if pickup {
             access.walk_to_station
@@ -94,7 +94,7 @@ pub(super) fn station_choices<'a>(
         }) else {
             continue;
         };
-        choices
+        access_by_station
             .entry(access.station_id.clone())
             .and_modify(|current| {
                 if walking.duration_seconds < current.duration_seconds {
@@ -103,7 +103,7 @@ pub(super) fn station_choices<'a>(
             })
             .or_insert(walking);
     }
-    let mut choices = choices
+    let mut choices = access_by_station
         .into_iter()
         .map(|(station_id, walking)| StationChoice {
             station_id,

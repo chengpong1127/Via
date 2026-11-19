@@ -31,7 +31,7 @@ struct ServiceBuilder {
     route_id: String,
     direction: Option<u8>,
     stops: Vec<u32>,
-    headsigns: BTreeMap<String, usize>,
+    trip_count_by_headsign: BTreeMap<String, usize>,
     scheduled_trips: Vec<TransitTrip>,
     frequencies: Vec<TransitFrequency>,
     bus_segment_samples: Vec<Vec<u32>>,
@@ -44,7 +44,7 @@ impl ServiceBuilder {
             route_id: key.route_id.clone(),
             direction: key.direction,
             stops: key.stops.clone(),
-            headsigns: BTreeMap::new(),
+            trip_count_by_headsign: BTreeMap::new(),
             scheduled_trips: Vec::new(),
             frequencies: Vec::new(),
             bus_segment_samples: vec![Vec::new(); key.stops.len().saturating_sub(1)],
@@ -53,12 +53,15 @@ impl ServiceBuilder {
 
     fn add_headsign(&mut self, value: Option<&str>) {
         if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
-            *self.headsigns.entry(value.to_owned()).or_default() += 1;
+            *self
+                .trip_count_by_headsign
+                .entry(value.to_owned())
+                .or_default() += 1;
         }
     }
 
     fn headsign(&self, route: &Route) -> String {
-        self.headsigns
+        self.trip_count_by_headsign
             .iter()
             .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
             .map(|(value, _)| value.clone())
@@ -88,7 +91,7 @@ pub(super) struct GtfsIndexes<'a> {
     pub(super) stop_index_by_gtfs_id: &'a HashMap<String, u32>,
     pub(super) routes: &'a [Route],
     pub(super) route_index_by_id: &'a HashMap<String, usize>,
-    pub(super) route_modes: &'a HashMap<String, TransitMode>,
+    pub(super) mode_by_route: &'a HashMap<String, TransitMode>,
 }
 
 pub(super) struct PatternTimingCounts {
@@ -111,7 +114,7 @@ pub(super) fn normalize(
     trips: &[&RawTrip],
     stop_times_by_trip: &HashMap<&str, Vec<&RawStopTime>>,
     frequencies_by_trip: &HashMap<String, Vec<RawFrequency>>,
-    calendars: &HashMap<String, ServiceCalendar>,
+    calendar_by_id: &HashMap<String, ServiceCalendar>,
     shapes: &[Shape],
 ) -> PatternNormalization {
     let mut shapes_by_id = HashMap::<&str, Vec<&Shape>>::new();
@@ -122,7 +125,7 @@ pub(super) fn normalize(
     }
 
     let mut builders = Vec::<ServiceBuilder>::new();
-    let mut service_indices = HashMap::<ServicePatternKey, usize>::new();
+    let mut builder_index_by_service = HashMap::<ServicePatternKey, usize>::new();
     let mut invalid_trip_count = 0;
     let mut invalid_trip_examples = Vec::new();
     for trip in trips {
@@ -151,7 +154,7 @@ pub(super) fn normalize(
 
         let route_id = bindings::via_route_id(
             &indexes.routes[route_index],
-            indexes.route_modes[trip.route_id.as_str()],
+            indexes.mode_by_route[trip.route_id.as_str()],
         );
         let direction = trip
             .direction_id
@@ -165,10 +168,12 @@ pub(super) fn normalize(
             direction,
             stops: pattern.clone(),
         };
-        let service_index = *service_indices.entry(key.clone()).or_insert_with(|| {
-            builders.push(ServiceBuilder::new(&key, route_index));
-            builders.len() - 1
-        });
+        let service_index = *builder_index_by_service
+            .entry(key.clone())
+            .or_insert_with(|| {
+                builders.push(ServiceBuilder::new(&key, route_index));
+                builders.len() - 1
+            });
         let builder = &mut builders[service_index];
         builder.add_headsign(trip.trip_headsign.as_deref());
 
@@ -192,7 +197,7 @@ pub(super) fn normalize(
             }
         }
 
-        let calendar = calendars.get(&trip.service_id);
+        let calendar = calendar_by_id.get(&trip.service_id);
         let has_frequencies = frequencies_by_trip
             .get(&trip.id)
             .is_some_and(|rows| rows.iter().any(valid_frequency));
@@ -225,7 +230,7 @@ pub(super) fn normalize(
             }
         }
 
-        if indexes.route_modes[trip.route_id.as_str()] == TransitMode::Bus
+        if indexes.mode_by_route[trip.route_id.as_str()] == TransitMode::Bus
             && let (Some(first_departure), Some(last_arrival)) = (
                 rows.first().and_then(|row| row.departure_time),
                 rows.last().and_then(|row| row.arrival_time),
@@ -249,16 +254,17 @@ pub(super) fn normalize(
         }
     }
 
-    let mut groups = BTreeMap::<(String, Option<u8>), Vec<usize>>::new();
+    let mut builder_indices_by_route_direction =
+        BTreeMap::<(String, Option<u8>), Vec<usize>>::new();
     for (index, builder) in builders.iter().enumerate() {
-        groups
+        builder_indices_by_route_direction
             .entry((builder.route_id.clone(), builder.direction))
             .or_default()
             .push(index);
     }
     let mut pattern_ids = vec![TransitPatternId::new(""); builders.len()];
     let mut patterns = Vec::with_capacity(builders.len());
-    for ((route_id, direction), mut indices) in groups {
+    for ((route_id, direction), mut indices) in builder_indices_by_route_direction {
         indices.sort_by(|left, right| builders[*left].stops.cmp(&builders[*right].stops));
         for (position, builder_index) in indices.iter().enumerate() {
             let builder = &builders[*builder_index];
@@ -283,7 +289,7 @@ pub(super) fn normalize(
                     &builder.scheduled_trips,
                     &builder.frequencies,
                     &builder.bus_segment_samples,
-                    indexes.route_modes[route.id.as_str()],
+                    indexes.mode_by_route[route.id.as_str()],
                     indexes.stops,
                 ),
             ));

@@ -123,7 +123,8 @@ async fn measured_corridors_case(
     query.limits.max_concurrent_phase2_corridors = corridor_concurrency;
     let retained = candidate_corridor(&network, &query);
     let original =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let corridors = (0..corridor_count)
         .map(|_| {
             EvaluationCorridor::new(
@@ -135,7 +136,7 @@ async fn measured_corridors_case(
                         distance_metres: 0,
                     },
                     PlannedMovement::Transit(
-                        retained.retained()[0]
+                        retained.retained_corridors()[0]
                             .transit_legs()
                             .next()
                             .unwrap()
@@ -920,7 +921,7 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
     let mut query = query(&[TransitMode::Bus], 0, 1);
     query.limits.max_concurrent_phase2_corridors = 3;
     let retained = candidate_corridor(&network, &query);
-    let leg = retained.retained()[0]
+    let leg = retained.retained_corridors()[0]
         .transit_legs()
         .next()
         .unwrap()

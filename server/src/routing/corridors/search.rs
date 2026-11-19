@@ -91,7 +91,7 @@ struct Candidate {
 struct Search<'a> {
     transit: &'a TransitRuntime,
     nodes: Vec<Node>,
-    best: HashMap<BoardingPointId, Vec<BagEntry>>,
+    bags_by_stop: HashMap<BoardingPointId, Vec<BagEntry>>,
     max_seconds: u32,
     target_seconds: u32,
     metro_transfer_penalty_seconds: u32,
@@ -123,7 +123,7 @@ pub fn generate(
     let mut search = Search {
         transit,
         nodes: Vec::new(),
-        best: HashMap::new(),
+        bags_by_stop: HashMap::new(),
         max_seconds: query.limits.max_journey_duration_seconds,
         target_seconds: query.limits.max_journey_duration_seconds,
         metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
@@ -167,7 +167,7 @@ pub fn generate(
             search.stats.deadline_exceeded = true;
             return (RetainedCorridorSet::default(), search.stats);
         }
-        let mut boardable =
+        let mut boardable_by_pattern =
             HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
         for stop_id in current.keys() {
             for position in transit.pattern_positions_at(stop_id) {
@@ -176,18 +176,17 @@ pub fn generate(
                 else {
                     continue;
                 };
-                let (_, _, first_board_index) = boardable.entry(&position.pattern_id).or_insert((
-                    pattern,
-                    mode,
-                    position.stop_index,
-                ));
+                let (_, _, first_board_index) = boardable_by_pattern
+                    .entry(&position.pattern_id)
+                    .or_insert((pattern, mode, position.stop_index));
                 *first_board_index = (*first_board_index).min(position.stop_index);
             }
         }
-        let mut boardable = boardable.into_values().collect::<Vec<_>>();
-        boardable.sort_unstable_by(|left, right| left.0.id.as_str().cmp(right.0.id.as_str()));
+        let mut boardable_patterns = boardable_by_pattern.into_values().collect::<Vec<_>>();
+        boardable_patterns
+            .sort_unstable_by(|left, right| left.0.id.as_str().cmp(right.0.id.as_str()));
         let mut next = RoundLabels::new();
-        for (pattern, mode, first_board_index) in boardable {
+        for (pattern, mode, first_board_index) in boardable_patterns {
             search.scan_pattern(pattern, mode, first_board_index, &current, &mut next);
         }
         for stop_id in sorted_stops(&next) {
@@ -231,16 +230,16 @@ pub fn generate(
     let mut stats = search.stats;
     let target_seconds = search.target_seconds;
     candidates.retain(|candidate| candidate.search_cost_seconds <= target_seconds);
-    let selected = select(
+    let selected_corridors = select(
         transit,
         candidates,
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs = equivalent_legs_for(transit, &selected);
+    let equivalent_legs_by_key = equivalent_legs_for(transit, &selected_corridors);
     let (retained, pattern_count, bus_stop_count) =
-        RetainedCorridorSet::from_retained(transit, &equivalent_legs, selected);
-    stats.corridors_retained = retained.retained().len();
+        RetainedCorridorSet::from_retained(transit, &equivalent_legs_by_key, selected_corridors);
+    stats.corridors_retained = retained.retained_corridors().len();
     stats.corridor_patterns = pattern_count;
     stats.corridor_positions = retained.timing_positions().count();
     stats.corridor_bus_stops = bus_stop_count;
@@ -422,10 +421,10 @@ impl Search<'_> {
         if cost_seconds > self.target_seconds {
             return false;
         }
-        if !self.best.contains_key(stop_id) {
-            self.best.insert(stop_id.clone(), Vec::new());
+        if !self.bags_by_stop.contains_key(stop_id) {
+            self.bags_by_stop.insert(stop_id.clone(), Vec::new());
         }
-        let Some(bag) = self.best.get_mut(stop_id) else {
+        let Some(bag) = self.bags_by_stop.get_mut(stop_id) else {
             return false;
         };
         if let Some(index) = bag
@@ -489,7 +488,7 @@ impl Search<'_> {
 
     fn retain_current(&self, current: &mut RoundLabels) {
         current.retain(|stop_id, labels| {
-            let Some(bag) = self.best.get(stop_id) else {
+            let Some(bag) = self.bags_by_stop.get(stop_id) else {
                 return false;
             };
             labels.retain(|label| {
@@ -536,14 +535,14 @@ fn select(
     limit: usize,
     stats: &mut CorridorSearchStats,
 ) -> Vec<StaticCorridor> {
-    let mut unique = HashMap::<EquivalentCorridorSignature, Candidate>::new();
+    let mut candidate_by_signature = HashMap::<EquivalentCorridorSignature, Candidate>::new();
     for candidate in candidates {
         let structure = EquivalentCorridorSignature {
             access_stop_id: candidate.corridor.access_stop_id.clone(),
             steps: equivalent_steps(transit, &candidate.corridor.steps),
             egress_stop_id: candidate.corridor.egress_stop_id.clone(),
         };
-        let replace = unique.get(&structure).is_none_or(|known| {
+        let replace = candidate_by_signature.get(&structure).is_none_or(|known| {
             candidate
                 .search_cost_seconds
                 .cmp(&known.search_cost_seconds)
@@ -554,11 +553,11 @@ fn select(
                 .is_lt()
         });
         if replace {
-            unique.insert(structure, candidate);
+            candidate_by_signature.insert(structure, candidate);
         }
     }
-    stats.unique_corridors_found = unique.len();
-    let mut candidates = unique.into_values().collect::<Vec<_>>();
+    stats.unique_corridors_found = candidate_by_signature.len();
+    let mut candidates = candidate_by_signature.into_values().collect::<Vec<_>>();
     candidates.sort_by_cached_key(|candidate| {
         let (access, egress, steps) = corridor_order_key(&candidate.corridor);
         (
@@ -569,7 +568,7 @@ fn select(
             steps,
         )
     });
-    let mut chosen = HashSet::new();
+    let mut chosen_indices = HashSet::new();
     let mut best_with_fewer_rides = u32::MAX;
     let max_rides = candidates
         .iter()
@@ -583,45 +582,45 @@ fn select(
         {
             let duration = candidates[index].search_cost_seconds;
             if duration < best_with_fewer_rides {
-                chosen.insert(index);
+                chosen_indices.insert(index);
                 best_with_fewer_rides = duration;
             }
         }
     }
-    let mut mode_sets = chosen
+    let mut mode_sets = chosen_indices
         .iter()
         .map(|&index| corridor_modes(transit, &candidates[index].corridor))
         .collect::<HashSet<_>>();
     for (index, candidate) in candidates.iter().enumerate() {
-        if chosen.len() >= limit {
+        if chosen_indices.len() >= limit {
             break;
         }
         if mode_sets.insert(corridor_modes(transit, &candidate.corridor)) {
-            chosen.insert(index);
+            chosen_indices.insert(index);
         }
     }
-    let mut sequences = chosen
+    let mut sequences = chosen_indices
         .iter()
         .map(|&index| candidates[index].corridor.pattern_sequence())
         .collect::<HashSet<_>>();
     for (index, candidate) in candidates.iter().enumerate() {
-        if chosen.len() >= limit {
+        if chosen_indices.len() >= limit {
             break;
         }
         if sequences.insert(candidate.corridor.pattern_sequence()) {
-            chosen.insert(index);
+            chosen_indices.insert(index);
         }
     }
     for index in 0..candidates.len() {
-        if chosen.len() >= limit {
+        if chosen_indices.len() >= limit {
             break;
         }
-        chosen.insert(index);
+        chosen_indices.insert(index);
     }
     candidates
         .into_iter()
         .enumerate()
-        .filter(|(index, _)| chosen.contains(index))
+        .filter(|(index, _)| chosen_indices.contains(index))
         .map(|(_, candidate)| candidate.corridor)
         .collect()
 }
@@ -630,10 +629,10 @@ fn equivalent_legs_for(
     transit: &TransitRuntime,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
-    let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
+    let mut equivalent_legs_by_key = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
     for leg in corridors.iter().flat_map(StaticCorridor::transit_legs) {
         let key = equivalent_leg_key(transit, leg);
-        if equivalent_legs.contains_key(&key) {
+        if equivalent_legs_by_key.contains_key(&key) {
             continue;
         }
         let mut legs = Vec::new();
@@ -665,9 +664,9 @@ fn equivalent_legs_for(
         if !legs.iter().any(|known| known == leg) {
             legs.push(leg.clone());
         }
-        equivalent_legs.insert(key, legs);
+        equivalent_legs_by_key.insert(key, legs);
     }
-    equivalent_legs
+    equivalent_legs_by_key
 }
 
 fn pattern_with_mode<'a>(

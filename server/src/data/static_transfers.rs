@@ -33,7 +33,7 @@ pub struct TransferStatistics {
     pub removed_by_fanout: usize,
     pub retained_edges: usize,
     pub elapsed_milliseconds: u128,
-    pub by_mode: BTreeMap<String, usize>,
+    pub edge_count_by_mode: BTreeMap<String, usize>,
 }
 
 fn coordinate(network: &TransitNetwork, index: usize) -> Coordinate {
@@ -69,7 +69,7 @@ pub async fn enrich_network_with_static_transfers(
             reason: "street matrix limits must be positive".into(),
         });
     }
-    let best = query_walking_transfers(
+    let best_by_pair = query_walking_transfers(
         network,
         street,
         &indices,
@@ -79,8 +79,12 @@ pub async fn enrich_network_with_static_transfers(
         policy,
     )
     .await?;
-    network.transfer_edges =
-        retain_outgoing_transfers(best, &mut stats, policy, network.default_transfer_seconds);
+    network.transfer_edges = retain_outgoing_transfers(
+        best_by_pair,
+        &mut stats,
+        policy,
+        network.default_transfer_seconds,
+    );
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
     stats.elapsed_milliseconds = started.elapsed().as_millis();
@@ -132,7 +136,8 @@ async fn query_walking_transfers(
     policy: TransferSettings,
 ) -> Result<HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>, StreetRoutingError>
 {
-    let mut best = HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
+    let mut best_by_pair =
+        HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
 
     for source_group in indices.chunks(policy.source_group_size) {
         let mut requests = Vec::new();
@@ -186,7 +191,7 @@ async fn query_walking_transfers(
                         network.stops[source].id.clone(),
                         network.stops[target].id.clone(),
                     );
-                    best.insert(
+                    best_by_pair.insert(
                         key,
                         WalkingTransferMetrics {
                             duration_seconds: duration.0,
@@ -197,18 +202,18 @@ async fn query_walking_transfers(
             }
         }
     }
-    Ok(best)
+    Ok(best_by_pair)
 }
 
 fn retain_outgoing_transfers(
-    best: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
+    best_by_pair: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
     stats: &mut TransferStatistics,
     policy: TransferSettings,
     co_located_transfer_seconds: u32,
 ) -> Vec<TransferEdge> {
     let mut by_source =
         HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
-    for ((from, to), metrics) in best {
+    for ((from, to), metrics) in best_by_pair {
         by_source.entry(from).or_default().push((to, metrics));
     }
     let mut transfer_edges = Vec::new();
@@ -266,7 +271,7 @@ fn record_mode_statistics(network: &TransitNetwork, stats: &mut TransferStatisti
             for &a in from {
                 for &b in to {
                     *stats
-                        .by_mode
+                        .edge_count_by_mode
                         .entry(format!("{} → {}", mode_name(a), mode_name(b)))
                         .or_default() += 1;
                 }
@@ -331,10 +336,10 @@ mod tests {
 
     #[test]
     fn retained_transfers_sort_edges_and_break_fanout_ties_by_stop_id() {
-        let mut best = HashMap::new();
+        let mut best_by_pair = HashMap::new();
         for source in ["z", "a"] {
             for index in (0..14).rev() {
-                best.insert(
+                best_by_pair.insert(
                     (
                         BoardingPointId::new(source),
                         BoardingPointId::new(format!("target{index:02}")),
@@ -351,7 +356,7 @@ mod tests {
             ..Default::default()
         };
         let edges = retain_outgoing_transfers(
-            best,
+            best_by_pair,
             &mut stats,
             crate::config::ViaConfig::default().preprocessing.transfers,
             0,

@@ -18,13 +18,13 @@ pub(super) struct MetroObservation {
 }
 
 pub(super) fn parse_metro_boards(
-    payload: Vec<MetroBoard>,
+    boards: Vec<MetroBoard>,
     freshness_policy: &FreshnessPolicy,
     max_clock_skew_seconds: u32,
 ) -> Result<Vec<MetroObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let mut observations = Vec::new();
-    for board in payload {
+    for board in boards {
         let source_update = parse_timestamp(&board.source_update_time)?;
         let platform_update = parse_timestamp(&board.update_time)?;
         reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;

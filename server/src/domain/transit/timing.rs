@@ -93,22 +93,22 @@ impl DepartureQuery {
 
 #[derive(Clone, Debug, Default)]
 pub struct TimingSnapshot {
-    departures: HashMap<(TransitPatternId, usize), StoredDepartures>,
-    trip_pool: HashMap<(EffectiveTripId, OffsetDateTime), Arc<EffectiveTrip>>,
+    departures_by_position: HashMap<(TransitPatternId, usize), StoredDepartures>,
+    trip_by_key: HashMap<(EffectiveTripId, OffsetDateTime), Arc<EffectiveTrip>>,
     failures: Vec<DepartureError>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SnapshotDepartures {
-    pub preferred: Vec<EffectiveTrip>,
-    pub fallback: Vec<EffectiveTrip>,
+    pub preferred_trips: Vec<EffectiveTrip>,
+    pub fallback_trips: Vec<EffectiveTrip>,
     pub failure: Option<DepartureError>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct StoredDepartures {
-    preferred: Vec<Arc<EffectiveTrip>>,
-    fallback: Vec<Arc<EffectiveTrip>>,
+    preferred_trips: Vec<Arc<EffectiveTrip>>,
+    fallback_trips: Vec<Arc<EffectiveTrip>>,
     failure: Option<DepartureError>,
 }
 
@@ -117,9 +117,9 @@ impl TimingSnapshot {
         let mut successful = 0;
         let mut empty = 0;
         let mut failed = 0;
-        let mut bases = HashMap::<TimingBasis, usize>::new();
-        for departures in self.departures.values() {
-            if departures.preferred.is_empty() && departures.fallback.is_empty() {
+        let mut count_by_basis = HashMap::<TimingBasis, usize>::new();
+        for departures in self.departures_by_position.values() {
+            if departures.preferred_trips.is_empty() && departures.fallback_trips.is_empty() {
                 if departures.failure.is_some() {
                     failed += 1;
                 } else {
@@ -127,14 +127,18 @@ impl TimingSnapshot {
                 }
             } else {
                 successful += 1;
-                for trip in departures.preferred.iter().chain(&departures.fallback) {
-                    *bases.entry(trip.timing_basis).or_default() += 1;
+                for trip in departures
+                    .preferred_trips
+                    .iter()
+                    .chain(&departures.fallback_trips)
+                {
+                    *count_by_basis.entry(trip.timing_basis).or_default() += 1;
                 }
             }
         }
-        let mut bases = bases.into_iter().collect::<Vec<_>>();
-        bases.sort_by_key(|(basis, _)| format!("{basis:?}"));
-        (successful, empty, failed, bases)
+        let mut basis_counts = count_by_basis.into_iter().collect::<Vec<_>>();
+        basis_counts.sort_by_key(|(basis, _)| format!("{basis:?}"));
+        (successful, empty, failed, basis_counts)
     }
 
     pub fn insert(
@@ -147,8 +151,8 @@ impl TimingSnapshot {
             pattern_id,
             board_index,
             SnapshotDepartures {
-                preferred: trips,
-                fallback: Vec::new(),
+                preferred_trips: trips,
+                fallback_trips: Vec::new(),
                 failure: None,
             },
         );
@@ -174,8 +178,8 @@ impl TimingSnapshot {
                     .then(left.id.as_str().cmp(right.id.as_str()))
             });
         };
-        sort(&mut departures.preferred);
-        sort(&mut departures.fallback);
+        sort(&mut departures.preferred_trips);
+        sort(&mut departures.fallback_trips);
         if let Some(failure) = departures.failure.clone() {
             self.failures.push(failure);
         }
@@ -185,17 +189,22 @@ impl TimingSnapshot {
                 .first()
                 .map(|stop| stop.departure_at)
                 .unwrap_or(OffsetDateTime::UNIX_EPOCH);
-            self.trip_pool
+            self.trip_by_key
                 .entry((trip.id.clone(), first_departure))
                 .or_insert_with(|| Arc::new(trip))
                 .clone()
         };
         let stored = StoredDepartures {
-            preferred: departures.preferred.into_iter().map(&mut intern).collect(),
-            fallback: departures.fallback.into_iter().map(intern).collect(),
+            preferred_trips: departures
+                .preferred_trips
+                .into_iter()
+                .map(&mut intern)
+                .collect(),
+            fallback_trips: departures.fallback_trips.into_iter().map(intern).collect(),
             failure: departures.failure,
         };
-        self.departures.insert((pattern_id, board_index), stored);
+        self.departures_by_position
+            .insert((pattern_id, board_index), stored);
     }
 
     pub fn record_failure(&mut self, failure: DepartureError) {
@@ -204,10 +213,10 @@ impl TimingSnapshot {
 
     pub fn all_positions_failed(&self) -> bool {
         !self.failures.is_empty()
-            && self.departures.values().all(|departures| {
+            && self.departures_by_position.values().all(|departures| {
                 departures.failure.is_some()
-                    && departures.preferred.is_empty()
-                    && departures.fallback.is_empty()
+                    && departures.preferred_trips.is_empty()
+                    && departures.fallback_trips.is_empty()
             })
     }
 
@@ -222,7 +231,10 @@ impl TimingSnapshot {
         after: OffsetDateTime,
         limit: usize,
     ) -> Vec<&EffectiveTrip> {
-        let Some(departures) = self.departures.get(&(pattern_id.clone(), board_index)) else {
+        let Some(departures) = self
+            .departures_by_position
+            .get(&(pattern_id.clone(), board_index))
+        else {
             return Vec::new();
         };
         let departs_in_time = |trip: &&Arc<EffectiveTrip>| {
@@ -231,14 +243,14 @@ impl TimingSnapshot {
                 .is_some_and(|stop| stop.departure_at >= after)
         };
         let mut preferred = departures
-            .preferred
+            .preferred_trips
             .iter()
             .filter(departs_in_time)
             .map(Arc::as_ref)
             .collect::<Vec<_>>();
         if preferred.is_empty() {
             return departures
-                .fallback
+                .fallback_trips
                 .iter()
                 .filter(departs_in_time)
                 .take(limit)
@@ -246,7 +258,7 @@ impl TimingSnapshot {
                 .collect();
         }
         if departures
-            .preferred
+            .preferred_trips
             .iter()
             .any(|trip| trip.scheduled_trip_id.is_none())
         {
@@ -254,13 +266,13 @@ impl TimingSnapshot {
             return preferred;
         }
         let observed = departures
-            .preferred
+            .preferred_trips
             .iter()
             .filter_map(|trip| trip.scheduled_trip_id.as_ref())
             .collect::<HashSet<_>>();
         preferred.extend(
             departures
-                .fallback
+                .fallback_trips
                 .iter()
                 .filter(departs_in_time)
                 .filter(|trip| {
@@ -686,12 +698,12 @@ mod tests {
             pattern_id.clone(),
             0,
             SnapshotDepartures {
-                preferred: vec![trip(
+                preferred_trips: vec![trip(
                     "realtime",
                     &pattern_id,
                     datetime!(2026-08-31 10:01 UTC),
                 )],
-                fallback: vec![trip(
+                fallback_trips: vec![trip(
                     "schedule",
                     &pattern_id,
                     datetime!(2026-08-31 11:00 UTC),
@@ -717,12 +729,12 @@ mod tests {
             pattern_id.clone(),
             0,
             SnapshotDepartures {
-                preferred: vec![linked(
+                preferred_trips: vec![linked(
                     "observed-late",
                     "train-2125",
                     datetime!(2026-08-31 21:27 UTC),
                 )],
-                fallback: vec![
+                fallback_trips: vec![
                     linked(
                         "scheduled-early",
                         "train-2055",

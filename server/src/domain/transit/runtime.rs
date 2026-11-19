@@ -47,11 +47,17 @@ impl TransitRuntime {
 
 impl TransitRuntime {
     pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
-        entity(&self.network.stops, self.indexes.lookup.stops.get(id))
+        entity(
+            &self.network.stops,
+            self.indexes.lookup.position_by_stop_id.get(id),
+        )
     }
 
     pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
-        entity(&self.network.patterns, self.indexes.lookup.patterns.get(id))
+        entity(
+            &self.network.patterns,
+            self.indexes.lookup.position_by_pattern_id.get(id),
+        )
     }
 
     pub(crate) fn required_pattern(&self, id: &TransitPatternId) -> &TransitPattern {
@@ -59,19 +65,25 @@ impl TransitRuntime {
     }
 
     pub fn required_route(&self, id: &TransitRouteId) -> &TransitRoute {
-        entity(&self.network.routes, self.indexes.lookup.routes.get(id))
-            .expect("validated transit route id")
+        entity(
+            &self.network.routes,
+            self.indexes.lookup.position_by_route_id.get(id),
+        )
+        .expect("validated transit route id")
     }
 
     pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
         entity(
             &self.network.calendars,
-            self.indexes.lookup.calendars.get(id),
+            self.indexes.lookup.position_by_calendar_id.get(id),
         )
     }
 
     pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
-        entity(&self.network.trips, self.indexes.lookup.trips.get(id))
+        entity(
+            &self.network.trips,
+            self.indexes.lookup.position_by_trip_id.get(id),
+        )
     }
 }
 
@@ -182,26 +194,33 @@ impl TransitRuntimeIndexes {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct LookupIndex {
-    stops: HashMap<BoardingPointId, usize>,
-    routes: HashMap<TransitRouteId, usize>,
-    patterns: HashMap<TransitPatternId, usize>,
-    trips: HashMap<TransitTripId, usize>,
-    calendars: HashMap<ServiceCalendarId, usize>,
+    position_by_stop_id: HashMap<BoardingPointId, usize>,
+    position_by_route_id: HashMap<TransitRouteId, usize>,
+    position_by_pattern_id: HashMap<TransitPatternId, usize>,
+    position_by_trip_id: HashMap<TransitTripId, usize>,
+    position_by_calendar_id: HashMap<ServiceCalendarId, usize>,
 }
 
 impl LookupIndex {
     fn build(network: &TransitNetwork) -> Self {
         Self {
-            stops: positions(&network.stops, |stop| stop.id.clone()),
-            routes: positions(&network.routes, |route| route.id.clone()),
-            patterns: positions(&network.patterns, |pattern| pattern.id.clone()),
-            trips: positions(&network.trips, |trip| trip.id.clone()),
-            calendars: positions(&network.calendars, |calendar| calendar.id.clone()),
+            position_by_stop_id: position_by_key(&network.stops, |stop| stop.id.clone()),
+            position_by_route_id: position_by_key(&network.routes, |route| route.id.clone()),
+            position_by_pattern_id: position_by_key(&network.patterns, |pattern| {
+                pattern.id.clone()
+            }),
+            position_by_trip_id: position_by_key(&network.trips, |trip| trip.id.clone()),
+            position_by_calendar_id: position_by_key(&network.calendars, |calendar| {
+                calendar.id.clone()
+            }),
         }
     }
 }
 
-fn positions<T, K: std::hash::Hash + Eq>(items: &[T], key: impl Fn(&T) -> K) -> HashMap<K, usize> {
+fn position_by_key<T, K: std::hash::Hash + Eq>(
+    items: &[T],
+    key: impl Fn(&T) -> K,
+) -> HashMap<K, usize> {
     items
         .iter()
         .enumerate()
@@ -218,7 +237,7 @@ struct ScheduleIndex {
 
 impl ScheduleIndex {
     fn build(network: &TransitNetwork) -> Self {
-        let patterns = network
+        let pattern_by_id = network
             .patterns
             .iter()
             .map(|pattern| (&pattern.id, pattern))
@@ -230,7 +249,7 @@ impl ScheduleIndex {
                 .entry(trip.pattern_id.clone())
                 .or_default()
                 .push(trip_index);
-            let Some(pattern) = patterns.get(&trip.pattern_id) else {
+            let Some(pattern) = pattern_by_id.get(&trip.pattern_id) else {
                 continue;
             };
             if trip.stop_times.len() != pattern.stops.len() {

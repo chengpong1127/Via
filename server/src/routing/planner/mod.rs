@@ -147,7 +147,7 @@ impl MultimodalPlanner {
             query.origin,
             query.destination,
         )];
-        for corridor in retained.retained() {
+        for corridor in retained.retained_corridors() {
             corridors.push(EvaluationCorridor::from_transit(
                 &self.transit,
                 corridor,
@@ -223,7 +223,7 @@ impl MultimodalPlanner {
             latency_ms = stats.search_latency_ms,
             "static round-based corridor search"
         );
-        for (index, corridor) in retained.retained().iter().enumerate() {
+        for (index, corridor) in retained.retained_corridors().iter().enumerate() {
             tracing::debug!(
                 target: "via_server::routing",
                 corridor_rank = index + 1,
@@ -243,7 +243,7 @@ impl MultimodalPlanner {
         Ok((retained, stats))
     }
 
-    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = retained.retained().len()))]
+    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = retained.retained_corridors().len()))]
     async fn load_snapshots(
         &self,
         query: &PlanningQuery,

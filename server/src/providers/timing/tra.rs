@@ -132,7 +132,7 @@ impl TraDepartureSource {
 
         let train_numbers = requested_train_numbers.iter().cloned().collect::<Vec<_>>();
         let batch = self.live.tra_delays(&train_numbers).await;
-        let observations = match batch.unavailable.first() {
+        let observation_by_train = match batch.unavailable.first() {
             Some(unavailable) if batch.records.is_empty() => {
                 Err(departure_error(unavailable.reason))
             }
@@ -144,8 +144,8 @@ impl TraDepartureSource {
             ),
         };
 
-        match observations {
-            Ok(observations) => {
+        match observation_by_train {
+            Ok(observation_by_train) => {
                 let mut results = Vec::with_capacity(queries.len());
                 for (index, query) in queries.into_iter().enumerate() {
                     if invalid_queries.contains(&index) {
@@ -156,7 +156,7 @@ impl TraDepartureSource {
                         results.push(Ok(Vec::new()));
                         continue;
                     }
-                    results.push(self.resolve_query(&query, &observations).await);
+                    results.push(self.resolve_query(&query, &observation_by_train).await);
                 }
                 results
             }
@@ -179,12 +179,12 @@ impl TraDepartureSource {
     async fn resolve_query(
         &self,
         query: &DepartureQuery,
-        observations: &BTreeMap<String, TraDelayObservation>,
+        observation_by_train: &BTreeMap<String, TraDelayObservation>,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        if observations.is_empty() {
+        if observation_by_train.is_empty() {
             return Ok(Vec::new());
         }
-        let max_delay = observations
+        let max_delay = observation_by_train
             .values()
             .map(|observation| observation.delay)
             .max()
@@ -205,7 +205,7 @@ impl TraDepartureSource {
             .filter_map(|trip| {
                 let trip_id = trip.scheduled_trip_id.as_ref()?;
                 let train_number = &self.bindings.tra_trips.get(trip_id)?.train_number;
-                let observation = *observations.get(train_number)?;
+                let observation = *observation_by_train.get(train_number)?;
                 (self.transit.service_day(query.after)
                     == self.transit.service_day(observation.observed_at))
                 .then(|| self.delay_adjusted_trip(trip, query, observation))
@@ -298,7 +298,7 @@ fn parse_tra_delays(
     max_clock_skew_seconds: u32,
 ) -> Result<BTreeMap<String, TraDelayObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
-    let mut observations = BTreeMap::new();
+    let mut observation_by_train = BTreeMap::new();
     for delay in delays {
         let platform_update = parse_timestamp(&delay.board_update_time)?;
         let source_update = parse_timestamp(&delay.board_source_update_time)?;
@@ -333,14 +333,14 @@ fn parse_tra_delays(
             delay: TimeDuration::seconds(delay_seconds),
             observed_at,
         };
-        let replace = observations
+        let replace = observation_by_train
             .get(train_no)
             .is_none_or(|current: &TraDelayObservation| current.observed_at < observed_at);
         if replace {
-            observations.insert(train_no.to_owned(), observation);
+            observation_by_train.insert(train_no.to_owned(), observation);
         }
     }
-    Ok(observations)
+    Ok(observation_by_train)
 }
 
 fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {

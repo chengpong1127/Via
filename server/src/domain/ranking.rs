@@ -77,27 +77,27 @@ impl Default for RankingPolicy {
 
 impl RankingPolicy {
     pub fn rank(&self, candidates: Vec<RankingCandidate>) -> Vec<RankedJourney> {
-        let mut eligible: Vec<_> = candidates
+        let mut eligible_candidates: Vec<_> = candidates
             .into_iter()
             .filter_map(|candidate| self.classify(candidate))
             .collect();
 
-        eligible = remove_dominated(self, eligible);
-        eligible.sort_by(|left, right| self.compare_ranked(left, right));
+        eligible_candidates = remove_dominated(self, eligible_candidates);
+        eligible_candidates.sort_by(|left, right| self.compare_ranked(left, right));
 
-        let mut selected = Vec::with_capacity(self.result_limit);
-        for candidate in eligible {
-            if selected.len() == self.result_limit {
+        let mut selected_journeys = Vec::with_capacity(self.result_limit);
+        for candidate in eligible_candidates {
+            if selected_journeys.len() == self.result_limit {
                 break;
             }
-            if selected
+            if selected_journeys
                 .iter()
                 .all(|current| self.materially_different(current, &candidate))
             {
-                selected.push(candidate);
+                selected_journeys.push(candidate);
             }
         }
-        selected
+        selected_journeys
     }
 
     fn classify(&self, candidate: RankingCandidate) -> Option<RankedJourney> {

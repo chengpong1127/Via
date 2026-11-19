@@ -50,16 +50,16 @@ enum MatrixFixture {
 #[derive(Clone)]
 pub struct FakeStreetRouter {
     healthy: bool,
-    matrix: Arc<HashMap<LegKey, MatrixFixture>>,
-    paths: Arc<HashMap<LegKey, StreetPath>>,
+    matrix_by_leg: Arc<HashMap<LegKey, MatrixFixture>>,
+    path_by_leg: Arc<HashMap<LegKey, StreetPath>>,
     matrix_failure: Option<StreetRoutingError>,
     route_failure: Option<StreetRoutingError>,
 }
 
 pub struct FakeStreetRouterBuilder {
     healthy: bool,
-    matrix: HashMap<LegKey, MatrixFixture>,
-    paths: HashMap<LegKey, StreetPath>,
+    matrix_by_leg: HashMap<LegKey, MatrixFixture>,
+    path_by_leg: HashMap<LegKey, StreetPath>,
     matrix_failure: Option<StreetRoutingError>,
     route_failure: Option<StreetRoutingError>,
 }
@@ -68,8 +68,8 @@ impl FakeStreetRouter {
     pub fn builder() -> FakeStreetRouterBuilder {
         FakeStreetRouterBuilder {
             healthy: true,
-            matrix: HashMap::new(),
-            paths: HashMap::new(),
+            matrix_by_leg: HashMap::new(),
+            path_by_leg: HashMap::new(),
             matrix_failure: None,
             route_failure: None,
         }
@@ -100,7 +100,7 @@ impl FakeStreetRouterBuilder {
         duration: Seconds,
         distance: Metres,
     ) -> Self {
-        self.matrix.insert(
+        self.matrix_by_leg.insert(
             LegKey::new(travel_mode, origin, destination),
             MatrixFixture::Reachable { duration, distance },
         );
@@ -113,7 +113,7 @@ impl FakeStreetRouterBuilder {
         origin: Coordinate,
         destination: Coordinate,
     ) -> Self {
-        self.matrix.insert(
+        self.matrix_by_leg.insert(
             LegKey::new(travel_mode, origin, destination),
             MatrixFixture::Unreachable,
         );
@@ -127,7 +127,7 @@ impl FakeStreetRouterBuilder {
         destination: Coordinate,
         path: StreetPath,
     ) -> Self {
-        self.paths
+        self.path_by_leg
             .insert(LegKey::new(travel_mode, origin, destination), path);
         self
     }
@@ -135,8 +135,8 @@ impl FakeStreetRouterBuilder {
     pub fn build(self) -> FakeStreetRouter {
         FakeStreetRouter {
             healthy: self.healthy,
-            matrix: Arc::new(self.matrix),
-            paths: Arc::new(self.paths),
+            matrix_by_leg: Arc::new(self.matrix_by_leg),
+            path_by_leg: Arc::new(self.path_by_leg),
             matrix_failure: self.matrix_failure,
             route_failure: self.route_failure,
         }
@@ -170,7 +170,7 @@ impl StreetRouter for FakeStreetRouter {
                     .iter()
                     .map(|target| {
                         let key = LegKey::new(query.travel_mode, *source, *target);
-                        match self.matrix.get(&key) {
+                        match self.matrix_by_leg.get(&key) {
                             Some(MatrixFixture::Reachable { duration, distance })
                                 if query
                                     .constraints
@@ -185,7 +185,7 @@ impl StreetRouter for FakeStreetRouter {
                             Some(MatrixFixture::Reachable { .. })
                             | Some(MatrixFixture::Unreachable) => MatrixCell::Unreachable,
                             None => self
-                                .paths
+                                .path_by_leg
                                 .get(&key)
                                 .filter(|path| {
                                     query
@@ -211,7 +211,7 @@ impl StreetRouter for FakeStreetRouter {
             return Err(error.clone());
         }
         let path = self
-            .paths
+            .path_by_leg
             .get(&LegKey::new(
                 query.travel_mode,
                 query.origin,

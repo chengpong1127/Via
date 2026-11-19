@@ -109,7 +109,7 @@ impl BikeShareMovementPlanner {
         pickup: bool,
         limits: MatrixLimits,
     ) -> Result<Vec<StationChoice>, StreetRoutingError> {
-        let mut exact = Vec::new();
+        let mut exact_choices = Vec::new();
         let mut failure = None;
         for chunk in choices.chunks(if pickup {
             limits.max_targets
@@ -159,19 +159,19 @@ impl BikeShareMovementPlanner {
                 };
                 if let Some(walking) = walking_access(cell, self.settings.max_endpoint_walk_seconds)
                 {
-                    exact.push(StationChoice {
+                    exact_choices.push(StationChoice {
                         station_id: choice.station_id.clone(),
                         walking,
                     });
                 }
             }
         }
-        if exact.is_empty()
+        if exact_choices.is_empty()
             && let Some(error) = failure
         {
             return Err(error);
         }
-        Ok(exact)
+        Ok(exact_choices)
     }
 }
 

@@ -24,18 +24,18 @@ pub(super) fn prune_coverage(
     stops: Vec<EndpointStop>,
     limit: usize,
 ) -> Vec<EndpointStop> {
-    let mut retained = Vec::with_capacity(stops.len());
+    let mut retained_stops = Vec::with_capacity(stops.len());
     for stop in stops {
-        if retained.iter().any(|existing: &EndpointStop| {
+        if retained_stops.iter().any(|existing: &EndpointStop| {
             existing.walking_seconds <= stop.walking_seconds
                 && stop_coverage_dominates(transit, &existing.stop_id, &stop.stop_id)
         }) {
             continue;
         }
-        retained.push(stop);
+        retained_stops.push(stop);
     }
-    retained.truncate(limit.max(1));
-    retained
+    retained_stops.truncate(limit.max(1));
+    retained_stops
 }
 
 fn stop_coverage_dominates(
@@ -97,39 +97,39 @@ fn select_mode_balanced(
     limit: usize,
 ) -> Vec<NearbyStopCandidate> {
     let limit = limit.max(1);
-    let mut selected = Vec::with_capacity(limit.min(candidates.len()));
+    let mut selected_candidates = Vec::with_capacity(limit.min(candidates.len()));
     loop {
         let mut added = false;
         for mode in allowed_transit_modes {
-            if selected.len() >= limit {
+            if selected_candidates.len() >= limit {
                 break;
             }
             if let Some(candidate) = candidates.iter().find(|candidate| {
                 candidate.modes.contains(mode)
-                    && !selected
+                    && !selected_candidates
                         .iter()
-                        .any(|selected: &NearbyStopCandidate| selected.stop_id == candidate.stop_id)
+                        .any(|known: &NearbyStopCandidate| known.stop_id == candidate.stop_id)
             }) {
-                selected.push(candidate.clone());
+                selected_candidates.push(candidate.clone());
                 added = true;
             }
         }
-        if !added || selected.len() >= limit {
+        if !added || selected_candidates.len() >= limit {
             break;
         }
     }
     for candidate in candidates {
-        if selected.len() >= limit {
+        if selected_candidates.len() >= limit {
             break;
         }
-        if !selected
+        if !selected_candidates
             .iter()
-            .any(|selected| selected.stop_id == candidate.stop_id)
+            .any(|known| known.stop_id == candidate.stop_id)
         {
-            selected.push(candidate);
+            selected_candidates.push(candidate);
         }
     }
-    selected
+    selected_candidates
 }
 
 pub(crate) fn modes_at_stop(

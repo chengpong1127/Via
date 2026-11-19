@@ -26,7 +26,7 @@ pub(super) fn read(path: &Path) -> Result<RawGtfs, DataError> {
     let started_at = Instant::now();
     let file = File::open(path).map_err(|error| DataError::Io(path.into(), error))?;
     let mut archive = ZipArchive::new(file).map_err(|error| invalid_archive(path, error))?;
-    let mut indices = HashMap::new();
+    let mut column_by_name = HashMap::new();
     let mut files = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {
         let entry = archive
@@ -34,39 +34,39 @@ pub(super) fn read(path: &Path) -> Result<RawGtfs, DataError> {
             .map_err(|error| invalid_archive(path, error))?;
         let name = entry.name().to_owned();
         if let Some(file_name) = Path::new(&name).file_name().and_then(|name| name.to_str()) {
-            if RECOGNIZED_TABLES.contains(&file_name) && indices.contains_key(file_name) {
+            if RECOGNIZED_TABLES.contains(&file_name) && column_by_name.contains_key(file_name) {
                 return Err(invalid_archive(
                     path,
                     format!("duplicate GTFS table {file_name}"),
                 ));
             }
-            indices.entry(file_name.to_owned()).or_insert(index);
+            column_by_name.entry(file_name.to_owned()).or_insert(index);
         }
         files.push(name);
     }
 
-    let calendar = read_optional::<Calendar>(&mut archive, &indices, path, "calendar.txt")?;
+    let calendar = read_optional::<Calendar>(&mut archive, &column_by_name, path, "calendar.txt")?;
     let calendar_dates =
-        read_optional::<CalendarDate>(&mut archive, &indices, path, "calendar_dates.txt")?;
-    let routes = read_required::<Route>(&mut archive, &indices, path, "routes.txt")?;
-    let stops = read_required::<Stop>(&mut archive, &indices, path, "stops.txt")?;
+        read_optional::<CalendarDate>(&mut archive, &column_by_name, path, "calendar_dates.txt")?;
+    let routes = read_required::<Route>(&mut archive, &column_by_name, path, "routes.txt")?;
+    let stops = read_required::<Stop>(&mut archive, &column_by_name, path, "stops.txt")?;
     let trips = read_required_with::<RawTrip>(
         &mut archive,
-        &indices,
+        &column_by_name,
         path,
         "trips.txt",
         clear_unused_direction,
     )?;
     let stop_times = read_required_with::<RawStopTime>(
         &mut archive,
-        &indices,
+        &column_by_name,
         path,
         "stop_times.txt",
         normalize_stop_times,
     )?;
     let frequencies =
-        read_optional::<RawFrequency>(&mut archive, &indices, path, "frequencies.txt")?;
-    let shapes = read_optional::<Shape>(&mut archive, &indices, path, "shapes.txt")?;
+        read_optional::<RawFrequency>(&mut archive, &column_by_name, path, "frequencies.txt")?;
+    let shapes = read_optional::<Shape>(&mut archive, &column_by_name, path, "shapes.txt")?;
 
     Ok(RawGtfs {
         read_duration: started_at.elapsed(),
@@ -99,42 +99,42 @@ pub(super) fn read(path: &Path) -> Result<RawGtfs, DataError> {
 
 fn read_required<T: DeserializeOwned>(
     archive: &mut ZipArchive<File>,
-    indices: &HashMap<String, usize>,
+    column_by_name: &HashMap<String, usize>,
     path: &Path,
     name: &str,
 ) -> Result<Vec<T>, DataError> {
-    read_table(archive, indices, path, name, |_, row| row.clone())?
+    read_table(archive, column_by_name, path, name, |_, row| row.clone())?
         .ok_or_else(|| invalid_archive(path, format!("required GTFS table {name} is missing")))
 }
 
 fn read_required_with<T: DeserializeOwned>(
     archive: &mut ZipArchive<File>,
-    indices: &HashMap<String, usize>,
+    column_by_name: &HashMap<String, usize>,
     path: &Path,
     name: &str,
     normalize: fn(&StringRecord, &StringRecord) -> StringRecord,
 ) -> Result<Vec<T>, DataError> {
-    read_table(archive, indices, path, name, normalize)?
+    read_table(archive, column_by_name, path, name, normalize)?
         .ok_or_else(|| invalid_archive(path, format!("required GTFS table {name} is missing")))
 }
 
 fn read_optional<T: DeserializeOwned>(
     archive: &mut ZipArchive<File>,
-    indices: &HashMap<String, usize>,
+    column_by_name: &HashMap<String, usize>,
     path: &Path,
     name: &str,
 ) -> Result<Option<Vec<T>>, DataError> {
-    read_table(archive, indices, path, name, |_, row| row.clone())
+    read_table(archive, column_by_name, path, name, |_, row| row.clone())
 }
 
 fn read_table<T: DeserializeOwned>(
     archive: &mut ZipArchive<File>,
-    indices: &HashMap<String, usize>,
+    column_by_name: &HashMap<String, usize>,
     path: &Path,
     name: &str,
     normalize: impl Fn(&StringRecord, &StringRecord) -> StringRecord,
 ) -> Result<Option<Vec<T>>, DataError> {
-    let Some(index) = indices.get(name).copied() else {
+    let Some(index) = column_by_name.get(name).copied() else {
         return Ok(None);
     };
     let mut entry = archive

@@ -85,7 +85,8 @@ async fn faster_walking_makes_downstream_transit_catchable() {
         }],
     );
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),

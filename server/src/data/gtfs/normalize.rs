@@ -65,20 +65,20 @@ pub(super) fn normalize(
         shapes,
     } = extract_tables(raw, input)?;
 
-    let calendars = via_calendars(raw_calendars, calendar_dates);
+    let calendar_by_id = via_calendars(raw_calendars, calendar_dates);
     let ViaStops {
         stops,
         index_by_gtfs_id: stop_index_by_gtfs_id,
         valid_gtfs_stop_ids,
     } = via_stops(raw_stops)?;
-    let route_modes = route_modes(&raw_routes, diagnostics);
+    let mode_by_route = route_modes(&raw_routes, diagnostics);
     let route_index_by_id = raw_routes
         .iter()
         .enumerate()
         .map(|(index, route)| (route.id.clone(), index))
         .collect::<HashMap<_, _>>();
     let (usable_trip_ids, usable_trips) =
-        select_usable_trips(&raw_trips, &route_modes, diagnostics);
+        select_usable_trips(&raw_trips, &mode_by_route, diagnostics);
     record_shape_rows_loaded(&usable_trips, &shapes, diagnostics);
 
     let indexes = GtfsIndexes {
@@ -86,7 +86,7 @@ pub(super) fn normalize(
         stop_index_by_gtfs_id: &stop_index_by_gtfs_id,
         routes: &raw_routes,
         route_index_by_id: &route_index_by_id,
-        route_modes: &route_modes,
+        mode_by_route: &mode_by_route,
     };
     let stop_times_by_trip =
         index_stop_times(&stop_times, &usable_trip_ids, &stop_index_by_gtfs_id);
@@ -97,7 +97,7 @@ pub(super) fn normalize(
         &usable_trips,
         &stop_times_by_trip,
         &frequencies_by_trip,
-        &calendars,
+        &calendar_by_id,
         &shapes,
     );
     record_timing_diagnostics(&mut normalized, diagnostics);
@@ -108,7 +108,7 @@ pub(super) fn normalize(
     let route_by_via_id = raw_routes
         .iter()
         .filter_map(|route| {
-            route_modes
+            mode_by_route
                 .get(route.id.as_str())
                 .map(|mode| (bindings::via_route_id(route, *mode), route))
         })
@@ -117,10 +117,10 @@ pub(super) fn normalize(
     record_pattern_modes(&patterns, &route_by_via_id, diagnostics);
     let stops = retain_referenced_stops(stops, &valid_gtfs_stop_ids, &patterns, diagnostics);
     let calendars =
-        retain_referenced_calendars(calendars, &scheduled_trips, &normalized_frequencies);
+        retain_referenced_calendars(calendar_by_id, &scheduled_trips, &normalized_frequencies);
     normalized_frequencies.shrink_to_fit();
     patterns.shrink_to_fit();
-    let routes = build_routes(route_by_via_id, &route_modes);
+    let routes = build_routes(route_by_via_id, &mode_by_route);
     let network = assemble_network(
         stops,
         patterns,
@@ -134,7 +134,7 @@ pub(super) fn normalize(
         network,
         binding_inputs: BindingInputs {
             routes: raw_routes,
-            route_modes,
+            mode_by_route,
             trips: raw_trips,
         },
     })
@@ -163,13 +163,13 @@ fn extract_tables(raw: RawGtfs, input: &Path) -> Result<RawTables, DataError> {
 
 fn select_usable_trips<'a>(
     raw_trips: &'a [RawTrip],
-    route_modes: &HashMap<String, TransitMode>,
+    mode_by_route: &HashMap<String, TransitMode>,
     diagnostics: &mut GtfsBuildDiagnostics,
 ) -> (HashSet<&'a str>, Vec<&'a RawTrip>) {
     let mut usable_trip_ids = HashSet::new();
     let mut usable_trips = Vec::new();
     for trip in raw_trips {
-        if route_modes.contains_key(trip.route_id.as_str())
+        if mode_by_route.contains_key(trip.route_id.as_str())
             && usable_trip_ids.insert(trip.id.as_str())
         {
             usable_trips.push(trip);
@@ -202,32 +202,32 @@ fn index_stop_times<'a>(
     usable_trip_ids: &HashSet<&str>,
     stop_index_by_gtfs_id: &HashMap<String, u32>,
 ) -> HashMap<&'a str, Vec<&'a RawStopTime>> {
-    let mut by_trip = HashMap::<&str, Vec<&RawStopTime>>::new();
+    let mut stop_times_by_trip = HashMap::<&str, Vec<&RawStopTime>>::new();
     for stop_time in stop_times {
         if usable_trip_ids.contains(stop_time.trip_id.as_str())
             && stop_index_by_gtfs_id.contains_key(stop_time.stop_id.as_str())
         {
-            by_trip
+            stop_times_by_trip
                 .entry(stop_time.trip_id.as_str())
                 .or_default()
                 .push(stop_time);
         }
     }
-    for times in by_trip.values_mut() {
+    for times in stop_times_by_trip.values_mut() {
         times.sort_by_key(|stop_time| stop_time.stop_sequence);
     }
-    by_trip
+    stop_times_by_trip
 }
 
 fn index_frequencies(frequencies: Vec<RawFrequency>) -> HashMap<String, Vec<RawFrequency>> {
-    let mut by_trip = HashMap::<String, Vec<_>>::new();
+    let mut stop_times_by_trip = HashMap::<String, Vec<_>>::new();
     for frequency in frequencies {
-        by_trip
+        stop_times_by_trip
             .entry(frequency.trip_id.clone())
             .or_default()
             .push(frequency);
     }
-    by_trip
+    stop_times_by_trip
 }
 
 fn record_timing_diagnostics(
@@ -284,7 +284,7 @@ fn retain_referenced_stops(
 }
 
 fn retain_referenced_calendars(
-    calendars: HashMap<String, ServiceCalendar>,
+    calendar_by_id: HashMap<String, ServiceCalendar>,
     scheduled_trips: &[TransitTrip],
     frequencies: &[TransitFrequency],
 ) -> Vec<ServiceCalendar> {
@@ -297,7 +297,7 @@ fn retain_referenced_calendars(
                 .map(|frequency| frequency.calendar_id.as_str()),
         )
         .collect::<HashSet<_>>();
-    calendars
+    calendar_by_id
         .into_values()
         .filter(|calendar| used_calendars.contains(calendar.id.as_str()))
         .collect()
@@ -305,12 +305,12 @@ fn retain_referenced_calendars(
 
 fn build_routes(
     route_by_via_id: BTreeMap<String, &Route>,
-    route_modes: &HashMap<String, TransitMode>,
+    mode_by_route: &HashMap<String, TransitMode>,
 ) -> Vec<TransitRoute> {
     route_by_via_id
         .into_iter()
         .map(|(id, route)| {
-            let mode = route_modes[route.id.as_str()];
+            let mode = mode_by_route[route.id.as_str()];
             let label = match mode {
                 TransitMode::Bus => route
                     .short_name
@@ -374,11 +374,11 @@ fn optional_table<T>(
         .map_err(|error| super::invalid_gtfs(input, format!("{name}: {error}")))
 }
 
-fn via_stops(source: Vec<gtfs_structures::Stop>) -> Result<ViaStops, DataError> {
+fn via_stops(gtfs_stops: Vec<gtfs_structures::Stop>) -> Result<ViaStops, DataError> {
     let mut stops = Vec::new();
     let mut index_by_gtfs_id = HashMap::new();
     let mut valid_gtfs_stop_ids = Vec::new();
-    for stop in source {
+    for stop in gtfs_stops {
         if stop.location_type != LocationType::StopPoint {
             continue;
         }
@@ -427,10 +427,10 @@ pub(super) fn valid_coordinate(latitude: f64, longitude: f64) -> bool {
 }
 
 fn via_calendars(
-    source: Vec<Calendar>,
+    gtfs_calendars: Vec<Calendar>,
     exceptions: Vec<CalendarDate>,
 ) -> HashMap<String, ServiceCalendar> {
-    let mut calendars = source
+    let mut calendar_by_id = gtfs_calendars
         .into_iter()
         .map(|calendar| {
             let weekdays = [
@@ -460,7 +460,7 @@ fn via_calendars(
         })
         .collect::<HashMap<_, _>>();
     for exception in exceptions {
-        let calendar = calendars
+        let calendar = calendar_by_id
             .entry(exception.service_id.clone())
             .or_insert_with(|| empty_calendar(&exception.service_id));
         let dates = match exception.exception_type {
@@ -469,13 +469,13 @@ fn via_calendars(
         };
         dates.push(via_date(exception.date));
     }
-    for calendar in calendars.values_mut() {
+    for calendar in calendar_by_id.values_mut() {
         calendar.added_dates.sort_unstable();
         calendar.added_dates.dedup();
         calendar.removed_dates.sort_unstable();
         calendar.removed_dates.dedup();
     }
-    calendars
+    calendar_by_id
 }
 
 fn empty_calendar(service_id: &str) -> ServiceCalendar {
@@ -502,17 +502,17 @@ fn route_modes(
     routes: &[Route],
     diagnostics: &mut GtfsBuildDiagnostics,
 ) -> HashMap<String, TransitMode> {
-    let mut modes = HashMap::new();
+    let mut mode_by_route = HashMap::new();
     for route in routes {
         if let Some(mode) = via_mode(route.route_type, &route.id) {
-            modes.insert(route.id.clone(), mode);
+            mode_by_route.insert(route.id.clone(), mode);
             *diagnostics
                 .routes_loaded_by_mode
                 .entry(mode_name(mode).to_owned())
                 .or_default() += 1;
         }
     }
-    modes
+    mode_by_route
 }
 
 pub(super) fn via_mode(route_type: RouteType, route_id: &str) -> Option<TransitMode> {

@@ -516,8 +516,8 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
         vec![
-            corridor.retained()[0].clone(),
-            corridor.retained()[0].clone(),
+            corridor.retained_corridors()[0].clone(),
+            corridor.retained_corridors()[0].clone(),
         ],
     );
     let (_, stats) = evaluate_with_test_bike_routes(
@@ -784,7 +784,8 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         vec![bike_movement(0, 1, 240)],
     )]));
     let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let snapshot = TimingSnapshot::default();
     let result = evaluate_corridors(
         &network,
@@ -818,7 +819,8 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         let retained = candidate_corridor(&network, &query);
         query.limits.max_journey_duration_seconds = 30;
         let corridor =
-            EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+            EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+                .unwrap();
         let snapshot = TimingSnapshot::default();
         let bike = TestBikeSource::new(HashMap::from([(
             corridor_movement(0, 1, "origin", "destination"),
@@ -856,7 +858,8 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
     let retained = candidate_corridor(&network, &query);
     let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
     let transit =
-        EvaluationCorridor::from_transit(&network, &retained.retained()[0], &query).unwrap();
+        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
+            .unwrap();
     let mut bike = bike_movement(0, 1, 240);
     bike.from_anchor = 0;
     bike.to_anchor = 1;

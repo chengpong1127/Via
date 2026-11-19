@@ -136,7 +136,7 @@ async fn snapshot_mode_sources_overlap_and_preserve_results() {
             calls: Arc::new(Mutex::new(Vec::new())),
         };
         let mut entries = recording.snapshot_batch(queries.clone()).await;
-        entries[0].preferred = recording
+        entries[0].preferred_trips = recording
             .static_departures(queries[0].clone())
             .await
             .unwrap();

@@ -81,26 +81,30 @@ impl TdxBikeAvailabilitySource {
         let batch = self.live.bike_availability(city, &uids).await;
         let mut failure = batch_failure(city, &batch);
         let received_at = OffsetDateTime::now_utc();
-        let required = ids.iter().collect::<HashSet<_>>();
+        let required_ids = ids.iter().collect::<HashSet<_>>();
         let record_count = batch.records.len();
-        let mut stations = HashMap::new();
-        let mut duplicated = HashSet::new();
+        let mut availability_by_station = HashMap::new();
+        let mut duplicated_ids = HashSet::new();
         for record in batch.records {
             let Some(availability) = normalize_record(city, record) else {
                 continue;
             };
             if !self.is_fresh(&availability, received_at)
-                || !required.contains(&availability.station_id)
+                || !required_ids.contains(&availability.station_id)
             {
                 continue;
             }
             let station_id = availability.station_id.clone();
-            if stations.insert(station_id.clone(), availability).is_some() {
-                duplicated.insert(station_id);
+            if availability_by_station
+                .insert(station_id.clone(), availability)
+                .is_some()
+            {
+                duplicated_ids.insert(station_id);
             }
         }
-        let rejected = !duplicated.is_empty() || (record_count > 0 && stations.is_empty());
-        stations.retain(|station_id, _| !duplicated.contains(station_id));
+        let rejected =
+            !duplicated_ids.is_empty() || (record_count > 0 && availability_by_station.is_empty());
+        availability_by_station.retain(|station_id, _| !duplicated_ids.contains(station_id));
         if rejected {
             tracing::warn!(
                 target: "via_server::providers::bikeshare",
@@ -110,7 +114,7 @@ impl TdxBikeAvailabilitySource {
             );
             failure.get_or_insert(BikeAvailabilityError::RejectedPayload);
         }
-        (stations, failure)
+        (availability_by_station, failure)
     }
 }
 
@@ -135,42 +139,48 @@ impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
         &self,
         station_ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
-        let required = station_ids.iter().collect::<HashSet<_>>();
+        let required_ids = station_ids.iter().collect::<HashSet<_>>();
         ::metrics::counter!("via_bike_availability_stations_requested_total")
-            .increment(required.len() as u64);
-        let mut cities = BTreeMap::<String, Vec<BikeStationId>>::new();
-        for id in required {
+            .increment(required_ids.len() as u64);
+        let mut station_ids_by_city = BTreeMap::<String, Vec<BikeStationId>>::new();
+        for id in required_ids {
             let Some((city, _)) = tdx_bike_station_parts(id) else {
                 tracing::warn!(target: "via_server::providers::bikeshare", station_id = %id.as_str(), "unsupported bike station identity; skipping availability");
                 continue;
             };
-            cities.entry(city.to_owned()).or_default().push(id.clone());
+            station_ids_by_city
+                .entry(city.to_owned())
+                .or_default()
+                .push(id.clone());
         }
-        for ids in cities.values_mut() {
+        for ids in station_ids_by_city.values_mut() {
             ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         }
         let mut results = stream::iter(
-            cities
+            station_ids_by_city
                 .into_iter()
                 .map(|(city, ids)| async move { self.load_city(&city, ids).await }),
         )
         .buffer_unordered(self.settings.max_concurrent_cities);
-        let mut stations = HashMap::new();
+        let mut availability_by_station = HashMap::new();
         let mut failure = None;
         while let Some((loaded, error)) = results.next().await {
-            stations.extend(loaded);
+            availability_by_station.extend(loaded);
             if let Some(error) = error {
                 failure.get_or_insert(error);
             }
         }
         let now = OffsetDateTime::now_utc();
-        stations.retain(|_, availability| self.is_fresh(availability, now));
-        if stations.is_empty()
+        availability_by_station.retain(|_, availability| self.is_fresh(availability, now));
+        if availability_by_station.is_empty()
             && let Some(error) = failure
         {
             return Err(error);
         }
-        Ok(Arc::new(BikeAvailabilitySnapshot::new(now, stations)))
+        Ok(Arc::new(BikeAvailabilitySnapshot::new(
+            now,
+            availability_by_station,
+        )))
     }
 }
 

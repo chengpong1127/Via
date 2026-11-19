@@ -9,8 +9,8 @@ use super::types::{EquivalentLegKey, StaticCorridor, StaticTransitLeg, equivalen
 
 #[derive(Clone, Debug, Default)]
 pub struct RetainedCorridorSet {
-    retained: Vec<StaticCorridor>,
-    equivalent_legs: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+    retained_corridors: Vec<StaticCorridor>,
+    equivalent_legs_by_key: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     timing_positions: Vec<PatternPosition>,
 }
 
@@ -18,22 +18,22 @@ impl RetainedCorridorSet {
     #[cfg(test)]
     pub(in crate::routing) fn from_retained_for_test(
         transit: &TransitRuntime,
-        retained: Vec<StaticCorridor>,
+        retained_corridors: Vec<StaticCorridor>,
     ) -> Self {
-        Self::from_retained(transit, &HashMap::new(), retained).0
+        Self::from_retained(transit, &HashMap::new(), retained_corridors).0
     }
 
     pub(super) fn from_retained(
         transit: &TransitRuntime,
-        equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-        retained: Vec<StaticCorridor>,
+        equivalent_legs_by_key: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+        retained_corridors: Vec<StaticCorridor>,
     ) -> (Self, usize, usize) {
-        let retained_equivalent_legs = retained
+        let retained_equivalent_legs_by_key = retained_corridors
             .iter()
             .flat_map(StaticCorridor::transit_legs)
             .filter_map(|leg| {
                 let key = equivalent_leg_key(transit, leg);
-                equivalent_legs
+                equivalent_legs_by_key
                     .get(&key)
                     .filter(|legs| legs.len() > 1)
                     .map(|equivalent_legs| (key, equivalent_legs.clone()))
@@ -42,10 +42,10 @@ impl RetainedCorridorSet {
         let mut timing_positions = HashSet::<PatternPosition>::new();
         let mut selected_pattern_ids = HashSet::new();
         let mut selected_bus_stop_ids = HashSet::new();
-        for corridor in &retained {
+        for corridor in &retained_corridors {
             for leg in corridor.transit_legs() {
                 for equivalent_leg in
-                    Self::equivalent_legs_from(transit, &retained_equivalent_legs, leg)
+                    Self::equivalent_legs_from(transit, &retained_equivalent_legs_by_key, leg)
                 {
                     timing_positions.insert(PatternPosition {
                         pattern_id: equivalent_leg.pattern_id.clone(),
@@ -77,8 +77,8 @@ impl RetainedCorridorSet {
 
         (
             Self {
-                retained,
-                equivalent_legs: retained_equivalent_legs,
+                retained_corridors,
+                equivalent_legs_by_key: retained_equivalent_legs_by_key,
                 timing_positions,
             },
             selected_pattern_ids.len(),
@@ -86,8 +86,8 @@ impl RetainedCorridorSet {
         )
     }
 
-    pub fn retained(&self) -> &[StaticCorridor] {
-        &self.retained
+    pub fn retained_corridors(&self) -> &[StaticCorridor] {
+        &self.retained_corridors
     }
 
     pub fn equivalent_legs_for(
@@ -95,24 +95,24 @@ impl RetainedCorridorSet {
         transit: &TransitRuntime,
         leg: &StaticTransitLeg,
     ) -> Vec<StaticTransitLeg> {
-        Self::equivalent_legs_from(transit, &self.equivalent_legs, leg)
+        Self::equivalent_legs_from(transit, &self.equivalent_legs_by_key, leg)
     }
 
     pub fn is_equivalent_leg(
         &self,
         transit: &TransitRuntime,
-        retained: &StaticTransitLeg,
+        retained_leg: &StaticTransitLeg,
         equivalent_leg: &StaticTransitLeg,
     ) -> bool {
-        equivalent_leg_key(transit, retained) == equivalent_leg_key(transit, equivalent_leg)
+        equivalent_leg_key(transit, retained_leg) == equivalent_leg_key(transit, equivalent_leg)
     }
 
     fn equivalent_legs_from(
         transit: &TransitRuntime,
-        equivalent_legs: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+        equivalent_legs_by_key: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
         leg: &StaticTransitLeg,
     ) -> Vec<StaticTransitLeg> {
-        let mut equivalent_legs = equivalent_legs
+        let mut equivalent_legs = equivalent_legs_by_key
             .get(&equivalent_leg_key(transit, leg))
             .cloned()
             .unwrap_or_else(|| vec![leg.clone()]);
@@ -131,7 +131,7 @@ impl RetainedCorridorSet {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.retained.is_empty()
+        self.retained_corridors.is_empty()
     }
 }
 
@@ -180,7 +180,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let retained_leg = &legs[0];
             let key = equivalent_leg_key(&transit, retained_leg);
-            let equivalent_legs = HashMap::from([(key.clone(), legs.clone())]);
+            let equivalent_legs_by_key = HashMap::from([(key.clone(), legs.clone())]);
             let corridor = StaticCorridor {
                 access_stop_id: board_stop_id,
                 egress_stop_id: alight_stop_id,
@@ -191,23 +191,26 @@ mod tests {
 
             let (finalized, pattern_count, bus_stop_count) = RetainedCorridorSet::from_retained(
                 &transit,
-                &equivalent_legs,
+                &equivalent_legs_by_key,
                 vec![corridor.clone()],
             );
 
-            assert_eq!(finalized.retained(), &[corridor]);
-            assert_eq!(equivalent_legs[&key], legs);
+            assert_eq!(finalized.retained_corridors(), &[corridor]);
+            assert_eq!(equivalent_legs_by_key[&key], legs);
             if legs.len() == 1 {
-                assert!(finalized.equivalent_legs.is_empty());
+                assert!(finalized.equivalent_legs_by_key.is_empty());
                 assert_eq!(
                     finalized.equivalent_legs_for(&transit, retained_leg),
                     vec![retained_leg.clone()]
                 );
             } else {
-                assert_eq!(finalized.equivalent_legs, equivalent_legs);
+                assert_eq!(finalized.equivalent_legs_by_key, equivalent_legs_by_key);
             }
-            let expected_legs =
-                RetainedCorridorSet::equivalent_legs_from(&transit, &equivalent_legs, retained_leg);
+            let expected_legs = RetainedCorridorSet::equivalent_legs_from(
+                &transit,
+                &equivalent_legs_by_key,
+                retained_leg,
+            );
             assert_eq!(
                 finalized.equivalent_legs_for(&transit, retained_leg),
                 expected_legs
