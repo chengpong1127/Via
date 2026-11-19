@@ -352,7 +352,7 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
                 println!(
                     "  pattern={} label={:?} position={}",
                     pattern.id.as_str(),
-                    runtime.route_of(pattern).label,
+                    runtime.required_route(&pattern.route_id).label,
                     position + 1
                 );
             }
@@ -372,7 +372,7 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         .filter(|pattern| {
             pattern.id.as_str() == args.query
                 || runtime
-                    .route_of(pattern)
+                    .required_route(&pattern.route_id)
                     .label
                     .to_lowercase()
                     .contains(&query)
@@ -387,8 +387,8 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         println!(
             "pattern={} label={:?} mode={} headsign={:?}",
             pattern.id.as_str(),
-            runtime.route_of(pattern).label,
-            mode_name(runtime.route_of(pattern).mode),
+            runtime.required_route(&pattern.route_id).label,
+            mode_name(runtime.required_route(&pattern.route_id).mode),
             pattern.headsign
         );
         println!(
@@ -639,7 +639,7 @@ fn pattern_labels(network: &TransitRuntime, stop_id: &BoardingPointId) -> String
         .patterns
         .iter()
         .filter(|pattern| pattern.stops.iter().any(|id| id == stop_id))
-        .map(|pattern| network.route_of(pattern).label.as_str())
+        .map(|pattern| network.required_route(&pattern.route_id).label.as_str())
         .collect::<Vec<_>>()
         .join(", ")
 }

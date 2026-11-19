@@ -43,7 +43,7 @@ impl TransitDepartureSource for ThsrDepartureSource {
         let Some(pattern) = self.network.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.route_of(pattern).mode != TransitMode::HighSpeedRail
+        if self.network.required_route(&pattern.route_id).mode != TransitMode::HighSpeedRail
             || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);

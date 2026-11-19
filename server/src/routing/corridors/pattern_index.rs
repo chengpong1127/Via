@@ -37,7 +37,7 @@ impl<'a> CorridorPatternIndex<'a> {
                 stats.deadline_exceeded = true;
                 break;
             }
-            let mode = network.route_of(pattern).mode;
+            let mode = network.required_route(&pattern.route_id).mode;
             if !allowed_modes.contains(&mode) {
                 continue;
             }

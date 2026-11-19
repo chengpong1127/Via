@@ -53,7 +53,11 @@ impl RetainedCorridorSet {
                     });
                     selected_pattern_ids.insert(equivalent_leg.pattern_id.clone());
                     if network
-                        .route_of(network.required_pattern(&equivalent_leg.pattern_id))
+                        .required_route(
+                            &network
+                                .required_pattern(&equivalent_leg.pattern_id)
+                                .route_id,
+                        )
                         .mode
                         == TransitMode::Bus
                     {

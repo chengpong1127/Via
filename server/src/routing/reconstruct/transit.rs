@@ -48,7 +48,10 @@ impl ReconstructionState<'_, '_> {
             .reconstructor
             .transit_runtime
             .required_pattern(&trip.pattern_id);
-        let route_data = self.reconstructor.transit_runtime.route_of(pattern_data);
+        let route_data = self
+            .reconstructor
+            .transit_runtime
+            .required_route(&pattern_data.route_id);
         let ride_times = trip
             .stop_times
             .get(board_index..=alight_index)

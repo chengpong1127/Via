@@ -71,14 +71,13 @@ impl TransitRuntime {
         self.pattern(id).expect("validated transit pattern id")
     }
 
-    pub fn route_for_pattern(&self, pattern: &TransitPattern) -> Option<&TransitRoute> {
-        let index = *self.indexes.lookup.route_by_id.get(&pattern.route_id)?;
-        self.network.routes.get(index)
-    }
-
-    pub fn route_of(&self, pattern: &TransitPattern) -> &TransitRoute {
-        self.route_for_pattern(pattern)
-            .expect("validated pattern route")
+    pub fn required_route(&self, id: &TransitRouteId) -> &TransitRoute {
+        self.indexes
+            .lookup
+            .route_by_id
+            .get(id)
+            .and_then(|index| self.network.routes.get(*index))
+            .expect("validated transit route id")
     }
 
     pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {

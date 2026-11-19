@@ -403,7 +403,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
     let bus_patterns = network
         .patterns
         .iter()
-        .filter(|pattern| runtime.route_of(pattern).mode == TransitMode::Bus)
+        .filter(|pattern| runtime.required_route(&pattern.route_id).mode == TransitMode::Bus)
         .collect::<Vec<_>>();
     assert_eq!(
         bus_patterns.len(),
@@ -415,7 +415,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         .find(|pattern| pattern.stops.len() == 3)
         .unwrap();
     assert_eq!(bus.route_id, bus_patterns[1].route_id);
-    assert_eq!(runtime.route_of(bus).label, "1");
+    assert_eq!(runtime.required_route(&bus.route_id).label, "1");
     assert_eq!(
         network
             .routes

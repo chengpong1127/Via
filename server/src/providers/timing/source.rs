@@ -211,7 +211,7 @@ impl DepartureResolver {
                 continue;
             };
             grouped
-                .entry(self.network.route_of(pattern).mode)
+                .entry(self.network.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push((index, query));
         }
@@ -257,7 +257,7 @@ impl TimingSnapshotLoader for DepartureResolver {
                 continue;
             };
             grouped
-                .entry(self.network.route_of(pattern).mode)
+                .entry(self.network.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push(query);
         }

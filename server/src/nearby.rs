@@ -81,9 +81,7 @@ impl NearbyService {
     ) -> Self {
         let mut services_by_stop: HashMap<BoardingPointId, StopServices> = HashMap::new();
         for pattern in &transit.network().patterns {
-            let Some(route) = transit.route_for_pattern(pattern) else {
-                continue;
-            };
+            let route = transit.required_route(&pattern.route_id);
             for stop in &pattern.stops {
                 let services = services_by_stop.entry(stop.clone()).or_default();
                 services.modes.insert(route.mode);

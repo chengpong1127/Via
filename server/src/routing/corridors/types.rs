@@ -130,7 +130,7 @@ pub(super) fn equivalent_steps(
         .map(|step| match step {
             StaticCorridorStep::Transit(leg) => EquivalentStep::Transit {
                 mode: network
-                    .route_of(network.required_pattern(&leg.pattern_id))
+                    .required_route(&network.required_pattern(&leg.pattern_id).route_id)
                     .mode,
                 board_stop_id: leg.board_stop_id.clone(),
                 alight_stop_id: leg.alight_stop_id.clone(),
@@ -151,7 +151,7 @@ pub(super) fn equivalent_leg_key(
 ) -> EquivalentLegKey {
     let pattern = network.required_pattern(&leg.pattern_id);
     EquivalentLegKey {
-        mode: network.route_of(pattern).mode,
+        mode: network.required_route(&pattern.route_id).mode,
         board_stop_id: leg.board_stop_id.clone(),
         alight_stop_id: leg.alight_stop_id.clone(),
     }

@@ -403,7 +403,7 @@ fn competitive_metro_to_bus_corridor_is_retained() {
             corridor
                 .transit_legs()
                 .filter_map(|leg| runtime.pattern(&leg.pattern_id))
-                .map(|pattern| runtime.route_of(pattern).mode)
+                .map(|pattern| runtime.required_route(&pattern.route_id).mode)
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();

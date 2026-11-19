@@ -140,7 +140,7 @@ pub(crate) fn modes_at_stop(
         .pattern_positions_at(stop_id)
         .iter()
         .map(|position| runtime.required_pattern(&position.pattern_id))
-        .map(|pattern| runtime.route_of(pattern).mode)
+        .map(|pattern| runtime.required_route(&pattern.route_id).mode)
         .collect::<Vec<_>>();
     modes.sort_unstable();
     modes.dedup();

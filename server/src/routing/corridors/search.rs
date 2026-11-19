@@ -681,7 +681,7 @@ fn corridor_modes(network: &TransitRuntime, corridor: &StaticCorridor) -> Vec<Tr
         .transit_legs()
         .map(|leg| {
             network
-                .route_of(network.required_pattern(&leg.pattern_id))
+                .required_route(&network.required_pattern(&leg.pattern_id).route_id)
                 .mode
         })
         .collect::<Vec<_>>();

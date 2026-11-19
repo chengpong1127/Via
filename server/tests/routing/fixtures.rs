@@ -333,7 +333,7 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
         network
             .patterns
             .iter()
-            .filter(|pattern| runtime.route_of(pattern).mode
+            .filter(|pattern| runtime.required_route(&pattern.route_id).mode
                 == via_server::domain::transit::network::TransitMode::Metro)
             .count(),
         3
