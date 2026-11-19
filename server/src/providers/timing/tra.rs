@@ -23,6 +23,7 @@ use crate::{
     tdx::{RealtimeSettings, TdxClient},
 };
 
+use super::realtime_check::RealtimeCheck;
 use super::{live_error::departure_error, source::TransitDepartureSource};
 use crate::providers::tdx_bindings::TdxProviderBindings;
 
@@ -36,8 +37,7 @@ pub struct TraDepartureSource {
     transit: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
     live: Arc<dyn LiveDataSource>,
-    freshness_policy: FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: RealtimeCheck,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -63,8 +63,7 @@ impl TraDepartureSource {
             schedule: ScheduleTiming::new(transit.clone()),
             transit,
             live,
-            freshness_policy: realtime.freshness_policy(),
-            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
+            realtime_check: RealtimeCheck::new(realtime),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -75,7 +74,7 @@ impl TraDepartureSource {
     }
 
     pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.freshness_policy = freshness_policy;
+        self.realtime_check.freshness = freshness_policy;
         self
     }
 
@@ -139,8 +138,7 @@ impl TraDepartureSource {
             _ => parse_tra_delays(
                 batch.records,
                 &requested_train_numbers,
-                &self.freshness_policy,
-                self.max_clock_skew_seconds,
+                &self.realtime_check,
             ),
         };
 
@@ -293,16 +291,15 @@ impl TransitDepartureSource for TraDepartureSource {
 fn parse_tra_delays(
     delays: Vec<TraDelay>,
     requested_train_numbers: &BTreeSet<String>,
-    freshness_policy: &FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: &RealtimeCheck,
 ) -> Result<BTreeMap<String, TraDelayObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let mut observation_by_train = BTreeMap::new();
     for delay in delays {
         let platform_update = parse_timestamp(&delay.board_update_time)?;
         let source_update = parse_timestamp(&delay.board_source_update_time)?;
-        reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
-        reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
+        realtime_check.reject_future(platform_update, received_at)?;
+        realtime_check.reject_future(source_update, received_at)?;
         let board_evidence_at = platform_update.min(source_update);
         let train_no = delay.train_no.trim();
         if train_no.is_empty() || !requested_train_numbers.contains(train_no) {
@@ -312,9 +309,9 @@ fn parse_tra_delays(
             continue;
         }
         let observed_at = parse_timestamp(&delay.update_time)?;
-        reject_future_timestamp(observed_at, received_at, max_clock_skew_seconds)?;
+        realtime_check.reject_future(observed_at, received_at)?;
         let evidence_at = observed_at.min(board_evidence_at);
-        let freshness = freshness_policy.evaluate(
+        let freshness = realtime_check.freshness.evaluate(
             LiveStatusTimes {
                 published_at: Some(evidence_at),
                 received_at,
@@ -344,15 +341,4 @@ fn parse_tra_delays(
 
 fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
-}
-
-fn reject_future_timestamp(
-    timestamp: OffsetDateTime,
-    received_at: OffsetDateTime,
-    max_clock_skew_seconds: u32,
-) -> Result<(), DepartureError> {
-    if timestamp > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
-        return Err(DepartureError::InvalidResponse);
-    }
-    Ok(())
 }

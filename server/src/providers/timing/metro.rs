@@ -6,6 +6,7 @@ use std::{
 use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
+use super::realtime_check::RealtimeCheck;
 use super::{
     live_error::departure_error,
     metro_realtime::{MetroObservation, parse_metro_boards},
@@ -34,8 +35,7 @@ pub struct MetroDepartureSource {
     transit: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
     live: Arc<dyn LiveDataSource>,
-    freshness_policy: FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: RealtimeCheck,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -68,8 +68,7 @@ impl MetroDepartureSource {
             schedule: ScheduleTiming::new(transit.clone()),
             transit,
             live,
-            freshness_policy: realtime.freshness_policy(),
-            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
+            realtime_check: RealtimeCheck::new(realtime),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -80,7 +79,7 @@ impl MetroDepartureSource {
     }
 
     pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.freshness_policy = freshness_policy;
+        self.realtime_check.freshness = freshness_policy;
         self
     }
 
@@ -268,11 +267,7 @@ impl MetroDepartureSource {
                 errors_by_query.insert(*index, departure_error(unavailable.reason));
             }
         }
-        let observations = match parse_metro_boards(
-            batch.records,
-            &self.freshness_policy,
-            self.max_clock_skew_seconds,
-        ) {
+        let observations = match parse_metro_boards(batch.records, &self.realtime_check) {
             Ok(observations) => observations,
             Err(error) => {
                 for index in query_indices_by_pair.values().flatten() {

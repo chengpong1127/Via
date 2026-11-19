@@ -9,6 +9,7 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::bus_realtime::parse_bus_arrivals;
 use super::live_error::departure_error;
+use super::realtime_check::RealtimeCheck;
 use super::source::TransitDepartureSource;
 use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
@@ -46,8 +47,7 @@ pub struct BusDepartureSource {
     transit: Arc<TransitRuntime>,
     live: Arc<dyn LiveDataSource>,
     schedule: ScheduleTiming,
-    freshness_policy: FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: RealtimeCheck,
     bindings: Arc<TdxProviderBindings>,
 }
 
@@ -73,8 +73,7 @@ impl BusDepartureSource {
             schedule: ScheduleTiming::new(transit.clone()),
             transit,
             live,
-            freshness_policy: realtime.freshness_policy(),
-            max_clock_skew_seconds: realtime.max_clock_skew_seconds,
+            realtime_check: RealtimeCheck::new(realtime),
             bindings: Arc::new(TdxProviderBindings::default()),
         }
     }
@@ -85,7 +84,7 @@ impl BusDepartureSource {
     }
 
     pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.freshness_policy = freshness_policy;
+        self.realtime_check.freshness = freshness_policy;
         self
     }
 
@@ -359,24 +358,20 @@ impl BusDepartureSource {
                     .insert(pair.clone(), departure_error(*reason));
             }
         }
-        let values = match parse_bus_arrivals(
-            &batch.records,
-            &patterns_by_service,
-            &self.freshness_policy,
-            self.max_clock_skew_seconds,
-        ) {
-            Ok(values) => values,
-            Err(error) => {
-                ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
-                for pair in scope_pairs {
-                    results
-                        .errors_by_pair
-                        .entry(pair)
-                        .or_insert_with(|| error.clone());
+        let values =
+            match parse_bus_arrivals(&batch.records, &patterns_by_service, &self.realtime_check) {
+                Ok(values) => values,
+                Err(error) => {
+                    ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
+                    for pair in scope_pairs {
+                        results
+                            .errors_by_pair
+                            .entry(pair)
+                            .or_insert_with(|| error.clone());
+                    }
+                    return;
                 }
-                return;
-            }
-        };
+            };
         results.rows_received += values.len();
         for value in values {
             let arrival = &value.value;

@@ -2,13 +2,11 @@ use std::collections::HashMap;
 
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use super::realtime_check::RealtimeCheck;
 use crate::{
     domain::{
         ids::{BoardingPointId, TransitPatternId},
-        realtime::{
-            ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes,
-            NormalizedRealtimeValue,
-        },
+        realtime::{ArrivalEstimate, ArrivalState, LiveStatusTimes, NormalizedRealtimeValue},
         transit::timing::DepartureError,
     },
     live::BusArrival,
@@ -20,8 +18,7 @@ use crate::{
 pub(super) fn parse_bus_arrivals(
     records: &[BusArrival],
     patterns_by_service: &HashMap<String, Vec<TransitPatternId>>,
-    freshness_policy: &FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: &RealtimeCheck,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let parent_services = parent_route_services(patterns_by_service);
@@ -30,10 +27,8 @@ pub(super) fn parse_bus_arrivals(
         let Ok(published_at) = OffsetDateTime::parse(&record.update_time, &Rfc3339) else {
             continue;
         };
-        if published_at > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
-            return Err(DepartureError::InvalidResponse);
-        }
-        let freshness = freshness_policy.evaluate(
+        realtime_check.reject_future(published_at, received_at)?;
+        let freshness = realtime_check.freshness.evaluate(
             LiveStatusTimes {
                 published_at: Some(published_at),
                 received_at,
@@ -137,6 +132,7 @@ pub fn normalize_n1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::realtime::FreshnessPolicy;
     use time::format_description::well_known::Rfc3339;
 
     #[test]
@@ -159,8 +155,7 @@ mod tests {
         let values = parse_bus_arrivals(
             &records,
             &patterns_by_service,
-            &FreshnessPolicy::tdx_default(),
-            300,
+            &RealtimeCheck::with_policy(FreshnessPolicy::tdx_default(), 300),
         )
         .unwrap();
 
@@ -222,8 +217,7 @@ mod tests {
         let values = parse_bus_arrivals(
             &records,
             &patterns_by_service,
-            &FreshnessPolicy::tdx_default(),
-            300,
+            &RealtimeCheck::with_policy(FreshnessPolicy::tdx_default(), 300),
         )
         .unwrap();
 

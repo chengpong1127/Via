@@ -5,6 +5,7 @@ mod bus_realtime;
 mod live_error;
 mod metro;
 mod metro_realtime;
+mod realtime_check;
 mod thsr;
 mod tra;
 

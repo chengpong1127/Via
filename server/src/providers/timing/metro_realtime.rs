@@ -1,8 +1,9 @@
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use super::realtime_check::RealtimeCheck;
 use crate::{
     domain::{
-        realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
+        realtime::{FreshnessState, LiveStatusTimes},
         transit::timing::DepartureError,
     },
     live::MetroBoard,
@@ -19,18 +20,17 @@ pub(super) struct MetroObservation {
 
 pub(super) fn parse_metro_boards(
     boards: Vec<MetroBoard>,
-    freshness_policy: &FreshnessPolicy,
-    max_clock_skew_seconds: u32,
+    realtime_check: &RealtimeCheck,
 ) -> Result<Vec<MetroObservation>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
     let mut observations = Vec::new();
     for board in boards {
         let source_update = parse_timestamp(&board.source_update_time)?;
         let platform_update = parse_timestamp(&board.update_time)?;
-        reject_future_timestamp(source_update, received_at, max_clock_skew_seconds)?;
-        reject_future_timestamp(platform_update, received_at, max_clock_skew_seconds)?;
+        realtime_check.reject_future(source_update, received_at)?;
+        realtime_check.reject_future(platform_update, received_at)?;
         let observed_at = source_update.min(platform_update);
-        let freshness = freshness_policy.evaluate(
+        let freshness = realtime_check.freshness.evaluate(
             LiveStatusTimes {
                 published_at: Some(observed_at),
                 received_at,
@@ -63,15 +63,4 @@ pub(super) fn parse_metro_boards(
 
 fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
     OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
-}
-
-fn reject_future_timestamp(
-    timestamp: OffsetDateTime,
-    received_at: OffsetDateTime,
-    max_clock_skew_seconds: u32,
-) -> Result<(), DepartureError> {
-    if timestamp > received_at + TimeDuration::seconds(i64::from(max_clock_skew_seconds)) {
-        return Err(DepartureError::InvalidResponse);
-    }
-    Ok(())
 }
