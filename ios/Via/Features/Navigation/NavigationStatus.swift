@@ -74,7 +74,7 @@ extension Guidance {
 
 extension NavigationModel {
     var status: NavigationStatus {
-        let leg = currentLeg.leg
+        let leg = currentLeg.journeyLeg
         func status(_ title: String, _ detail: String, _ symbol: String) -> NavigationStatus {
             NavigationStatus(title: title, detail: detail, symbol: symbol, arrival: estimatedArrival, isFinished: isFinished)
         }

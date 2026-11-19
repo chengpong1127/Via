@@ -17,7 +17,7 @@ nonisolated struct NavigationManeuver: Hashable, Sendable {
 }
 
 nonisolated struct NavigationLeg: Sendable {
-    let leg: Leg
+    let journeyLeg: Leg
     let path: [Coordinate]
     let cumulative: [Double]
     let maneuvers: [NavigationManeuver]
@@ -25,7 +25,7 @@ nonisolated struct NavigationLeg: Sendable {
     let stopDistances: [Double]
 
     init(_ leg: Leg) {
-        self.leg = leg
+        journeyLeg = leg
         switch leg.kind {
         case let .transit(ride):
             let stops = [leg.from] + ride.intermediateStops + [leg.to]
@@ -65,7 +65,7 @@ nonisolated struct NavigationLeg: Sendable {
     }
 
     var isStreet: Bool {
-        if case .transit = leg.kind { false } else { true }
+        if case .transit = journeyLeg.kind { false } else { true }
     }
 
     private static func cumulative(_ path: [Coordinate]) -> [Double] {

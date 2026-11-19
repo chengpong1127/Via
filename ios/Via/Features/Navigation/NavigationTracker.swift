@@ -49,7 +49,7 @@ nonisolated struct NavigationTracker: Sendable {
     private var raised: Set<RaisedAlert> = []
 
     private struct RaisedAlert: Hashable {
-        let leg: Int
+        let legIndex: Int
         let alert: NavigationAlert
     }
 
@@ -91,7 +91,7 @@ nonisolated struct NavigationTracker: Sendable {
         let later = route.legs.dropFirst(legIndex + 1)
         guard currentLeg.isStreet, later.allSatisfy(\.isStreet) else { return route.option.arrivalTime }
         let fraction = currentLeg.length > 0 ? remainingLegDistance / currentLeg.length : 0
-        return now.addingTimeInterval(currentLeg.leg.duration * fraction + later.map(\.leg.duration).reduce(0, +))
+        return now.addingTimeInterval(currentLeg.journeyLeg.duration * fraction + later.map(\.journeyLeg.duration).reduce(0, +))
     }
 
     mutating func update(_ fix: LocationFix) -> NavigationUpdate {
@@ -140,19 +140,19 @@ nonisolated struct NavigationTracker: Sendable {
 
     private mutating func trackTransit(_ fix: LocationFix, _ update: inout NavigationUpdate) {
         guard fix.horizontalAccuracy >= 0, fix.horizontalAccuracy <= Self.usableAccuracy * 2 else { return }
-        let leg = currentLeg
-        let nearExit = fix.coordinate.distance(to: leg.leg.to.coordinate) <= Self.exitRadius
+        let navLeg = currentLeg
+        let nearExit = fix.coordinate.distance(to: navLeg.journeyLeg.to.coordinate) <= Self.exitRadius
         let onNextLeg = nextLeg.flatMap { $0.isStreet ? $0.project(fix.coordinate, through: Self.lookahead) : nil }
             .map { $0.offset <= Self.offRouteDistance && $0.distanceAlong > Self.arrivalRadius } ?? false
-        let alightingWindow = fix.timestamp >= leg.leg.arrivalTime.addingTimeInterval(-Self.alightLead)
-        if (boarded || alightingWindow) && (nearExit || onNextLeg) && leg.length > Self.exitRadius {
-            raise(.getOff(leg.leg.to.name), &update)
+        let alightingWindow = fix.timestamp >= navLeg.journeyLeg.arrivalTime.addingTimeInterval(-Self.alightLead)
+        if (boarded || alightingWindow) && (nearExit || onNextLeg) && navLeg.length > Self.exitRadius {
+            raise(.getOff(navLeg.journeyLeg.to.name), &update)
             advance(&update)
             return
         }
-        guard let projection = leg.project(fix.coordinate), projection.offset <= Self.boardingRadius * 2 else { return }
+        guard let projection = navLeg.project(fix.coordinate), projection.offset <= Self.boardingRadius * 2 else { return }
         if !boarded {
-            let fromBoarding = fix.coordinate.distance(to: leg.leg.from.coordinate)
+            let fromBoarding = fix.coordinate.distance(to: navLeg.journeyLeg.from.coordinate)
             guard fromBoarding > Self.boardingRadius, projection.distanceAlong > Self.boardingRadius else { return }
             boarded = true
         }
@@ -162,7 +162,7 @@ nonisolated struct NavigationTracker: Sendable {
 
     private mutating func announceStops(_ update: inout NavigationUpdate) {
         guard let remaining = stopsRemaining else { return }
-        let leg = currentLeg.leg
+        let leg = currentLeg.journeyLeg
         switch remaining {
         case 0:
             raise(.getOff(leg.to.name), &update)
@@ -177,13 +177,13 @@ nonisolated struct NavigationTracker: Sendable {
     }
 
     private mutating func checkDeparture(now: Date, _ update: inout NavigationUpdate) {
-        let leg = currentLeg.leg
+        let leg = currentLeg.journeyLeg
         if legIndex == 0, distanceAlong < Self.arrivalRadius, now >= leg.departureTime,
            startedAt < leg.departureTime.addingTimeInterval(-30) {
             raise(.leaveNow, &update)
         }
         guard let next = nextLeg, !next.isStreet else { return }
-        let available = next.leg.departureTime.timeIntervalSince(now)
+        let available = next.journeyLeg.departureTime.timeIntervalSince(now)
         let needed = remainingLegDistance / Self.walkingSpeed
         if available < -Self.missedGrace {
             update.reroute = .missedConnection
@@ -193,7 +193,7 @@ nonisolated struct NavigationTracker: Sendable {
     }
 
     private mutating func checkTransitTiming(now: Date, _ update: inout NavigationUpdate) {
-        let leg = currentLeg.leg
+        let leg = currentLeg.journeyLeg
         let stale = lastFix.map { now.timeIntervalSince($0.timestamp) > Self.staleFix } ?? true
         if !boarded, now > leg.departureTime.addingTimeInterval(Self.missedGrace) {
             if stale {
@@ -208,7 +208,7 @@ nonisolated struct NavigationTracker: Sendable {
     }
 
     private mutating func raise(_ alert: NavigationAlert, _ update: inout NavigationUpdate) {
-        if raised.insert(RaisedAlert(leg: legIndex, alert: alert)).inserted {
+        if raised.insert(RaisedAlert(legIndex: legIndex, alert: alert)).inserted {
             update.alerts.append(alert)
         }
     }

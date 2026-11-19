@@ -85,7 +85,7 @@ struct NavigationBanner: View {
     }
 
     private var tracker: NavigationTracker { navigation.tracker }
-    private var leg: Leg { navigation.currentLeg.leg }
+    private var leg: Leg { navigation.currentLeg.journeyLeg }
 
     private var symbol: String {
         if navigation.isFinished { return "mappin.circle.fill" }
@@ -131,7 +131,7 @@ struct NavigationBanner: View {
     }
 
     private var arrival: Text {
-        switch (leg.kind, navigation.tracker.nextLeg?.leg.kind) {
+        switch (leg.kind, navigation.tracker.nextLeg?.journeyLeg.kind) {
         case let (.bikeShare(ride), _):
             Text("Return the bike at \(ride.dropoffStationName)")
         case (_, .transit?):
@@ -222,9 +222,9 @@ private struct NavigationStepList: View {
             summary
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
-            ForEach(Array(tracker.route.legs.enumerated()), id: \.element.leg.id) { index, item in
+            ForEach(Array(tracker.route.legs.enumerated()), id: \.element.journeyLeg.id) { index, navLeg in
                 NavigationStepRows(
-                    item: item,
+                    navLeg: navLeg,
                     state: state(of: index),
                     stopsRemaining: index == tracker.legIndex ? tracker.stopsRemaining : nil
                 )
@@ -311,18 +311,18 @@ private struct NavigationStatusRow: View {
 }
 
 private struct NavigationStepRows: View {
-    let item: NavigationLeg
+    let navLeg: NavigationLeg
     let state: NavigationStepState
     let stopsRemaining: Int?
 
-    private var leg: Leg { item.leg }
+    private var leg: Leg { navLeg.journeyLeg }
 
     var body: some View {
         switch leg.kind {
         case .walking:
             NavigationStepRow(
                 title: Text("Walk to \(leg.to.name)"),
-                subtitle: Text("\(item.length.distanceText), about \(leg.duration.travelTime)"),
+                subtitle: Text("\(navLeg.length.distanceText), about \(leg.duration.travelTime)"),
                 state: state
             ) {
                 Image(systemName: "figure.walk")
@@ -331,7 +331,7 @@ private struct NavigationStepRows: View {
         case let .bikeShare(ride):
             NavigationStepRow(
                 title: Text("Ride YouBike to \(ride.dropoffStationName)"),
-                subtitle: Text("\(item.length.distanceText), about \(leg.duration.travelTime)"),
+                subtitle: Text("\(navLeg.length.distanceText), about \(leg.duration.travelTime)"),
                 state: state
             ) {
                 Image(systemName: "bicycle")
