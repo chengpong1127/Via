@@ -121,14 +121,13 @@ pub fn generate(
         &mut stats,
         query.deadline,
     );
-    let egress_by_stop = query.destination_egress.iter().fold(
-        HashMap::<BoardingPointId, u32>::new(),
-        |mut by_stop, egress| {
-            let walking = by_stop.entry(egress.stop_id.clone()).or_insert(u32::MAX);
-            *walking = (*walking).min(egress.walking_seconds);
-            by_stop
-        },
-    );
+    let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
+    for egress in &query.destination_egress {
+        egress_by_stop
+            .entry(&egress.stop_id)
+            .and_modify(|walking| *walking = (*walking).min(egress.walking_seconds))
+            .or_insert(egress.walking_seconds);
+    }
     let mut search = Search {
         transit,
         nodes: Vec::new(),
