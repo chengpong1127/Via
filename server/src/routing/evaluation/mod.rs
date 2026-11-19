@@ -59,7 +59,7 @@ pub(super) struct Evaluation {
 }
 
 pub(super) struct CorridorEvaluator<'a> {
-    pub network: &'a TransitRuntime,
+    pub transit: &'a TransitRuntime,
     pub retained: &'a RetainedCorridorSet,
     pub timing: &'a TimingSnapshot,
     pub query: &'a PlanningQuery,
@@ -238,17 +238,17 @@ impl<'e, 'a> Run<'e, 'a> {
             return Ok(Vec::new());
         };
         let CorridorEvaluator {
-            network,
+            transit,
             retained,
             timing,
             query,
             ..
         } = *self.evaluator;
-        let ready_at = transit_ready_at(state, network.same_stop_transfer_seconds());
+        let ready_at = transit_ready_at(state, transit.same_stop_transfer_seconds());
         let mut successors = Vec::new();
-        for equivalent_leg in retained.equivalent_legs_for(network, leg) {
+        for equivalent_leg in retained.equivalent_legs_for(transit, leg) {
             self.check_deadline()?;
-            validate_equivalent_leg(network, retained, leg, &equivalent_leg)?;
+            validate_equivalent_leg(transit, retained, leg, &equivalent_leg)?;
             if !within_query_bounds(query, ready_at) {
                 continue;
             }
@@ -263,7 +263,7 @@ impl<'e, 'a> Run<'e, 'a> {
             ) {
                 self.check_deadline()?;
                 successors.extend(transit_successor(
-                    network,
+                    transit,
                     query,
                     state,
                     trip,
@@ -428,7 +428,7 @@ fn transit_ready_at(state: &EvaluationState, transfer_seconds: u32) -> OffsetDat
 }
 
 fn transit_successor(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     query: &PlanningQuery,
     state: &EvaluationState,
     trip: &EffectiveTrip,
@@ -436,7 +436,7 @@ fn transit_successor(
     anchor: usize,
     ready_at: OffsetDateTime,
 ) -> Option<EvaluationState> {
-    let arrival = alight_time(network, trip, leg, ready_at)?;
+    let arrival = alight_time(transit, trip, leg, ready_at)?;
     within_query_bounds(query, arrival).then(|| {
         state.after_movement(JourneyMovement {
             from_anchor: anchor,
@@ -507,7 +507,7 @@ fn bike_successors(
 }
 
 fn validate_equivalent_leg(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     retained: &RetainedCorridorSet,
     leg: &StaticTransitLeg,
     equivalent_leg: &StaticTransitLeg,
@@ -517,13 +517,13 @@ fn validate_equivalent_leg(
             "retained transit leg {reason}"
         )))
     };
-    if !retained.is_equivalent_leg(network, leg, equivalent_leg) {
+    if !retained.is_equivalent_leg(transit, leg, equivalent_leg) {
         return invalid("has an invalid equivalent leg");
     }
     if equivalent_leg.board_index >= equivalent_leg.alight_index {
         return invalid("has reversed stop indexes");
     }
-    let pattern = network.required_pattern(&equivalent_leg.pattern_id);
+    let pattern = transit.required_pattern(&equivalent_leg.pattern_id);
     let Some(board_stop) = pattern.stops.get(equivalent_leg.board_index) else {
         return invalid("has an invalid boarding index");
     };
@@ -537,7 +537,7 @@ fn validate_equivalent_leg(
 }
 
 fn alight_time(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     trip: &EffectiveTrip,
     leg: &StaticTransitLeg,
     ready_at: OffsetDateTime,
@@ -545,7 +545,7 @@ fn alight_time(
     if trip.pattern_id != leg.pattern_id || leg.board_index >= leg.alight_index {
         return None;
     }
-    let pattern = network.pattern(&leg.pattern_id)?;
+    let pattern = transit.pattern(&leg.pattern_id)?;
     if trip.stop_times.len() != pattern.stops.len()
         || trip
             .stop_times

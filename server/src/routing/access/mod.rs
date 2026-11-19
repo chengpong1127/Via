@@ -17,13 +17,13 @@ use super::model::{EndpointStop, FailureSummary, JourneyPlanningContext, Journey
 
 #[derive(Clone)]
 pub(crate) struct AccessDiscovery {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     street: Arc<dyn StreetRouter>,
 }
 
 impl AccessDiscovery {
-    pub(crate) fn new(network: Arc<TransitRuntime>, street: Arc<dyn StreetRouter>) -> Self {
-        Self { network, street }
+    pub(crate) fn new(transit: Arc<TransitRuntime>, street: Arc<dyn StreetRouter>) -> Self {
+        Self { transit, street }
     }
 
     async fn discover_endpoint_stops(
@@ -37,7 +37,7 @@ impl AccessDiscovery {
         let endpoint = Coordinate::try_new(endpoint.latitude, endpoint.longitude)?;
         let stop_limit = limits.max_transit_endpoint_stops;
         let stops = nearby::nearby_stops(
-            &self.network,
+            &self.transit,
             endpoint,
             allowed_transit_modes,
             stop_limit,
@@ -87,7 +87,7 @@ impl AccessDiscovery {
                 .then(left.distance_metres.cmp(&right.distance_metres))
                 .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
         });
-        Ok(nearby::prune_coverage(&self.network, walks, stop_limit))
+        Ok(nearby::prune_coverage(&self.transit, walks, stop_limit))
     }
 
     pub(crate) async fn discover(
@@ -138,7 +138,7 @@ impl AccessDiscovery {
         let describe = |stop_id: &BoardingPointId, walking_seconds: u32| {
             (
                 stop_id.as_str().to_owned(),
-                nearby::modes_at_stop(&self.network, stop_id),
+                nearby::modes_at_stop(&self.transit, stop_id),
                 walking_seconds,
             )
         };

@@ -84,7 +84,7 @@ struct Candidate {
 }
 
 struct Search<'a> {
-    network: &'a TransitRuntime,
+    transit: &'a TransitRuntime,
     nodes: Vec<Node>,
     best: HashMap<BoardingPointId, Vec<BagEntry>>,
     max_seconds: u32,
@@ -104,13 +104,13 @@ struct BagEntry {
 }
 
 pub fn generate(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     query: &PlanningQuery,
 ) -> (RetainedCorridorSet, CorridorSearchStats) {
     let started = Instant::now();
     let mut stats = CorridorSearchStats::default();
     let patterns = CorridorPatternIndex::new(
-        network,
+        transit,
         &query.allowed_transit_modes,
         &mut stats,
         query.deadline,
@@ -124,7 +124,7 @@ pub fn generate(
         },
     );
     let mut search = Search {
-        network,
+        transit,
         nodes: Vec::new(),
         best: HashMap::new(),
         max_seconds: query.limits.max_journey_duration_seconds,
@@ -172,7 +172,7 @@ pub fn generate(
         }
         let mut routes = HashMap::<usize, usize>::new();
         for stop_id in current.keys() {
-            for position in network.pattern_positions_at(stop_id) {
+            for position in transit.pattern_positions_at(stop_id) {
                 if let Some(group_index) = patterns.group_index(&position.pattern_id) {
                     let first = routes.entry(group_index).or_insert(position.stop_index);
                     *first = (*first).min(position.stop_index);
@@ -227,14 +227,14 @@ pub fn generate(
     let target_seconds = search.target_seconds;
     candidates.retain(|candidate| candidate.search_cost_seconds <= target_seconds);
     let selected = select(
-        network,
+        transit,
         candidates,
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs = equivalent_legs_for(network, &patterns, &selected);
+    let equivalent_legs = equivalent_legs_for(transit, &patterns, &selected);
     let (retained, pattern_count, bus_stop_count) =
-        RetainedCorridorSet::from_retained(network, &equivalent_legs, selected);
+        RetainedCorridorSet::from_retained(transit, &equivalent_legs, selected);
     stats.corridors_retained = retained.retained().len();
     stats.corridor_patterns = pattern_count;
     stats.corridor_positions = retained.timing_positions().count();
@@ -258,7 +258,7 @@ impl Search<'_> {
                 TransitRouteId::new(group.pattern_id.as_str())
             }
             TransitMode::Bus | TransitMode::Metro => self
-                .network
+                .transit
                 .required_pattern(group.pattern_id)
                 .route_id
                 .clone(),
@@ -332,7 +332,7 @@ impl Search<'_> {
                 let board_cost_seconds = label
                     .cost_seconds
                     .saturating_add(if label.after_ride {
-                        self.network.same_stop_transfer_seconds()
+                        self.transit.same_stop_transfer_seconds()
                     } else {
                         0
                     })
@@ -376,7 +376,7 @@ impl Search<'_> {
                 if !label.after_ride && self.nodes[label.node].parent.is_some() {
                     continue;
                 }
-                for shortcut in self.network.transfers_from(stop_id) {
+                for shortcut in self.transit.transfers_from(stop_id) {
                     let cost_seconds = label.cost_seconds.saturating_add(shortcut.duration_seconds);
                     let structure = fingerprint(label.structure, &(&shortcut.from, &shortcut.to));
                     if !self.insert(
@@ -533,7 +533,7 @@ fn fingerprint(parent: u64, value: &impl Hash) -> u64 {
 }
 
 fn select(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     candidates: Vec<Candidate>,
     limit: usize,
     stats: &mut CorridorSearchStats,
@@ -542,7 +542,7 @@ fn select(
     for candidate in candidates {
         let structure = EquivalentCorridorSignature {
             access_stop_id: candidate.corridor.access_stop_id.clone(),
-            steps: equivalent_steps(network, &candidate.corridor.steps),
+            steps: equivalent_steps(transit, &candidate.corridor.steps),
             egress_stop_id: candidate.corridor.egress_stop_id.clone(),
         };
         let replace = unique.get(&structure).is_none_or(|known| {
@@ -592,13 +592,13 @@ fn select(
     }
     let mut mode_sets = chosen
         .iter()
-        .map(|&index| corridor_modes(network, &candidates[index].corridor))
+        .map(|&index| corridor_modes(transit, &candidates[index].corridor))
         .collect::<HashSet<_>>();
     for (index, candidate) in candidates.iter().enumerate() {
         if chosen.len() >= limit {
             break;
         }
-        if mode_sets.insert(corridor_modes(network, &candidate.corridor)) {
+        if mode_sets.insert(corridor_modes(transit, &candidate.corridor)) {
             chosen.insert(index);
         }
     }
@@ -629,18 +629,18 @@ fn select(
 }
 
 fn equivalent_legs_for(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     patterns: &CorridorPatternIndex,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
     for leg in corridors.iter().flat_map(StaticCorridor::transit_legs) {
-        let key = equivalent_leg_key(network, leg);
+        let key = equivalent_leg_key(transit, leg);
         if equivalent_legs.contains_key(&key) {
             continue;
         }
         let mut legs = Vec::new();
-        for position in network.pattern_positions_at(&leg.board_stop_id) {
+        for position in transit.pattern_positions_at(&leg.board_stop_id) {
             let Some(group_index) = patterns.group_index(&position.pattern_id) else {
                 continue;
             };
@@ -676,12 +676,12 @@ fn equivalent_legs_for(
     equivalent_legs
 }
 
-fn corridor_modes(network: &TransitRuntime, corridor: &StaticCorridor) -> Vec<TransitMode> {
+fn corridor_modes(transit: &TransitRuntime, corridor: &StaticCorridor) -> Vec<TransitMode> {
     let mut modes = corridor
         .transit_legs()
         .map(|leg| {
-            network
-                .required_route(&network.required_pattern(&leg.pattern_id).route_id)
+            transit
+                .required_route(&transit.required_pattern(&leg.pattern_id).route_id)
                 .mode
         })
         .collect::<Vec<_>>();

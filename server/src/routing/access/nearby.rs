@@ -20,7 +20,7 @@ struct NearbyStopCandidate {
 }
 
 pub(super) fn prune_coverage(
-    runtime: &TransitRuntime,
+    transit: &TransitRuntime,
     stops: Vec<EndpointStop>,
     limit: usize,
 ) -> Vec<EndpointStop> {
@@ -28,7 +28,7 @@ pub(super) fn prune_coverage(
     for stop in stops {
         if retained.iter().any(|existing: &EndpointStop| {
             existing.walking_seconds <= stop.walking_seconds
-                && stop_coverage_dominates(runtime, &existing.stop_id, &stop.stop_id)
+                && stop_coverage_dominates(transit, &existing.stop_id, &stop.stop_id)
         }) {
             continue;
         }
@@ -39,15 +39,15 @@ pub(super) fn prune_coverage(
 }
 
 fn stop_coverage_dominates(
-    runtime: &TransitRuntime,
+    transit: &TransitRuntime,
     dominant_stop: &crate::domain::ids::BoardingPointId,
     candidate_stop: &crate::domain::ids::BoardingPointId,
 ) -> bool {
-    runtime
+    transit
         .pattern_positions_at(candidate_stop)
         .iter()
         .all(|position| {
-            runtime
+            transit
                 .pattern_positions_at(dominant_stop)
                 .iter()
                 .any(|dominant| dominant.pattern_id == position.pattern_id)
@@ -55,7 +55,7 @@ fn stop_coverage_dominates(
 }
 
 pub(super) fn nearby_stops(
-    runtime: &TransitRuntime,
+    transit: &TransitRuntime,
     coordinate: Coordinate,
     allowed_transit_modes: &[TransitMode],
     limit: usize,
@@ -65,11 +65,11 @@ pub(super) fn nearby_stops(
         latitude: coordinate.latitude(),
         longitude: coordinate.longitude(),
     };
-    let candidates = runtime
+    let candidates = transit
         .stops_within_radius(request_coordinate, limits.max_walking_radius_metres)
         .into_iter()
         .filter_map(|stop| {
-            let modes = modes_at_stop(runtime, &stop.id);
+            let modes = modes_at_stop(transit, &stop.id);
             if !allowed_transit_modes
                 .iter()
                 .any(|mode| modes.contains(mode))
@@ -133,14 +133,14 @@ fn select_mode_balanced(
 }
 
 pub(crate) fn modes_at_stop(
-    runtime: &TransitRuntime,
+    transit: &TransitRuntime,
     stop_id: &crate::domain::ids::BoardingPointId,
 ) -> Vec<TransitMode> {
-    let mut modes = runtime
+    let mut modes = transit
         .pattern_positions_at(stop_id)
         .iter()
-        .map(|position| runtime.required_pattern(&position.pattern_id))
-        .map(|pattern| runtime.required_route(&pattern.route_id).mode)
+        .map(|position| transit.required_pattern(&position.pattern_id))
+        .map(|pattern| transit.required_route(&pattern.route_id).mode)
         .collect::<Vec<_>>();
     modes.sort_unstable();
     modes.dedup();
@@ -209,14 +209,14 @@ mod tests {
             Vec::new(),
         );
 
-        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+        let transit = TransitRuntime::new(std::sync::Arc::new(network));
         assert!(stop_coverage_dominates(
-            &runtime,
+            &transit,
             &BoardingPointId::new("a"),
             &BoardingPointId::new("b")
         ));
         assert!(!stop_coverage_dominates(
-            &runtime,
+            &transit,
             &BoardingPointId::new("a"),
             &BoardingPointId::new("c")
         ));
@@ -298,10 +298,10 @@ mod tests {
             patterns,
             Vec::new(),
         );
-        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+        let transit = TransitRuntime::new(std::sync::Arc::new(network));
         let limits = JourneyPlanningLimits::default();
         let nearby = nearby_stops(
-            &runtime,
+            &transit,
             Coordinate::try_new(origin.latitude, origin.longitude).unwrap(),
             &[
                 TransitMode::Bus,
@@ -365,11 +365,11 @@ mod tests {
             ],
             Vec::new(),
         );
-        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+        let transit = TransitRuntime::new(std::sync::Arc::new(network));
         let limits = JourneyPlanningLimits::default();
         let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
 
-        let metro_only = nearby_stops(&runtime, coordinate, &[TransitMode::Metro], 8, &limits);
+        let metro_only = nearby_stops(&transit, coordinate, &[TransitMode::Metro], 8, &limits);
         assert_eq!(
             metro_only
                 .iter()
@@ -379,7 +379,7 @@ mod tests {
         );
 
         let bus_and_metro = nearby_stops(
-            &runtime,
+            &transit,
             coordinate,
             &[TransitMode::Bus, TransitMode::Metro],
             8,

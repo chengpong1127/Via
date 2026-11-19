@@ -35,10 +35,10 @@ use super::{
 
 #[derive(Clone)]
 pub struct MultimodalPlanner {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     access: AccessDiscovery,
     timing: Arc<dyn TimingSnapshotLoader>,
-    bike: BikeShareMovementPlanner,
+    bike_planner: BikeShareMovementPlanner,
     bike_availability: Arc<dyn BikeAvailabilitySource>,
     street: Arc<dyn StreetRouter>,
 }
@@ -62,18 +62,18 @@ struct RequestSnapshots {
 
 impl MultimodalPlanner {
     pub fn new(
-        network: Arc<TransitRuntime>,
+        transit: Arc<TransitRuntime>,
         timing: Arc<dyn TimingSnapshotLoader>,
         street: Arc<dyn StreetRouter>,
-        bike_network: Arc<BikeShareNetwork>,
+        bike_share: Arc<BikeShareNetwork>,
         bike_availability: Arc<dyn BikeAvailabilitySource>,
-        bike: BikeMovementPolicy,
+        bike_policy: BikeMovementPolicy,
     ) -> Self {
         Self {
-            access: AccessDiscovery::new(network.clone(), street.clone()),
-            network,
+            access: AccessDiscovery::new(transit.clone(), street.clone()),
+            transit,
             timing,
-            bike: BikeShareMovementPlanner::new(bike_network, bike),
+            bike_planner: BikeShareMovementPlanner::new(bike_share, bike_policy),
             street,
             bike_availability,
         }
@@ -146,7 +146,7 @@ impl MultimodalPlanner {
         )];
         for corridor in retained.retained() {
             corridors.push(EvaluationCorridor::from_transit(
-                &self.network,
+                &self.transit,
                 corridor,
                 &query,
             )?);
@@ -156,21 +156,23 @@ impl MultimodalPlanner {
             .run(self.load_snapshots(&query, &retained, &search, &corridors))
             .await??;
         let street = Arc::new(MatrixCache::new(routes));
-        let bike = snapshots.bike.map(|snapshot| {
+        let bike_session = snapshots.bike.map(|snapshot| {
             BikeShareSession::new(
-                self.bike.clone(),
+                self.bike_planner.clone(),
                 snapshot,
                 OffsetDateTime::now_utc(),
                 street.clone(),
             )
         });
         let evaluation = CorridorEvaluator {
-            network: &self.network,
+            transit: &self.transit,
             retained: &retained,
             timing: &snapshots.timing,
             query: &query,
             street: street.as_ref(),
-            bike: bike.as_ref().map(|bike| bike as &dyn BikeMovementSource),
+            bike: bike_session
+                .as_ref()
+                .map(|session| session as &dyn BikeMovementSource),
         }
         .evaluate(&corridors)
         .instrument(tracing::info_span!(
@@ -180,9 +182,9 @@ impl MultimodalPlanner {
         ))
         .await?;
         let mut stats = evaluation.stats;
-        if let Some(bike) = &bike {
-            stats.bike_requests = bike.requests();
-            stats.bike_cache_hits = bike.hits();
+        if let Some(session) = &bike_session {
+            stats.bike_requests = session.requests();
+            stats.bike_cache_hits = session.hits();
         }
         ::metrics::counter!("via_planner_transit_departure_lookups_total")
             .increment(stats.transit_departure_lookups as u64);
@@ -203,7 +205,7 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
     ) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
-        let (retained, stats) = corridors::generate(&self.network, query);
+        let (retained, stats) = corridors::generate(&self.transit, query);
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
@@ -256,7 +258,7 @@ impl MultimodalPlanner {
             .timing_positions()
             .map(|position| {
                 let stop_id = self
-                    .network
+                    .transit
                     .pattern(&position.pattern_id)
                     .and_then(|pattern| pattern.stops.get(position.stop_index))
                     .ok_or_else(|| {
@@ -274,7 +276,7 @@ impl MultimodalPlanner {
             })
             .collect::<Result<Vec<_>, RoutingError>>()?;
         let bike_station_ids = if query.allow_bike_share {
-            self.bike
+            self.bike_planner
                 .required_station_ids(corridors.iter().flat_map(EvaluationCorridor::anchors))
         } else {
             Vec::new()

@@ -33,7 +33,7 @@ struct TraDelayObservation {
 }
 
 pub struct TraDepartureSource {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
     live: Arc<dyn LiveDataSource>,
     freshness_policy: FreshnessPolicy,
@@ -42,10 +42,10 @@ pub struct TraDepartureSource {
 }
 
 impl TraDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
+    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
         let settings = tdx.settings.clone();
         Self::with_live_data(
-            network,
+            transit,
             Arc::new(CachedLiveData::new(
                 Arc::new(DirectLiveData::new(tdx)),
                 (&settings).into(),
@@ -55,13 +55,13 @@ impl TraDepartureSource {
     }
 
     pub fn with_live_data(
-        network: Arc<TransitRuntime>,
+        transit: Arc<TransitRuntime>,
         live: Arc<dyn LiveDataSource>,
         realtime: &RealtimeSettings,
     ) -> Self {
         Self {
-            schedule: ScheduleTiming::new(network.clone()),
-            network,
+            schedule: ScheduleTiming::new(transit.clone()),
+            transit,
             live,
             freshness_policy: realtime.freshness_policy(),
             max_clock_skew_seconds: realtime.max_clock_skew_seconds,
@@ -80,10 +80,10 @@ impl TraDepartureSource {
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.required_route(&pattern.route_id).mode != TransitMode::Rail
+        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Rail
             || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
@@ -92,7 +92,7 @@ impl TraDepartureSource {
     }
 
     fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
-        self.network
+        self.transit
             .scheduled_trips_of(pattern_id)
             .filter_map(|trip| self.bindings.tra_trips.get(&trip.id))
             .map(|binding| binding.train_number.clone())
@@ -193,7 +193,7 @@ impl TraDepartureSource {
         let static_query = DepartureQuery {
             after: adjusted_after,
             limit: self
-                .network
+                .transit
                 .scheduled_trips_of(&query.pattern_id)
                 .count()
                 .max(query.limit),
@@ -206,13 +206,13 @@ impl TraDepartureSource {
                 let trip_id = trip.scheduled_trip_id.as_ref()?;
                 let train_number = &self.bindings.tra_trips.get(trip_id)?.train_number;
                 let observation = *observations.get(train_number)?;
-                (self.network.service_day(query.after)
-                    == self.network.service_day(observation.observed_at))
+                (self.transit.service_day(query.after)
+                    == self.transit.service_day(observation.observed_at))
                 .then(|| self.delay_adjusted_trip(trip, query, observation))
                 .flatten()
             })
             .collect::<Vec<_>>();
-        let board_index = query.resolve_board_index(&self.network)?;
+        let board_index = query.resolve_board_index(&self.transit)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at
@@ -233,7 +233,7 @@ impl TraDepartureSource {
             stop_time.arrival_at = stop_time.arrival_at.checked_add(observation.delay)?;
             stop_time.departure_at = stop_time.departure_at.checked_add(observation.delay)?;
         }
-        let board_index = query.resolve_board_index(&self.network).ok()?;
+        let board_index = query.resolve_board_index(&self.transit).ok()?;
         let board_departure = trip.stop_times[board_index].departure_at;
         if board_departure < query.after
             || query.before.is_some_and(|before| board_departure > before)

@@ -46,11 +46,11 @@ impl ReconstructionState<'_, '_> {
         }
         let pattern_data = self
             .reconstructor
-            .transit_runtime
+            .transit
             .required_pattern(&trip.pattern_id);
         let route_data = self
             .reconstructor
-            .transit_runtime
+            .transit
             .required_route(&pattern_data.route_id);
         let ride_times = trip
             .stop_times
@@ -60,7 +60,7 @@ impl ReconstructionState<'_, '_> {
             .iter()
             .map(|stop_time| {
                 self.reconstructor
-                    .transit_runtime
+                    .transit
                     .stop(&stop_time.stop_id)
                     .ok_or(PlanningError::Internal)
             })
@@ -95,10 +95,7 @@ impl ReconstructionState<'_, '_> {
                 &mut self.assembly,
                 PendingTransfer {
                     from_arrival: previous.arrival,
-                    duration_seconds: self
-                        .reconstructor
-                        .transit_runtime
-                        .same_stop_transfer_seconds(),
+                    duration_seconds: self.reconstructor.transit.same_stop_transfer_seconds(),
                     from_mode: Some(previous.mode),
                 },
                 route_data.mode,

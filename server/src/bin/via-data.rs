@@ -326,8 +326,8 @@ fn inspect(args: InspectArgs) -> Result<(), Box<dyn Error>> {
 
 fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static(&args.artifact.static_path)?;
-    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
-    let data = runtime.network();
+    let transit = TransitRuntime::new(Arc::new(artifact.transit));
+    let data = transit.network();
     let query = args.query.to_lowercase();
     let mut matches = data
         .stops
@@ -352,7 +352,7 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
                 println!(
                     "  pattern={} label={:?} position={}",
                     pattern.id.as_str(),
-                    runtime.required_route(&pattern.route_id).label,
+                    transit.required_route(&pattern.route_id).label,
                     position + 1
                 );
             }
@@ -363,15 +363,15 @@ fn inspect_stop(args: StopArgs) -> Result<(), Box<dyn Error>> {
 
 fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static(&args.artifact.static_path)?;
-    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
-    let data = runtime.network();
+    let transit = TransitRuntime::new(Arc::new(artifact.transit));
+    let data = transit.network();
     let query = args.query.to_lowercase();
     let mut matches = data
         .patterns
         .iter()
         .filter(|pattern| {
             pattern.id.as_str() == args.query
-                || runtime
+                || transit
                     .required_route(&pattern.route_id)
                     .label
                     .to_lowercase()
@@ -387,8 +387,8 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
         println!(
             "pattern={} label={:?} mode={} headsign={:?}",
             pattern.id.as_str(),
-            runtime.required_route(&pattern.route_id).label,
-            mode_name(runtime.required_route(&pattern.route_id).mode),
+            transit.required_route(&pattern.route_id).label,
+            mode_name(transit.required_route(&pattern.route_id).mode),
             pattern.headsign
         );
         println!(
@@ -420,9 +420,9 @@ fn inspect_pattern(args: PatternArgs) -> Result<(), Box<dyn Error>> {
 
 fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
     let artifact = load_static(&args.artifact.static_path)?;
-    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
+    let transit = TransitRuntime::new(Arc::new(artifact.transit));
     let coordinate = coordinate(args.lat, args.lon)?;
-    let mut stops = runtime
+    let mut stops = transit
         .network()
         .stops
         .iter()
@@ -439,7 +439,7 @@ fn inspect_nearby_stops(args: NearbyArgs) -> Result<(), Box<dyn Error>> {
             distance,
             stop.id.as_str(),
             stop.name,
-            pattern_labels(&runtime, &stop.id)
+            pattern_labels(&transit, &stop.id)
         );
     }
     Ok(())
@@ -450,10 +450,10 @@ fn inspect_stats(args: StatsArgs) -> Result<(), Box<dyn Error>> {
     print_static_counts("static data", &artifact);
     let coverage = measure_mode_coverage(&artifact.transit, &artifact.provider_bindings);
     print_mode_coverage(&coverage);
-    let runtime = TransitRuntime::new(Arc::new(artifact.transit));
+    let transit = TransitRuntime::new(Arc::new(artifact.transit));
     println!(
         "service-day boundary: {}",
-        runtime.network().service_day_boundary
+        transit.network().service_day_boundary
     );
     Ok(())
 }
@@ -633,13 +633,13 @@ fn coordinate(
     })
 }
 
-fn pattern_labels(network: &TransitRuntime, stop_id: &BoardingPointId) -> String {
-    network
+fn pattern_labels(transit: &TransitRuntime, stop_id: &BoardingPointId) -> String {
+    transit
         .network()
         .patterns
         .iter()
         .filter(|pattern| pattern.stops.iter().any(|id| id == stop_id))
-        .map(|pattern| network.required_route(&pattern.route_id).label.as_str())
+        .map(|pattern| transit.required_route(&pattern.route_id).label.as_str())
         .collect::<Vec<_>>()
         .join(", ")
 }

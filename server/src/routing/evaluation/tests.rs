@@ -244,7 +244,7 @@ fn test_evaluator<'a>(
     bike: Option<&'a dyn BikeMovementSource>,
 ) -> CorridorEvaluator<'a> {
     CorridorEvaluator {
-        network,
+        transit: network,
         retained,
         timing: snapshot,
         query,
@@ -267,7 +267,7 @@ async fn evaluate_corridors(
     corridors: &[EvaluationCorridor],
 ) -> Result<Evaluation, RoutingError> {
     CorridorEvaluator {
-        network,
+        transit: network,
         retained,
         timing: snapshot,
         query,

@@ -907,7 +907,7 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
     let street = fake_street();
     let bike = TestBikeSource::new(HashMap::new());
     let evaluator = CorridorEvaluator {
-        network: &network,
+        transit: &network,
         retained: &retained,
         timing: &snapshot,
         query: &query,

@@ -43,24 +43,23 @@ pub struct RoutingService {
 impl RoutingService {
     pub fn new(
         street_routing: Arc<dyn StreetRouter>,
-        transit_runtime: Arc<TransitRuntime>,
+        transit: Arc<TransitRuntime>,
         timing: Arc<dyn TimingSnapshotLoader>,
-        bike_share_network: Arc<BikeShareNetwork>,
+        bike_share: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
         request_timeouts_enabled: bool,
     ) -> Self {
         let planner = MultimodalPlanner::new(
-            transit_runtime.clone(),
+            transit.clone(),
             timing,
             street_routing.clone(),
-            bike_share_network.clone(),
+            bike_share.clone(),
             bike_availability_source,
             limits.bike.clone(),
         );
-        let reconstructor =
-            JourneyReconstructor::new(street_routing.clone(), transit_runtime, bike_share_network)
-                .with_rental_handling_seconds(limits.bike.rental_handling_seconds);
+        let reconstructor = JourneyReconstructor::new(street_routing.clone(), transit, bike_share)
+            .with_rental_handling_seconds(limits.bike.rental_handling_seconds);
         let limits = limits.normalized();
         Self {
             street_routing,

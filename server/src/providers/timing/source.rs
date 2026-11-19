@@ -167,20 +167,20 @@ pub trait TransitDepartureSource: Send + Sync {
 
 #[derive(Clone)]
 pub struct DepartureResolver {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     sources: HashMap<TransitMode, Arc<dyn TransitDepartureSource>>,
 }
 
 impl DepartureResolver {
     pub fn new(
-        network: Arc<TransitRuntime>,
+        transit: Arc<TransitRuntime>,
         sources: impl IntoIterator<Item = Arc<dyn TransitDepartureSource>>,
     ) -> Self {
         let sources = sources
             .into_iter()
             .map(|source| (source.mode(), source))
             .collect();
-        Self { network, sources }
+        Self { transit, sources }
     }
 }
 
@@ -206,12 +206,12 @@ impl DepartureResolver {
         let mut results = vec![None; queries.len()];
         let mut grouped = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
         for (index, query) in queries.into_iter().enumerate() {
-            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
                 results[index] = Some(Err(DepartureError::InvalidQuery));
                 continue;
             };
             grouped
-                .entry(self.network.required_route(&pattern.route_id).mode)
+                .entry(self.transit.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push((index, query));
         }
@@ -252,12 +252,12 @@ impl TimingSnapshotLoader for DepartureResolver {
         let mut snapshot = TimingSnapshot::default();
         let mut grouped = BTreeMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
-            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
                 snapshot.record_failure(DepartureError::InvalidQuery);
                 continue;
             };
             grouped
-                .entry(self.network.required_route(&pattern.route_id).mode)
+                .entry(self.transit.required_route(&pattern.route_id).mode)
                 .or_default()
                 .push(query);
         }

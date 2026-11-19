@@ -43,7 +43,7 @@ struct RealtimeDepartureResults {
 }
 
 pub struct BusDepartureSource {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     live: Arc<dyn LiveDataSource>,
     schedule: ScheduleTiming,
     freshness_policy: FreshnessPolicy,
@@ -52,10 +52,10 @@ pub struct BusDepartureSource {
 }
 
 impl BusDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
+    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
         let settings = tdx.settings.clone();
         Self::with_live_data(
-            network,
+            transit,
             Arc::new(CachedLiveData::new(
                 Arc::new(DirectLiveData::new(tdx)),
                 (&settings).into(),
@@ -65,13 +65,13 @@ impl BusDepartureSource {
     }
 
     pub fn with_live_data(
-        network: Arc<TransitRuntime>,
+        transit: Arc<TransitRuntime>,
         live: Arc<dyn LiveDataSource>,
         realtime: &RealtimeSettings,
     ) -> Self {
         Self {
-            schedule: ScheduleTiming::new(network.clone()),
-            network,
+            schedule: ScheduleTiming::new(transit.clone()),
+            transit,
             live,
             freshness_policy: realtime.freshness_policy(),
             max_clock_skew_seconds: realtime.max_clock_skew_seconds,
@@ -96,8 +96,8 @@ impl BusDepartureSource {
         observed_at: OffsetDateTime,
         evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
-        let pattern = self.network.pattern(&query.pattern_id)?;
-        let board_index = query.resolve_board_index(&self.network).ok()?;
+        let pattern = self.transit.pattern(&query.pattern_id)?;
+        let board_index = query.resolve_board_index(&self.transit).ok()?;
         let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(pattern.stops.len());
         let mut previous_departure = None;
         for (index, stop_id) in pattern.stops.iter().enumerate() {
@@ -285,7 +285,7 @@ impl BusDepartureSource {
         let mut unscoped_queries = 0;
         for query in active_queries {
             let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
-            let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
                 continue;
             };
@@ -407,17 +407,17 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.required_route(&pattern.route_id).mode != TransitMode::Bus
+        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Bus
             || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);
         }
         let mut departures = self.schedule.next_departures(query.clone()).await?;
         departures.extend(self.schedule.next_frequency_departures(query.clone())?);
-        let board_index = query.resolve_board_index(&self.network)?;
+        let board_index = query.resolve_board_index(&self.transit)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at

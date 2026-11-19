@@ -13,15 +13,15 @@ use crate::domain::{
 use super::source::TransitDepartureSource;
 
 pub struct ThsrDepartureSource {
-    network: Arc<TransitRuntime>,
+    transit: Arc<TransitRuntime>,
     schedule: ScheduleTiming,
 }
 
 impl ThsrDepartureSource {
-    pub fn new(network: Arc<TransitRuntime>) -> Self {
+    pub fn new(transit: Arc<TransitRuntime>) -> Self {
         Self {
-            schedule: ScheduleTiming::new(network.clone()),
-            network,
+            schedule: ScheduleTiming::new(transit.clone()),
+            transit,
         }
     }
 }
@@ -40,10 +40,10 @@ impl TransitDepartureSource for ThsrDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(pattern) = self.network.pattern(&query.pattern_id) else {
+        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
             return Err(DepartureError::InvalidQuery);
         };
-        if self.network.required_route(&pattern.route_id).mode != TransitMode::HighSpeedRail
+        if self.transit.required_route(&pattern.route_id).mode != TransitMode::HighSpeedRail
             || !pattern.stops.contains(&query.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);

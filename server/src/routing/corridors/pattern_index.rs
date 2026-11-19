@@ -26,18 +26,18 @@ pub(super) struct CorridorPatternIndex<'a> {
 
 impl<'a> CorridorPatternIndex<'a> {
     pub(super) fn new(
-        network: &'a TransitRuntime,
+        transit: &'a TransitRuntime,
         allowed_modes: &[TransitMode],
         stats: &mut CorridorSearchStats,
         deadline: PlanningDeadline,
     ) -> Self {
         let mut index = Self::default();
-        for pattern in &network.network().patterns {
+        for pattern in &transit.network().patterns {
             if deadline.is_elapsed() {
                 stats.deadline_exceeded = true;
                 break;
             }
-            let mode = network.required_route(&pattern.route_id).mode;
+            let mode = transit.required_route(&pattern.route_id).mode;
             if !allowed_modes.contains(&mode) {
                 continue;
             }

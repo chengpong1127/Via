@@ -302,7 +302,7 @@ async fn walking_operation_returns_local_failures_and_reuses_cached_results() {
             error,
         }));
         let evaluator = CorridorEvaluator {
-            network: &network,
+            transit: &network,
             retained: &retained,
             timing: &snapshot,
             query: &query,

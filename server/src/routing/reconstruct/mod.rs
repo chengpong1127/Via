@@ -35,8 +35,8 @@ pub(super) use geometry::{taipei_now, to_street_coordinate};
 #[derive(Clone)]
 pub(super) struct JourneyReconstructor {
     street_routing: Arc<dyn StreetRouter>,
-    transit_runtime: Arc<TransitRuntime>,
-    bike_share_network: Arc<BikeShareNetwork>,
+    transit: Arc<TransitRuntime>,
+    bike_share: Arc<BikeShareNetwork>,
     rental_handling_seconds: u32,
 }
 
@@ -48,13 +48,13 @@ pub(super) struct JourneyCandidate {
 impl JourneyReconstructor {
     pub(super) fn new(
         street_routing: Arc<dyn StreetRouter>,
-        transit_runtime: Arc<TransitRuntime>,
-        bike_share_network: Arc<BikeShareNetwork>,
+        transit: Arc<TransitRuntime>,
+        bike_share: Arc<BikeShareNetwork>,
     ) -> Self {
         Self {
             street_routing,
-            transit_runtime,
-            bike_share_network,
+            transit,
+            bike_share,
             rental_handling_seconds: 0,
         }
     }
@@ -106,8 +106,8 @@ impl JourneyReconstructor {
     pub(super) fn with_routes(&self, routes: Arc<RouteCache>) -> Self {
         Self {
             street_routing: routes,
-            transit_runtime: self.transit_runtime.clone(),
-            bike_share_network: self.bike_share_network.clone(),
+            transit: self.transit.clone(),
+            bike_share: self.bike_share.clone(),
             rental_handling_seconds: self.rental_handling_seconds,
         }
     }
@@ -183,7 +183,7 @@ impl JourneyReconstructor {
         &self,
         stop_id: &crate::domain::ids::BoardingPointId,
     ) -> Result<Place, PlanningError> {
-        self.transit_runtime
+        self.transit
             .stop(stop_id)
             .map(transit::transit_place)
             .ok_or(PlanningError::Internal)
@@ -193,7 +193,7 @@ impl JourneyReconstructor {
         &self,
         station_id: &BikeStationId,
     ) -> Result<Place, PlanningError> {
-        self.bike_share_network
+        self.bike_share
             .station(station_id)
             .map(|station| Place {
                 display_name: station.name.clone(),

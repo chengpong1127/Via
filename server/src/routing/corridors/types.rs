@@ -122,15 +122,15 @@ pub(super) enum EquivalentStep {
 }
 
 pub(super) fn equivalent_steps(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     steps: &[StaticCorridorStep],
 ) -> Vec<EquivalentStep> {
     steps
         .iter()
         .map(|step| match step {
             StaticCorridorStep::Transit(leg) => EquivalentStep::Transit {
-                mode: network
-                    .required_route(&network.required_pattern(&leg.pattern_id).route_id)
+                mode: transit
+                    .required_route(&transit.required_pattern(&leg.pattern_id).route_id)
                     .mode,
                 board_stop_id: leg.board_stop_id.clone(),
                 alight_stop_id: leg.alight_stop_id.clone(),
@@ -146,12 +146,12 @@ pub(super) fn equivalent_steps(
 }
 
 pub(super) fn equivalent_leg_key(
-    network: &TransitRuntime,
+    transit: &TransitRuntime,
     leg: &StaticTransitLeg,
 ) -> EquivalentLegKey {
-    let pattern = network.required_pattern(&leg.pattern_id);
+    let pattern = transit.required_pattern(&leg.pattern_id);
     EquivalentLegKey {
-        mode: network.required_route(&pattern.route_id).mode,
+        mode: transit.required_route(&pattern.route_id).mode,
         board_stop_id: leg.board_stop_id.clone(),
         alight_stop_id: leg.alight_stop_id.clone(),
     }

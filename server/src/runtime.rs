@@ -49,11 +49,11 @@ pub struct RuntimeOptions {
 
 impl ViaRuntime {
     pub fn from_dependencies(dependencies: ViaRuntimeDependencies) -> Self {
-        let transit_runtime = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
+        let transit = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
         let provider_bindings = Arc::new(dependencies.provider_bindings);
         let bus = Arc::new(
             BusDepartureSource::with_live_data(
-                transit_runtime.clone(),
+                transit.clone(),
                 dependencies.live.clone(),
                 &dependencies.realtime,
             )
@@ -61,7 +61,7 @@ impl ViaRuntime {
         );
         let metro = Arc::new(
             MetroDepartureSource::with_live_data(
-                transit_runtime.clone(),
+                transit.clone(),
                 dependencies.live.clone(),
                 &dependencies.realtime,
             )
@@ -69,15 +69,15 @@ impl ViaRuntime {
         );
         let tra = Arc::new(
             TraDepartureSource::with_live_data(
-                transit_runtime.clone(),
+                transit.clone(),
                 dependencies.live,
                 &dependencies.realtime,
             )
             .with_bindings(provider_bindings),
         );
-        let thsr = Arc::new(ThsrDepartureSource::new(transit_runtime.clone()));
+        let thsr = Arc::new(ThsrDepartureSource::new(transit.clone()));
         let departure_resolver = Arc::new(DepartureResolver::new(
-            transit_runtime.clone(),
+            transit.clone(),
             vec![
                 bus as Arc<dyn TransitDepartureSource>,
                 metro as Arc<dyn TransitDepartureSource>,
@@ -86,20 +86,20 @@ impl ViaRuntime {
             ],
         ));
         let nearby = NearbyService::new(
-            transit_runtime.clone(),
+            transit.clone(),
             dependencies.bike_share_network.clone(),
             dependencies.bike_availability.clone(),
         );
         let routing = RoutingService::new(
             dependencies.street,
-            transit_runtime.clone(),
+            transit.clone(),
             departure_resolver,
             dependencies.bike_share_network,
             dependencies.bike_availability,
             dependencies.limits,
             dependencies.environment.is_production(),
         );
-        let health = Health::new(dependencies.street_health, transit_runtime);
+        let health = Health::new(dependencies.street_health, transit);
         Self {
             routing,
             health,

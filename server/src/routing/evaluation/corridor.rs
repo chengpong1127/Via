@@ -51,7 +51,7 @@ impl EvaluationCorridor {
     }
 
     pub fn from_transit(
-        network: &TransitRuntime,
+        transit: &TransitRuntime,
         retained: &StaticCorridor,
         query: &PlanningQuery,
     ) -> Result<Self, RoutingError> {
@@ -63,7 +63,7 @@ impl EvaluationCorridor {
         let stop_anchors = stops
             .iter()
             .map(|id| {
-                let stop = network.stop(id).ok_or_else(|| {
+                let stop = transit.stop(id).ok_or_else(|| {
                     RoutingError::Internal(format!(
                         "retained corridor references unknown stop {id:?}"
                     ))

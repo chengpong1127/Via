@@ -86,6 +86,9 @@ raises action-only alerts and flags off-route or missed connections;
 `NavigationModel` re-plans from the current position with a 60 s cooldown to
 respect the TDX rate limit.
 
+Names follow the type they hold: a `TransitRuntime` is `transit`, a raw
+`TransitNetwork` is `network`, and a `BikeShareNetwork` is `bike_share`.
+
 See [server/README.md](server/README.md) for local development and verification,
 [configuration](server/docs/configuration.md) for runtime settings, and the
 [VIA project](https://app.notion.com/p/408aefae2f748154b5ebcdf042f8c303)
