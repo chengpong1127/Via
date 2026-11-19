@@ -91,7 +91,7 @@ struct Candidate {
 struct Search<'a> {
     transit: &'a TransitRuntime,
     nodes: Vec<Node>,
-    bags_by_stop: HashMap<BoardingPointId, Vec<BagEntry>>,
+    entries_by_stop: HashMap<BoardingPointId, Vec<BagEntry>>,
     max_seconds: u32,
     target_seconds: u32,
     metro_transfer_penalty_seconds: u32,
@@ -123,7 +123,7 @@ pub fn generate(
     let mut search = Search {
         transit,
         nodes: Vec::new(),
-        bags_by_stop: HashMap::new(),
+        entries_by_stop: HashMap::new(),
         max_seconds: query.limits.max_journey_duration_seconds,
         target_seconds: query.limits.max_journey_duration_seconds,
         metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
@@ -421,30 +421,30 @@ impl Search<'_> {
         if cost_seconds > self.target_seconds {
             return false;
         }
-        if !self.bags_by_stop.contains_key(stop_id) {
-            self.bags_by_stop.insert(stop_id.clone(), Vec::new());
+        if !self.entries_by_stop.contains_key(stop_id) {
+            self.entries_by_stop.insert(stop_id.clone(), Vec::new());
         }
-        let Some(bag) = self.bags_by_stop.get_mut(stop_id) else {
+        let Some(entries) = self.entries_by_stop.get_mut(stop_id) else {
             return false;
         };
-        if let Some(index) = bag
+        if let Some(index) = entries
             .iter()
             .position(|known| known.structure == structure && known.last_line.as_ref() == last_line)
         {
-            if bag[index].cost_seconds <= cost_seconds {
+            if entries[index].cost_seconds <= cost_seconds {
                 return false;
             }
-            bag.remove(index);
+            entries.remove(index);
         }
         let mut same_structure = 0;
         let mut better_structures = 0;
-        for (index, known) in bag.iter().enumerate() {
+        for (index, known) in entries.iter().enumerate() {
             if known.cost_seconds > cost_seconds {
                 break;
             }
             if known.structure == structure {
                 same_structure += 1;
-            } else if !bag[..index]
+            } else if !entries[..index]
                 .iter()
                 .any(|earlier| earlier.structure == known.structure)
             {
@@ -454,8 +454,8 @@ impl Search<'_> {
         if same_structure >= ROUTE_VARIANTS_PER_STRUCTURE || better_structures >= LABELS_PER_STOP {
             return false;
         }
-        let position = bag.partition_point(|known| known.cost_seconds <= cost_seconds);
-        bag.insert(
+        let position = entries.partition_point(|known| known.cost_seconds <= cost_seconds);
+        entries.insert(
             position,
             BagEntry {
                 cost_seconds,
@@ -465,9 +465,9 @@ impl Search<'_> {
         );
         let mut structures = 0;
         let mut index = 0;
-        while index < bag.len() {
-            let structure = bag[index].structure;
-            let variants = bag[..index]
+        while index < entries.len() {
+            let structure = entries[index].structure;
+            let variants = entries[..index]
                 .iter()
                 .filter(|known| known.structure == structure)
                 .count();
@@ -480,7 +480,7 @@ impl Search<'_> {
                 structures += usize::from(variants == 0);
                 index += 1;
             } else {
-                bag.remove(index);
+                entries.remove(index);
             }
         }
         true
@@ -488,11 +488,11 @@ impl Search<'_> {
 
     fn retain_current(&self, current: &mut RoundLabels) {
         current.retain(|stop_id, labels| {
-            let Some(bag) = self.bags_by_stop.get(stop_id) else {
+            let Some(entries) = self.entries_by_stop.get(stop_id) else {
                 return false;
             };
             labels.retain(|label| {
-                bag.iter().any(|known| {
+                entries.iter().any(|known| {
                     known.cost_seconds == label.cost_seconds
                         && known.structure == label.structure
                         && known.last_line == label.last_line
