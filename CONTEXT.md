@@ -14,7 +14,7 @@ Routing modules follow the pipeline:
 
 | Module | Step |
 | --- | --- |
-| `access` | `AccessDiscovery` finds walkable boarding points near the origin and destination |
+| `access` | `access::discover` finds walkable boarding points near the origin and destination |
 | `corridors` | Corridor search (Phase 1): static round-based transit corridors over the pattern-position and transfer indexes on `TransitRuntime` |
 | `planner` | `MultimodalPlanner` runs corridor search, loads request-local snapshots and runs corridor evaluation |
 | `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator`, evaluation corridors and BikeShare movement |

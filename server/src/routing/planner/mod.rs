@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    access::AccessDiscovery,
+    access,
     cache::{MatrixCache, RouteCache},
     corridors::{self, CorridorSearchStats, RetainedCorridorSet},
     evaluation::{
@@ -36,7 +36,6 @@ use super::{
 #[derive(Clone)]
 pub struct MultimodalPlanner {
     transit: Arc<TransitRuntime>,
-    access: AccessDiscovery,
     timing_loader: Arc<dyn TimingSnapshotLoader>,
     bike_planner: BikeShareMovementPlanner,
     bike_availability: Arc<dyn BikeAvailabilitySource>,
@@ -70,7 +69,6 @@ impl MultimodalPlanner {
         bike_policy: BikeMovementPolicy,
     ) -> Self {
         Self {
-            access: AccessDiscovery::new(transit.clone(), street_router.clone()),
             transit,
             timing_loader,
             bike_planner: BikeShareMovementPlanner::new(bike_share, bike_policy),
@@ -89,11 +87,16 @@ impl MultimodalPlanner {
         let origin = to_street_coordinate(request.origin.coordinate)?;
         let destination = to_street_coordinate(request.destination.coordinate)?;
         let mut failures = FailureSummary::default();
-        let (access, egress) = self
-            .access
-            .discover(context, limits, &modes, &mut failures)
-            .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
-            .await?;
+        let (access, egress) = access::discover(
+            &self.transit,
+            self.street_router.as_ref(),
+            context,
+            limits,
+            &modes,
+            &mut failures,
+        )
+        .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
+        .await?;
         let query = PlanningQuery::new(
             origin,
             destination,
