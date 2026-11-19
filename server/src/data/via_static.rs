@@ -13,6 +13,7 @@ pub const VIA_STATIC_SCHEMA_VERSION: u32 = 2;
 #[serde(deny_unknown_fields)]
 pub struct ViaStaticSource {
     pub source_id: String,
+    #[serde(alias = "url")]
     pub source_url: Option<String>,
     pub sha256: String,
     pub byte_size: u64,
@@ -344,6 +345,18 @@ mod tests {
         assert_eq!(
             ViaStatic::from_json(&serde_json::to_string(&invalid).unwrap()).unwrap_err(),
             expected
+        );
+    }
+
+    #[test]
+    fn source_reads_fetch_manifests_written_with_url() {
+        let source: ViaStaticSource = serde_json::from_str(
+            r#"{"source_id":"gtfs","url":"https://example.test/gtfs.zip","sha256":"abc","byte_size":3}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            source.source_url.as_deref(),
+            Some("https://example.test/gtfs.zip")
         );
     }
 }

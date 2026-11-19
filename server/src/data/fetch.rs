@@ -12,6 +12,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
+use crate::data::via_static::ViaStaticSource;
 use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
@@ -19,19 +20,10 @@ const BIKE_STATION_ORDER: &str = "StationUID asc";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FetchSource {
-    pub source_id: String,
-    pub url: Option<String>,
-    pub sha256: String,
-    pub byte_size: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct FetchManifest {
     pub manifest_version: u32,
     pub fetched_at: String,
-    pub sources: BTreeMap<String, FetchSource>,
+    pub sources: BTreeMap<String, ViaStaticSource>,
 }
 
 #[derive(Clone, Debug)]
@@ -130,9 +122,9 @@ async fn populate_snapshot(
     let gtfs_source = if let Some(source_path) = gtfs_file {
         fs::copy(source_path, &gtfs_path)
             .map_err(|error| FetchError::Io(source_path.into(), error))?;
-        FetchSource {
+        ViaStaticSource {
             source_id: "local-gtfs-file".to_owned(),
-            url: None,
+            source_url: None,
             sha256: hash_file(&gtfs_path)?,
             byte_size: file_size(&gtfs_path)?,
         }
@@ -140,9 +132,9 @@ async fn populate_snapshot(
         let byte_size = client
             .download_url_to_path(&sources.gtfs_static_url, &gtfs_path)
             .await?;
-        FetchSource {
+        ViaStaticSource {
             source_id: "tdx-gtfs-static-v3".to_owned(),
-            url: Some(sources.gtfs_static_url.clone()),
+            source_url: Some(sources.gtfs_static_url.clone()),
             sha256: hash_file(&gtfs_path)?,
             byte_size,
         }
@@ -263,7 +255,7 @@ fn write_station_source(
     source_name: &str,
     body: &[u8],
     url: &str,
-) -> Result<FetchSource, FetchError> {
+) -> Result<ViaStaticSource, FetchError> {
     let filename =
         source_file_name(source_name).ok_or_else(|| FetchError::InvalidBikeResponse {
             city: source_name.to_owned(),
@@ -301,10 +293,14 @@ fn station_url(base_url: &str, city: &str) -> Result<String, FetchError> {
         })
 }
 
-fn source_metadata(source_id: &str, url: String, path: &Path) -> Result<FetchSource, FetchError> {
-    Ok(FetchSource {
+fn source_metadata(
+    source_id: &str,
+    url: String,
+    path: &Path,
+) -> Result<ViaStaticSource, FetchError> {
+    Ok(ViaStaticSource {
         source_id: source_id.to_owned(),
-        url: Some(safe_source_url(&url)),
+        source_url: Some(safe_source_url(&url)),
         sha256: hash_file(path)?,
         byte_size: file_size(path)?,
     })

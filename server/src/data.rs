@@ -71,22 +71,7 @@ pub async fn build_from_fetch_snapshot(
             .iter()
             .map(|(city, body)| (city.as_str(), body.as_str())),
     )?;
-    let sources = fetch_inputs
-        .manifest
-        .sources
-        .iter()
-        .map(|(name, source)| {
-            (
-                name.clone(),
-                ViaStaticSource {
-                    source_id: source.source_id.clone(),
-                    source_url: source.url.clone(),
-                    sha256: source.sha256.clone(),
-                    byte_size: source.byte_size,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let sources = fetch_inputs.manifest.sources.clone();
 
     let (mut network, provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
     network.default_transfer_seconds = same_stop_transfer_seconds;

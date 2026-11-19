@@ -9,10 +9,7 @@ use super::{
     patterns::route_headsign_fallback,
     segment_profile::distribute_runtime,
 };
-use crate::data::{
-    build_from_fetch_snapshot,
-    fetch::{FetchManifest, FetchSource},
-};
+use crate::data::{build_from_fetch_snapshot, fetch::FetchManifest, via_static::ViaStaticSource};
 use crate::domain::{
     transit::network::{ScheduledStopTime, TransitMode},
     transit::runtime::TransitRuntime,
@@ -84,9 +81,9 @@ fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
     std::fs::write(&new_taipei_path, "[]").unwrap();
     let source = |path: &PathBuf, source_id: &str| {
         let bytes = std::fs::read(path).unwrap();
-        FetchSource {
+        ViaStaticSource {
             source_id: source_id.to_owned(),
-            url: None,
+            source_url: None,
             sha256: crate::data::sha256_hex(&bytes),
             byte_size: bytes.len() as u64,
         }
