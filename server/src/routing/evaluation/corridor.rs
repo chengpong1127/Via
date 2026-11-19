@@ -4,7 +4,7 @@ use crate::routing::{
     journey::{JourneyAnchorKind, WalkingMovementKind},
     model::{PlanningQuery, RoutingError},
 };
-use crate::{domain::transit_runtime::TransitRuntime, street::Coordinate};
+use crate::{domain::transit::runtime::TransitRuntime, street::Coordinate};
 
 pub(crate) struct EvaluationCorridor {
     anchors: Vec<CorridorAnchor>,

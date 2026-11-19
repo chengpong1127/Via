@@ -1,6 +1,6 @@
 use crate::{
     domain::location::GeoCoordinate,
-    domain::{transit::TransitMode, transit_runtime::TransitRuntime},
+    domain::{transit::network::TransitMode, transit::runtime::TransitRuntime},
     street::{Coordinate, MatrixCell},
 };
 
@@ -164,8 +164,8 @@ mod tests {
         domain::location::GeoCoordinate,
         domain::{
             ids::BoardingPointId,
-            transit::{TransitMode, TransitNetwork, TransitPattern, TransitStop},
-            transit_runtime::TransitRuntime,
+            transit::network::{TransitMode, TransitNetwork, TransitPattern, TransitStop},
+            transit::runtime::TransitRuntime,
         },
         street::Coordinate,
     };

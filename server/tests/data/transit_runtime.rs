@@ -4,8 +4,8 @@ use geo::{Destination, HaversineMeasure, Point};
 use via_server::domain::{
     ids::{BoardingPointId, TransitPatternId, TransitRouteId},
     location::GeoCoordinate,
-    transit::{SegmentProfile, TransferEdge, TransitNetwork, TransitPattern, TransitStop},
-    transit_runtime::{PatternPosition, TransitRuntime},
+    transit::network::{SegmentProfile, TransferEdge, TransitNetwork, TransitPattern, TransitStop},
+    transit::runtime::{PatternPosition, TransitRuntime},
 };
 
 fn stop(id: &str, latitude: f64, longitude: f64) -> TransitStop {

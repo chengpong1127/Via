@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::domain::transit::TransitMode as DomainTransitMode;
+use crate::domain::transit::network::TransitMode as DomainTransitMode;
 
 pub use crate::domain::location::GeoCoordinate;
 

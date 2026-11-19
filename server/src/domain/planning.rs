@@ -1,6 +1,6 @@
 use time::OffsetDateTime;
 
-use super::{location::GeoCoordinate, normalize_to_taipei, transit::TransitMode};
+use super::{location::GeoCoordinate, normalize_to_taipei, transit::network::TransitMode};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanningInput {

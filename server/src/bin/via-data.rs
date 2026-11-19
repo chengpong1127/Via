@@ -16,7 +16,9 @@ use via_server::{
         gtfs::measure_mode_coverage,
         load_static_artifact,
     },
-    domain::{ids::BoardingPointId, transit::TransitMode, transit_runtime::TransitRuntime},
+    domain::{
+        ids::BoardingPointId, transit::network::TransitMode, transit::runtime::TransitRuntime,
+    },
     health::DependencyHealth,
     providers::valhalla::ValhallaProvider,
     street::StreetRouter,

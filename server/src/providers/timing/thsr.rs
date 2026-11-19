@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::domain::{
-    transit::TransitMode,
-    transit_runtime::TransitRuntime,
-    transit_timing::{
+    transit::network::TransitMode,
+    transit::runtime::TransitRuntime,
+    transit::timing::{
         DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingReliability,
     },
 };

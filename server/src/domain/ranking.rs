@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::domain::transit_timing::TimingReliability;
+use crate::domain::transit::timing::TimingReliability;
 
 pub const MAX_RESULT_LIMIT: usize = 5;
 

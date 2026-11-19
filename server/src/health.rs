@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::domain::transit_runtime::TransitRuntime;
+use crate::domain::transit::runtime::TransitRuntime;
 
 #[async_trait]
 pub trait DependencyHealth: Send + Sync {

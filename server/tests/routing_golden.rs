@@ -16,8 +16,8 @@ use via_server::{
         ids::BikeStationId,
         location::GeoCoordinate,
         planning::PlanningInput,
-        transit_runtime::TransitRuntime,
-        transit_timing::{
+        transit::runtime::TransitRuntime,
+        transit::timing::{
             DepartureQuery, ScheduleTiming, SnapshotDepartures, TimingReliability, TimingSnapshot,
             TimingSnapshotLoader,
         },

@@ -6,10 +6,10 @@ use std::{
 use async_trait::async_trait;
 use time::{Date, OffsetDateTime};
 
-use super::{
+use crate::domain::{
     ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
     realtime::NormalizedRealtimeValue,
-    transit_runtime::TransitRuntime,
+    transit::runtime::TransitRuntime,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -347,7 +347,7 @@ impl EffectiveTrip {
     pub fn from_frequency(
         network: &TransitRuntime,
         service_day: Date,
-        frequency: &super::transit::TransitFrequency,
+        frequency: &super::network::TransitFrequency,
         first_departure_seconds: u32,
     ) -> Option<Self> {
         if !network
@@ -652,11 +652,11 @@ mod tests {
     use super::*;
     use crate::{
         api::GeoCoordinate,
-        domain::transit::{
+        domain::transit::network::{
             ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
             TransitTrip,
         },
-        domain::transit_runtime::TransitRuntime,
+        domain::transit::runtime::TransitRuntime,
     };
 
     fn trip(

@@ -5,7 +5,7 @@ use gtfs_structures::{RawTrip, Route};
 use crate::{
     domain::{
         ids::{TransitPatternId, TransitTripId},
-        transit::{TransitMode, TransitNetwork, TransitStop},
+        transit::network::{TransitMode, TransitNetwork, TransitStop},
     },
     providers::tdx_bindings::{
         BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,

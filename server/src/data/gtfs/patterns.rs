@@ -6,7 +6,7 @@ use gtfs_structures::{
 
 use crate::domain::{
     ids::{ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
-    transit::{
+    transit::network::{
         ScheduledStopTime, SegmentTimeSource, ServiceCalendar, TransitFrequency, TransitMode,
         TransitPattern, TransitStop, TransitTrip,
     },

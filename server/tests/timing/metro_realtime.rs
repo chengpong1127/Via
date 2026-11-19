@@ -17,13 +17,13 @@ use via_server::{
             BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
         },
         realtime::FreshnessState,
-        transit::{
+        transit::network::{
             ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
             ServiceCalendar, TransitMode, TransitNetwork, TransitPattern, TransitRoute,
             TransitStop, TransitTrip,
         },
-        transit_runtime::TransitRuntime,
-        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
+        transit::runtime::TransitRuntime,
+        transit::timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{
         DepartureResolver, MetroDepartureSource, MetroPatternBinding, TdxProviderBindings,

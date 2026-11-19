@@ -7,7 +7,7 @@ use crate::{
         bikeshare::{BikeShareNetwork, BikeStationAccess, BikeWalkingAccess},
         ids::{BikeStationId, BoardingPointId},
         spatial::SpatialPointIndex,
-        transit::TransitNetwork,
+        transit::network::TransitNetwork,
     },
     street::{
         Coordinate, MatrixCell, MatrixLimits, MatrixOrientation, MatrixQuery, Metres,
@@ -333,7 +333,7 @@ mod tests {
         domain::{
             bikeshare::{BikeShareNetwork, BikeStation, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId},
-            transit::{TransitNetwork, TransitStop},
+            transit::network::{TransitNetwork, TransitStop},
         },
         street::{FakeStreetRouter, Metres, Seconds, StreetTravelMode},
     };

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use time::macros::datetime;
 use via_server::domain::{
     ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-    transit_timing::{
+    transit::timing::{
         DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
         TimingReliability,
     },
@@ -17,8 +17,8 @@ struct FixtureSource {
 
 #[async_trait]
 impl TransitDepartureSource for FixtureSource {
-    fn mode(&self) -> via_server::domain::transit::TransitMode {
-        via_server::domain::transit::TransitMode::Bus
+    fn mode(&self) -> via_server::domain::transit::network::TransitMode {
+        via_server::domain::transit::network::TransitMode::Bus
     }
 
     fn static_timing_reliability(&self, _query: &DepartureQuery) -> TimingReliability {

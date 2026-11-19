@@ -250,7 +250,7 @@ async fn server_starts_with_supplied_config_and_environment_port_override() {
             ViaStatic,
             via_static::{ViaStaticCounts, ViaStaticRevisions},
         },
-        domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
+        domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork},
         providers::tdx_bindings::TdxProviderBindings,
     };
     struct ChildGuard(std::process::Child);

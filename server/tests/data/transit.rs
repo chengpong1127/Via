@@ -1,7 +1,7 @@
 use via_server::domain::{
     ids::{BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
     location::GeoCoordinate,
-    transit::{
+    transit::network::{
         ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
         TransitMode, TransitNetwork, TransitNetworkValidationError, TransitPattern, TransitRoute,
         TransitStop, TransitTrip,

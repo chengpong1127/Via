@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::{SegmentTravelTime, TransitMode},
-    transit_runtime::TransitRuntime,
+    transit::network::{SegmentTravelTime, TransitMode},
+    transit::runtime::TransitRuntime,
 };
 
 use crate::routing::model::PlanningDeadline;

@@ -9,8 +9,6 @@ pub mod ranking;
 pub mod realtime;
 pub(crate) mod spatial;
 pub mod transit;
-pub mod transit_runtime;
-pub mod transit_timing;
 
 pub fn taipei_offset() -> UtcOffset {
     UtcOffset::from_hms(8, 0, 0).expect("Taipei UTC offset is valid")

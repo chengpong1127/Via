@@ -11,7 +11,7 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 
 use crate::data::via_static::{ViaStaticCounts, ViaStaticRevisions, ViaStaticSource};
-use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
+use crate::domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork};
 use crate::street::StreetRouter;
 
 pub mod bike_access;

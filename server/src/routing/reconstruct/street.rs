@@ -235,8 +235,8 @@ mod tests {
         domain::{
             bikeshare::BikeShareNetwork,
             location::GeoCoordinate,
-            transit::{TransitNetwork, TransitStop},
-            transit_runtime::TransitRuntime,
+            transit::network::{TransitNetwork, TransitStop},
+            transit::runtime::TransitRuntime,
         },
         routing::{JourneyAnchor, JourneyMovementKind, PlanningDeadline, WalkingMovementKind},
         street::{Coordinate, FakeStreetRouter, Metres, Seconds},
@@ -453,7 +453,7 @@ mod tests {
             bicycle_seconds: 0,
             bike_share_uses: 0,
             bike_reuse_available_at: None,
-            timing_reliability: crate::domain::transit_timing::TimingReliability::Reliable,
+            timing_reliability: crate::domain::transit::timing::TimingReliability::Reliable,
             walking_tail: None,
         };
         let (a, b, c) = (place("a", 121.5), place("b", 121.501), place("c", 121.502));

@@ -1,6 +1,6 @@
 use via_server::domain::{
     ranking::{JourneyClass, RankingCandidate, RankingPolicy, TransferEvidence, TransferKind},
-    transit_timing::TimingReliability,
+    transit::timing::TimingReliability,
 };
 
 fn candidate(key: &str, arrival: i64) -> RankingCandidate {

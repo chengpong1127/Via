@@ -6,13 +6,13 @@ use via_server::{
         ids::{
             BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
         },
-        transit::{
+        transit::network::{
             ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime,
             ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork,
             TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
         },
-        transit_runtime::TransitRuntime,
-        transit_timing::{DepartureQuery, TimingBasis, TimingReliability},
+        transit::runtime::TransitRuntime,
+        transit::timing::{DepartureQuery, TimingBasis, TimingReliability},
     },
     providers::timing::{DepartureResolver, MetroDepartureSource, TransitDepartureSource},
 };

@@ -15,9 +15,9 @@ use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
         realtime::{ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue},
-        transit::TransitMode,
-        transit_runtime::TransitRuntime,
-        transit_timing::{
+        transit::network::TransitMode,
+        transit::runtime::TransitRuntime,
+        transit::timing::{
             DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
             TimingReliability,
         },
@@ -136,7 +136,7 @@ impl BusDepartureSource {
             pattern_id: query.pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
-            timing_basis: crate::domain::transit_timing::TimingBasis::RealtimePrediction,
+            timing_basis: crate::domain::transit::timing::TimingBasis::RealtimePrediction,
             timing_reliability: TimingReliability::Reliable,
             observed_at: Some(observed_at),
             uncertainty_seconds: None,

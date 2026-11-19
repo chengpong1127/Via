@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Instant};
 use crate::{
     domain::{
         ids::BoardingPointId, journey::PlanningError, location::GeoCoordinate,
-        transit::TransitMode, transit_runtime::TransitRuntime,
+        transit::network::TransitMode, transit::runtime::TransitRuntime,
     },
     street::{
         Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,

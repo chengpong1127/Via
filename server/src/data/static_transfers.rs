@@ -9,7 +9,7 @@ use crate::{
     domain::{
         ids::BoardingPointId,
         spatial::SpatialPointIndex,
-        transit::{TransferEdge, TransitMode, TransitNetwork},
+        transit::network::{TransferEdge, TransitMode, TransitNetwork},
     },
     street::{
         Coordinate, MatrixCell, MatrixOrientation, MatrixQuery, Metres, RoutingConstraints,
@@ -293,7 +293,7 @@ mod tests {
         domain::{
             ids::TransitPatternId,
             location::GeoCoordinate,
-            transit::{TransitPattern, TransitStop, default_service_day_boundary},
+            transit::network::{TransitPattern, TransitStop, default_service_day_boundary},
         },
         street::{FakeStreetRouter, Seconds},
     };

@@ -5,7 +5,8 @@ use crate::{
     config::{Environment, RuntimeConfig},
     data::ViaStatic,
     domain::{
-        bikeshare::BikeShareNetwork, transit::TransitNetwork, transit_runtime::TransitRuntime,
+        bikeshare::BikeShareNetwork, transit::network::TransitNetwork,
+        transit::runtime::TransitRuntime,
     },
     health::{DependencyHealth, Health},
     live::{CachedLiveData, DirectLiveData, GatewayLiveData, LiveDataSource},

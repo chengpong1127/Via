@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc};
 
 use time::{Date, OffsetDateTime, PrimitiveDateTime, Time};
 
-use super::{
+use crate::domain::{
     ids::{BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId},
     location::GeoCoordinate,
     normalize_to_taipei,
     spatial::SpatialPointIndex,
     taipei_offset,
-    transit::{
+    transit::network::{
         ServiceCalendar, TransferEdge, TransitFrequency, TransitNetwork,
         TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },

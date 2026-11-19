@@ -3,8 +3,8 @@ use std::{hint::black_box, sync::Arc, time::Instant};
 use time::macros::datetime;
 use via_server::{
     domain::{
-        bikeshare::BikeShareNetwork, ids::BoardingPointId, transit::TransitMode,
-        transit_runtime::TransitRuntime,
+        bikeshare::BikeShareNetwork, ids::BoardingPointId, transit::network::TransitMode,
+        transit::runtime::TransitRuntime,
     },
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
@@ -21,8 +21,8 @@ use via_server::street::FakeStreetRouter;
 #[path = "support/tdx.rs"]
 mod tdx;
 
-fn network() -> via_server::domain::transit::TransitNetwork {
-    via_server::domain::transit::TransitNetwork::from_artifact_json(include_str!(
+fn network() -> via_server::domain::transit::network::TransitNetwork {
+    via_server::domain::transit::network::TransitNetwork::from_artifact_json(include_str!(
         "../fixtures/routing/network.json"
     ))
     .unwrap()

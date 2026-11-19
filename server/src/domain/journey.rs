@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use super::{location::GeoCoordinate, realtime::FreshnessState, transit::TransitMode};
+use super::{location::GeoCoordinate, realtime::FreshnessState, transit::network::TransitMode};
 
 #[derive(
     Clone,

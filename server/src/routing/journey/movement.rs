@@ -1,6 +1,6 @@
 use time::OffsetDateTime;
 
-use crate::domain::{ids::BoardingPointId, transit_timing::EffectiveTrip};
+use crate::domain::{ids::BoardingPointId, transit::timing::EffectiveTrip};
 
 use super::*;
 

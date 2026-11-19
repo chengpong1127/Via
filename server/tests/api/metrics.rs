@@ -9,7 +9,7 @@ use http_body_util::BodyExt;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use via_server::domain::transit::TransitNetwork;
+use via_server::domain::transit::network::TransitNetwork;
 use via_server::street::FakeStreetRouter;
 
 #[tokio::test]

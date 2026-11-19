@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::ids::{TransitPatternId, TransitTripId};
-use crate::domain::transit::{TransitMode, TransitNetwork};
+use crate::domain::transit::network::{TransitMode, TransitNetwork};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

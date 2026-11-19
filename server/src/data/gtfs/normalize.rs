@@ -14,7 +14,7 @@ use crate::{
     domain::{
         ids::{BoardingPointId, ServiceCalendarId, TransitRouteId},
         location::GeoCoordinate,
-        transit::{
+        transit::network::{
             ScheduledStopTime, ServiceCalendar, TransitFrequency, TransitMode, TransitNetwork,
             TransitPattern, TransitRoute, TransitStop, TransitTrip, default_service_day_boundary,
         },

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::domain::{
-    transit::TransitMode,
-    transit_runtime::{PatternPosition, TransitRuntime},
+    transit::network::TransitMode,
+    transit::runtime::{PatternPosition, TransitRuntime},
 };
 
 use super::types::{EquivalentLegKey, StaticCorridor, StaticTransitLeg, equivalent_leg_key};
@@ -137,7 +137,7 @@ mod tests {
     use crate::domain::ids::BoardingPointId;
     use crate::domain::{
         ids::TransitPatternId,
-        transit::{TransitNetwork, TransitPattern},
+        transit::network::{TransitNetwork, TransitPattern},
     };
     use crate::routing::corridors::types::{StaticCorridorStep, StaticCostSource};
 

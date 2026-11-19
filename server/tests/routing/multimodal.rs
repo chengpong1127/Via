@@ -17,8 +17,8 @@ use via_server::{
             BikeStationAvailability, BikeWalkingAccess,
         },
         ids::BikeStationId,
-        transit_runtime::TransitRuntime,
-        transit_timing::{EffectiveTrip, TimingSnapshot},
+        transit::runtime::TransitRuntime,
+        transit::timing::{EffectiveTrip, TimingSnapshot},
     },
     providers::UnavailableBikeAvailabilitySource,
     street::{FakeStreetRouter, StreetTravelMode},
@@ -798,7 +798,7 @@ async fn ranking_corridor_fixture(iterations: usize) {
     use time::{Duration, macros::datetime};
     use via_server::domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
+        transit::timing::{EffectiveStopTime, TimingBasis, TimingReliability},
     };
     use via_server::routing::{JourneyPlanningLimits, RoutingService};
     let mut transit = network();

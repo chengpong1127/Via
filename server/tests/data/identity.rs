@@ -1,7 +1,7 @@
 use via_server::domain::{
     ids::{EffectiveTripId, ServiceCalendarId, TransitPatternId, TransitTripId},
-    transit::{ScheduledStopTime, TransitTrip},
-    transit_timing::{EffectiveTrip, TimingBasis, TimingReliability},
+    transit::network::{ScheduledStopTime, TransitTrip},
+    transit::timing::{EffectiveTrip, TimingBasis, TimingReliability},
 };
 
 #[test]

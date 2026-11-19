@@ -14,12 +14,12 @@ use crate::{
         bikeshare::{BikeAvailabilityError, BikeAvailabilitySnapshot, BikeShareNetwork},
         ids::{BikeStationId, BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
         location::GeoCoordinate,
-        transit::{
+        transit::network::{
             ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
             TransitTrip,
         },
-        transit_runtime::TransitRuntime,
-        transit_timing::{
+        transit::runtime::TransitRuntime,
+        transit::timing::{
             EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot,
         },
     },
@@ -190,13 +190,13 @@ fn multiple_mode_corridors_network() -> Arc<TransitRuntime> {
         Vec::new(),
     )
     .with_transfer_edges(vec![
-        crate::domain::transit::TransferEdge::new(
+        crate::domain::transit::network::TransferEdge::new(
             BoardingPointId::new("bus-end-a"),
             BoardingPointId::new("metro-start-a"),
             60,
             100,
         ),
-        crate::domain::transit::TransferEdge::new(
+        crate::domain::transit::network::TransferEdge::new(
             BoardingPointId::new("bus-end-b"),
             BoardingPointId::new("metro-start-b"),
             60,

@@ -2,7 +2,7 @@ use crate::domain::{
     journey::{LegMode, LiveStatusEvidence, LiveStatusSummary},
     ranking::TransferKind,
     realtime::{FreshnessState, NormalizedRealtimeValue},
-    transit::TransitMode,
+    transit::network::TransitMode,
 };
 
 pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusEvidence {

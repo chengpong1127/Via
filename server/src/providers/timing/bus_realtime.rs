@@ -9,7 +9,7 @@ use crate::{
             ArrivalEstimate, ArrivalState, FreshnessPolicy, LiveStatusTimes,
             NormalizedRealtimeValue,
         },
-        transit_timing::DepartureError,
+        transit::timing::DepartureError,
     },
     live::BusArrival,
     tdx::{

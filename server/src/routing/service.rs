@@ -12,8 +12,8 @@ use crate::{
         journey::{EmptyReason, EmptyResult, OptionsResult, PlanningError, PlanningOutcome},
         planning::PlanningInput,
         ranking::RankingPolicy,
-        transit_runtime::TransitRuntime,
-        transit_timing::TimingSnapshotLoader,
+        transit::runtime::TransitRuntime,
+        transit::timing::TimingSnapshotLoader,
     },
     street::StreetRouter,
 };

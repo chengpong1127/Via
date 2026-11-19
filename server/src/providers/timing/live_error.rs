@@ -1,4 +1,4 @@
-use crate::{domain::transit_timing::DepartureError, live::UnavailableReason};
+use crate::{domain::transit::timing::DepartureError, live::UnavailableReason};
 
 pub(super) fn departure_error(reason: UnavailableReason) -> DepartureError {
     match reason {

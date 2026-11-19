@@ -6,7 +6,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 use via_server::{
     app::build_router,
-    domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork},
+    domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork},
     health::DependencyHealth,
     providers::{UnavailableBikeAvailabilitySource, tdx_bindings::TdxProviderBindings},
     routing::JourneyPlanningLimits,

@@ -7,11 +7,11 @@ use crate::{
     domain::location::GeoCoordinate,
     domain::{
         ids::{BoardingPointId, TransitPatternId, TransitTripId},
-        transit::{
+        transit::network::{
             ScheduledStopTime, TransferEdge, TransitMode, TransitNetwork, TransitPattern,
             TransitStop, TransitTrip,
         },
-        transit_runtime::TransitRuntime,
+        transit::runtime::TransitRuntime,
     },
     routing::{EndpointStop, model::PlanningQuery},
 };

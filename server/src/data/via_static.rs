@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::domain::{bikeshare::BikeShareNetwork, transit::TransitNetwork};
+use crate::domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork};
 use crate::providers::tdx_bindings::TdxProviderBindings;
 
 pub const VIA_STATIC_SCHEMA_VERSION: u32 = 2;
@@ -171,7 +171,7 @@ mod tests {
             bikeshare::{BikeStation, BikeStationAccess, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId, TransitPatternId},
             location::GeoCoordinate,
-            transit::{TransitStop, default_service_day_boundary},
+            transit::network::{TransitStop, default_service_day_boundary},
         },
         providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings},
     };

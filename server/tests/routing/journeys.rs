@@ -8,10 +8,10 @@ use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::
 use via_server::{
     domain::bikeshare::BikeShareNetwork,
     domain::ids::TransitPatternId,
-    domain::transit_timing::{DepartureError, SnapshotDepartures, TimingSnapshot},
+    domain::transit::timing::{DepartureError, SnapshotDepartures, TimingSnapshot},
     domain::{
         ids::BoardingPointId,
-        transit::{ScheduledStopTime, TransferEdge, TransitNetwork},
+        transit::network::{ScheduledStopTime, TransferEdge, TransitNetwork},
     },
     providers::UnavailableBikeAvailabilitySource,
     routing::JourneyPlanningLimits,
@@ -858,7 +858,7 @@ async fn matrix_route_mismatch_preserves_a_later_feasible_transit_departure() {
     use time::macros::datetime;
     use via_server::domain::{
         ids::EffectiveTripId,
-        transit_timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
+        transit::timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
     };
     use via_server::street::{Metres, Seconds};
     let transit = network();

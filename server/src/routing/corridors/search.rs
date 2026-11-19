@@ -6,8 +6,8 @@ use std::{
 
 use crate::domain::{
     ids::{BoardingPointId, TransitRouteId},
-    transit::{SegmentTimeSource, TransitMode},
-    transit_runtime::TransitRuntime,
+    transit::network::{SegmentTimeSource, TransitMode},
+    transit::runtime::TransitRuntime,
 };
 
 use crate::routing::model::PlanningQuery;

@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use time::{Date, Time, Weekday};
 
-use super::ids::{
+use crate::domain::ids::{
     BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
 };
-use super::location::GeoCoordinate;
+use crate::domain::location::GeoCoordinate;
 
 pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")

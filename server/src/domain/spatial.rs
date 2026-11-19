@@ -3,7 +3,7 @@ use rstar::{RTree, primitives::GeomWithData};
 use super::{
     bikeshare::BikeStation,
     location::{EARTH_RADIUS_METRES, GeoCoordinate},
-    transit::TransitStop,
+    transit::network::TransitStop,
 };
 
 pub(crate) trait SpatialPoint {

@@ -4,8 +4,8 @@ use crate::domain::{
     ids::EffectiveTripId,
     journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError, StopVisit},
     ranking::TransferEvidence,
-    transit::TransitMode,
-    transit_timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
+    transit::network::TransitMode,
+    transit::timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
 };
 
 use super::{
@@ -166,9 +166,9 @@ fn record_transfer(
 
 fn transit_leg(
     id: String,
-    service: &crate::domain::transit::TransitPattern,
-    route: &crate::domain::transit::TransitRoute,
-    stops: &[&crate::domain::transit::TransitStop],
+    service: &crate::domain::transit::network::TransitPattern,
+    route: &crate::domain::transit::network::TransitRoute,
+    stops: &[&crate::domain::transit::network::TransitStop],
     stop_times: &[EffectiveStopTime],
     departure: OffsetDateTime,
     arrival: OffsetDateTime,
@@ -219,7 +219,7 @@ fn transit_leg(
     })
 }
 
-pub(super) fn transit_place(stop: &crate::domain::transit::TransitStop) -> Place {
+pub(super) fn transit_place(stop: &crate::domain::transit::network::TransitStop) -> Place {
     Place {
         display_name: stop.name.clone(),
         coordinate: stop.coordinate,

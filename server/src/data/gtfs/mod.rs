@@ -17,7 +17,7 @@ use crate::{
     data::DataError,
     domain::{
         ids::{TransitPatternId, TransitTripId},
-        transit::{SegmentTimeSource, TransitMode, TransitNetwork},
+        transit::network::{SegmentTimeSource, TransitMode, TransitNetwork},
     },
     providers::tdx_bindings::TdxProviderBindings,
 };

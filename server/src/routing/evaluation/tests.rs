@@ -15,9 +15,11 @@ use crate::{
     domain::{
         bikeshare::BikeWalkingAccess,
         ids::{BikeStationId, EffectiveTripId, TransitPatternId},
-        transit::{TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop},
-        transit_runtime::TransitRuntime,
-        transit_timing::{EffectiveStopTime, TimingBasis, TimingReliability},
+        transit::network::{
+            TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop,
+        },
+        transit::runtime::TransitRuntime,
+        transit::timing::{EffectiveStopTime, TimingBasis, TimingReliability},
     },
     routing::{
         EndpointStop,

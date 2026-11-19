@@ -28,8 +28,8 @@ use super::{
 use crate::{
     domain::{
         realtime::NormalizedRealtimeValue,
-        transit_runtime::TransitRuntime,
-        transit_timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
+        transit::runtime::TransitRuntime,
+        transit::timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
     },
     street::{MatrixCell, RouteQuery, RoutingConstraints, StreetRoutingError, StreetTravelMode},
 };

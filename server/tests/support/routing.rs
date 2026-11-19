@@ -1,4 +1,4 @@
-use via_server::domain::transit::{TransitNetwork, TransitStop};
+use via_server::domain::transit::network::{TransitNetwork, TransitStop};
 use via_server::street::{
     Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
 };

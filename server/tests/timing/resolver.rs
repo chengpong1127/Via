@@ -7,12 +7,12 @@ use via_server::domain::{
         BoardingPointId, EffectiveTripId, ServiceCalendarId, TransitPatternId, TransitRouteId,
         TransitTripId,
     },
-    transit::{
+    transit::network::{
         ScheduledStopTime, SegmentProfile, SegmentTimeSource, SegmentTravelTime, ServiceCalendar,
         TransitMode, TransitNetwork, TransitPattern, TransitRoute, TransitTrip,
     },
-    transit_runtime::TransitRuntime,
-    transit_timing::{
+    transit::runtime::TransitRuntime,
+    transit::timing::{
         DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, SnapshotDepartures,
         TimingBasis, TimingReliability, TimingSnapshot, TimingSnapshotLoader,
     },

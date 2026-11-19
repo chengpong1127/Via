@@ -3,12 +3,12 @@ use tokio::time::Instant;
 
 use crate::{
     domain::planning::PlanningInput,
-    domain::{journey::PlanningError, normalize_to_taipei, transit::TransitMode},
+    domain::{journey::PlanningError, normalize_to_taipei, transit::network::TransitMode},
     street::{ProviderFailureClass, RoutingConstraints, RoutingTime, StreetRoutingError},
 };
 
 use crate::domain::{
-    bikeshare::BikeAvailabilityError, ids::BoardingPointId, transit_timing::DepartureError,
+    bikeshare::BikeAvailabilityError, ids::BoardingPointId, transit::timing::DepartureError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

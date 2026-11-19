@@ -10,8 +10,8 @@ use crate::{
     domain::{
         bikeshare::{BikeAvailabilitySnapshot, BikeAvailabilitySource, BikeShareNetwork},
         journey::PlanningError,
-        transit_runtime::TransitRuntime,
-        transit_timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
+        transit::runtime::TransitRuntime,
+        transit::timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
     },
     street::StreetRouter,
 };

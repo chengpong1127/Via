@@ -1,7 +1,7 @@
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::TransitMode,
-    transit_runtime::TransitRuntime,
+    transit::network::TransitMode,
+    transit::runtime::TransitRuntime,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

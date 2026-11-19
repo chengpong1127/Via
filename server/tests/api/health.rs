@@ -11,7 +11,7 @@ use via_server::{
     domain::ids::BoardingPointId,
     domain::{
         location::GeoCoordinate,
-        transit::{TransitNetwork, TransitStop},
+        transit::network::{TransitNetwork, TransitStop},
     },
     street::FakeStreetRouter,
 };

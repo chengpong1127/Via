@@ -33,8 +33,8 @@ fn planning_request_accepts_the_provider_neutral_contract() {
     assert_eq!(
         request.allowed_transit_modes(),
         vec![
-            via_server::domain::transit::TransitMode::Bus,
-            via_server::domain::transit::TransitMode::Metro,
+            via_server::domain::transit::network::TransitMode::Bus,
+            via_server::domain::transit::network::TransitMode::Metro,
         ]
     );
     assert!(request.allows_bike_share());
@@ -60,8 +60,8 @@ fn planning_request_accepts_modes_in_any_order() {
     assert_eq!(
         request.allowed_transit_modes(),
         vec![
-            via_server::domain::transit::TransitMode::Bus,
-            via_server::domain::transit::TransitMode::Metro,
+            via_server::domain::transit::network::TransitMode::Bus,
+            via_server::domain::transit::network::TransitMode::Metro,
         ]
     );
 }
@@ -165,7 +165,7 @@ fn validation_error_has_only_a_code_and_json_pointer() {
 fn domain_conversion_preserves_endpoints_modes_and_departure_intent() {
     use via_server::domain::{
         planning::{DepartureIntent, PlanningInput},
-        transit::TransitMode,
+        transit::network::TransitMode,
     };
     let now = datetime!(2026-09-01 00:00 UTC);
     for (modes, transit, bike) in [

@@ -3,7 +3,7 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use crate::{
     domain::{
         realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
-        transit_timing::DepartureError,
+        transit::timing::DepartureError,
     },
     live::MetroBoard,
 };

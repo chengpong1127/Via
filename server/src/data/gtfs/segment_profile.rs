@@ -4,7 +4,7 @@ use gtfs_structures::{RawStopTime, RawTrip, Shape};
 
 use crate::domain::{
     location::GeoCoordinate,
-    transit::{
+    transit::network::{
         SegmentProfile, SegmentTimeSource, SegmentTravelTime, TransitFrequency, TransitMode,
         TransitStop, TransitTrip,
     },

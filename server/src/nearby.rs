@@ -11,8 +11,8 @@ use crate::domain::{
     bikeshare::{BikeAvailabilitySource, BikeShareNetwork},
     ids::{BikeStationId, BoardingPointId},
     location::GeoCoordinate,
-    transit::TransitMode,
-    transit_runtime::TransitRuntime,
+    transit::network::TransitMode,
+    transit::runtime::TransitRuntime,
 };
 
 pub const DEFAULT_RADIUS_METRES: u32 = 500;

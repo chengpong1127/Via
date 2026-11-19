@@ -5,8 +5,8 @@ use crate::{
         ids::BoardingPointId,
         journey::{Leg, LegMode, LiveStatusEvidence, PlanningError},
         ranking::TransferEvidence,
-        transit::TransitMode,
-        transit_timing::TimingReliability,
+        transit::network::TransitMode,
+        transit::timing::TimingReliability,
     },
     routing::{
         JourneyMovement, JourneyMovementKind, RealizedJourney, model::JourneyPlanningContext,

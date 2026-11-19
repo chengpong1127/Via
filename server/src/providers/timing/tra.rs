@@ -12,9 +12,9 @@ use crate::{
             ArrivalEstimate, ArrivalState, FreshnessPolicy, FreshnessState, LiveStatusTimes,
             NormalizedRealtimeValue,
         },
-        transit::TransitMode,
-        transit_runtime::TransitRuntime,
-        transit_timing::{
+        transit::network::TransitMode,
+        transit::runtime::TransitRuntime,
+        transit::timing::{
             DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingBasis,
             TimingReliability,
         },

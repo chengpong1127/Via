@@ -12,7 +12,7 @@ use via_server::{
     domain::ids::{BoardingPointId, TransitPatternId, TransitRouteId},
     domain::{
         location::GeoCoordinate,
-        transit::{
+        transit::network::{
             SegmentProfile, SegmentTimeSource, SegmentTravelTime, TransitMode, TransitNetwork,
             TransitPattern, TransitRoute, TransitStop,
         },

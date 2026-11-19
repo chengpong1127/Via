@@ -16,9 +16,9 @@ use via_server::{
         ids::BoardingPointId,
         journey::PlanningError,
         realtime::FreshnessPolicy,
-        transit::{TransferEdge, TransitNetwork},
-        transit_runtime::TransitRuntime,
-        transit_timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
+        transit::network::{TransferEdge, TransitNetwork},
+        transit::runtime::TransitRuntime,
+        transit::timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
     },
     providers::{
         UnavailableBikeAvailabilitySource,
@@ -334,7 +334,7 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
             .patterns
             .iter()
             .filter(|pattern| runtime.route_of(pattern).mode
-                == via_server::domain::transit::TransitMode::Metro)
+                == via_server::domain::transit::network::TransitMode::Metro)
             .count(),
         3
     );

@@ -14,8 +14,8 @@ use crate::data::{
     fetch::{FetchManifest, FetchSource},
 };
 use crate::domain::{
-    transit::{ScheduledStopTime, TransitMode},
-    transit_runtime::TransitRuntime,
+    transit::network::{ScheduledStopTime, TransitMode},
+    transit::runtime::TransitRuntime,
 };
 use crate::street::{Coordinate, FakeStreetRouter, Metres, Seconds, StreetTravelMode};
 use gtfs_structures::RouteType;
@@ -433,12 +433,9 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .collect::<Vec<_>>(),
         vec![420, 1680]
     );
-    assert!(
-        bus.static_profile
-            .segments
-            .iter()
-            .all(|segment| segment.source == crate::domain::transit::SegmentTimeSource::Derived)
-    );
+    assert!(bus.static_profile.segments.iter().all(
+        |segment| segment.source == crate::domain::transit::network::SegmentTimeSource::Derived
+    ));
     let persisted = crate::data::load_static_artifact(&output.join(".via-static.json")).unwrap();
     assert_eq!(
         persisted
