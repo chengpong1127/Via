@@ -303,7 +303,7 @@ async fn timing_queries_include_all_patterns_in_a_retained_pattern_family() {
             .iter()
             .any(|query| query.pattern_id == TransitPatternId::new("realtime-fast"))
     );
-    assert_eq!(stats.search.corridor_positions, 2);
+    assert_eq!(queries.len(), 2);
     assert_eq!(stats.search.corridors_retained, 1);
 }
 

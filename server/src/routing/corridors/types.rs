@@ -112,9 +112,6 @@ pub struct CorridorSearchStats {
     pub states_expanded: usize,
     pub unique_corridors_found: usize,
     pub corridors_retained: usize,
-    pub corridor_patterns: usize,
-    pub corridor_positions: usize,
-    pub corridor_bus_stops: usize,
     pub search_latency_ms: u64,
     pub deadline_exceeded: bool,
 }

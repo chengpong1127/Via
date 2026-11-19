@@ -1,10 +1,12 @@
-use crate::domain::ids::{BoardingPointId, TransitPatternId};
+use std::collections::HashMap;
+
+use crate::domain::ids::BoardingPointId;
 use crate::routing::{
     journey::{JourneyAnchorKind, WalkingMovementKind},
     model::{PlanningQuery, RoutingError},
 };
 
-use super::types::{StaticCorridorStep, StaticCostSource, StaticTransitLeg};
+use super::types::{EquivalentLegKey, StaticCorridorStep, StaticTransitLeg, equivalent_leg_key};
 use crate::{domain::transit::runtime::TransitRuntime, street::Coordinate};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,7 +17,9 @@ pub struct Corridor {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlannedMovement {
-    Transit(StaticTransitLeg),
+    Transit {
+        legs: Vec<StaticTransitLeg>,
+    },
     WalkingToResolve,
     RetainedWalking {
         kind: WalkingMovementKind,
@@ -117,7 +121,9 @@ impl Corridor {
             distance_metres: access.distance_metres,
         }];
         edges.extend(steps.iter().map(|step| match step {
-            StaticCorridorStep::Transit(leg) => PlannedMovement::Transit(leg.clone()),
+            StaticCorridorStep::Transit(leg) => PlannedMovement::Transit {
+                legs: vec![leg.clone()],
+            },
             StaticCorridorStep::SurfaceTransfer {
                 walking_duration_seconds,
                 walking_distance_metres,
@@ -145,49 +151,41 @@ impl Corridor {
         })
     }
 
-    pub fn pattern_sequence(&self) -> Vec<TransitPatternId> {
-        self.transit_legs()
-            .map(|leg| leg.pattern_id.clone())
-            .collect()
-    }
-
-    pub fn cost_source(&self) -> StaticCostSource {
-        super::search::cost_source(self.transit_legs())
-    }
-
-    #[cfg(test)]
-    pub(in crate::routing) fn from_transit_leg_for_test(leg: StaticTransitLeg) -> Self {
-        let coordinate = Coordinate::try_new(25.0, 121.5).expect("valid test coordinate");
-        let anchor = |kind| CorridorAnchor { kind, coordinate };
-        let walking = |kind| PlannedMovement::RetainedWalking {
-            kind,
-            duration_seconds: 0,
-            distance_metres: 0,
-        };
-        Self {
-            anchors: vec![
-                anchor(JourneyAnchorKind::Origin),
-                anchor(JourneyAnchorKind::BoardingPoint {
-                    id: leg.board_stop_id.clone(),
-                }),
-                anchor(JourneyAnchorKind::BoardingPoint {
-                    id: leg.alight_stop_id.clone(),
-                }),
-                anchor(JourneyAnchorKind::Destination),
-            ],
-            edges: vec![
-                walking(WalkingMovementKind::Access),
-                PlannedMovement::Transit(leg),
-                walking(WalkingMovementKind::Egress),
-            ],
+    pub(super) fn with_equivalent_legs(
+        mut self,
+        transit: &TransitRuntime,
+        equivalent_legs_by_key: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
+    ) -> Self {
+        for edge in &mut self.edges {
+            let PlannedMovement::Transit { legs } = edge else {
+                continue;
+            };
+            let Some(equivalent_legs) = legs
+                .first()
+                .and_then(|leg| equivalent_legs_by_key.get(&equivalent_leg_key(transit, leg)))
+            else {
+                continue;
+            };
+            legs.clone_from(equivalent_legs);
+            legs.sort_by(|left, right| {
+                left.pattern_id
+                    .as_str()
+                    .cmp(right.pattern_id.as_str())
+                    .then(left.board_index.cmp(&right.board_index))
+                    .then(left.alight_index.cmp(&right.alight_index))
+            });
         }
+        self
     }
 
     pub fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
-        self.edges.iter().filter_map(|edge| match edge {
-            PlannedMovement::Transit(leg) => Some(leg),
-            PlannedMovement::WalkingToResolve | PlannedMovement::RetainedWalking { .. } => None,
-        })
+        self.edges
+            .iter()
+            .filter_map(|edge| match edge {
+                PlannedMovement::Transit { legs } => Some(legs.iter()),
+                PlannedMovement::WalkingToResolve | PlannedMovement::RetainedWalking { .. } => None,
+            })
+            .flatten()
     }
 }
 

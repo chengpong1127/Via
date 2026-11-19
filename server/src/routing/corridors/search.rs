@@ -14,7 +14,6 @@ use crate::routing::model::{PlanningQuery, RoutingError};
 
 use super::{
     corridor::Corridor,
-    retention::RetainedCorridorSet,
     types::{
         CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridorStep,
         StaticCostSource, StaticTransitLeg, equivalent_leg_key, equivalent_steps,
@@ -129,7 +128,7 @@ struct BagEntry {
 pub fn generate(
     transit: &TransitRuntime,
     query: &PlanningQuery,
-) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
+) -> Result<(Vec<Corridor>, CorridorSearchStats), RoutingError> {
     let started = Instant::now();
     let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
     for egress in &query.destination_egress {
@@ -183,7 +182,7 @@ pub fn generate(
         }
         if query.deadline.is_elapsed() {
             search.stats.deadline_exceeded = true;
-            return Ok((RetainedCorridorSet::default(), search.stats));
+            return Ok((Vec::new(), search.stats));
         }
         let mut boardable_by_pattern =
             HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
@@ -262,22 +261,20 @@ pub fn generate(
             cost_source = cost_source(candidate.transit_legs()).as_str(),
             "retained static corridor"
         );
-        selected_corridors.push(Corridor::from_steps(
-            transit,
-            query,
-            &candidate.access_stop_id,
-            &candidate.steps,
-            &candidate.egress_stop_id,
-        )?);
+        selected_corridors.push(
+            Corridor::from_steps(
+                transit,
+                query,
+                &candidate.access_stop_id,
+                &candidate.steps,
+                &candidate.egress_stop_id,
+            )?
+            .with_equivalent_legs(transit, &equivalent_legs_by_key),
+        );
     }
-    let (retained, pattern_count, bus_stop_count) =
-        RetainedCorridorSet::from_retained(transit, &equivalent_legs_by_key, selected_corridors);
-    stats.corridors_retained = retained.retained_corridors().len();
-    stats.corridor_patterns = pattern_count;
-    stats.corridor_positions = retained.timing_positions().count();
-    stats.corridor_bus_stops = bus_stop_count;
+    stats.corridors_retained = selected_corridors.len();
     stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    Ok((retained, stats))
+    Ok((selected_corridors, stats))
 }
 
 impl Search<'_> {

@@ -122,7 +122,7 @@ async fn measured_corridors_case(
     query.limits.max_concurrent_phase2_states = concurrency;
     query.limits.max_concurrent_phase2_corridors = corridor_concurrency;
     let retained = candidate_corridor(&network, &query);
-    let original = retained.retained_corridors()[0].clone();
+    let original = retained[0].clone();
     let corridors = (0..corridor_count)
         .map(|_| {
             Corridor::new(
@@ -133,13 +133,9 @@ async fn measured_corridors_case(
                         duration_seconds: 0,
                         distance_metres: 0,
                     },
-                    PlannedMovement::Transit(
-                        retained.retained_corridors()[0]
-                            .transit_legs()
-                            .next()
-                            .unwrap()
-                            .clone(),
-                    ),
+                    PlannedMovement::Transit {
+                        legs: vec![retained[0].transit_legs().next().unwrap().clone()],
+                    },
                     PlannedMovement::WalkingToResolve,
                 ],
             )
@@ -170,7 +166,6 @@ async fn measured_corridors_case(
     }
     let result = evaluate_corridors(
         &network,
-        &retained,
         &snapshot,
         &query,
         &matrix,
@@ -220,7 +215,6 @@ async fn successful_evaluations_preserve_ordered_journeys_and_work_at_all_limits
 #[tokio::test]
 async fn edge_collector_restores_input_order_before_pareto_pruning() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut expected = None;
     for concurrency in [1, 2, 4, 8] {
@@ -229,7 +223,7 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
         let corridor = Corridor::direct_walking(query.origin, query.destination);
         let provider = Arc::new(DelayedMatrix::new(1, None));
         let street = MatrixCache::new(provider.clone());
-        let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+        let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
         let run = Run::new(&evaluator);
         let states = (0..10)
             .map(|i| {
@@ -262,7 +256,6 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
 #[tokio::test(start_paused = true)]
 async fn fatal_deadline_drops_outstanding_states() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut query = query(&[], 0, 1);
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
@@ -277,7 +270,7 @@ async fn fatal_deadline_drops_outstanding_states() {
             s
         })
         .collect::<Vec<_>>();
-    let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+    let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
     let run = Run::new(&evaluator);
     let outcome = run.expand_edge(&states, &corridor, 0).await;
     assert!(matches!(outcome, Err(RoutingError::DeadlineExceeded)));
@@ -521,7 +514,6 @@ impl BikeMovementSource for ReverseBikePlanner {
 #[tokio::test]
 async fn forced_reverse_completion_preserves_successor_order() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut reference = None;
     for concurrency in [1, 4] {
@@ -544,8 +536,7 @@ async fn forced_reverse_completion_preserves_successor_order() {
             completed: completed.clone(),
             gates: gates.clone(),
         };
-        let evaluator =
-            test_evaluator(&network, &retained, &snapshot, &query, &street, Some(&bike));
+        let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
         let run = Run::new(&evaluator);
         let states = (0..4)
             .map(|index| {
@@ -590,7 +581,6 @@ async fn forced_reverse_completion_preserves_successor_order() {
 #[tokio::test]
 async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut query = query(&[], 0, 1);
     query.limits.max_concurrent_phase2_states = 4;
@@ -602,7 +592,7 @@ async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
     provider.started = Some(started.clone());
     let provider = Arc::new(provider);
     let street = MatrixCache::new(provider.clone());
-    let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
+    let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
     let run = Run::new(&evaluator);
     let states = [0, 1, 180, 3600].map(|seconds| {
         let mut state = EvaluationState::initial(&query);
@@ -746,7 +736,6 @@ async fn corridor_concurrency_preserves_transit_and_mixed_results_and_shares_cac
 #[tokio::test(start_paused = true)]
 async fn corridor_deadline_cancels_pending_provider_operations() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut query = query(&[], 0, 1);
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
@@ -761,10 +750,7 @@ async fn corridor_deadline_cancels_pending_provider_operations() {
             )
         })
         .collect::<Vec<_>>();
-    let report = evaluate_corridors(
-        &network, &retained, &snapshot, &query, &street, None, &corridors,
-    )
-    .await;
+    let report = evaluate_corridors(&network, &snapshot, &query, &street, None, &corridors).await;
     assert!(matches!(report, Err(RoutingError::DeadlineExceeded)));
     assert_eq!(provider.active.load(Ordering::Relaxed), 0);
     assert_eq!(provider.calls.load(Ordering::Relaxed), 4);
@@ -797,7 +783,6 @@ impl StreetRouter for OutOfOrderMatrix {
 #[tokio::test(start_paused = true)]
 async fn corridors_start_in_order_and_overlap_without_reordering_journeys() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let mut reference = None;
     for concurrency in [1, 2, 4, 8] {
@@ -816,11 +801,9 @@ async fn corridors_start_in_order_and_overlap_without_reordering_journeys() {
             completed: std::sync::Mutex::new(Vec::new()),
         });
         let street = MatrixCache::new(provider.clone());
-        let result = evaluate_corridors(
-            &network, &retained, &snapshot, &query, &street, None, &corridors,
-        )
-        .await
-        .unwrap();
+        let result = evaluate_corridors(&network, &snapshot, &query, &street, None, &corridors)
+            .await
+            .unwrap();
         let signatures = result
             .journeys
             .iter()
@@ -855,7 +838,6 @@ async fn corridor_provider_failures_keep_classification_and_reuse_cache() {
         (StreetRoutingError::Unreachable, false, false),
     ] {
         let network = network(Vec::new(), &[], Vec::new());
-        let retained = RetainedCorridorSet::default();
         let snapshot = TimingSnapshot::default();
         let mut query = query(&[], 0, 1);
         query.limits.max_concurrent_phase2_corridors = 8;
@@ -864,11 +846,9 @@ async fn corridor_provider_failures_keep_classification_and_reuse_cache() {
         let corridors = (0..8)
             .map(|_| Corridor::direct_walking(query.origin, query.destination))
             .collect::<Vec<_>>();
-        let report = evaluate_corridors(
-            &network, &retained, &snapshot, &query, &street, None, &corridors,
-        )
-        .await
-        .unwrap();
+        let report = evaluate_corridors(&network, &snapshot, &query, &street, None, &corridors)
+            .await
+            .unwrap();
         assert!(report.journeys.is_empty());
         assert_eq!(
             (report.failures.transient, report.failures.internal),
@@ -919,11 +899,7 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
     let mut query = query(&[TransitMode::Bus], 0, 1);
     query.limits.max_concurrent_phase2_corridors = 3;
     let retained = candidate_corridor(&network, &query);
-    let leg = retained.retained_corridors()[0]
-        .transit_legs()
-        .next()
-        .unwrap()
-        .clone();
+    let leg = retained[0].transit_legs().next().unwrap().clone();
     let corridor = |index: usize, invalid_alight: usize| {
         let direct = Corridor::direct_walking(
             Coordinate::try_new(25.0 + index as f64 / 1000.0, 121.5).unwrap(),
@@ -939,7 +915,9 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
             ],
             vec![
                 PlannedMovement::WalkingToResolve,
-                PlannedMovement::Transit(bad_leg),
+                PlannedMovement::Transit {
+                    legs: vec![bad_leg],
+                },
             ],
         )
         .unwrap()
@@ -956,10 +934,7 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
         active: AtomicUsize::new(0),
     });
     let street = MatrixCache::new(provider.clone());
-    let report = evaluate_corridors(
-        &network, &retained, &snapshot, &query, &street, None, &corridors,
-    )
-    .await;
+    let report = evaluate_corridors(&network, &snapshot, &query, &street, None, &corridors).await;
     assert!(
         matches!(report, Err(RoutingError::Internal(message)) if message.contains("invalid alighting index"))
     );

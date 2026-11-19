@@ -15,28 +15,25 @@ fn faster_bike_surface_transfer_catches_the_next_transit_departure() {
         Vec::new(),
     );
     let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("origin"),
-                &[
-                    static_leg("first", "origin", "transfer-from"),
-                    StaticCorridorStep::SurfaceTransfer {
-                        from: BoardingPointId::new("transfer-from"),
-                        to: BoardingPointId::new("transfer-to"),
-                        walking_duration_seconds: 8 * 60,
-                        walking_distance_metres: 100,
-                    },
-                    static_leg("second", "transfer-to", "destination"),
-                ],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[
+                static_leg("first", "origin", "transfer-from"),
+                StaticCorridorStep::SurfaceTransfer {
+                    from: BoardingPointId::new("transfer-from"),
+                    to: BoardingPointId::new("transfer-to"),
+                    walking_duration_seconds: 8 * 60,
+                    walking_distance_metres: 100,
+                },
+                static_leg("second", "transfer-to", "destination"),
+            ],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),
@@ -138,22 +135,19 @@ fn bike_replacing_a_transit_leg_requeries_the_next_departure() {
         Vec::new(),
     );
     let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("origin"),
-                &[
-                    static_leg("first", "origin", "middle"),
-                    static_leg("second", "middle", "destination"),
-                ],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[
+                static_leg("first", "origin", "middle"),
+                static_leg("second", "middle", "destination"),
+            ],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),
@@ -214,22 +208,19 @@ fn one_bike_movement_can_skip_multiple_transit_anchors() {
         Vec::new(),
     );
     let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 1);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("origin"),
-                &[
-                    static_leg("first", "origin", "middle"),
-                    static_leg("second", "middle", "destination"),
-                ],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[
+                static_leg("first", "origin", "middle"),
+                static_leg("second", "middle", "destination"),
+            ],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),
@@ -291,24 +282,21 @@ fn bike_can_replace_a_surface_walking_edge() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 600,
-                    walking_distance_metres: 100,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[StaticCorridorStep::SurfaceTransfer {
+                from: BoardingPointId::new("a"),
+                to: BoardingPointId::new("b"),
+                walking_duration_seconds: 600,
+                walking_distance_metres: 100,
+            }],
+            &BoardingPointId::new("b"),
+        )
+        .unwrap(),
+    ];
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
         vec![bike_movement(0, 1, 300)],
@@ -346,24 +334,21 @@ fn slower_bike_preserves_a_less_walking_tradeoff() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 300,
-                    walking_distance_metres: 100,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[StaticCorridorStep::SurfaceTransfer {
+                from: BoardingPointId::new("a"),
+                to: BoardingPointId::new("b"),
+                walking_duration_seconds: 300,
+                walking_distance_metres: 100,
+            }],
+            &BoardingPointId::new("b"),
+        )
+        .unwrap(),
+    ];
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
         vec![bike_movement(0, 1, 20 * 60)],
@@ -402,19 +387,16 @@ fn transit_waiting_time_preserves_a_feasible_bike_alternative() {
         Vec::new(),
     );
     let query = query(&[TransitMode::Bus], 0, 1);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("origin"),
-                &[static_leg("bus", "origin", "destination")],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[static_leg("bus", "origin", "destination")],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -454,24 +436,21 @@ fn slower_exact_bike_survives_with_less_walking() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 12 * 60,
-                    walking_distance_metres: 100,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[StaticCorridorStep::SurfaceTransfer {
+                from: BoardingPointId::new("a"),
+                to: BoardingPointId::new("b"),
+                walking_duration_seconds: 12 * 60,
+                walking_distance_metres: 100,
+            }],
+            &BoardingPointId::new("b"),
+        )
+        .unwrap(),
+    ];
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
         vec![bike_movement(0, 1, 14 * 60)],
@@ -514,36 +493,25 @@ fn identical_physical_bike_movements_use_one_exact_realization() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let corridor = RetainedCorridorSet::from_retained_for_test(
+    let corridor = [Corridor::from_steps(
         &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 10 * 60,
-                    walking_distance_metres: 100,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+        &query,
+        &BoardingPointId::new("a"),
+        &[StaticCorridorStep::SurfaceTransfer {
+            from: BoardingPointId::new("a"),
+            to: BoardingPointId::new("b"),
+            walking_duration_seconds: 10 * 60,
+            walking_distance_metres: 100,
+        }],
+        &BoardingPointId::new("b"),
+    )
+    .unwrap()];
     let realizations = HashMap::from([(
         corridor_movement(0, 1, "a", "b"),
         vec![bike_movement(0, 1, 5 * 60)],
     )]);
 
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            corridor.retained_corridors()[0].clone(),
-            corridor.retained_corridors()[0].clone(),
-        ],
-    );
+    let corridor = vec![corridor[0].clone(), corridor[0].clone()];
     let (_, stats) = evaluate_with_test_bike_routes(
         &network,
         &corridor,
@@ -584,23 +552,20 @@ fn separate_bike_rental_waits_until_fifteen_minutes_after_return() {
         },
     )
     .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro]);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[
-                    static_leg("first", "a", "b"),
-                    static_leg("second", "b", "c"),
-                    static_leg("third", "c", "d"),
-                ],
-                &BoardingPointId::new("d"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[
+                static_leg("first", "a", "b"),
+                static_leg("second", "b", "c"),
+                static_leg("third", "c", "d"),
+            ],
+            &BoardingPointId::new("d"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),
@@ -703,19 +668,16 @@ fn transit_remains_when_it_reaches_the_anchor_before_bike() {
         crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes([TransitMode::Bus]);
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[static_leg("bus", "a", "b")],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[static_leg("bus", "a", "b")],
+            &BoardingPointId::new("b"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -789,24 +751,19 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let retained = RetainedCorridorSet::from_retained_for_test(
+    let retained = [Corridor::from_steps(
         &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 600,
-                    walking_distance_metres: 1000,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+        &query,
+        &BoardingPointId::new("a"),
+        &[StaticCorridorStep::SurfaceTransfer {
+            from: BoardingPointId::new("a"),
+            to: BoardingPointId::new("b"),
+            walking_duration_seconds: 600,
+            walking_distance_metres: 1000,
+        }],
+        &BoardingPointId::new("b"),
+    )
+    .unwrap()];
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: calls.clone(),
@@ -816,11 +773,10 @@ async fn retained_walking_is_reused_while_bike_share_can_replace_it() {
         corridor_movement(0, 1, "a", "b"),
         vec![bike_movement(0, 1, 240)],
     )]));
-    let corridor = retained.retained_corridors()[0].clone();
+    let corridor = retained[0].clone();
     let snapshot = TimingSnapshot::default();
     let result = evaluate_corridors(
         &network,
-        &retained,
         &snapshot,
         &query,
         &street,
@@ -849,7 +805,7 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         let mut query = query(&[TransitMode::Bus], 0, 1);
         let retained = candidate_corridor(&network, &query);
         query.limits.max_journey_duration_seconds = 30;
-        let corridor = retained.retained_corridors()[0].clone();
+        let corridor = retained[0].clone();
         let snapshot = TimingSnapshot::default();
         let bike = TestBikeSource::new(HashMap::from([(
             corridor_movement(0, 1, "origin", "destination"),
@@ -858,7 +814,6 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         let street = fake_street();
         let result = evaluate_corridors(
             &network,
-            &retained,
             &snapshot,
             &query,
             &street,
@@ -886,7 +841,7 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
     let direct = Corridor::direct_walking(query.origin, query.destination);
-    let transit = retained.retained_corridors()[0].clone();
+    let transit = retained[0].clone();
     let mut bike = bike_movement(0, 1, 240);
     bike.from_anchor = 0;
     bike.to_anchor = 1;
@@ -898,7 +853,6 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
     let snapshot = TimingSnapshot::default();
     let result = evaluate_corridors(
         &network,
-        &retained,
         &snapshot,
         &query,
         &street,
@@ -930,7 +884,6 @@ async fn all_corridors_complete_with_direct_walking_and_bike_share() {
 #[tokio::test]
 async fn absent_bike_candidate_does_not_attempt_or_realize() {
     let network = network(Vec::new(), &[], Vec::new());
-    let retained = RetainedCorridorSet::from_retained_for_test(&network, Vec::new());
     let snapshot = TimingSnapshot::default();
     let query = query(&[], 0, 1);
     let corridor = Corridor::direct_walking(query.origin, query.destination);
@@ -938,7 +891,6 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
     let bike = TestBikeSource::new(HashMap::new());
     let evaluator = CorridorEvaluator {
         transit: &network,
-        retained: &retained,
         timing: &snapshot,
         query: &query,
         matrix_cache: &street,

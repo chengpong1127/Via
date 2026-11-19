@@ -12,24 +12,21 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
         datetime!(2026-09-21 10:00 UTC),
         crate::config::ViaConfig::default().planner_limits(),
     );
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new("a"),
-                    to: BoardingPointId::new("b"),
-                    walking_duration_seconds: 60,
-                    walking_distance_metres: 100,
-                }],
-                &BoardingPointId::new("b"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[StaticCorridorStep::SurfaceTransfer {
+                from: BoardingPointId::new("a"),
+                to: BoardingPointId::new("b"),
+                walking_duration_seconds: 60,
+                walking_distance_metres: 100,
+            }],
+            &BoardingPointId::new("b"),
+        )
+        .unwrap(),
+    ];
     let bike = BikeShareMovement::new(
         0,
         1,
@@ -91,27 +88,24 @@ fn pareto_keeps_a_later_route_with_less_walking() {
         crate::config::ViaConfig::default().planner_limits(),
     );
     query.limits.max_candidates = 10;
-    let corridor = RetainedCorridorSet::from_retained_for_test(
-        &network,
-        vec![
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("a"),
-                &[static_leg("walky", "a", "destination")],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-            Corridor::from_steps(
-                &network,
-                &query,
-                &BoardingPointId::new("x"),
-                &[static_leg("lowwalk", "x", "destination")],
-                &BoardingPointId::new("destination"),
-            )
-            .unwrap(),
-        ],
-    );
+    let corridor = vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("a"),
+            &[static_leg("walky", "a", "destination")],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("x"),
+            &[static_leg("lowwalk", "x", "destination")],
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+    ];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("walky"),

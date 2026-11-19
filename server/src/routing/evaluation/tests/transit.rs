@@ -408,16 +408,14 @@ fn phase2_allows_equivalent_pattern_substitution() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let corridor = candidate_corridor(&network, &query);
-    let retained_leg = corridor.retained_corridors()[0]
-        .transit_legs()
-        .next()
-        .unwrap();
-    let equivalent_legs = corridor.equivalent_legs_for(&network, retained_leg);
+    let PlannedMovement::Transit {
+        legs: equivalent_legs,
+    } = &corridor[0].edges()[1]
+    else {
+        panic!("corridor should start with a transit edge after access");
+    };
     assert_eq!(equivalent_legs.len(), 2);
-    let equivalent_leg = equivalent_legs
-        .iter()
-        .find(|leg| leg.pattern_id != retained_leg.pattern_id)
-        .unwrap();
+    let equivalent_leg = &equivalent_legs[1];
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         equivalent_leg.pattern_id.clone(),
@@ -480,7 +478,7 @@ fn phase2_never_combines_different_retained_corridors() {
         )
         .unwrap(),
     ];
-    let corridor = RetainedCorridorSet::from_retained_for_test(&network, retained);
+    let corridor = retained;
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("a-bus-prefix"),
@@ -562,7 +560,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         .destination_egress
         .push(query.destination_egress[0].clone());
     let retained = candidate_corridor(&network, &query);
-    let corridor = retained.retained_corridors()[0].clone();
+    let corridor = retained[0].clone();
     let expected = [
         JourneyAnchorKind::Origin,
         JourneyAnchorKind::BoardingPoint {
@@ -597,7 +595,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         }
     ));
     assert!(
-        matches!(&corridor.edges()[1], PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("bus"))
+        matches!(&corridor.edges()[1], PlannedMovement::Transit { legs } if legs[0].pattern_id == TransitPatternId::new("bus"))
     );
     assert!(matches!(
         corridor.edges()[2],
@@ -608,7 +606,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         }
     ));
     assert!(
-        matches!(&corridor.edges()[3], PlannedMovement::Transit(leg) if leg.pattern_id == TransitPatternId::new("metro"))
+        matches!(&corridor.edges()[3], PlannedMovement::Transit { legs } if legs[0].pattern_id == TransitPatternId::new("metro"))
     );
     assert!(matches!(
         corridor.edges()[4],
@@ -629,10 +627,7 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    let leg = retained.retained_corridors()[0]
-        .transit_legs()
-        .next()
-        .unwrap();
+    let leg = retained[0].transit_legs().next().unwrap();
     let state = EvaluationState::initial(&query);
     let ride = trip("ride", "bus", &["origin", "destination"], &[1, 5]);
     let next = transit_successor(&network, &query, &state, &ride, leg, 1, state.ready_at).unwrap();

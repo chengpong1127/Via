@@ -15,7 +15,7 @@ use tracing::Instrument;
 
 use super::{
     cache::MatrixCache,
-    corridors::{Corridor, CorridorAnchor, PlannedMovement, RetainedCorridorSet, StaticTransitLeg},
+    corridors::{Corridor, CorridorAnchor, PlannedMovement, StaticTransitLeg},
     journey::{
         BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
         RealizedJourney, WalkingMovementKind,
@@ -56,7 +56,6 @@ pub(super) struct Evaluation {
 
 pub(super) struct CorridorEvaluator<'a> {
     pub transit: &'a TransitRuntime,
-    pub retained: &'a RetainedCorridorSet,
     pub timing: &'a TimingSnapshot,
     pub query: &'a PlanningQuery,
     pub matrix_cache: &'a MatrixCache,
@@ -224,21 +223,20 @@ impl<'e, 'a> Run<'e, 'a> {
         edge: &PlannedMovement,
         anchor: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
-        let PlannedMovement::Transit(leg) = edge else {
+        let PlannedMovement::Transit { legs } = edge else {
             return Ok(Vec::new());
         };
         let CorridorEvaluator {
             transit,
-            retained,
             timing,
             query,
             ..
         } = *self.evaluator;
         let ready_at = transit_ready_at(state, transit.same_stop_transfer_seconds());
         let mut successors = Vec::new();
-        for equivalent_leg in retained.equivalent_legs_for(transit, leg) {
+        for leg in legs {
             self.check_deadline()?;
-            validate_equivalent_leg(transit, retained, leg, &equivalent_leg)?;
+            validate_transit_leg(transit, leg)?;
             if !within_query_bounds(query, ready_at) {
                 continue;
             }
@@ -246,20 +244,14 @@ impl<'e, 'a> Run<'e, 'a> {
                 .departure_lookups
                 .fetch_add(1, Ordering::Relaxed);
             for trip in timing.departures(
-                &equivalent_leg.pattern_id,
-                equivalent_leg.board_index,
+                &leg.pattern_id,
+                leg.board_index,
                 ready_at,
                 query.limits.max_departures_per_query,
             ) {
                 self.check_deadline()?;
                 successors.extend(transit_successor(
-                    transit,
-                    query,
-                    state,
-                    trip,
-                    &equivalent_leg,
-                    anchor,
-                    ready_at,
+                    transit, query, state, trip, leg, anchor, ready_at,
                 ));
             }
         }
@@ -284,7 +276,7 @@ impl<'e, 'a> Run<'e, 'a> {
                 duration_seconds: *duration_seconds,
                 distance_metres: *distance_metres,
             },
-            PlannedMovement::Transit(_) | PlannedMovement::WalkingToResolve => {
+            PlannedMovement::Transit { .. } | PlannedMovement::WalkingToResolve => {
                 let from = &corridor.anchors()[index];
                 let to = &corridor.anchors()[index + 1];
                 let cell = walking_cell(self.evaluator.matrix_cache, from, to).await;
@@ -496,28 +488,23 @@ fn bike_successors(
         .collect()
 }
 
-fn validate_equivalent_leg(
+fn validate_transit_leg(
     transit: &TransitRuntime,
-    retained: &RetainedCorridorSet,
     leg: &StaticTransitLeg,
-    equivalent_leg: &StaticTransitLeg,
 ) -> Result<(), RoutingError> {
     let invalid = |reason: &str| {
         Err(RoutingError::Internal(format!(
             "retained transit leg {reason}"
         )))
     };
-    if !retained.is_equivalent_leg(transit, leg, equivalent_leg) {
-        return invalid("has an invalid equivalent leg");
-    }
-    if equivalent_leg.board_index >= equivalent_leg.alight_index {
+    if leg.board_index >= leg.alight_index {
         return invalid("has reversed stop indexes");
     }
-    let pattern = transit.required_pattern(&equivalent_leg.pattern_id);
-    let Some(board_stop) = pattern.stops.get(equivalent_leg.board_index) else {
+    let pattern = transit.required_pattern(&leg.pattern_id);
+    let Some(board_stop) = pattern.stops.get(leg.board_index) else {
         return invalid("has an invalid boarding index");
     };
-    let Some(alight_stop) = pattern.stops.get(equivalent_leg.alight_index) else {
+    let Some(alight_stop) = pattern.stops.get(leg.alight_index) else {
         return invalid("has an invalid alighting index");
     };
     if board_stop != &leg.board_stop_id || alight_stop != &leg.alight_stop_id {

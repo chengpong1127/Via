@@ -87,7 +87,7 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
     .with_max_static_corridors(max_corridors)
 }
 
-fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> RetainedCorridorSet {
+fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> Vec<Corridor> {
     generate(network, query).unwrap().0
 }
 
@@ -237,7 +237,6 @@ impl BikeMovementSource for TestBikeSource {
 
 fn test_evaluator<'a>(
     network: &'a TransitRuntime,
-    retained: &'a RetainedCorridorSet,
     snapshot: &'a TimingSnapshot,
     query: &'a PlanningQuery,
     street: &'a MatrixCache,
@@ -245,7 +244,6 @@ fn test_evaluator<'a>(
 ) -> CorridorEvaluator<'a> {
     CorridorEvaluator {
         transit: network,
-        retained,
         timing: snapshot,
         query,
         matrix_cache: street,
@@ -259,7 +257,6 @@ fn fake_street() -> MatrixCache {
 
 async fn evaluate_corridors(
     network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
     snapshot: &TimingSnapshot,
     query: &PlanningQuery,
     street: &MatrixCache,
@@ -268,7 +265,6 @@ async fn evaluate_corridors(
 ) -> Result<Evaluation, RoutingError> {
     CorridorEvaluator {
         transit: network,
-        retained,
         timing: snapshot,
         query,
         matrix_cache: street,
@@ -280,7 +276,7 @@ async fn evaluate_corridors(
 
 fn run_test_evaluation(
     network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
+    retained: &[Corridor],
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
     bike: Option<&dyn BikeMovementSource>,
@@ -293,19 +289,17 @@ fn run_test_evaluation(
             if query.origin_access.is_empty() || query.destination_egress.is_empty() {
                 return Err(RoutingError::InvalidQuery);
             }
-            let corridors = retained.retained_corridors().to_vec();
+            let corridors = retained.to_vec();
             let street = fake_street();
-            let evaluation = evaluate_corridors(
-                network, retained, snapshot, &query, &street, bike, &corridors,
-            )
-            .await?;
+            let evaluation =
+                evaluate_corridors(network, snapshot, &query, &street, bike, &corridors).await?;
             Ok((evaluation.journeys, evaluation.stats))
         })
 }
 
 fn evaluate(
     network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
+    retained: &[Corridor],
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
 ) -> Result<Vec<RealizedJourney>, RoutingError> {
@@ -314,7 +308,7 @@ fn evaluate(
 
 fn evaluate_with_stats(
     network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
+    retained: &[Corridor],
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
 ) -> Result<(Vec<RealizedJourney>, CorridorEvaluationStats), RoutingError> {
@@ -323,7 +317,7 @@ fn evaluate_with_stats(
 
 fn evaluate_with_test_bike_routes(
     network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
+    retained: &[Corridor],
     snapshot: &TimingSnapshot,
     query: PlanningQuery,
     routes: &TestBikeRoutes,
@@ -482,7 +476,7 @@ async fn evaluate_walking_replacement(
             vec![bike_movement(0, 1, 240)],
         )]))
     });
-    let make_corridor = || retained.retained_corridors()[0].clone();
+    let make_corridor = || retained[0].clone();
     let corridors = if duplicate {
         vec![make_corridor(), make_corridor()]
     } else {
@@ -490,7 +484,6 @@ async fn evaluate_walking_replacement(
     };
     let result = evaluate_corridors(
         &network,
-        &retained,
         &snapshot,
         &query,
         &street,
