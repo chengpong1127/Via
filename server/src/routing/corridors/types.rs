@@ -60,11 +60,7 @@ pub(super) struct EquivalentLegKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum EquivalentStep {
-    Transit {
-        mode: TransitMode,
-        board_stop_id: BoardingPointId,
-        alight_stop_id: BoardingPointId,
-    },
+    Transit(EquivalentLegKey),
     SurfaceTransfer {
         from: BoardingPointId,
         to: BoardingPointId,
@@ -78,13 +74,9 @@ pub(super) fn equivalent_steps(
     steps
         .iter()
         .map(|step| match step {
-            StaticCorridorStep::Transit(leg) => EquivalentStep::Transit {
-                mode: transit
-                    .required_route(&transit.required_pattern(&leg.pattern_id).route_id)
-                    .mode,
-                board_stop_id: leg.board_stop_id.clone(),
-                alight_stop_id: leg.alight_stop_id.clone(),
-            },
+            StaticCorridorStep::Transit(leg) => {
+                EquivalentStep::Transit(equivalent_leg_key(transit, leg))
+            }
             StaticCorridorStep::SurfaceTransfer { from, to, .. } => {
                 EquivalentStep::SurfaceTransfer {
                     from: from.clone(),
