@@ -670,8 +670,6 @@ fn pruning_bike_state(rental_started_at_delta: i64, reuse_delta: i64) -> Evaluat
     state.active_bike_rental = Some(super::state::ActiveBikeRental {
         start_anchor: 1,
         started_at,
-        prefix_movements: vec![transit],
-        movement: bike.clone(),
     });
     state.bike_reuse_available_at =
         Some(started_at + Duration::minutes(20) + Duration::seconds(reuse_delta));

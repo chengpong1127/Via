@@ -550,11 +550,18 @@ async fn forced_reverse_completion_preserves_successor_order() {
             .map(|index| {
                 let mut state = EvaluationState::initial(&query);
                 state.ready_at += Duration::seconds(index as i64);
+                let movement = bike_movement(index, 4, 60);
+                state.movements.push(JourneyMovement {
+                    from_anchor: index,
+                    to_anchor: 4,
+                    departure_at: query.departure_time,
+                    arrival_at: query.departure_time
+                        + Duration::seconds(i64::from(movement.total_seconds)),
+                    kind: JourneyMovementKind::BikeShare { movement },
+                });
                 state.active_bike_rental = Some(super::super::state::ActiveBikeRental {
                     start_anchor: index,
                     started_at: query.departure_time,
-                    prefix_movements: Vec::new(),
-                    movement: bike_movement(index, 4, 60),
                 });
                 state
             })

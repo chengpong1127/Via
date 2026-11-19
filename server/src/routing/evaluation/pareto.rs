@@ -116,11 +116,10 @@ pub(super) fn same_capability(left: &EvaluationState, right: &EvaluationState) -
         && left.bike_reuse_available_at == right.bike_reuse_available_at
         && match (&left.active_bike_rental, &right.active_bike_rental) {
             (None, None) => true,
-            (Some(left), Some(right)) => {
-                left.start_anchor == right.start_anchor
-                    && left.started_at == right.started_at
-                    && left.movement == right.movement
-                    && left.prefix_movements == right.prefix_movements
+            (Some(left_rental), Some(right_rental)) => {
+                left_rental == right_rental
+                    && left.rental_bike_movement() == right.rental_bike_movement()
+                    && left.rental_prefix() == right.rental_prefix()
             }
             _ => false,
         }

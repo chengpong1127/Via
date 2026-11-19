@@ -22,8 +22,7 @@ impl EvaluationState {
 
     pub fn after_movement(&self, movement: JourneyMovement) -> Self {
         let mut next = self.clone();
-        if let Some(rental) = &self.active_bike_rental {
-            let return_at = rental.reuse_available_at();
+        if let Some(return_at) = self.rental_reuse_available_at() {
             next.bike_reuse_available_at = Some(
                 next.bike_reuse_available_at
                     .map_or(return_at, |known| known.max(return_at)),
@@ -38,6 +37,34 @@ impl EvaluationState {
 
     pub fn metrics(&self) -> PathMetrics {
         PathMetrics::from_movements(&self.movements, self.ready_at)
+    }
+
+    pub fn rental_bike_movement(&self) -> Option<&BikeShareMovement> {
+        self.active_bike_rental.as_ref()?;
+        match &self.movements.last()?.kind {
+            JourneyMovementKind::BikeShare { movement } => Some(movement),
+            JourneyMovementKind::Walking { .. } | JourneyMovementKind::Transit { .. } => None,
+        }
+    }
+
+    pub fn rental_prefix(&self) -> Option<&[JourneyMovement]> {
+        self.rental_bike_movement()?;
+        self.movements.split_last().map(|(_, prefix)| prefix)
+    }
+
+    fn rental_reuse_available_at(&self) -> Option<OffsetDateTime> {
+        let rental = self.active_bike_rental.as_ref()?;
+        let movement = self.rental_bike_movement()?;
+        Some(
+            rental.started_at
+                + Duration::seconds(i64::from(
+                    movement
+                        .walk_to_pickup
+                        .duration_seconds
+                        .saturating_add(movement.bicycle_duration_seconds),
+                ))
+                + Duration::minutes(15),
+        )
     }
 }
 
@@ -152,20 +179,6 @@ fn same_timing_bases(left: &[TimingBasis], right: &[TimingBasis]) -> bool {
 pub(super) struct ActiveBikeRental {
     pub start_anchor: usize,
     pub started_at: OffsetDateTime,
-    pub prefix_movements: Vec<JourneyMovement>,
-    pub movement: BikeShareMovement,
-}
-impl ActiveBikeRental {
-    pub fn reuse_available_at(&self) -> OffsetDateTime {
-        self.started_at
-            + Duration::seconds(i64::from(
-                self.movement
-                    .walk_to_pickup
-                    .duration_seconds
-                    .saturating_add(self.movement.bicycle_duration_seconds),
-            ))
-            + Duration::minutes(15)
-    }
 }
 impl EvaluationState {
     pub fn bike_departure(&self, index: usize) -> (usize, OffsetDateTime) {
@@ -189,27 +202,24 @@ impl EvaluationState {
         arrival: OffsetDateTime,
         query_departure: OffsetDateTime,
     ) -> Option<Self> {
-        let wait = self.active_bike_rental.as_ref().map_or_else(
+        let wait = self.rental_bike_movement().map_or_else(
             || u32::try_from((started_at - self.ready_at).whole_seconds()).unwrap_or(u32::MAX),
-            |rental| rental.movement.rental_wait_seconds,
+            |rental_movement| rental_movement.rental_wait_seconds,
         );
         let movement = movement.with_rental_wait(wait)?;
-        let prefix = self.active_bike_rental.as_ref().map_or_else(
-            || self.movements.clone(),
-            |rental| rental.prefix_movements.clone(),
-        );
+        let prefix = self
+            .rental_prefix()
+            .map_or_else(|| self.movements.clone(), <[JourneyMovement]>::to_vec);
         let departure = prefix
             .last()
             .map_or(query_departure, |movement| movement.arrival_at);
-        let mut movements = prefix.clone();
+        let mut movements = prefix;
         movements.push(JourneyMovement {
             from_anchor: start_anchor,
             to_anchor,
             departure_at: departure,
             arrival_at: arrival,
-            kind: JourneyMovementKind::BikeShare {
-                movement: movement.clone(),
-            },
+            kind: JourneyMovementKind::BikeShare { movement },
         });
         Some(Self {
             ready_at: arrival,
@@ -217,8 +227,6 @@ impl EvaluationState {
             active_bike_rental: Some(ActiveBikeRental {
                 start_anchor,
                 started_at,
-                prefix_movements: prefix,
-                movement,
             }),
             bike_reuse_available_at: self.bike_reuse_available_at,
             movements,
