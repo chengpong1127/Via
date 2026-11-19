@@ -153,6 +153,7 @@ fn corridor_search_does_not_depend_on_realtime_or_bikeshare() {
         "SurfaceMovementPlanner",
         "StreetTravelMode::Bicycle",
         "scheduled_trip",
+        "frequencies_of",
         "TDX",
         "reqwest",
     ] {

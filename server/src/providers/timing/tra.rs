@@ -93,10 +93,7 @@ impl TraDepartureSource {
 
     fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
         self.network
-            .network()
-            .trips
-            .iter()
-            .filter(|trip| &trip.pattern_id == pattern_id)
+            .scheduled_trips_of(pattern_id)
             .filter_map(|trip| self.bindings.tra_trips.get(&trip.id))
             .map(|binding| binding.train_number.clone())
             .collect()
@@ -197,10 +194,7 @@ impl TraDepartureSource {
             after: adjusted_after,
             limit: self
                 .network
-                .network()
-                .trips
-                .iter()
-                .filter(|trip| trip.pattern_id == query.pattern_id)
+                .scheduled_trips_of(&query.pattern_id)
                 .count()
                 .max(query.limit),
             ..query.clone()

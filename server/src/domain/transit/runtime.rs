@@ -43,7 +43,39 @@ impl TransitRuntime {
     pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
         self.network.validate()
     }
+}
 
+impl TransitRuntime {
+    pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
+        entity(&self.network.stops, self.indexes.lookup.stops.get(id))
+    }
+
+    pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
+        entity(&self.network.patterns, self.indexes.lookup.patterns.get(id))
+    }
+
+    pub(crate) fn required_pattern(&self, id: &TransitPatternId) -> &TransitPattern {
+        self.pattern(id).expect("validated transit pattern id")
+    }
+
+    pub fn required_route(&self, id: &TransitRouteId) -> &TransitRoute {
+        entity(&self.network.routes, self.indexes.lookup.routes.get(id))
+            .expect("validated transit route id")
+    }
+
+    pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
+        entity(
+            &self.network.calendars,
+            self.indexes.lookup.calendars.get(id),
+        )
+    }
+
+    pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
+        entity(&self.network.trips, self.indexes.lookup.trips.get(id))
+    }
+}
+
+impl TransitRuntime {
     pub fn stops_within_radius(
         &self,
         coordinate: GeoCoordinate,
@@ -57,88 +89,51 @@ impl TransitRuntime {
             .collect()
     }
 
-    pub fn stop(&self, id: &BoardingPointId) -> Option<&TransitStop> {
-        let index = *self.indexes.lookup.stop_by_id.get(id)?;
-        self.network.stops.get(index)
-    }
-
-    pub fn pattern(&self, id: &TransitPatternId) -> Option<&TransitPattern> {
-        let index = *self.indexes.lookup.pattern_by_id.get(id)?;
-        self.network.patterns.get(index)
-    }
-
-    pub(crate) fn required_pattern(&self, id: &TransitPatternId) -> &TransitPattern {
-        self.pattern(id).expect("validated transit pattern id")
-    }
-
-    pub fn required_route(&self, id: &TransitRouteId) -> &TransitRoute {
-        self.indexes
-            .lookup
-            .route_by_id
-            .get(id)
-            .and_then(|index| self.network.routes.get(*index))
-            .expect("validated transit route id")
-    }
-
-    pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {
-        let index = *self.indexes.lookup.calendar_by_id.get(id)?;
-        self.network.calendars.get(index)
-    }
-
-    pub fn scheduled_trip(&self, id: &TransitTripId) -> Option<&TransitTrip> {
-        let index = *self.indexes.lookup.trip_by_id.get(id)?;
-        self.network.trips.get(index)
-    }
-
-    pub fn scheduled_trip_at(&self, index: usize) -> Option<&TransitTrip> {
-        self.network.trips.get(index)
-    }
-
-    pub fn scheduled_trip_indices(
-        &self,
-        pattern_id: &TransitPatternId,
-        board_index: usize,
-    ) -> &[usize] {
-        self.indexes
-            .schedule
-            .trip_indices_by_pattern_stop
-            .get(pattern_id)
-            .and_then(|by_stop| by_stop.get(board_index))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
-    pub fn frequency_at(&self, index: usize) -> Option<&TransitFrequency> {
-        self.network.frequencies.get(index)
-    }
-
-    pub fn frequency_indices(&self, pattern_id: &TransitPatternId) -> &[usize] {
-        self.indexes
-            .schedule
-            .frequency_indices_by_pattern
-            .get(pattern_id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
-    }
-
     pub fn pattern_positions_at(&self, stop: &BoardingPointId) -> &[PatternPosition] {
-        self.indexes
-            .topology
-            .pattern_positions_by_stop
-            .get(stop)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.indexes.topology.pattern_positions_at(stop)
     }
 
     pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferEdge] {
-        self.indexes
-            .topology
-            .transfers_by_stop
-            .get(stop)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.indexes.topology.transfers_from(stop)
+    }
+}
+
+impl TransitRuntime {
+    pub fn scheduled_trips_of(
+        &self,
+        pattern_id: &TransitPatternId,
+    ) -> impl Iterator<Item = &TransitTrip> {
+        entities(
+            &self.network.trips,
+            self.indexes.schedule.trips_of(pattern_id),
+        )
     }
 
+    pub fn scheduled_trips_boarding_at(
+        &self,
+        pattern_id: &TransitPatternId,
+        board_index: usize,
+    ) -> impl Iterator<Item = &TransitTrip> {
+        entities(
+            &self.network.trips,
+            self.indexes
+                .schedule
+                .trips_boarding_at(pattern_id, board_index),
+        )
+    }
+
+    pub fn frequencies_of(
+        &self,
+        pattern_id: &TransitPatternId,
+    ) -> impl Iterator<Item = &TransitFrequency> {
+        entities(
+            &self.network.frequencies,
+            self.indexes.schedule.frequencies_of(pattern_id),
+        )
+    }
+}
+
+impl TransitRuntime {
     pub fn same_stop_transfer_seconds(&self) -> u32 {
         self.network.default_transfer_seconds
     }
@@ -158,63 +153,100 @@ impl TransitRuntime {
     }
 }
 
+fn entity<'a, T>(items: &'a [T], index: Option<&usize>) -> Option<&'a T> {
+    items.get(*index?)
+}
+
+fn entities<'a, T>(items: &'a [T], indices: &'a [usize]) -> impl Iterator<Item = &'a T> {
+    indices.iter().map(|index| &items[*index])
+}
+
 #[derive(Clone, Debug, Default)]
 struct TransitRuntimeIndexes {
     spatial: SpatialPointIndex,
-    lookup: TransitLookupIndex,
+    lookup: LookupIndex,
     schedule: ScheduleIndex,
     topology: TopologyIndex,
 }
 
 impl TransitRuntimeIndexes {
     fn build(network: &TransitNetwork) -> Self {
-        let mut indexes = Self {
+        Self {
             spatial: SpatialPointIndex::build(&network.stops),
-            ..Self::default()
-        };
-        for (index, stop) in network.stops.iter().enumerate() {
-            indexes.lookup.stop_by_id.insert(stop.id.clone(), index);
+            lookup: LookupIndex::build(network),
+            schedule: ScheduleIndex::build(network),
+            topology: TopologyIndex::build(network),
         }
-        for (index, route) in network.routes.iter().enumerate() {
-            indexes.lookup.route_by_id.insert(route.id.clone(), index);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct LookupIndex {
+    stops: HashMap<BoardingPointId, usize>,
+    routes: HashMap<TransitRouteId, usize>,
+    patterns: HashMap<TransitPatternId, usize>,
+    trips: HashMap<TransitTripId, usize>,
+    calendars: HashMap<ServiceCalendarId, usize>,
+}
+
+impl LookupIndex {
+    fn build(network: &TransitNetwork) -> Self {
+        Self {
+            stops: positions(&network.stops, |stop| stop.id.clone()),
+            routes: positions(&network.routes, |route| route.id.clone()),
+            patterns: positions(&network.patterns, |pattern| pattern.id.clone()),
+            trips: positions(&network.trips, |trip| trip.id.clone()),
+            calendars: positions(&network.calendars, |calendar| calendar.id.clone()),
         }
-        for (index, calendar) in network.calendars.iter().enumerate() {
-            indexes
-                .lookup
-                .calendar_by_id
-                .insert(calendar.id.clone(), index);
-        }
-        for (index, pattern) in network.patterns.iter().enumerate() {
-            indexes
-                .lookup
-                .pattern_by_id
-                .insert(pattern.id.clone(), index);
-        }
+    }
+}
+
+fn positions<T, K: std::hash::Hash + Eq>(items: &[T], key: impl Fn(&T) -> K) -> HashMap<K, usize> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (key(item), index))
+        .collect()
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ScheduleIndex {
+    trips_by_pattern: HashMap<TransitPatternId, Vec<usize>>,
+    trips_by_pattern_stop: HashMap<TransitPatternId, Vec<Vec<usize>>>,
+    frequencies_by_pattern: HashMap<TransitPatternId, Vec<usize>>,
+}
+
+impl ScheduleIndex {
+    fn build(network: &TransitNetwork) -> Self {
+        let patterns = network
+            .patterns
+            .iter()
+            .map(|pattern| (&pattern.id, pattern))
+            .collect::<HashMap<_, _>>();
+        let mut index = Self::default();
         for (trip_index, trip) in network.trips.iter().enumerate() {
-            indexes
-                .lookup
-                .trip_by_id
-                .insert(trip.id.clone(), trip_index);
-            let Some(pattern_index) = indexes.lookup.pattern_by_id.get(&trip.pattern_id).copied()
-            else {
+            index
+                .trips_by_pattern
+                .entry(trip.pattern_id.clone())
+                .or_default()
+                .push(trip_index);
+            let Some(pattern) = patterns.get(&trip.pattern_id) else {
                 continue;
             };
-            let pattern = &network.patterns[pattern_index];
             if trip.stop_times.len() != pattern.stops.len() {
                 continue;
             }
-            let trip_indices = indexes
-                .schedule
-                .trip_indices_by_pattern_stop
+            let by_stop = index
+                .trips_by_pattern_stop
                 .entry(trip.pattern_id.clone())
                 .or_insert_with(|| vec![Vec::new(); pattern.stops.len()]);
-            for trip_indices_at_stop in trip_indices.iter_mut().take(trip.stop_times.len()) {
-                trip_indices_at_stop.push(trip_index);
+            for trips_at_stop in by_stop.iter_mut() {
+                trips_at_stop.push(trip_index);
             }
         }
-        for trip_indices_by_stop in indexes.schedule.trip_indices_by_pattern_stop.values_mut() {
-            for (board_index, trip_indices) in trip_indices_by_stop.iter_mut().enumerate() {
-                trip_indices.sort_by(|left, right| {
+        for by_stop in index.trips_by_pattern_stop.values_mut() {
+            for (board_index, trips_at_stop) in by_stop.iter_mut().enumerate() {
+                trips_at_stop.sort_by(|left, right| {
                     let left_trip = &network.trips[*left];
                     let right_trip = &network.trips[*right];
                     left_trip.stop_times[board_index]
@@ -224,26 +256,37 @@ impl TransitRuntimeIndexes {
                 });
             }
         }
-        for (index, frequency) in network.frequencies.iter().enumerate() {
-            indexes
-                .schedule
-                .frequency_indices_by_pattern
+        for (frequency_index, frequency) in network.frequencies.iter().enumerate() {
+            index
+                .frequencies_by_pattern
                 .entry(frequency.pattern_id.clone())
                 .or_default()
-                .push(index);
+                .push(frequency_index);
         }
-        indexes.topology = TopologyIndex::build(network);
-        indexes
+        index
     }
-}
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct TransitLookupIndex {
-    stop_by_id: HashMap<BoardingPointId, usize>,
-    route_by_id: HashMap<TransitRouteId, usize>,
-    pattern_by_id: HashMap<TransitPatternId, usize>,
-    trip_by_id: HashMap<TransitTripId, usize>,
-    calendar_by_id: HashMap<ServiceCalendarId, usize>,
+    fn trips_of(&self, pattern_id: &TransitPatternId) -> &[usize] {
+        self.trips_by_pattern
+            .get(pattern_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn trips_boarding_at(&self, pattern_id: &TransitPatternId, board_index: usize) -> &[usize] {
+        self.trips_by_pattern_stop
+            .get(pattern_id)
+            .and_then(|by_stop| by_stop.get(board_index))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn frequencies_of(&self, pattern_id: &TransitPatternId) -> &[usize] {
+        self.frequencies_by_pattern
+            .get(pattern_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -294,10 +337,18 @@ impl TopologyIndex {
         }
         index
     }
-}
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ScheduleIndex {
-    trip_indices_by_pattern_stop: HashMap<TransitPatternId, Vec<Vec<usize>>>,
-    frequency_indices_by_pattern: HashMap<TransitPatternId, Vec<usize>>,
+    fn pattern_positions_at(&self, stop: &BoardingPointId) -> &[PatternPosition] {
+        self.pattern_positions_by_stop
+            .get(stop)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferEdge] {
+        self.transfers_by_stop
+            .get(stop)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
 }

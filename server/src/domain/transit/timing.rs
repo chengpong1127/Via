@@ -466,9 +466,6 @@ impl ScheduleTiming {
             return Err(DepartureError::InvalidQuery);
         }
         let board_index = query.resolve_board_index(&self.network)?;
-        let trip_indices = self
-            .network
-            .scheduled_trip_indices(&query.pattern_id, board_index);
         let first_service_day = self.network.service_day(query.after);
         let last_service_day = query
             .before
@@ -477,14 +474,19 @@ impl ScheduleTiming {
         let mut service_day = first_service_day;
         let mut departures = Vec::new();
         loop {
-            departures.extend(trip_indices.iter().filter_map(|trip_index| {
-                let trip = self.network.scheduled_trip_at(*trip_index)?;
+            departures.extend(
                 self.network
-                    .calendar(&trip.calendar_id)?
-                    .runs_on(service_day)
-                    .then(|| EffectiveTrip::from_scheduled(&self.network, service_day, &trip.id))
-                    .flatten()
-            }));
+                    .scheduled_trips_boarding_at(&query.pattern_id, board_index)
+                    .filter_map(|trip| {
+                        self.network
+                            .calendar(&trip.calendar_id)?
+                            .runs_on(service_day)
+                            .then(|| {
+                                EffectiveTrip::from_scheduled(&self.network, service_day, &trip.id)
+                            })
+                            .flatten()
+                    }),
+            );
             if service_day >= last_service_day {
                 break;
             }
@@ -538,12 +540,7 @@ impl ScheduleTiming {
                     u32::try_from((before - day_start).whole_seconds().max(0)).unwrap_or(u32::MAX)
                 })
                 .unwrap_or(u32::MAX);
-            for frequency in self
-                .network
-                .frequency_indices(&query.pattern_id)
-                .iter()
-                .filter_map(|index| self.network.frequency_at(*index))
-            {
+            for frequency in self.network.frequencies_of(&query.pattern_id) {
                 if !self
                     .network
                     .calendar(&frequency.calendar_id)
