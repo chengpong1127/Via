@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
     let live = Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(client)),
-        (&settings.tdx).into(),
+        &settings.tdx,
     ));
     let router = gateway::router(live, metrics, settings.tdx.gateway.max_ids_per_request);
 

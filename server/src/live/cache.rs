@@ -19,29 +19,6 @@ use crate::tdx::TdxSettings;
 const ENTRY_BASE_WEIGHT: usize = 96;
 const RECORD_WEIGHT: usize = 192;
 
-#[derive(Clone, Debug)]
-pub struct LiveCacheSettings {
-    pub realtime_ttl: Duration,
-    pub realtime_max_bytes: u64,
-    pub bike_ttl: Duration,
-    pub bike_capacity: u64,
-    pub bike_max_age: Duration,
-    pub rate_limit_backoff: Duration,
-}
-
-impl From<&TdxSettings> for LiveCacheSettings {
-    fn from(settings: &TdxSettings) -> Self {
-        Self {
-            realtime_ttl: Duration::from_secs(settings.realtime.cache_ttl_seconds),
-            realtime_max_bytes: settings.realtime.cache_max_bytes,
-            bike_ttl: Duration::from_secs(settings.bikeshare.cache_ttl_seconds),
-            bike_capacity: settings.bikeshare.cache_capacity,
-            bike_max_age: Duration::from_secs(u64::from(settings.bikeshare.max_age_seconds)),
-            rate_limit_backoff: Duration::from_secs(settings.rate_limit_backoff_seconds),
-        }
-    }
-}
-
 pub struct CachedLiveData {
     inner: Arc<dyn LiveDataSource>,
     bus: EntityCache<String, BusArrival>,
@@ -53,39 +30,41 @@ pub struct CachedLiveData {
 }
 
 impl CachedLiveData {
-    pub fn new(inner: Arc<dyn LiveDataSource>, settings: LiveCacheSettings) -> Self {
-        let realtime_bytes = settings.realtime_max_bytes / 3;
+    pub fn new(inner: Arc<dyn LiveDataSource>, settings: &TdxSettings) -> Self {
+        let realtime_ttl = Duration::from_secs(settings.realtime.cache_ttl_seconds);
+        let bike_max_age = Duration::from_secs(u64::from(settings.bikeshare.max_age_seconds));
+        let realtime_bytes = settings.realtime.cache_max_bytes / 3;
         Self {
             inner,
             bus: EntityCache::weighted(
                 "bus",
                 "via_tdx_realtime_cache_hits_total",
-                settings.realtime_ttl,
+                realtime_ttl,
                 realtime_bytes,
             ),
             metro: EntityCache::weighted(
                 "metro",
                 "via_tdx_realtime_cache_hits_total",
-                settings.realtime_ttl,
+                realtime_ttl,
                 realtime_bytes,
             ),
             tra: EntityCache::weighted(
                 "tra",
                 "via_tdx_realtime_cache_hits_total",
-                settings.realtime_ttl,
+                realtime_ttl,
                 realtime_bytes,
             ),
             bike: EntityCache::counted(
                 "bike",
                 "via_bike_availability_station_cache_hits_total",
-                settings.bike_ttl,
-                settings.bike_capacity,
+                Duration::from_secs(settings.bikeshare.cache_ttl_seconds),
+                settings.bikeshare.cache_capacity,
             )
             .reusable_while(move |record: &BikeAvailabilityRecord| {
-                bike_observation_is_current(record, settings.bike_max_age)
+                bike_observation_is_current(record, bike_max_age)
             }),
             blocked_until: Mutex::new(None),
-            rate_limit_backoff: settings.rate_limit_backoff,
+            rate_limit_backoff: Duration::from_secs(settings.rate_limit_backoff_seconds),
         }
     }
 

@@ -8,10 +8,10 @@ use via_server::{
 
 #[allow(dead_code)]
 pub fn bus_feed(tdx: Arc<TdxClient>, path: &str) -> Arc<dyn LiveDataSource> {
-    let cache = tdx.settings().into();
+    let cache = tdx.settings().clone();
     Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(tdx).with_bus_arrival_path(path)),
-        cache,
+        &cache,
     ))
 }
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-pub use cache::{CachedLiveData, LiveCacheSettings};
+pub use cache::CachedLiveData;
 pub use client::{GatewayClientError, GatewayLiveData};
 pub use direct::DirectLiveData;
 

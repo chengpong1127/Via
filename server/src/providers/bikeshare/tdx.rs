@@ -13,8 +13,8 @@ use crate::{
         ids::BikeStationId,
     },
     live::{
-        BikeAvailabilityRecord, CachedLiveData, DirectLiveData, LiveBatch, LiveCacheSettings,
-        LiveDataSource, UnavailableReason,
+        BikeAvailabilityRecord, CachedLiveData, DirectLiveData, LiveBatch, LiveDataSource,
+        UnavailableReason,
     },
     tdx::{TdxClient, bike_station_id, tdx_bike_station_parts},
 };
@@ -33,14 +33,14 @@ impl TdxBikeAvailabilitySource {
         batch_size: usize,
         settings: crate::tdx::BikeAvailabilitySettings,
     ) -> Self {
-        let cache = LiveCacheSettings::from(&crate::tdx::TdxSettings {
+        let cache = crate::tdx::TdxSettings {
             bikeshare: settings.clone(),
             ..tdx_client.settings.clone()
-        });
+        };
         Self::with_live_data(
             Arc::new(CachedLiveData::new(
                 Arc::new(DirectLiveData::new(tdx_client).with_bike_batch_size(batch_size)),
-                cache,
+                &cache,
             )),
             settings,
         )

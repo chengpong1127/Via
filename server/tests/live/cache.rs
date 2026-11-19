@@ -92,10 +92,10 @@ async fn respond(
 pub async fn cached_live_data(upstream: Upstream) -> Arc<CachedLiveData> {
     let app = Router::new().fallback(any(respond)).with_state(upstream);
     let tdx = spawn_tdx_fixture(app).await;
-    let cache = tdx.settings().into();
+    let cache = tdx.settings().clone();
     Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(tdx)),
-        cache,
+        &cache,
     ))
 }
 

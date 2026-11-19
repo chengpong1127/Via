@@ -53,7 +53,7 @@ impl MetroDepartureSource {
             transit,
             Arc::new(CachedLiveData::new(
                 Arc::new(DirectLiveData::new(tdx)),
-                (&settings).into(),
+                &settings,
             )),
             &settings.realtime,
         )

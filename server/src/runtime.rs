@@ -163,7 +163,7 @@ pub fn live_data_source(
     let client = Arc::new(TdxClient::new(credentials, settings.clone())?);
     Ok(Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(client)),
-        settings.into(),
+        settings,
     )))
 }
 
