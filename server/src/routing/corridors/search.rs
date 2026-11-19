@@ -13,7 +13,7 @@ use crate::domain::{
 use crate::routing::model::PlanningQuery;
 
 use super::{
-    pattern_index::CorridorPatternIndex,
+    pattern_index::{CorridorPatternIndex, IndexedPattern},
     retention::RetainedCorridorSet,
     types::{
         CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
@@ -176,22 +176,24 @@ pub fn generate(
             search.stats.deadline_exceeded = true;
             return (RetainedCorridorSet::default(), search.stats);
         }
-        let mut first_board_by_slot = HashMap::<usize, usize>::new();
+        let mut boardable = HashMap::<&TransitPatternId, (IndexedPattern, usize)>::new();
         for stop_id in current.keys() {
             for position in transit.pattern_positions_at(stop_id) {
-                if let Some(slot) = pattern_index.slot(&position.pattern_id) {
-                    let first = first_board_by_slot
-                        .entry(slot)
-                        .or_insert(position.stop_index);
-                    *first = (*first).min(position.stop_index);
+                if let Some(pattern) = pattern_index.get(&position.pattern_id) {
+                    let (_, first_board_index) = boardable
+                        .entry(&position.pattern_id)
+                        .or_insert((pattern, position.stop_index));
+                    *first_board_index = (*first_board_index).min(position.stop_index);
                 }
             }
         }
-        let mut first_board_by_slot = first_board_by_slot.into_iter().collect::<Vec<_>>();
-        first_board_by_slot.sort_unstable();
+        let mut boardable = boardable.into_values().collect::<Vec<_>>();
+        boardable.sort_unstable_by(|left, right| {
+            left.0.pattern_id.as_str().cmp(right.0.pattern_id.as_str())
+        });
         let mut next = RoundLabels::new();
-        for (slot, first_board_index) in first_board_by_slot {
-            search.scan_pattern(&pattern_index, slot, first_board_index, &current, &mut next);
+        for (pattern, first_board_index) in boardable {
+            search.scan_pattern(pattern, first_board_index, &current, &mut next);
         }
         for stop_id in sorted_stops(&next) {
             let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
@@ -254,13 +256,11 @@ pub fn generate(
 impl Search<'_> {
     fn scan_pattern(
         &mut self,
-        pattern_index: &CorridorPatternIndex,
-        slot: usize,
+        pattern: IndexedPattern,
         first_board_index: usize,
         current: &RoundLabels,
         next: &mut RoundLabels,
     ) {
-        let pattern = pattern_index.pattern(slot);
         let line = match pattern.mode {
             TransitMode::Rail | TransitMode::HighSpeedRail => {
                 LineKey::Pattern(pattern.pattern_id.clone())
@@ -651,10 +651,9 @@ fn equivalent_legs_for(
         }
         let mut legs = Vec::new();
         for position in transit.pattern_positions_at(&leg.board_stop_id) {
-            let Some(slot) = pattern_index.slot(&position.pattern_id) else {
+            let Some(pattern) = pattern_index.get(&position.pattern_id) else {
                 continue;
             };
-            let pattern = pattern_index.pattern(slot);
             if pattern.mode != key.mode {
                 continue;
             }

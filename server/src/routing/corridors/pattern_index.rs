@@ -20,8 +20,7 @@ pub(super) struct IndexedPattern<'a> {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct CorridorPatternIndex<'a> {
-    pub(super) patterns: Vec<IndexedPattern<'a>>,
-    pub(super) slot_by_pattern_id: HashMap<&'a TransitPatternId, usize>,
+    patterns: HashMap<&'a TransitPatternId, IndexedPattern<'a>>,
 }
 
 impl<'a> CorridorPatternIndex<'a> {
@@ -41,23 +40,20 @@ impl<'a> CorridorPatternIndex<'a> {
             if !allowed_modes.contains(&mode) {
                 continue;
             }
-            let slot = index.patterns.len();
-            index.slot_by_pattern_id.insert(&pattern.id, slot);
-            index.patterns.push(IndexedPattern {
-                mode,
-                pattern_id: &pattern.id,
-                stops: &pattern.stops,
-                segments: &pattern.static_profile.segments,
-            });
+            index.patterns.insert(
+                &pattern.id,
+                IndexedPattern {
+                    mode,
+                    pattern_id: &pattern.id,
+                    stops: &pattern.stops,
+                    segments: &pattern.static_profile.segments,
+                },
+            );
         }
         index
     }
 
-    pub(super) fn slot(&self, pattern_id: &TransitPatternId) -> Option<usize> {
-        self.slot_by_pattern_id.get(pattern_id).copied()
-    }
-
-    pub(super) fn pattern(&self, slot: usize) -> IndexedPattern<'a> {
-        self.patterns[slot]
+    pub(super) fn get(&self, pattern_id: &TransitPatternId) -> Option<IndexedPattern<'a>> {
+        self.patterns.get(pattern_id).copied()
     }
 }
