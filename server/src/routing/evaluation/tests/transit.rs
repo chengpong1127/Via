@@ -629,7 +629,7 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     let retained = candidate_corridor(&network, &query);
     let leg = retained[0].transit_legs().next().unwrap();
     let state = EvaluationState::initial(&query);
-    let ride = trip("ride", "bus", &["origin", "destination"], &[1, 5]);
+    let ride = Arc::new(trip("ride", "bus", &["origin", "destination"], &[1, 5]));
     let next = transit_successor(&network, &query, &state, &ride, leg, 1, state.ready_at).unwrap();
     assert_eq!(next.ready_at, query.departure_time + Duration::minutes(5));
     assert!(next.last_was_transit);
@@ -638,7 +638,7 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
         next.ready_at + Duration::seconds(120)
     );
     assert!(transit_successor(&network, &query, &next, &ride, leg, 1, next.ready_at).is_none());
-    let invalid = trip("invalid", "bus", &["origin", "destination"], &[5, 1]);
+    let invalid = Arc::new(trip("invalid", "bus", &["origin", "destination"], &[5, 1]));
     assert!(
         transit_successor(&network, &query, &state, &invalid, leg, 1, state.ready_at).is_none()
     );

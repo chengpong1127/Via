@@ -412,7 +412,7 @@ fn transit_successor(
     transit: &TransitRuntime,
     query: &PlanningQuery,
     state: &EvaluationState,
-    trip: &EffectiveTrip,
+    trip: &Arc<EffectiveTrip>,
     leg: &StaticTransitLeg,
     anchor: usize,
     ready_at: OffsetDateTime,
@@ -425,7 +425,7 @@ fn transit_successor(
             departure_at: trip.stop_times[leg.board_index].departure_at,
             arrival_at: arrival,
             kind: JourneyMovementKind::Transit {
-                trip: Arc::new(trip.clone()),
+                trip: Arc::clone(trip),
                 board_index: leg.board_index,
                 alight_index: leg.alight_index,
             },

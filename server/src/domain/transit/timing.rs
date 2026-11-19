@@ -230,7 +230,7 @@ impl TimingSnapshot {
         board_index: usize,
         after: OffsetDateTime,
         limit: usize,
-    ) -> Vec<&EffectiveTrip> {
+    ) -> Vec<&Arc<EffectiveTrip>> {
         let Some(departures) = self
             .departures_by_position
             .get(&(pattern_id.clone(), board_index))
@@ -246,7 +246,6 @@ impl TimingSnapshot {
             .preferred_trips
             .iter()
             .filter(departs_in_time)
-            .map(Arc::as_ref)
             .collect::<Vec<_>>();
         if preferred.is_empty() {
             return departures
@@ -254,7 +253,6 @@ impl TimingSnapshot {
                 .iter()
                 .filter(departs_in_time)
                 .take(limit)
-                .map(Arc::as_ref)
                 .collect();
         }
         if departures
@@ -279,8 +277,7 @@ impl TimingSnapshot {
                     trip.scheduled_trip_id
                         .as_ref()
                         .is_none_or(|id| !observed.contains(id))
-                })
-                .map(Arc::as_ref),
+                }),
         );
         preferred.sort_by(|left, right| {
             left.stop_times[board_index]
