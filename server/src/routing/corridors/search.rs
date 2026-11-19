@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::domain::{
-    ids::{BoardingPointId, TransitRouteId},
+    ids::{BoardingPointId, TransitPatternId, TransitRouteId},
     transit::network::{SegmentTimeSource, TransitMode},
     transit::runtime::TransitRuntime,
 };
@@ -27,6 +27,12 @@ const ROUTE_VARIANTS_PER_STRUCTURE: usize = 2;
 const TARGET_SLACK_PERCENT: u32 = 50;
 const TARGET_SLACK_SECONDS: u32 = 600;
 
+#[derive(Clone, PartialEq, Eq)]
+enum LineKey {
+    Route(TransitRouteId),
+    Pattern(TransitPatternId),
+}
+
 #[derive(Clone)]
 struct Label {
     cost_seconds: u32,
@@ -34,7 +40,7 @@ struct Label {
     last_mode: Option<TransitMode>,
     node: usize,
     structure: u64,
-    last_line_id: Option<TransitRouteId>,
+    last_line: Option<LineKey>,
     after_ride: bool,
 }
 
@@ -100,7 +106,7 @@ type RoundLabels = HashMap<BoardingPointId, Vec<Label>>;
 struct BagEntry {
     cost_seconds: u32,
     structure: u64,
-    last_line_id: Option<TransitRouteId>,
+    last_line: Option<LineKey>,
 }
 
 pub fn generate(
@@ -109,7 +115,7 @@ pub fn generate(
 ) -> (RetainedCorridorSet, CorridorSearchStats) {
     let started = Instant::now();
     let mut stats = CorridorSearchStats::default();
-    let patterns = CorridorPatternIndex::new(
+    let pattern_index = CorridorPatternIndex::new(
         transit,
         &query.allowed_transit_modes,
         &mut stats,
@@ -152,7 +158,7 @@ pub fn generate(
                     last_mode: None,
                     node,
                     structure,
-                    last_line_id: None,
+                    last_line: None,
                     after_ride: false,
                 });
         }
@@ -170,20 +176,22 @@ pub fn generate(
             search.stats.deadline_exceeded = true;
             return (RetainedCorridorSet::default(), search.stats);
         }
-        let mut routes = HashMap::<usize, usize>::new();
+        let mut first_board_by_slot = HashMap::<usize, usize>::new();
         for stop_id in current.keys() {
             for position in transit.pattern_positions_at(stop_id) {
-                if let Some(group_index) = patterns.group_index(&position.pattern_id) {
-                    let first = routes.entry(group_index).or_insert(position.stop_index);
+                if let Some(slot) = pattern_index.slot(&position.pattern_id) {
+                    let first = first_board_by_slot
+                        .entry(slot)
+                        .or_insert(position.stop_index);
                     *first = (*first).min(position.stop_index);
                 }
             }
         }
-        let mut routes = routes.into_iter().collect::<Vec<_>>();
-        routes.sort_unstable();
+        let mut first_board_by_slot = first_board_by_slot.into_iter().collect::<Vec<_>>();
+        first_board_by_slot.sort_unstable();
         let mut next = RoundLabels::new();
-        for (group_index, first_index) in routes {
-            search.scan_route(&patterns, group_index, first_index, &current, &mut next);
+        for (slot, first_board_index) in first_board_by_slot {
+            search.scan_pattern(&pattern_index, slot, first_board_index, &current, &mut next);
         }
         for stop_id in sorted_stops(&next) {
             let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
@@ -232,7 +240,7 @@ pub fn generate(
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs = equivalent_legs_for(transit, &patterns, &selected);
+    let equivalent_legs = equivalent_legs_for(transit, &pattern_index, &selected);
     let (retained, pattern_count, bus_stop_count) =
         RetainedCorridorSet::from_retained(transit, &equivalent_legs, selected);
     stats.corridors_retained = retained.retained().len();
@@ -244,30 +252,31 @@ pub fn generate(
 }
 
 impl Search<'_> {
-    fn scan_route(
+    fn scan_pattern(
         &mut self,
-        patterns: &CorridorPatternIndex,
-        group_index: usize,
-        first_index: usize,
+        pattern_index: &CorridorPatternIndex,
+        slot: usize,
+        first_board_index: usize,
         current: &RoundLabels,
         next: &mut RoundLabels,
     ) {
-        let group = patterns.group(group_index);
-        let line_id = match group.mode {
+        let pattern = pattern_index.pattern(slot);
+        let line = match pattern.mode {
             TransitMode::Rail | TransitMode::HighSpeedRail => {
-                TransitRouteId::new(group.pattern_id.as_str())
+                LineKey::Pattern(pattern.pattern_id.clone())
             }
-            TransitMode::Bus | TransitMode::Metro => self
-                .transit
-                .required_pattern(group.pattern_id)
-                .route_id
-                .clone(),
+            TransitMode::Bus | TransitMode::Metro => LineKey::Route(
+                self.transit
+                    .required_pattern(pattern.pattern_id)
+                    .route_id
+                    .clone(),
+            ),
         };
         let mut boarded = Vec::<Boarded>::new();
-        for stop_index in first_index..group.stops.len() {
-            let stop_id = &group.stops[stop_index];
-            if stop_index > first_index {
-                let segment = &group.segments[stop_index - 1];
+        for stop_index in first_board_index..pattern.stops.len() {
+            let stop_id = &pattern.stops[stop_index];
+            if stop_index > first_board_index {
+                let segment = &pattern.segments[stop_index - 1];
                 for entry in &mut boarded {
                     entry.ride_seconds = entry.ride_seconds.saturating_add(segment.seconds);
                     entry.cost_source.push_segment(segment.source);
@@ -277,13 +286,13 @@ impl Search<'_> {
                         <= self.target_seconds
                 });
                 for entry in &boarded {
-                    let board_stop_id = &group.stops[entry.board_index];
+                    let board_stop_id = &pattern.stops[entry.board_index];
                     let structure = fingerprint(
                         entry.label.structure,
-                        &(group.mode as u8, board_stop_id, stop_id),
+                        &(pattern.mode as u8, board_stop_id, stop_id),
                     );
                     let cost_seconds = entry.board_cost_seconds.saturating_add(entry.ride_seconds);
-                    if !self.insert(stop_id, cost_seconds, structure, Some(&line_id)) {
+                    if !self.insert(stop_id, cost_seconds, structure, Some(&line)) {
                         continue;
                     }
                     let node = self.nodes.len();
@@ -291,7 +300,7 @@ impl Search<'_> {
                         parent: Some(entry.label.node),
                         access_stop_id: self.nodes[entry.label.node].access_stop_id.clone(),
                         step: Some(StaticCorridorStep::Transit(StaticTransitLeg {
-                            pattern_id: group.pattern_id.clone(),
+                            pattern_id: pattern.pattern_id.clone(),
                             board_stop_id: board_stop_id.clone(),
                             board_index: entry.board_index,
                             alight_stop_id: stop_id.clone(),
@@ -303,10 +312,10 @@ impl Search<'_> {
                     next.entry(stop_id.clone()).or_default().push(Label {
                         cost_seconds,
                         penalty_seconds: entry.penalty_seconds,
-                        last_mode: Some(group.mode),
+                        last_mode: Some(pattern.mode),
                         node,
                         structure,
-                        last_line_id: Some(line_id.clone()),
+                        last_line: Some(line.clone()),
                         after_ride: true,
                     });
                 }
@@ -314,17 +323,17 @@ impl Search<'_> {
             let Some(labels) = current.get(stop_id) else {
                 continue;
             };
-            if stop_index + 1 >= group.stops.len() {
+            if stop_index + 1 >= pattern.stops.len() {
                 continue;
             }
             let already_boarded = boarded.len();
             for label in labels {
-                if label.last_line_id.as_ref() == Some(&line_id) {
+                if label.last_line.as_ref() == Some(&line) {
                     continue;
                 }
                 let transfer_penalty_seconds = match label.last_mode {
                     None => 0,
-                    Some(TransitMode::Metro) if group.mode == TransitMode::Metro => {
+                    Some(TransitMode::Metro) if pattern.mode == TransitMode::Metro => {
                         self.metro_transfer_penalty_seconds
                     }
                     Some(_) => self.bus_transfer_penalty_seconds,
@@ -383,7 +392,7 @@ impl Search<'_> {
                         &shortcut.to,
                         cost_seconds,
                         structure,
-                        label.last_line_id.as_ref(),
+                        label.last_line.as_ref(),
                     ) {
                         continue;
                     }
@@ -404,7 +413,7 @@ impl Search<'_> {
                         last_mode: label.last_mode,
                         node,
                         structure,
-                        last_line_id: label.last_line_id.clone(),
+                        last_line: label.last_line.clone(),
                         after_ride: false,
                     });
                 }
@@ -420,7 +429,7 @@ impl Search<'_> {
         stop_id: &BoardingPointId,
         cost_seconds: u32,
         structure: u64,
-        last_line_id: Option<&TransitRouteId>,
+        last_line: Option<&LineKey>,
     ) -> bool {
         if cost_seconds > self.target_seconds {
             return false;
@@ -431,9 +440,10 @@ impl Search<'_> {
         let Some(bag) = self.best.get_mut(stop_id) else {
             return false;
         };
-        if let Some(index) = bag.iter().position(|known| {
-            known.structure == structure && known.last_line_id.as_ref() == last_line_id
-        }) {
+        if let Some(index) = bag
+            .iter()
+            .position(|known| known.structure == structure && known.last_line.as_ref() == last_line)
+        {
             if bag[index].cost_seconds <= cost_seconds {
                 return false;
             }
@@ -463,7 +473,7 @@ impl Search<'_> {
             BagEntry {
                 cost_seconds,
                 structure,
-                last_line_id: last_line_id.cloned(),
+                last_line: last_line.cloned(),
             },
         );
         let mut structures = 0;
@@ -498,7 +508,7 @@ impl Search<'_> {
                 bag.iter().any(|known| {
                     known.cost_seconds == label.cost_seconds
                         && known.structure == label.structure
-                        && known.last_line_id == label.last_line_id
+                        && known.last_line == label.last_line
                 })
             });
             !labels.is_empty()
@@ -630,7 +640,7 @@ fn select(
 
 fn equivalent_legs_for(
     transit: &TransitRuntime,
-    patterns: &CorridorPatternIndex,
+    pattern_index: &CorridorPatternIndex,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
     let mut equivalent_legs = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
@@ -641,14 +651,14 @@ fn equivalent_legs_for(
         }
         let mut legs = Vec::new();
         for position in transit.pattern_positions_at(&leg.board_stop_id) {
-            let Some(group_index) = patterns.group_index(&position.pattern_id) else {
+            let Some(slot) = pattern_index.slot(&position.pattern_id) else {
                 continue;
             };
-            let group = patterns.group(group_index);
-            if group.mode != key.mode {
+            let pattern = pattern_index.pattern(slot);
+            if pattern.mode != key.mode {
                 continue;
             }
-            let Some(offset) = group.stops[position.stop_index + 1..]
+            let Some(offset) = pattern.stops[position.stop_index + 1..]
                 .iter()
                 .position(|stop_id| *stop_id == leg.alight_stop_id)
             else {
@@ -656,11 +666,11 @@ fn equivalent_legs_for(
             };
             let alight_index = position.stop_index + 1 + offset;
             let mut cost_source = CostSourceTracker::default();
-            for segment in &group.segments[position.stop_index..alight_index] {
+            for segment in &pattern.segments[position.stop_index..alight_index] {
                 cost_source.push_segment(segment.source);
             }
             legs.push(StaticTransitLeg {
-                pattern_id: group.pattern_id.clone(),
+                pattern_id: pattern.pattern_id.clone(),
                 board_stop_id: leg.board_stop_id.clone(),
                 board_index: position.stop_index,
                 alight_stop_id: leg.alight_stop_id.clone(),

@@ -61,7 +61,7 @@ struct CountingBikeAvailabilitySource {
 
 #[async_trait::async_trait]
 impl BikeAvailabilitySource for CountingBikeAvailabilitySource {
-    async fn snapshot(
+    async fn load_snapshot(
         &self,
         station_ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
@@ -221,7 +221,7 @@ fn test_planner(
 }
 
 fn test_routes(planner: &MultimodalPlanner) -> Arc<RouteCache> {
-    Arc::new(RouteCache::new(planner.street.clone()))
+    Arc::new(RouteCache::new(planner.street_router.clone()))
 }
 
 fn query(k: usize) -> PlanningQuery {

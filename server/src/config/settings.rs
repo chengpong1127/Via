@@ -572,7 +572,7 @@ impl ViaConfig {
 
     pub fn journey_limits(&self) -> JourneyPlanningLimits {
         JourneyPlanningLimits {
-            bike: self.bike_policy(),
+            bike_policy: self.bike_policy(),
             ranking: self.routing.ranking.clone(),
             planner: self.planner_limits(),
             request_timeout: Duration::from_millis(self.server.request_timeout_ms),

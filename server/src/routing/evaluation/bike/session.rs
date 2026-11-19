@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) struct BikeShareSession {
     planner: BikeShareMovementPlanner,
-    street: Arc<dyn StreetRouter>,
+    street_router: Arc<dyn StreetRouter>,
     snapshot: Arc<BikeAvailabilitySnapshot>,
     now: OffsetDateTime,
     movements: RequestCache<
@@ -16,11 +16,11 @@ impl BikeShareSession {
         planner: BikeShareMovementPlanner,
         snapshot: Arc<BikeAvailabilitySnapshot>,
         now: OffsetDateTime,
-        street: Arc<dyn StreetRouter>,
+        street_router: Arc<dyn StreetRouter>,
     ) -> Self {
         Self {
             planner,
-            street,
+            street_router,
             snapshot,
             now,
             movements: RequestCache::default(),
@@ -52,7 +52,11 @@ impl BikeMovementSource for BikeShareSession {
                     .planner
                     .movement_candidate(from, to, &self.snapshot, self.now)
                 {
-                    Some(candidate) => self.planner.realize(self.street.as_ref(), &candidate).await,
+                    Some(candidate) => {
+                        self.planner
+                            .realize(self.street_router.as_ref(), &candidate)
+                            .await
+                    }
                     None => Ok(Vec::new()),
                 }
             })

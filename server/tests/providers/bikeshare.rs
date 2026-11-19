@@ -236,7 +236,7 @@ async fn merges_taipei_and_new_taipei_with_canonical_ids_and_counts() {
     .await;
 
     let snapshot = source
-        .snapshot(&[id("tdx:Taipei:TPE-1"), id("tdx:NewTaipei:NWT-1")])
+        .load_snapshot(&[id("tdx:Taipei:TPE-1"), id("tdx:NewTaipei:NWT-1")])
         .await
         .unwrap();
     assert_eq!(snapshot.stations.len(), 2);
@@ -270,7 +270,7 @@ async fn unusable_counts_status_stale_observations_and_directionality_are_filter
     )
     .await;
     let snapshot = source
-        .snapshot(&[
+        .load_snapshot(&[
             id("tdx:Taipei:TPE-1"),
             id("tdx:Taipei:TPE-DISABLED"),
             id("tdx:Taipei:TPE-STALE"),
@@ -317,7 +317,10 @@ async fn provider_clock_skew_within_the_allowance_is_tolerated_but_excess_is_rej
         json!([]),
     )
     .await;
-    let snapshot = tolerated.snapshot(&[id("tdx:Taipei:TPE-1")]).await.unwrap();
+    let snapshot = tolerated
+        .load_snapshot(&[id("tdx:Taipei:TPE-1")])
+        .await
+        .unwrap();
     assert_eq!(
         snapshot
             .station(&BikeStationId::new("tdx:Taipei:TPE-1"))
@@ -340,7 +343,7 @@ async fn provider_clock_skew_within_the_allowance_is_tolerated_but_excess_is_rej
     .await;
     assert_eq!(
         excessive
-            .snapshot(&[id("tdx:Taipei:TPE-1")])
+            .load_snapshot(&[id("tdx:Taipei:TPE-1")])
             .await
             .unwrap_err(),
         BikeAvailabilityError::RejectedPayload
@@ -398,12 +401,12 @@ async fn station_availability_is_cached_and_expiry_refreshes_requested_city() {
         },
     );
     let requested = [id("tdx:Taipei:TPE-1")];
-    source.snapshot(&requested).await.unwrap();
-    source.snapshot(&requested).await.unwrap();
+    source.load_snapshot(&requested).await.unwrap();
+    source.load_snapshot(&requested).await.unwrap();
     assert_eq!(taipei_calls.load(Ordering::Relaxed), 1);
     assert_eq!(new_taipei_calls.load(Ordering::Relaxed), 0);
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    source.snapshot(&requested).await.unwrap();
+    source.load_snapshot(&requested).await.unwrap();
     assert_eq!(taipei_calls.load(Ordering::Relaxed), 2);
     assert_eq!(new_taipei_calls.load(Ordering::Relaxed), 0);
 }
@@ -461,7 +464,7 @@ async fn concurrent_consumers_share_one_network_refresh() {
     let results = join_all((0..30).map(|_| {
         let source = source.clone();
         let requested = requested.clone();
-        async move { source.snapshot(&requested).await }
+        async move { source.load_snapshot(&requested).await }
     }))
     .await;
     assert!(results.iter().all(Result::is_ok));
@@ -484,7 +487,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
     .await;
     assert_eq!(
         malformed
-            .snapshot(&[id("tdx:Taipei:TPE-1")])
+            .load_snapshot(&[id("tdx:Taipei:TPE-1")])
             .await
             .unwrap_err(),
         BikeAvailabilityError::RejectedPayload
@@ -503,7 +506,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
     .await;
     assert_eq!(
         stale_only
-            .snapshot(&[id("tdx:Taipei:TPE-STALE")])
+            .load_snapshot(&[id("tdx:Taipei:TPE-STALE")])
             .await
             .unwrap_err(),
         BikeAvailabilityError::RejectedPayload
@@ -534,7 +537,7 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
     );
 
     assert!(matches!(
-        failing.snapshot(&[id("tdx:Taipei:TPE-1")]).await,
+        failing.load_snapshot(&[id("tdx:Taipei:TPE-1")]).await,
         Err(BikeAvailabilityError::TemporarilyUnavailable)
     ));
 }
@@ -552,9 +555,9 @@ async fn requests_only_missing_station_ids_after_a_partial_cache_hit() {
     )
     .await;
 
-    let cached = source.snapshot(&[id("tdx:Taipei:A")]).await.unwrap();
+    let cached = source.load_snapshot(&[id("tdx:Taipei:A")]).await.unwrap();
     let snapshot = source
-        .snapshot(&[id("tdx:Taipei:A"), id("tdx:Taipei:B"), id("tdx:Taipei:C")])
+        .load_snapshot(&[id("tdx:Taipei:A"), id("tdx:Taipei:B"), id("tdx:Taipei:C")])
         .await
         .unwrap();
     assert_eq!(snapshot.stations.len(), 3);
@@ -600,7 +603,7 @@ async fn groups_requested_stations_by_city_and_escapes_uid_filter_literals() {
     )
     .await;
     let snapshot = source
-        .snapshot(&[
+        .load_snapshot(&[
             id("tdx:Taipei:TPE-1"),
             id("tdx:Taichung:TC-1"),
             id("tdx:Taichung:A'B"),
@@ -643,7 +646,7 @@ async fn availability_requests_are_batched_at_three_hundred_stations() {
             .map(|uid| id(&format!("tdx:Taipei:{uid}")))
             .collect::<Vec<_>>();
 
-        let snapshot = source.snapshot(&requested).await.unwrap();
+        let snapshot = source.load_snapshot(&requested).await.unwrap();
         assert_eq!(snapshot.stations.len(), count);
         let requests = fixture.requests.lock().await;
         assert_eq!(requests.len(), count.div_ceil(300));
@@ -660,10 +663,10 @@ async fn availability_requests_are_batched_at_three_hundred_stations() {
 #[tokio::test]
 async fn empty_and_invalid_requests_do_not_call_tdx() {
     let (source, fixture) = source_for_cities(HashMap::new(), Duration::from_secs(30)).await;
-    assert!(source.snapshot(&[]).await.unwrap().stations.is_empty());
+    assert!(source.load_snapshot(&[]).await.unwrap().stations.is_empty());
     assert!(
         source
-            .snapshot(&[id("tdx:Unknown:UID"), id("tdx:Taipei:invalid:uid")])
+            .load_snapshot(&[id("tdx:Unknown:UID"), id("tdx:Taipei:invalid:uid")])
             .await
             .unwrap()
             .stations
@@ -710,9 +713,9 @@ async fn stale_cached_observation_is_refetched_before_cache_ttl() {
         },
     );
     let requested = [id("tdx:Taipei:TPE-1")];
-    source.snapshot(&requested).await.unwrap();
+    source.load_snapshot(&requested).await.unwrap();
     tokio::time::sleep(Duration::from_millis(1_100)).await;
-    let refreshed = source.snapshot(&requested).await.unwrap();
+    let refreshed = source.load_snapshot(&requested).await.unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 2);
     assert_eq!(
         refreshed
@@ -743,7 +746,7 @@ async fn partial_city_failure_keeps_successful_and_cached_station_data() {
     )
     .await;
     let requested = [id("tdx:Taipei:TPE-1"), id("tdx:Taichung:TC-1")];
-    let first = source.snapshot(&requested).await.unwrap();
+    let first = source.load_snapshot(&requested).await.unwrap();
     assert_eq!(first.stations.len(), 1);
     assert_eq!(
         first
@@ -752,7 +755,7 @@ async fn partial_city_failure_keeps_successful_and_cached_station_data() {
             .available_bikes,
         4
     );
-    let second = source.snapshot(&requested).await.unwrap();
+    let second = source.load_snapshot(&requested).await.unwrap();
     assert_eq!(second.stations.len(), 1);
     let requests = fixture.requests.lock().await;
     assert_eq!(
@@ -790,7 +793,7 @@ async fn changed_toml_batch_size_applies_to_every_supported_bike_city() {
             .iter()
             .map(|uid| id(&format!("tdx:{city}:{uid}")))
             .collect::<Vec<_>>();
-        let snapshot = source.snapshot(&ids).await.unwrap();
+        let snapshot = source.load_snapshot(&ids).await.unwrap();
         assert_eq!(snapshot.stations.len(), 7, "{city}");
         let requests = fixture.requests.lock().await;
         assert_eq!(requests.len(), 3, "{city}");

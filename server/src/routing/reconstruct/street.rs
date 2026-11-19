@@ -183,7 +183,7 @@ pub(super) async fn hydrate_path(
     let from = geometry::to_street_coordinate(from.coordinate)?;
     let to = geometry::to_street_coordinate(to.coordinate)?;
     let result = reconstructor
-        .street_routing
+        .street_router
         .route(RouteQuery {
             travel_mode: mode,
             origin: from,

@@ -18,12 +18,15 @@ use super::model::{EndpointStop, FailureSummary, JourneyPlanningContext, Journey
 #[derive(Clone)]
 pub(crate) struct AccessDiscovery {
     transit: Arc<TransitRuntime>,
-    street: Arc<dyn StreetRouter>,
+    street_router: Arc<dyn StreetRouter>,
 }
 
 impl AccessDiscovery {
-    pub(crate) fn new(transit: Arc<TransitRuntime>, street: Arc<dyn StreetRouter>) -> Self {
-        Self { transit, street }
+    pub(crate) fn new(transit: Arc<TransitRuntime>, street_router: Arc<dyn StreetRouter>) -> Self {
+        Self {
+            transit,
+            street_router,
+        }
     }
 
     async fn discover_endpoint_stops(
@@ -52,7 +55,7 @@ impl AccessDiscovery {
             _ => (coordinates, vec![endpoint]),
         };
         let matrix = self
-            .street
+            .street_router
             .matrix(MatrixQuery {
                 orientation,
                 travel_mode: StreetTravelMode::Walking,

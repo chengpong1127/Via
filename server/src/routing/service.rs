@@ -31,7 +31,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct RoutingService {
-    street_routing: Arc<dyn StreetRouter>,
+    street_router: Arc<dyn StreetRouter>,
     planner: MultimodalPlanner,
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
@@ -42,9 +42,9 @@ pub struct RoutingService {
 
 impl RoutingService {
     pub fn new(
-        street_routing: Arc<dyn StreetRouter>,
+        street_router: Arc<dyn StreetRouter>,
         transit: Arc<TransitRuntime>,
-        timing: Arc<dyn TimingSnapshotLoader>,
+        timing_loader: Arc<dyn TimingSnapshotLoader>,
         bike_share: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
@@ -52,17 +52,17 @@ impl RoutingService {
     ) -> Self {
         let planner = MultimodalPlanner::new(
             transit.clone(),
-            timing,
-            street_routing.clone(),
+            timing_loader,
+            street_router.clone(),
             bike_share.clone(),
             bike_availability_source,
-            limits.bike.clone(),
+            limits.bike_policy.clone(),
         );
-        let reconstructor = JourneyReconstructor::new(street_routing.clone(), transit, bike_share)
-            .with_rental_handling_seconds(limits.bike.rental_handling_seconds);
+        let reconstructor = JourneyReconstructor::new(street_router.clone(), transit, bike_share)
+            .with_rental_handling_seconds(limits.bike_policy.rental_handling_seconds);
         let limits = limits.normalized();
         Self {
-            street_routing,
+            street_router,
             planner,
             reconstructor,
             ranking: RankingPolicy {
@@ -167,8 +167,8 @@ impl RoutingService {
         query: PlanningQuery,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<(Vec<JourneyCandidate>, FailureSummary), RoutingError> {
-        let routes = Arc::new(RouteCache::new(self.street_routing.clone()));
-        let planned = self.planner.plan(query, routes.clone()).await?;
+        let route_cache = Arc::new(RouteCache::new(self.street_router.clone()));
+        let planned = self.planner.plan(query, route_cache.clone()).await?;
         context
             .ensure_before_deadline()
             .map_err(|_| RoutingError::DeadlineExceeded)?;
@@ -185,7 +185,7 @@ impl RoutingService {
                 &planned.journeys,
                 context,
                 self.limits.max_concurrent_reconstruction_candidates,
-                routes,
+                route_cache,
             )
             .await;
         let mut failures = planned.failures;

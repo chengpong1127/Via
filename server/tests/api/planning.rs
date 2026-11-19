@@ -210,7 +210,7 @@ fn domain_conversion_preserves_endpoints_modes_and_departure_intent() {
                 request.destination.display_text
             );
             assert_eq!(input.transit_modes, transit);
-            assert_eq!(input.bike_share, bike);
+            assert_eq!(input.allow_bike_share, bike);
             assert_eq!(input.departure, intent);
             let start = input.departure.search_start(now);
             assert_eq!(start, expected);

@@ -63,8 +63,8 @@ pub(super) struct CorridorEvaluator<'a> {
     pub retained: &'a RetainedCorridorSet,
     pub timing: &'a TimingSnapshot,
     pub query: &'a PlanningQuery,
-    pub street: &'a MatrixCache,
-    pub bike: Option<&'a dyn BikeMovementSource>,
+    pub matrix_cache: &'a MatrixCache,
+    pub bike_movements: Option<&'a dyn BikeMovementSource>,
 }
 
 #[derive(Default)]
@@ -97,8 +97,8 @@ impl CorridorEvaluator<'_> {
                 successors_generated: counters.successors.load(Ordering::Relaxed),
                 transit_departure_lookups: counters.departure_lookups.load(Ordering::Relaxed),
                 final_candidates: journeys.len(),
-                street_requests: self.street.requests(),
-                street_cache_hits: self.street.hits(),
+                street_requests: self.matrix_cache.requests(),
+                street_cache_hits: self.matrix_cache.hits(),
                 latency_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
                 ..CorridorEvaluationStats::default()
             },
@@ -297,7 +297,7 @@ impl<'e, 'a> Run<'e, 'a> {
             PlannedMovement::Transit(_) | PlannedMovement::WalkingToResolve => {
                 let from = &corridor.anchors()[index];
                 let to = &corridor.anchors()[index + 1];
-                let cell = walking_cell(self.evaluator.street, from, to).await;
+                let cell = walking_cell(self.evaluator.matrix_cache, from, to).await;
                 self.check_deadline()?;
                 match cell {
                     Ok(MatrixCell::Reachable { duration, distance }) => Walking {
@@ -323,12 +323,12 @@ impl<'e, 'a> Run<'e, 'a> {
         index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         self.check_deadline()?;
-        let Some(bike) = self.evaluator.bike else {
+        let Some(bike_movements) = self.evaluator.bike_movements else {
             return Ok(Vec::new());
         };
         let (start_anchor, _) = state.bike_departure(index);
         let anchors = corridor.anchors();
-        let result = bike
+        let result = bike_movements
             .movements(
                 &anchors[start_anchor],
                 &anchors[index + 1],
@@ -390,11 +390,11 @@ fn in_input_order<T>(mut items: Vec<(usize, T)>) -> Vec<T> {
 }
 
 async fn walking_cell(
-    street: &MatrixCache,
+    matrix_cache: &MatrixCache,
     from: &CorridorAnchor,
     to: &CorridorAnchor,
 ) -> Result<MatrixCell, StreetRoutingError> {
-    street
+    matrix_cache
         .route_cell(RouteQuery {
             travel_mode: StreetTravelMode::Walking,
             origin: from.coordinate,

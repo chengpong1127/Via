@@ -911,8 +911,8 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
         retained: &retained,
         timing: &snapshot,
         query: &query,
-        street: &street,
-        bike: Some(&bike),
+        matrix_cache: &street,
+        bike_movements: Some(&bike),
     };
     let next = Run::new(&evaluator)
         .expand_state(&EvaluationState::initial(&query), &corridor, 0)

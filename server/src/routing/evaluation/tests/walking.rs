@@ -306,8 +306,8 @@ async fn walking_operation_returns_local_failures_and_reuses_cached_results() {
             retained: &retained,
             timing: &snapshot,
             query: &query,
-            street: &street,
-            bike: None,
+            matrix_cache: &street,
+            bike_movements: None,
         };
         let run = Run::new(&evaluator);
         for _ in 0..2 {

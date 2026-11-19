@@ -33,18 +33,18 @@ use crate::support::routing::{path, stop_coordinate};
 
 #[derive(Clone)]
 struct FixtureAvailabilitySource {
-    snapshot: Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>,
+    availability: Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>,
     calls: Arc<AtomicUsize>,
 }
 
 #[async_trait]
 impl BikeAvailabilitySource for FixtureAvailabilitySource {
-    async fn snapshot(
+    async fn load_snapshot(
         &self,
         _station_ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        self.snapshot.clone()
+        self.availability.clone()
     }
 }
 
@@ -165,7 +165,7 @@ async fn bike_can_replace_a_transit_leg() {
             Some((
                 bike_network.clone(),
                 Arc::new(FixtureAvailabilitySource {
-                    snapshot: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
+                    availability: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
                     calls: calls.clone(),
                 }),
             )),
@@ -201,7 +201,7 @@ async fn bike_availability_is_not_loaded_when_bike_share_is_not_selected() {
         request(origin, destination, &["metro"]),
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[])),
+            availability: Ok(bike_snapshot(&[])),
             calls: calls.clone(),
         }),
     )
@@ -245,7 +245,7 @@ async fn slower_bike_preserves_transit_and_can_reduce_direct_walking() {
         request(origin, destination, &["metro", "bike_share"]),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
+            availability: Ok(bike_snapshot(&[("pickup", 2, 0), ("dropoff", 0, 2)])),
             calls: Arc::new(AtomicUsize::new(0)),
         }),
     )
@@ -310,7 +310,7 @@ async fn surface_transfer_options(bikes: u32, docks: u32) -> serde_json::Value {
         ),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[
+            availability: Ok(bike_snapshot(&[
                 ("pickup", bikes, 0),
                 ("dropoff", 0, docks),
             ])),
@@ -465,7 +465,7 @@ async fn viable_transit_corridor_competes_with_direct_bike_share() {
         request(origin, destination, &["metro", "bike_share"]),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[
+            availability: Ok(bike_snapshot(&[
                 ("direct-pickup", 2, 0),
                 ("direct-dropoff", 0, 2),
             ])),
@@ -555,7 +555,7 @@ async fn trivial_corridor_bike_options(modes: &[&str]) {
         request(origin, destination, modes),
         bike_network,
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Ok(bike_snapshot(&[
+            availability: Ok(bike_snapshot(&[
                 ("direct-pickup", 2, 0),
                 ("direct-dropoff", 0, 2),
             ])),
@@ -614,7 +614,7 @@ async fn walking_only_skips_timing_and_bike_availability() {
         request(origin, destination, &[]),
         Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
         Arc::new(FixtureAvailabilitySource {
-            snapshot: Err(BikeAvailabilityError::TemporarilyUnavailable),
+            availability: Err(BikeAvailabilityError::TemporarilyUnavailable),
             calls: calls.clone(),
         }),
     )
@@ -664,7 +664,7 @@ async fn bike_only_keeps_walking_when_availability_is_unusable() {
             request(origin, destination, &["bike_share"]),
             bike_network,
             Arc::new(FixtureAvailabilitySource {
-                snapshot: availability,
+                availability,
                 calls: calls.clone(),
             }),
         )
@@ -738,7 +738,7 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
             timing.clone(),
             Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("fixture")),
             Arc::new(FixtureAvailabilitySource {
-                snapshot: Ok(bike_snapshot(&[])),
+                availability: Ok(bike_snapshot(&[])),
                 calls: availability_calls.clone(),
             }),
             limits,

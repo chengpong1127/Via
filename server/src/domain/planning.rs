@@ -7,7 +7,7 @@ pub struct PlanningInput {
     pub origin: PlanningEndpoint,
     pub destination: PlanningEndpoint,
     pub transit_modes: Vec<TransitMode>,
-    pub bike_share: bool,
+    pub allow_bike_share: bool,
     pub departure: DepartureIntent,
 }
 

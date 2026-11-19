@@ -37,10 +37,10 @@ use super::{
 pub struct MultimodalPlanner {
     transit: Arc<TransitRuntime>,
     access: AccessDiscovery,
-    timing: Arc<dyn TimingSnapshotLoader>,
+    timing_loader: Arc<dyn TimingSnapshotLoader>,
     bike_planner: BikeShareMovementPlanner,
     bike_availability: Arc<dyn BikeAvailabilitySource>,
-    street: Arc<dyn StreetRouter>,
+    street_router: Arc<dyn StreetRouter>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -57,24 +57,24 @@ pub(crate) struct PlannedJourneys {
 
 struct RequestSnapshots {
     timing: TimingSnapshot,
-    bike: Option<Arc<BikeAvailabilitySnapshot>>,
+    bike_availability: Option<Arc<BikeAvailabilitySnapshot>>,
 }
 
 impl MultimodalPlanner {
     pub fn new(
         transit: Arc<TransitRuntime>,
-        timing: Arc<dyn TimingSnapshotLoader>,
-        street: Arc<dyn StreetRouter>,
+        timing_loader: Arc<dyn TimingSnapshotLoader>,
+        street_router: Arc<dyn StreetRouter>,
         bike_share: Arc<BikeShareNetwork>,
         bike_availability: Arc<dyn BikeAvailabilitySource>,
         bike_policy: BikeMovementPolicy,
     ) -> Self {
         Self {
-            access: AccessDiscovery::new(transit.clone(), street.clone()),
+            access: AccessDiscovery::new(transit.clone(), street_router.clone()),
             transit,
-            timing,
+            timing_loader,
             bike_planner: BikeShareMovementPlanner::new(bike_share, bike_policy),
-            street,
+            street_router,
             bike_availability,
         }
     }
@@ -104,7 +104,7 @@ impl MultimodalPlanner {
             limits.planner,
         )
         .with_allowed_transit_modes(modes)
-        .with_bike_share(request.bike_share);
+        .with_bike_share(request.allow_bike_share);
         Ok((query, failures))
     }
 
@@ -113,8 +113,8 @@ impl MultimodalPlanner {
         query: PlanningQuery,
     ) -> Result<(Vec<RealizedJourney>, MultimodalPlannerStats), RoutingError> {
         let limit = query.limits.max_candidates.max(1);
-        let routes = Arc::new(RouteCache::new(self.street.clone()));
-        let mut planned = self.plan(query, routes).await?;
+        let route_cache = Arc::new(RouteCache::new(self.street_router.clone()));
+        let mut planned = self.plan(query, route_cache).await?;
         planned.journeys.truncate(limit);
         planned.stats.evaluation.final_candidates = planned.journeys.len();
         Ok((planned.journeys, planned.stats))
@@ -123,7 +123,7 @@ impl MultimodalPlanner {
     pub(crate) async fn plan(
         &self,
         query: PlanningQuery,
-        routes: Arc<RouteCache>,
+        route_cache: Arc<RouteCache>,
     ) -> Result<PlannedJourneys, RoutingError> {
         if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
@@ -155,13 +155,13 @@ impl MultimodalPlanner {
             .deadline
             .run(self.load_snapshots(&query, &retained, &search, &corridors))
             .await??;
-        let street = Arc::new(MatrixCache::new(routes));
-        let bike_session = snapshots.bike.map(|snapshot| {
+        let matrix_cache = Arc::new(MatrixCache::new(route_cache));
+        let bike_session = snapshots.bike_availability.map(|availability| {
             BikeShareSession::new(
                 self.bike_planner.clone(),
-                snapshot,
+                availability,
                 OffsetDateTime::now_utc(),
-                street.clone(),
+                matrix_cache.clone(),
             )
         });
         let evaluation = CorridorEvaluator {
@@ -169,8 +169,8 @@ impl MultimodalPlanner {
             retained: &retained,
             timing: &snapshots.timing,
             query: &query,
-            street: street.as_ref(),
-            bike: bike_session
+            matrix_cache: matrix_cache.as_ref(),
+            bike_movements: bike_session
                 .as_ref()
                 .map(|session| session as &dyn BikeMovementSource),
         }
@@ -287,28 +287,32 @@ impl MultimodalPlanner {
             if timing_queries.is_empty() {
                 TimingSnapshot::default()
             } else {
-                self.timing.load_snapshot(timing_queries).await
+                self.timing_loader.load_snapshot(timing_queries).await
             }
         };
-        let bike = async {
+        let bike_availability = async {
             if query.allow_bike_share {
-                Some(self.bike_availability.snapshot(&bike_station_ids).await)
+                Some(
+                    self.bike_availability
+                        .load_snapshot(&bike_station_ids)
+                        .await,
+                )
             } else {
                 None
             }
         };
-        let (timing, bike) = tokio::join!(
+        let (timing, bike_availability) = tokio::join!(
             timing.instrument(tracing::info_span!(target: "via_profile", "TDX Timing")),
-            bike.instrument(tracing::info_span!(
+            bike_availability.instrument(tracing::info_span!(
                 target: "via_profile",
                 "BikeShare Availability",
                 enabled = query.allow_bike_share
             ))
         );
         let mut failures = FailureSummary::default();
-        let bike = match bike {
+        let bike_availability = match bike_availability {
             None => None,
-            Some(Ok(snapshot)) => Some(snapshot),
+            Some(Ok(availability)) => Some(availability),
             Some(Err(error)) => {
                 failures.record_bike_availability(&error);
                 tracing::debug!(
@@ -337,6 +341,12 @@ impl MultimodalPlanner {
         {
             failures.record_departure(error);
         }
-        Ok((RequestSnapshots { timing, bike }, failures))
+        Ok((
+            RequestSnapshots {
+                timing,
+                bike_availability,
+            },
+            failures,
+        ))
     }
 }

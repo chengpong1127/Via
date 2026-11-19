@@ -186,7 +186,7 @@ impl NearbyService {
             .iter()
             .map(|(_, station)| station.id.clone())
             .collect();
-        let snapshot = match self.bike_availability.snapshot(&ids).await {
+        let snapshot = match self.bike_availability.load_snapshot(&ids).await {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::warn!(

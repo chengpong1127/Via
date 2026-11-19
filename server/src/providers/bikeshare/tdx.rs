@@ -131,7 +131,7 @@ fn batch_failure(
 
 #[async_trait]
 impl BikeAvailabilitySource for TdxBikeAvailabilitySource {
-    async fn snapshot(
+    async fn load_snapshot(
         &self,
         station_ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {

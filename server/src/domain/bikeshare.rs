@@ -812,7 +812,7 @@ impl BikeAvailabilityError {
 
 #[async_trait::async_trait]
 pub trait BikeAvailabilitySource: Send + Sync {
-    async fn snapshot(
+    async fn load_snapshot(
         &self,
         station_ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError>;

@@ -34,7 +34,7 @@ pub(super) use geometry::{taipei_now, to_street_coordinate};
 
 #[derive(Clone)]
 pub(super) struct JourneyReconstructor {
-    street_routing: Arc<dyn StreetRouter>,
+    street_router: Arc<dyn StreetRouter>,
     transit: Arc<TransitRuntime>,
     bike_share: Arc<BikeShareNetwork>,
     rental_handling_seconds: u32,
@@ -47,12 +47,12 @@ pub(super) struct JourneyCandidate {
 
 impl JourneyReconstructor {
     pub(super) fn new(
-        street_routing: Arc<dyn StreetRouter>,
+        street_router: Arc<dyn StreetRouter>,
         transit: Arc<TransitRuntime>,
         bike_share: Arc<BikeShareNetwork>,
     ) -> Self {
         Self {
-            street_routing,
+            street_router,
             transit,
             bike_share,
             rental_handling_seconds: 0,
@@ -70,9 +70,9 @@ impl JourneyReconstructor {
         journeys: &[RealizedJourney],
         context: &JourneyPlanningContext<'_>,
         concurrency: usize,
-        routes: Arc<RouteCache>,
+        route_cache: Arc<RouteCache>,
     ) -> (Vec<JourneyCandidate>, FailureSummary) {
-        let request_local = self.with_routes(routes);
+        let request_local = self.with_route_cache(route_cache);
         let request_local = &request_local;
         let mut results = stream::iter(0..journeys.len())
             .map(|index| async move {
@@ -103,9 +103,9 @@ impl JourneyReconstructor {
         (candidates, failures)
     }
 
-    pub(super) fn with_routes(&self, routes: Arc<RouteCache>) -> Self {
+    pub(super) fn with_route_cache(&self, route_cache: Arc<RouteCache>) -> Self {
         Self {
-            street_routing: routes,
+            street_router: route_cache,
             transit: self.transit.clone(),
             bike_share: self.bike_share.clone(),
             rental_handling_seconds: self.rental_handling_seconds,
@@ -289,7 +289,7 @@ mod tests {
             Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
             Arc::new(BikeShareNetwork::new(Vec::new())),
         )
-        .with_routes(Arc::new(crate::routing::cache::RouteCache::new(Arc::new(
+        .with_route_cache(Arc::new(crate::routing::cache::RouteCache::new(Arc::new(
             street,
         ))));
         let journey = |departure| {

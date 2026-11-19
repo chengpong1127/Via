@@ -63,7 +63,7 @@ struct AvailableBikes;
 
 #[async_trait::async_trait]
 impl BikeAvailabilitySource for AvailableBikes {
-    async fn snapshot(
+    async fn load_snapshot(
         &self,
         ids: &[BikeStationId],
     ) -> Result<Arc<BikeAvailabilitySnapshot>, BikeAvailabilityError> {

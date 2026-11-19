@@ -248,8 +248,8 @@ fn test_evaluator<'a>(
         retained,
         timing: snapshot,
         query,
-        street,
-        bike,
+        matrix_cache: street,
+        bike_movements: bike,
     }
 }
 
@@ -271,8 +271,8 @@ async fn evaluate_corridors(
         retained,
         timing: snapshot,
         query,
-        street,
-        bike,
+        matrix_cache: street,
+        bike_movements: bike,
     }
     .evaluate(corridors)
     .await

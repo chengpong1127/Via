@@ -44,14 +44,11 @@ impl ReconstructionState<'_, '_> {
         {
             return Ok(false);
         }
-        let pattern_data = self
+        let pattern = self
             .reconstructor
             .transit
             .required_pattern(&trip.pattern_id);
-        let route_data = self
-            .reconstructor
-            .transit
-            .required_route(&pattern_data.route_id);
+        let route = self.reconstructor.transit.required_route(&pattern.route_id);
         let ride_times = trip
             .stop_times
             .get(board_index..=alight_index)
@@ -74,20 +71,15 @@ impl ReconstructionState<'_, '_> {
         let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
         self.assembly.legs.push(transit_leg(
             leg_id.clone(),
-            pattern_data,
-            route_data,
+            pattern,
+            route,
             &ride_stops,
             ride_times,
             board.departure_at,
             alight.arrival_at,
         )?);
         if let Some(pending) = self.pending_transfer.take() {
-            record_transfer(
-                &mut self.assembly,
-                pending,
-                route_data.mode,
-                board.departure_at,
-            )?;
+            record_transfer(&mut self.assembly, pending, route.mode, board.departure_at)?;
         } else if let Some(previous) = &self.previous_transit
             && previous.trip_id != trip.id
         {
@@ -98,14 +90,14 @@ impl ReconstructionState<'_, '_> {
                     duration_seconds: self.reconstructor.transit.same_stop_transfer_seconds(),
                     from_mode: Some(previous.mode),
                 },
-                route_data.mode,
+                route.mode,
                 board.departure_at,
             )?;
         }
         self.previous_transit = Some(PreviousTransit {
             trip_id: trip.id.clone(),
             arrival: alight.arrival_at,
-            mode: route_data.mode,
+            mode: route.mode,
         });
         self.assembly.arrival_time = alight.arrival_at;
         if trip.timing_reliability == TimingReliability::Fallback {
@@ -114,7 +106,7 @@ impl ReconstructionState<'_, '_> {
         evidence::push_unique_mode(&mut self.assembly.travel_modes, LegMode::Transit);
         self.assembly
             .main_pattern_sequence
-            .push(pattern_data.id.as_str().to_owned());
+            .push(pattern.id.as_str().to_owned());
         self.current_stop = Some(alight.stop_id.clone());
 
         Ok(true)
@@ -166,7 +158,7 @@ fn record_transfer(
 
 fn transit_leg(
     id: String,
-    service: &crate::domain::transit::network::TransitPattern,
+    pattern: &crate::domain::transit::network::TransitPattern,
     route: &crate::domain::transit::network::TransitRoute,
     stops: &[&crate::domain::transit::network::TransitStop],
     stop_times: &[EffectiveStopTime],
@@ -208,11 +200,11 @@ fn transit_leg(
         }],
         details: LegDetails::Transit {
             transit_mode: route.mode,
-            via_pattern_id: service.id.as_str().into(),
+            via_pattern_id: pattern.id.as_str().into(),
             via_boarding_point_id: boarding.id.as_str().into(),
             via_alighting_point_id: alighting.id.as_str().into(),
             service_label: route.label.clone(),
-            headsign: service.headsign.clone(),
+            headsign: pattern.headsign.clone(),
             intermediate_stops,
         },
         attribution: Vec::new(),
