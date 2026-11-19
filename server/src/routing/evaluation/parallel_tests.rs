@@ -83,8 +83,8 @@ impl StreetRouter for DelayedMatrix {
             ],
         })
     }
-    async fn route(&self, _: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
-        panic!("unexpected geometry")
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        super::route_via_matrix(self, query).await
     }
 }
 
@@ -214,7 +214,7 @@ async fn successful_evaluations_preserve_ordered_journeys_and_work_at_all_limits
         assert_eq!(actual.calls, reference.calls);
         assert!(actual.peak >= 1);
         assert!(actual.peak <= concurrency);
-        assert_eq!(actual.stats.matrix_requests, actual.calls);
+        assert_eq!(actual.stats.street_requests, actual.calls);
     }
 }
 
@@ -488,10 +488,10 @@ async fn simultaneous_planning_requests_have_independent_caches() {
         assert_eq!(result.journeys, reference.journeys);
         assert_eq!(result.calls, reference.calls);
         assert_eq!(
-            (result.stats.matrix_requests, result.stats.matrix_cache_hits),
+            (result.stats.street_requests, result.stats.street_cache_hits),
             (
-                reference.stats.matrix_requests,
-                reference.stats.matrix_cache_hits
+                reference.stats.street_requests,
+                reference.stats.street_cache_hits
             )
         );
     }
@@ -738,7 +738,7 @@ async fn corridor_concurrency_preserves_transit_and_mixed_results_and_shares_cac
             );
             assert_eq!(actual.stats.corridors_evaluated, 8);
             assert_eq!(actual.calls, reference.calls);
-            assert!(actual.stats.matrix_cache_hits > 0);
+            assert!(actual.stats.street_cache_hits > 0);
             assert!(actual.peak <= 8);
         }
     }
@@ -790,8 +790,8 @@ impl StreetRouter for OutOfOrderMatrix {
             }]],
         })
     }
-    async fn route(&self, _: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
-        unreachable!()
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        super::route_via_matrix(self, query).await
     }
 }
 
@@ -905,8 +905,8 @@ impl StreetRouter for FatalRaceMatrix {
             }]],
         })
     }
-    async fn route(&self, _: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
-        unreachable!()
+    async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError> {
+        super::route_via_matrix(self, query).await
     }
 }
 

@@ -391,6 +391,35 @@ fn bike_movement(from_anchor: usize, to_anchor: usize, seconds: u32) -> BikeShar
     .unwrap()
 }
 
+async fn route_via_matrix(
+    router: &dyn crate::street::StreetRouter,
+    query: crate::street::RouteQuery,
+) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
+    let matrix = router
+        .matrix(crate::street::MatrixQuery {
+            orientation: crate::street::MatrixOrientation::OneToMany,
+            travel_mode: query.travel_mode,
+            sources: vec![query.origin],
+            targets: vec![query.destination],
+            constraints: query.constraints,
+        })
+        .await?;
+    match matrix.cells[0][0] {
+        crate::street::MatrixCell::Reachable { duration, distance } => {
+            Ok(crate::street::StreetPath {
+                duration,
+                distance,
+                geometry: vec![query.origin, query.destination],
+                maneuvers: Vec::new(),
+                attribution: Vec::new(),
+            })
+        }
+        crate::street::MatrixCell::Unreachable => {
+            Err(crate::street::StreetRoutingError::Unreachable)
+        }
+    }
+}
+
 struct CountingWalkingRouter {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     error: Option<crate::street::StreetRoutingError>,
@@ -419,9 +448,9 @@ impl crate::street::StreetRouter for CountingWalkingRouter {
     }
     async fn route(
         &self,
-        _: crate::street::RouteQuery,
+        query: crate::street::RouteQuery,
     ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
-        unreachable!("Phase 2 walking uses Matrix")
+        route_via_matrix(self, query).await
     }
 }
 
@@ -529,9 +558,9 @@ impl crate::street::StreetRouter for SlowSecondWalkingRouter {
     }
     async fn route(
         &self,
-        _: crate::street::RouteQuery,
+        query: crate::street::RouteQuery,
     ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
-        unreachable!("Phase 2 walking uses Matrix")
+        route_via_matrix(self, query).await
     }
 }
 
@@ -579,9 +608,9 @@ impl crate::street::StreetRouter for DeadlineWalkingRouter {
     }
     async fn route(
         &self,
-        _: crate::street::RouteQuery,
+        query: crate::street::RouteQuery,
     ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
-        unreachable!()
+        route_via_matrix(self, query).await
     }
 }
 

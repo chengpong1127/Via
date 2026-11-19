@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn competitive_walking_replaces_transit_with_matrix_metrics() {
+async fn competitive_walking_replaces_transit_with_route_metrics() {
     let (result, calls) = evaluate_walking_replacement(20, None, false, false).await;
     assert_eq!(calls, 1);
     assert!(result.as_ref().unwrap().journeys.iter().any(|v| {
@@ -170,7 +170,7 @@ async fn walking_cache_reuses_exact_requests() {
 }
 
 #[tokio::test]
-async fn unreachable_walking_matrix_has_no_successor_or_provider_failure() {
+async fn unreachable_walking_route_has_no_successor_or_provider_failure() {
     let network = network(Vec::new(), &[], Vec::new());
     let query = query(&[], 0, 1);
     let retained = RetainedCorridorSet::default();
@@ -192,12 +192,12 @@ async fn unreachable_walking_matrix_has_no_successor_or_provider_failure() {
     .unwrap();
     assert!(result.journeys.is_empty());
     assert!(!result.failures.internal && !result.failures.transient);
-    assert_eq!(result.stats.matrix_requests, 1);
+    assert_eq!(result.stats.street_requests, 1);
     assert_eq!(result.stats.states_expanded, 1);
 }
 
 #[tokio::test]
-async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_query_limit() {
+async fn walking_uses_actual_route_timing_even_when_geometry_bound_exceeds_query_limit() {
     let network = network(Vec::new(), &[], Vec::new());
     let retained = RetainedCorridorSet::from_retained_for_test(&network, Vec::new());
     let snapshot = TimingSnapshot::default();
@@ -218,12 +218,17 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
             query.limits.max_journey_duration_seconds = 30;
             let street = MatrixCache::new(Arc::new(
                 crate::street::FakeStreetRouter::builder()
-                    .matrix_leg(
+                    .path(
                         crate::street::StreetTravelMode::Walking,
                         origin,
                         destination,
-                        crate::street::Seconds(actual_seconds),
-                        crate::street::Metres(20),
+                        crate::street::StreetPath {
+                            duration: crate::street::Seconds(actual_seconds),
+                            distance: crate::street::Metres(20),
+                            geometry: vec![origin, destination],
+                            maneuvers: Vec::new(),
+                            attribution: Vec::new(),
+                        },
                     )
                     .build(),
             ));
@@ -239,7 +244,7 @@ async fn walking_uses_actual_matrix_timing_even_when_geometry_bound_exceeds_quer
             .await
             .unwrap();
             assert_eq!(result.journeys.len(), usize::from(actual_seconds <= 30));
-            assert_eq!(result.stats.matrix_requests, 1);
+            assert_eq!(result.stats.street_requests, 1);
             assert_eq!(result.stats.states_expanded, 1);
         }
     }

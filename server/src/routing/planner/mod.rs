@@ -18,7 +18,7 @@ use crate::{
 
 use super::{
     access::AccessDiscovery,
-    cache::MatrixCache,
+    cache::{MatrixCache, RouteCache},
     corridors::{
         self, CorridorSearchStats, RetainedCorridorSet, TransferShortcutIndex, TransitTopologyIndex,
     },
@@ -120,13 +120,18 @@ impl MultimodalPlanner {
         query: PlanningQuery,
     ) -> Result<(Vec<RealizedJourney>, MultimodalPlannerStats), RoutingError> {
         let limit = query.limits.max_candidates.max(1);
-        let mut planned = self.plan(query).await?;
+        let routes = Arc::new(RouteCache::new(self.street.clone()));
+        let mut planned = self.plan(query, routes).await?;
         planned.journeys.truncate(limit);
         planned.stats.evaluation.final_candidates = planned.journeys.len();
         Ok((planned.journeys, planned.stats))
     }
 
-    pub(crate) async fn plan(&self, query: PlanningQuery) -> Result<PlannedJourneys, RoutingError> {
+    pub(crate) async fn plan(
+        &self,
+        query: PlanningQuery,
+        routes: Arc<RouteCache>,
+    ) -> Result<PlannedJourneys, RoutingError> {
         if query.deadline.is_elapsed() {
             return Err(RoutingError::DeadlineExceeded);
         }
@@ -157,7 +162,7 @@ impl MultimodalPlanner {
             .deadline
             .run(self.load_snapshots(&query, &retained, &search, &corridors))
             .await??;
-        let street = Arc::new(MatrixCache::new(self.street.clone()));
+        let street = Arc::new(MatrixCache::new(routes));
         let bike = snapshots.bike.map(|snapshot| {
             BikeShareSession::new(
                 self.bike.clone(),

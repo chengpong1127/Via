@@ -28,7 +28,7 @@ Include the direct walking corridor outside that set and evaluate it first. Skip
 `selected_modes` contains only optional non-walking modes. All corridors use one
 evaluation pass. Expand Transit, Walking, then BikeShare and collect feasible
 successors before shared Pareto pruning. Check surface feasibility using actual
-Matrix metrics, without optimistic-duration screening. Fixed-corridor evaluation
+Matrix or Route metrics, without optimistic-duration screening. Fixed-corridor evaluation
 cannot add anchors, combine corridors, or make TDX calls. Load timing only for
 retained transit positions and BikeShare availability only when selected. Keep
 request-local snapshots and routing caches, and allow a continuous BikeShare

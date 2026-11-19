@@ -337,7 +337,7 @@ async fn direct_corridor_returns_both_resolved_surface_successors() {
     assert_eq!(report.stats.states_expanded, 1);
     assert_eq!(report.stats.successors_generated, 2);
     assert_eq!(report.stats.corridors_evaluated, 1);
-    assert_eq!(report.stats.matrix_requests, 1);
+    assert_eq!(report.stats.street_requests, 1);
 }
 
 #[tokio::test]
@@ -366,8 +366,8 @@ async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
     assert_eq!(result.stats.corridors_evaluated, 2400);
     assert_eq!(result.stats.states_expanded, 2400);
     assert_eq!(result.stats.successors_generated, 2400);
-    assert_eq!(result.stats.matrix_requests, 1);
-    assert_eq!(result.stats.matrix_cache_hits, 2399);
+    assert_eq!(result.stats.street_requests, 1);
+    assert_eq!(result.stats.street_cache_hits, 2399);
     assert_eq!(result.journeys.len(), 1);
 }
 

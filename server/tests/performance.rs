@@ -150,10 +150,10 @@ async fn deterministic_routing_benchmark() {
         );
         let last_evaluation = last_evaluation.unwrap();
         println!(
-            "{label}: p2_states_expanded={} matrix_requests={} matrix_cache_hits={} bike_requests={} bike_cache_hits={}",
+            "{label}: p2_states_expanded={} street_requests={} street_cache_hits={} bike_requests={} bike_cache_hits={}",
             last_evaluation.states_expanded,
-            last_evaluation.matrix_requests,
-            last_evaluation.matrix_cache_hits,
+            last_evaluation.street_requests,
+            last_evaluation.street_cache_hits,
             last_evaluation.bike_requests,
             last_evaluation.bike_cache_hits
         );

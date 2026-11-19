@@ -846,7 +846,7 @@ async fn walking_corridor_realization_survives_a_transit_timing_failure() {
     .await;
 
     assert_eq!(timing.calls.load(Ordering::Relaxed), 1);
-    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(street.direct_calls.load(Ordering::Relaxed), 1);
     let options = body["journey_options"].as_array().unwrap();
     assert_eq!(options.len(), 1);
     assert!(leg_modes(&options[0]).iter().all(|mode| *mode == "walking"));

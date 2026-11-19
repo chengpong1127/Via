@@ -840,7 +840,7 @@ async fn bike_actual_realization_enforces_query_time_limits() {
         let mut stats = result.stats;
         bike.record_stats(&mut stats);
         assert_eq!(stats.bike_requests, 1);
-        assert_eq!(stats.matrix_requests, 1);
+        assert_eq!(stats.street_requests, 1);
         assert_eq!(stats.states_expanded, 2);
     }
 }

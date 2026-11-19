@@ -20,7 +20,7 @@ Routing modules follow the pipeline:
 | `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator`, evaluation corridors and BikeShare movement |
 | `journey` | `RealizedJourney`, the timed result of evaluation |
 | `reconstruct` | Street geometry, timing recheck and ranking |
-| `cache` | Request-local Matrix cache and the reconstruction Route cache |
+| `cache` | Request-local Matrix cache and the Route cache shared by evaluation and reconstruction |
 
 Corridor search runs a static round-based (RAPTOR-style) search in which each
 round adds one ride; it keeps the best corridor for each ride count, then
@@ -40,7 +40,7 @@ error. For each fixed corridor it expands Transit, Walking, then BikeShare along
 fixed anchors and prunes feasible successors. It cannot add anchors, combine
 corridors, or make TDX calls. States and transit corridors can run concurrently
 within configured limits; outcomes retain deterministic ordering. Walking and
-cycling Matrix and reconstruction Route requests are time-independent, so
+cycling Matrix and Route requests are time-independent, so
 conditional road restrictions can differ from a time-specific route.
 Reconstruction hydrates street geometry, rechecks timing and ranks usable
 journeys. `RealizedJourney` owns movement continuity, timing and its identity
@@ -51,8 +51,12 @@ Routing implementation modules are private; supported entry types are exported
 at the routing module root. Corridor evaluation reaches BikeShare through the
 `BikeMovementSource` interface; the production `BikeShareSession` combines
 candidate selection and Matrix realization behind one request-local cache. The
-shared `cache` module holds the request-local Matrix cache used by walking and
-BikeShare, and the Route cache used by reconstruction with its own retry policy.
+shared `cache` module holds the request-local Matrix cache used by access and
+BikeShare, and one request-local Route cache shared by evaluation and
+reconstruction. Evaluation times a walk it has to resolve between two anchors
+with a Route request, so reconstruction reuses that path instead of asking
+again; evaluation remembers a failed walk for the request, while reconstruction
+keeps the Route cache's own retry policy.
 
 Request-time TDX reads go through the `live` module's `LiveDataSource`: Bus
 arrivals by stop and scope, BikeShare availability by station, Metro boards by

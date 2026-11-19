@@ -14,8 +14,8 @@ use std::{
 use tokio::sync::OnceCell;
 
 use crate::street::{
-    Coordinate, MatrixLimits, MatrixQuery, MatrixResult, ProviderFailureClass, RouteQuery,
-    StreetPath, StreetRouter, StreetRoutingError,
+    Coordinate, MatrixCell, MatrixLimits, MatrixQuery, MatrixResult, ProviderFailureClass,
+    RouteQuery, StreetPath, StreetRouter, StreetRoutingError,
 };
 
 const MAX_ROUTE_ENTRIES: usize = 4096;
@@ -95,6 +95,7 @@ impl MatrixKey {
 pub(crate) struct MatrixCache {
     provider: Arc<dyn StreetRouter>,
     cache: RequestCache<MatrixKey, Result<MatrixResult, StreetRoutingError>>,
+    route_cells: RequestCache<RouteKey, Result<MatrixCell, StreetRoutingError>>,
 }
 
 impl MatrixCache {
@@ -102,15 +103,35 @@ impl MatrixCache {
         Self {
             provider,
             cache: RequestCache::default(),
+            route_cells: RequestCache::default(),
         }
     }
 
     pub(crate) fn requests(&self) -> usize {
-        self.cache.entries()
+        self.cache.entries() + self.route_cells.entries()
     }
 
     pub(crate) fn hits(&self) -> usize {
-        self.cache.hits()
+        self.cache.hits() + self.route_cells.hits()
+    }
+
+    pub(crate) async fn route_cell(
+        &self,
+        query: RouteQuery,
+    ) -> Result<MatrixCell, StreetRoutingError> {
+        let key = route_key(&query)?;
+        self.route_cells
+            .get_or_init(key, || async {
+                match self.provider.route(query).await {
+                    Ok(path) => Ok(MatrixCell::Reachable {
+                        duration: path.duration,
+                        distance: path.distance,
+                    }),
+                    Err(StreetRoutingError::Unreachable) => Ok(MatrixCell::Unreachable),
+                    Err(error) => Err(error),
+                }
+            })
+            .await
     }
 }
 
@@ -138,6 +159,15 @@ type RouteKey = (
     (u64, u64),
     crate::street::RoutingConstraints,
 );
+
+fn route_key(query: &RouteQuery) -> Result<RouteKey, StreetRoutingError> {
+    Ok((
+        query.travel_mode,
+        coordinate_key(query.origin)?,
+        coordinate_key(query.destination)?,
+        query.constraints,
+    ))
+}
 
 type RouteEntry = Arc<OnceCell<Result<StreetPath, StreetRoutingError>>>;
 
@@ -170,12 +200,7 @@ impl StreetRouter for RouteCache {
         if query.constraints.time.is_some() {
             return self.provider.route(query).await;
         }
-        let key = (
-            query.travel_mode,
-            coordinate_key(query.origin)?,
-            coordinate_key(query.destination)?,
-            query.constraints,
-        );
+        let key = route_key(&query)?;
         let cell = {
             let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             match entries.get(&key) {

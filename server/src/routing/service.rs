@@ -19,6 +19,7 @@ use crate::{
 };
 
 use super::{
+    cache::RouteCache,
     journey::RealizedJourney,
     model::{
         FailureSummary, JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline,
@@ -30,6 +31,7 @@ use super::{
 
 #[derive(Clone)]
 pub struct RoutingService {
+    street_routing: Arc<dyn StreetRouter>,
     planner: MultimodalPlanner,
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
@@ -61,6 +63,7 @@ impl RoutingService {
                 .with_rental_handling_seconds(limits.bike.rental_handling_seconds);
         let limits = limits.normalized();
         Self {
+            street_routing,
             planner,
             reconstructor,
             ranking: RankingPolicy {
@@ -165,7 +168,8 @@ impl RoutingService {
         query: PlanningQuery,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<(Vec<JourneyCandidate>, FailureSummary), RoutingError> {
-        let planned = self.planner.plan(query).await?;
+        let routes = Arc::new(RouteCache::new(self.street_routing.clone()));
+        let planned = self.planner.plan(query, routes.clone()).await?;
         context
             .ensure_before_deadline()
             .map_err(|_| RoutingError::DeadlineExceeded)?;
@@ -182,6 +186,7 @@ impl RoutingService {
                 &planned.journeys,
                 context,
                 self.limits.max_concurrent_reconstruction_candidates,
+                routes,
             )
             .await;
         let mut failures = planned.failures;

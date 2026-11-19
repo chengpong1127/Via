@@ -940,9 +940,9 @@ async fn ranking_corridor_fixture(iterations: usize) {
         street.hydration_calls.load(Ordering::Relaxed),
         4 * iterations
     );
-    assert_eq!(street.matrix_calls.load(Ordering::Relaxed), 5 * iterations);
+    assert_eq!(street.matrix_calls.load(Ordering::Relaxed), 2 * iterations);
     assert_eq!(timing.calls.load(Ordering::Relaxed), iterations);
-    assert_eq!(street.route_calls.load(Ordering::Relaxed), 5 * iterations);
+    assert_eq!(street.route_calls.load(Ordering::Relaxed), 7 * iterations);
     latency_us.sort_unstable();
     eprintln!(
         "ranking fixture: iterations={iterations} median_us={} p95_us={} routes_per_request={} matrices_per_request={} hydration_routes_per_request={} reconstructed_per_request=3",

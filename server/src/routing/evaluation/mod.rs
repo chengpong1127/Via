@@ -31,10 +31,7 @@ use crate::{
         transit_runtime::TransitRuntime,
         transit_timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
     },
-    street::{
-        MatrixCell, MatrixOrientation, MatrixQuery, RoutingConstraints, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+    street::{MatrixCell, RouteQuery, RoutingConstraints, StreetRoutingError, StreetTravelMode},
 };
 use bike::BikeMovementSource;
 use corridor::{CorridorAnchor, PlannedMovement};
@@ -48,8 +45,8 @@ pub struct CorridorEvaluationStats {
     pub successors_generated: usize,
     pub transit_departure_lookups: usize,
     pub final_candidates: usize,
-    pub matrix_requests: usize,
-    pub matrix_cache_hits: usize,
+    pub street_requests: usize,
+    pub street_cache_hits: usize,
     pub bike_requests: usize,
     pub bike_cache_hits: usize,
     pub latency_us: u64,
@@ -100,8 +97,8 @@ impl CorridorEvaluator<'_> {
                 successors_generated: counters.successors.load(Ordering::Relaxed),
                 transit_departure_lookups: counters.departure_lookups.load(Ordering::Relaxed),
                 final_candidates: journeys.len(),
-                matrix_requests: self.street.requests(),
-                matrix_cache_hits: self.street.hits(),
+                street_requests: self.street.requests(),
+                street_cache_hits: self.street.hits(),
                 latency_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
                 ..CorridorEvaluationStats::default()
             },
@@ -393,23 +390,18 @@ fn in_input_order<T>(mut items: Vec<(usize, T)>) -> Vec<T> {
 }
 
 async fn walking_cell(
-    street: &dyn StreetRouter,
+    street: &MatrixCache,
     from: &CorridorAnchor,
     to: &CorridorAnchor,
 ) -> Result<MatrixCell, StreetRoutingError> {
-    let matrix = street
-        .matrix(MatrixQuery {
-            orientation: MatrixOrientation::OneToMany,
+    street
+        .route_cell(RouteQuery {
             travel_mode: StreetTravelMode::Walking,
-            sources: vec![from.coordinate],
-            targets: vec![to.coordinate],
+            origin: from.coordinate,
+            destination: to.coordinate,
             constraints: RoutingConstraints::default(),
         })
-        .await?;
-    match matrix.cells.as_slice() {
-        [row] if row.len() == 1 => Ok(row[0]),
-        _ => Err(StreetRoutingError::MalformedResponse),
-    }
+        .await
 }
 
 fn walking_kind(from: &CorridorAnchor, to: &CorridorAnchor) -> WalkingMovementKind {

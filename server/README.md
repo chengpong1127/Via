@@ -115,8 +115,8 @@ search and request-local snapshots, and `CorridorEvaluator` returns journeys,
 statistics and observed failures or a single routing error. It evaluates the direct walking corridor and retained transit
 corridors in one pass, starting direct walking first while allowing bounded overlap.
 Walking is always available; `selected_modes` lists optional transit and BikeShare
-modes. `JourneyReconstructor::reconstruct_all` hydrates geometry concurrently with a
-request-local Route cache, restores candidate ordering and collects failures
+modes. `JourneyReconstructor::reconstruct_all` hydrates geometry concurrently with the
+request-local Route cache that evaluation already filled for resolved walks, restores candidate ordering and collects failures
 before final ranking.
 
 Rust callers use the exports at `routing` rather than implementation submodules.

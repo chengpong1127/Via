@@ -220,6 +220,10 @@ fn test_planner(
     )
 }
 
+fn test_routes(planner: &MultimodalPlanner) -> Arc<RouteCache> {
+    Arc::new(RouteCache::new(planner.street.clone()))
+}
+
 fn query(k: usize) -> PlanningQuery {
     PlanningQuery::new(
         Coordinate::try_new(25.0, 121.5).unwrap(),
@@ -319,7 +323,7 @@ async fn disabled_deadline_awaits_slow_snapshot_loading() {
     let mut query = query(1);
     query.deadline = crate::routing::PlanningDeadline::disabled();
     let started = tokio::time::Instant::now();
-    assert!(planner.plan(query).await.is_ok());
+    assert!(planner.plan(query, test_routes(&planner)).await.is_ok());
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(11));
 }
 
@@ -330,7 +334,7 @@ async fn enabled_deadline_cancels_slow_snapshot_loading() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(5));
     let started = tokio::time::Instant::now();
     assert!(matches!(
-        planner.plan(query).await.err(),
+        planner.plan(query, test_routes(&planner)).await.err(),
         Some(RoutingError::DeadlineExceeded)
     ));
     assert_eq!(started.elapsed(), std::time::Duration::from_secs(5));
@@ -398,7 +402,10 @@ async fn operational_metrics_count_completed_stages_once() {
     let mut planning_query = query(1);
     planning_query.origin = origin;
     planning_query.destination = destination;
-    let report = planner.plan(planning_query).await.unwrap();
+    let report = planner
+        .plan(planning_query, test_routes(&planner))
+        .await
+        .unwrap();
     assert!(!report.journeys.is_empty());
     let lookups = report.stats.evaluation.transit_departure_lookups;
     assert!(lookups > 0);
@@ -585,7 +592,7 @@ async fn direct_walking_is_evaluated_once_without_transit() {
         crate::config::ViaConfig::default().planner_limits(),
     )
     .with_allowed_transit_modes([]);
-    let report = planner.plan(query).await.unwrap();
+    let report = planner.plan(query, test_routes(&planner)).await.unwrap();
 
     assert_eq!(report.journeys.len(), 1);
     assert_eq!(report.stats.evaluation.states_expanded, 1);

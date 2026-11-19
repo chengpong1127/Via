@@ -70,8 +70,9 @@ impl JourneyReconstructor {
         journeys: &[RealizedJourney],
         context: &JourneyPlanningContext<'_>,
         concurrency: usize,
+        routes: Arc<RouteCache>,
     ) -> (Vec<JourneyCandidate>, FailureSummary) {
-        let request_local = self.request_local();
+        let request_local = self.with_routes(routes);
         let request_local = &request_local;
         let mut results = stream::iter(0..journeys.len())
             .map(|index| async move {
@@ -102,9 +103,9 @@ impl JourneyReconstructor {
         (candidates, failures)
     }
 
-    pub(super) fn request_local(&self) -> Self {
+    pub(super) fn with_routes(&self, routes: Arc<RouteCache>) -> Self {
         Self {
-            street_routing: Arc::new(RouteCache::new(self.street_routing.clone())),
+            street_routing: routes,
             transit_runtime: self.transit_runtime.clone(),
             bike_share_network: self.bike_share_network.clone(),
             rental_handling_seconds: self.rental_handling_seconds,
@@ -284,11 +285,13 @@ mod tests {
             )
             .build();
         let reconstructor = JourneyReconstructor::new(
-            Arc::new(street),
+            Arc::new(street.clone()),
             Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::default()))),
             Arc::new(BikeShareNetwork::new(Vec::new())),
         )
-        .request_local();
+        .with_routes(Arc::new(crate::routing::cache::RouteCache::new(Arc::new(
+            street,
+        ))));
         let journey = |departure| {
             RealizedJourney::from_movements(
                 vec![
