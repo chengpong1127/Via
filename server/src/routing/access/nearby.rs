@@ -4,10 +4,7 @@ use crate::{
     street::{Coordinate, MatrixCell},
 };
 
-use crate::routing::{
-    corridors::TransitTopologyIndex,
-    model::{EndpointStop, JourneyPlanningLimits},
-};
+use crate::routing::model::{EndpointStop, JourneyPlanningLimits};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct StreetMetric {
@@ -23,7 +20,7 @@ struct NearbyStopCandidate {
 }
 
 pub(super) fn prune_coverage(
-    topology: &TransitTopologyIndex,
+    runtime: &TransitRuntime,
     stops: Vec<EndpointStop>,
     limit: usize,
 ) -> Vec<EndpointStop> {
@@ -31,7 +28,7 @@ pub(super) fn prune_coverage(
     for stop in stops {
         if retained.iter().any(|existing: &EndpointStop| {
             existing.walking_seconds <= stop.walking_seconds
-                && stop_coverage_dominates(topology, &existing.stop_id, &stop.stop_id)
+                && stop_coverage_dominates(runtime, &existing.stop_id, &stop.stop_id)
         }) {
             continue;
         }
@@ -42,16 +39,16 @@ pub(super) fn prune_coverage(
 }
 
 fn stop_coverage_dominates(
-    topology: &TransitTopologyIndex,
+    runtime: &TransitRuntime,
     dominant_stop: &crate::domain::ids::BoardingPointId,
     candidate_stop: &crate::domain::ids::BoardingPointId,
 ) -> bool {
-    topology
-        .occurrences_at(candidate_stop)
+    runtime
+        .pattern_positions_at(candidate_stop)
         .iter()
         .all(|position| {
-            topology
-                .occurrences_at(dominant_stop)
+            runtime
+                .pattern_positions_at(dominant_stop)
                 .iter()
                 .any(|dominant| dominant.pattern_id == position.pattern_id)
         })
@@ -59,7 +56,6 @@ fn stop_coverage_dominates(
 
 pub(super) fn nearby_stops(
     runtime: &TransitRuntime,
-    topology: &TransitTopologyIndex,
     coordinate: Coordinate,
     allowed_transit_modes: &[TransitMode],
     limit: usize,
@@ -73,7 +69,7 @@ pub(super) fn nearby_stops(
         .stops_within_radius(request_coordinate, limits.max_walking_radius_metres)
         .into_iter()
         .filter_map(|stop| {
-            let modes = modes_at_stop(runtime, topology, &stop.id);
+            let modes = modes_at_stop(runtime, &stop.id);
             if !allowed_transit_modes
                 .iter()
                 .any(|mode| modes.contains(mode))
@@ -138,11 +134,10 @@ fn select_mode_balanced(
 
 pub(crate) fn modes_at_stop(
     runtime: &TransitRuntime,
-    topology: &TransitTopologyIndex,
     stop_id: &crate::domain::ids::BoardingPointId,
 ) -> Vec<TransitMode> {
-    let mut modes = topology
-        .occurrences_at(stop_id)
+    let mut modes = runtime
+        .pattern_positions_at(stop_id)
         .iter()
         .map(|position| runtime.required_pattern(&position.pattern_id))
         .map(|pattern| runtime.route_of(pattern).mode)
@@ -165,7 +160,6 @@ pub(crate) fn street_metric(cell: &MatrixCell) -> Option<StreetMetric> {
 #[cfg(test)]
 mod tests {
     use super::{JourneyPlanningLimits, nearby_stops, stop_coverage_dominates};
-    use crate::routing::corridors::TransitTopologyIndex;
     use crate::{
         domain::location::GeoCoordinate,
         domain::{
@@ -215,13 +209,14 @@ mod tests {
             Vec::new(),
         );
 
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network));
         assert!(stop_coverage_dominates(
-            &TransitTopologyIndex::new(&network),
+            &runtime,
             &BoardingPointId::new("a"),
             &BoardingPointId::new("b")
         ));
         assert!(!stop_coverage_dominates(
-            &TransitTopologyIndex::new(&network),
+            &runtime,
             &BoardingPointId::new("a"),
             &BoardingPointId::new("c")
         ));
@@ -304,11 +299,9 @@ mod tests {
             Vec::new(),
         );
         let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-        let topology = TransitTopologyIndex::new(runtime.network());
         let limits = JourneyPlanningLimits::default();
         let nearby = nearby_stops(
             &runtime,
-            &topology,
             Coordinate::try_new(origin.latitude, origin.longitude).unwrap(),
             &[
                 TransitMode::Bus,
@@ -373,18 +366,10 @@ mod tests {
             Vec::new(),
         );
         let runtime = TransitRuntime::new(std::sync::Arc::new(network));
-        let topology = TransitTopologyIndex::new(runtime.network());
         let limits = JourneyPlanningLimits::default();
         let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
 
-        let metro_only = nearby_stops(
-            &runtime,
-            &topology,
-            coordinate,
-            &[TransitMode::Metro],
-            8,
-            &limits,
-        );
+        let metro_only = nearby_stops(&runtime, coordinate, &[TransitMode::Metro], 8, &limits);
         assert_eq!(
             metro_only
                 .iter()
@@ -395,7 +380,6 @@ mod tests {
 
         let bus_and_metro = nearby_stops(
             &runtime,
-            &topology,
             coordinate,
             &[TransitMode::Bus, TransitMode::Metro],
             8,

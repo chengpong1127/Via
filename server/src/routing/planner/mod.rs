@@ -19,9 +19,7 @@ use crate::{
 use super::{
     access::AccessDiscovery,
     cache::{MatrixCache, RouteCache},
-    corridors::{
-        self, CorridorSearchStats, RetainedCorridorSet, TransferShortcutIndex, TransitTopologyIndex,
-    },
+    corridors::{self, CorridorSearchStats, RetainedCorridorSet},
     evaluation::{
         CorridorEvaluationStats, CorridorEvaluator, EvaluationCorridor,
         bike::{
@@ -38,9 +36,7 @@ use super::{
 #[derive(Clone)]
 pub struct MultimodalPlanner {
     network: Arc<TransitRuntime>,
-    topology: Arc<TransitTopologyIndex>,
     access: AccessDiscovery,
-    transfers: Arc<TransferShortcutIndex>,
     timing: Arc<dyn TimingSnapshotLoader>,
     bike: BikeShareMovementPlanner,
     bike_availability: Arc<dyn BikeAvailabilitySource>,
@@ -73,11 +69,8 @@ impl MultimodalPlanner {
         bike_availability: Arc<dyn BikeAvailabilitySource>,
         bike: BikeMovementPolicy,
     ) -> Self {
-        let topology = Arc::new(TransitTopologyIndex::new(network.network()));
         Self {
-            access: AccessDiscovery::new(network.clone(), topology.clone(), street.clone()),
-            topology,
-            transfers: Arc::new(TransferShortcutIndex::from_network(network.network())),
+            access: AccessDiscovery::new(network.clone(), street.clone()),
             network,
             timing,
             bike: BikeShareMovementPlanner::new(bike_network, bike),
@@ -210,8 +203,7 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
     ) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
-        let (retained, stats) =
-            corridors::generate(&self.network, &self.topology, &self.transfers, query);
+        let (retained, stats) = corridors::generate(&self.network, query);
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);

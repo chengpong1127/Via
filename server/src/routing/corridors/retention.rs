@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use super::topology::PatternPosition;
-
-use crate::domain::{transit::TransitMode, transit_runtime::TransitRuntime};
+use crate::domain::{
+    transit::TransitMode,
+    transit_runtime::{PatternPosition, TransitRuntime},
+};
 
 use super::types::{EquivalentLegKey, StaticCorridor, StaticTransitLeg, equivalent_leg_key};
 

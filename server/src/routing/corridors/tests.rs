@@ -13,7 +13,7 @@ use crate::{
         },
         transit_runtime::TransitRuntime,
     },
-    routing::{EndpointStop, TransferShortcutIndex, TransitTopologyIndex, model::PlanningQuery},
+    routing::{EndpointStop, model::PlanningQuery},
 };
 
 fn id(value: &str) -> BoardingPointId {
@@ -104,9 +104,7 @@ fn query(
 
 fn run(network: &TransitNetwork, query: &PlanningQuery) -> RetainedCorridorSet {
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-    let topology = TransitTopologyIndex::new(runtime.network());
-    let transfers = TransferShortcutIndex::from_network(runtime.network());
-    generate(&runtime, &topology, &transfers, query).0
+    generate(&runtime, query).0
 }
 
 #[test]
@@ -311,9 +309,7 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
     );
 
     let (retained_corridors, stats) = generate(
-        &TransitRuntime::new(std::sync::Arc::new(network.clone())),
-        &TransitTopologyIndex::new(&network),
-        &TransferShortcutIndex::from_network(&network),
+        &TransitRuntime::new(std::sync::Arc::new(network)),
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 2),
     );
 
@@ -330,16 +326,10 @@ fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timi
         ],
         vec![trip("a", "bus-a", &[0, 100]), trip("b", "bus-b", &[0, 110])],
     );
-    let topology = TransitTopologyIndex::new(&network);
-    let transfers = TransferShortcutIndex::from_network(&network);
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
-    let (retained_corridors, stats) = generate(
-        &runtime,
-        &topology,
-        &transfers,
-        &query("o", "d", &[TransitMode::Bus], 0, 1),
-    );
+    let (retained_corridors, stats) =
+        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
     assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
@@ -367,16 +357,10 @@ fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
             trip("long-trip", "continues-past-destination", &[0, 110, 220]),
         ],
     );
-    let topology = TransitTopologyIndex::new(&network);
-    let transfers = TransferShortcutIndex::from_network(&network);
-    let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
-    let (retained_corridors, stats) = generate(
-        &runtime,
-        &topology,
-        &transfers,
-        &query("o", "d", &[TransitMode::Bus], 0, 1),
-    );
+    let (retained_corridors, stats) =
+        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
 
     assert_eq!(retained_corridors.retained().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
@@ -649,13 +633,11 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
         vec![pattern("bus", TransitMode::Bus, &["o", "d"])],
         vec![trip("bus-trip", "bus", &[0, 100])],
     );
-    let topology = TransitTopologyIndex::new(&network);
-    let transfers = TransferShortcutIndex::from_network(&network);
     let mut query = query("o", "d", &[TransitMode::Bus], 0, 2);
     query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
-    let (corridors, stats) = generate(&runtime, &topology, &transfers, &query);
+    let (corridors, stats) = generate(&runtime, &query);
 
     assert!(stats.deadline_exceeded);
     assert_eq!(stats.states_expanded, 0);

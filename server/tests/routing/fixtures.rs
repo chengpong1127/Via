@@ -27,7 +27,7 @@ use via_server::{
             ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         },
     },
-    routing::{JourneyPlanningLimits, RoutingService, TransferShortcutIndex},
+    routing::{JourneyPlanningLimits, RoutingService},
     street::{
         Coordinate, FakeStreetRouter, MatrixQuery, MatrixResult, RouteQuery, StreetPath,
         StreetRouter, StreetRoutingError,
@@ -325,7 +325,6 @@ pub(crate) fn leg_modes(option: &Value) -> Vec<&str> {
 fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     let network = network();
     let runtime = TransitRuntime::new(Arc::new(network.clone()));
-    let transfers = TransferShortcutIndex::from_network(&network);
 
     assert_eq!(network.stops.len(), 18);
     assert_eq!(network.patterns.len(), 10);
@@ -342,13 +341,13 @@ fn routing_fixture_artifacts_are_small_valid_and_bidirectional() {
     assert_eq!(network.transfer_edges.len(), 12);
     assert!(network.validate().is_ok());
     assert!(
-        transfers
+        runtime
             .transfers_from(&BoardingPointId::new("F-TRA-B"))
             .iter()
             .any(|shortcut| shortcut.to == BoardingPointId::new("F-M1"))
     );
     assert!(
-        transfers
+        runtime
             .transfers_from(&BoardingPointId::new("F-M1"))
             .iter()
             .any(|shortcut| shortcut.to == BoardingPointId::new("F-TRA-B"))

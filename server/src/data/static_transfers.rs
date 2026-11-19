@@ -295,7 +295,6 @@ mod tests {
             location::GeoCoordinate,
             transit::{TransitPattern, TransitStop, default_service_day_boundary},
         },
-        routing::TransferShortcutIndex,
         street::{FakeStreetRouter, Seconds},
     };
 
@@ -462,12 +461,6 @@ mod tests {
                 90
             )]
         );
-        let index = TransferShortcutIndex::from_network(&network);
-        assert_eq!(index.transfers_from(&BoardingPointId::new("a")).len(), 1);
-        assert_eq!(
-            index.transfers_from(&BoardingPointId::new("a"))[0].distance_metres,
-            90
-        );
         network.static_network_revision = "fixture".to_owned();
         network.schedule_revision = "fixture".to_owned();
         let restored =
@@ -479,7 +472,6 @@ mod tests {
             .unwrap()
             .remove("distance_metres");
         assert!(TransitNetwork::from_artifact_json(&legacy.to_string()).is_err());
-        assert!(index.transfers_from(&BoardingPointId::new("b")).is_empty());
     }
 
     #[tokio::test]

@@ -130,7 +130,7 @@ fn reconstruction_does_not_depend_on_the_routing_service() {
 #[test]
 fn routing_service_does_not_access_planner_topology() {
     let routing = source("src/routing/service.rs");
-    for forbidden in ["TransitTopologyIndex", ".topology()", "AccessNetwork"] {
+    for forbidden in ["pattern_positions_at", "transfers_from", "AccessNetwork"] {
         assert!(
             !routing.contains(forbidden),
             "RoutingService must not access planner internals through {forbidden}"

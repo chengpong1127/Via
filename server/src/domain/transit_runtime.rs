@@ -9,10 +9,16 @@ use super::{
     spatial::SpatialPointIndex,
     taipei_offset,
     transit::{
-        ServiceCalendar, TransitFrequency, TransitNetwork, TransitNetworkValidationError,
-        TransitPattern, TransitRoute, TransitStop, TransitTrip,
+        ServiceCalendar, TransferEdge, TransitFrequency, TransitNetwork,
+        TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PatternPosition {
+    pub pattern_id: TransitPatternId,
+    pub stop_index: usize,
+}
 
 #[derive(Clone, Debug)]
 pub struct TransitRuntime {
@@ -116,6 +122,24 @@ impl TransitRuntime {
             .unwrap_or(&[])
     }
 
+    pub fn pattern_positions_at(&self, stop: &BoardingPointId) -> &[PatternPosition] {
+        self.indexes
+            .topology
+            .pattern_positions_by_stop
+            .get(stop)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferEdge] {
+        self.indexes
+            .topology
+            .transfers_by_stop
+            .get(stop)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     pub fn same_stop_transfer_seconds(&self) -> u32 {
         self.network.default_transfer_seconds
     }
@@ -140,6 +164,7 @@ struct TransitRuntimeIndexes {
     spatial: SpatialPointIndex,
     lookup: TransitLookupIndex,
     schedule: ScheduleIndex,
+    topology: TopologyIndex,
 }
 
 impl TransitRuntimeIndexes {
@@ -208,6 +233,7 @@ impl TransitRuntimeIndexes {
                 .or_default()
                 .push(index);
         }
+        indexes.topology = TopologyIndex::build(network);
         indexes
     }
 }
@@ -219,6 +245,56 @@ struct TransitLookupIndex {
     pattern_by_id: HashMap<TransitPatternId, usize>,
     trip_by_id: HashMap<TransitTripId, usize>,
     calendar_by_id: HashMap<ServiceCalendarId, usize>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TopologyIndex {
+    pattern_positions_by_stop: HashMap<BoardingPointId, Vec<PatternPosition>>,
+    transfers_by_stop: HashMap<BoardingPointId, Vec<TransferEdge>>,
+}
+
+impl TopologyIndex {
+    fn build(network: &TransitNetwork) -> Self {
+        let mut index = Self::default();
+        for pattern in &network.patterns {
+            for (stop_index, stop_id) in pattern.stops.iter().enumerate() {
+                index
+                    .pattern_positions_by_stop
+                    .entry(stop_id.clone())
+                    .or_default()
+                    .push(PatternPosition {
+                        pattern_id: pattern.id.clone(),
+                        stop_index,
+                    });
+            }
+        }
+        for positions in index.pattern_positions_by_stop.values_mut() {
+            positions.sort_by(|left, right| {
+                left.pattern_id
+                    .as_str()
+                    .cmp(right.pattern_id.as_str())
+                    .then(left.stop_index.cmp(&right.stop_index))
+            });
+        }
+        for edge in &network.transfer_edges {
+            let outgoing = index
+                .transfers_by_stop
+                .entry(edge.from.clone())
+                .or_default();
+            if !outgoing.contains(edge) {
+                outgoing.push(edge.clone());
+            }
+        }
+        for outgoing in index.transfers_by_stop.values_mut() {
+            outgoing.sort_by(|left, right| {
+                left.to
+                    .as_str()
+                    .cmp(right.to.as_str())
+                    .then(left.duration_seconds.cmp(&right.duration_seconds))
+            });
+        }
+        index
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

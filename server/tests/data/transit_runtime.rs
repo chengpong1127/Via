@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use geo::{Destination, HaversineMeasure, Point};
 use via_server::domain::{
-    ids::BoardingPointId,
+    ids::{BoardingPointId, TransitPatternId, TransitRouteId},
     location::GeoCoordinate,
-    transit::{TransitNetwork, TransitStop},
-    transit_runtime::TransitRuntime,
+    transit::{SegmentProfile, TransferEdge, TransitNetwork, TransitPattern, TransitStop},
+    transit_runtime::{PatternPosition, TransitRuntime},
 };
 
 fn stop(id: &str, latitude: f64, longitude: f64) -> TransitStop {
@@ -187,5 +187,98 @@ fn spatial_queries_use_geographic_scale_across_longitude_dateline_and_poles() {
     assert_eq!(
         ids(polar_runtime.stops_within_radius(polar_origin, 300)),
         expected_ids(&["polar-near"])
+    );
+}
+
+fn pattern(id: &str, stops: &[&str]) -> TransitPattern {
+    TransitPattern::new(
+        TransitPatternId::new(id),
+        TransitRouteId::new(id),
+        None,
+        id,
+        stops
+            .iter()
+            .map(|stop| BoardingPointId::new(*stop))
+            .collect(),
+        SegmentProfile {
+            segments: Vec::new(),
+        },
+    )
+}
+
+#[test]
+fn pattern_positions_list_every_pattern_occurrence_in_pattern_order() {
+    let runtime = TransitRuntime::new(Arc::new(TransitNetwork::new(
+        time::Time::from_hms(4, 0, 0).expect("valid fixture time"),
+        vec![stop("a", 25.0, 121.5), stop("b", 25.0, 121.5)],
+        vec![pattern("z", &["a", "b", "a"]), pattern("m", &["b", "a"])],
+        Vec::new(),
+    )));
+
+    assert_eq!(
+        runtime.pattern_positions_at(&BoardingPointId::new("a")),
+        &[
+            PatternPosition {
+                pattern_id: TransitPatternId::new("m"),
+                stop_index: 1,
+            },
+            PatternPosition {
+                pattern_id: TransitPatternId::new("z"),
+                stop_index: 0,
+            },
+            PatternPosition {
+                pattern_id: TransitPatternId::new("z"),
+                stop_index: 2,
+            },
+        ]
+    );
+    assert!(
+        runtime
+            .pattern_positions_at(&BoardingPointId::new("missing"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn transfers_are_directional_deduplicated_and_ordered() {
+    let edge = |from: &str, to: &str, duration_seconds| {
+        TransferEdge::new(
+            BoardingPointId::new(from),
+            BoardingPointId::new(to),
+            duration_seconds,
+            100,
+        )
+    };
+    let mut network = TransitNetwork::new(
+        time::Time::from_hms(4, 0, 0).expect("valid fixture time"),
+        vec![
+            stop("a", 25.0, 121.5),
+            stop("b", 25.0, 121.5),
+            stop("c", 25.0, 121.5),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    network.transfer_edges = vec![
+        edge("a", "c", 60),
+        edge("a", "b", 90),
+        edge("a", "b", 90),
+        edge("a", "b", 30),
+        edge("b", "a", 90),
+    ];
+    let runtime = TransitRuntime::new(Arc::new(network));
+
+    assert_eq!(
+        runtime.transfers_from(&BoardingPointId::new("a")),
+        &[edge("a", "b", 30), edge("a", "b", 90), edge("a", "c", 60)]
+    );
+    assert_eq!(
+        runtime.transfers_from(&BoardingPointId::new("b")),
+        &[edge("b", "a", 90)]
+    );
+    assert!(
+        runtime
+            .transfers_from(&BoardingPointId::new("c"))
+            .is_empty()
     );
 }

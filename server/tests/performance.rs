@@ -11,8 +11,7 @@ use via_server::{
         TraDepartureSource, TransitDepartureSource, UnavailableBikeAvailabilitySource,
     },
     routing::{
-        EndpointStop, MultimodalPlanner, PlanningDeadline, PlanningQuery, TransferShortcutIndex,
-        TransitTopologyIndex, generate_static_corridors,
+        EndpointStop, MultimodalPlanner, PlanningDeadline, PlanningQuery, generate_static_corridors,
     },
 };
 
@@ -34,8 +33,6 @@ fn network() -> via_server::domain::transit::TransitNetwork {
 #[ignore = "in-process routing performance comparison"]
 async fn deterministic_routing_benchmark() {
     let runtime = Arc::new(TransitRuntime::new(Arc::new(network())));
-    let topology = TransitTopologyIndex::new(runtime.network());
-    let transfers = TransferShortcutIndex::from_network(runtime.network());
     let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
         Arc::new(BusDepartureSource::new(
             runtime.clone(),
@@ -111,8 +108,7 @@ async fn deterministic_routing_benchmark() {
         let mut last_evaluation = None;
         for iteration in 0..WARMUP + ITERATIONS {
             let started = Instant::now();
-            let (corridors, static_stats) =
-                generate_static_corridors(&runtime, &topology, &transfers, black_box(&query));
+            let (corridors, static_stats) = generate_static_corridors(&runtime, black_box(&query));
             let static_ns = started.elapsed().as_nanos();
             let started = Instant::now();
             let (realized_journeys, planner_stats) = planner

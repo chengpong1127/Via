@@ -15,8 +15,6 @@ use crate::routing::model::PlanningQuery;
 use super::{
     pattern_index::CorridorPatternIndex,
     retention::RetainedCorridorSet,
-    topology::TransitTopologyIndex,
-    transfers::TransferShortcutIndex,
     types::{
         CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
         StaticCorridorStep, StaticCostSource, StaticTransitLeg, equivalent_leg_key,
@@ -87,7 +85,6 @@ struct Candidate {
 
 struct Search<'a> {
     network: &'a TransitRuntime,
-    transfers: &'a TransferShortcutIndex,
     nodes: Vec<Node>,
     best: HashMap<BoardingPointId, Vec<BagEntry>>,
     max_seconds: u32,
@@ -108,8 +105,6 @@ struct BagEntry {
 
 pub fn generate(
     network: &TransitRuntime,
-    topology: &TransitTopologyIndex,
-    transfers: &TransferShortcutIndex,
     query: &PlanningQuery,
 ) -> (RetainedCorridorSet, CorridorSearchStats) {
     let started = Instant::now();
@@ -130,7 +125,6 @@ pub fn generate(
     );
     let mut search = Search {
         network,
-        transfers,
         nodes: Vec::new(),
         best: HashMap::new(),
         max_seconds: query.limits.max_journey_duration_seconds,
@@ -178,7 +172,7 @@ pub fn generate(
         }
         let mut routes = HashMap::<usize, usize>::new();
         for stop_id in current.keys() {
-            for position in topology.occurrences_at(stop_id) {
+            for position in network.pattern_positions_at(stop_id) {
                 if let Some(group_index) = patterns.group_index(&position.pattern_id) {
                     let first = routes.entry(group_index).or_insert(position.stop_index);
                     *first = (*first).min(position.stop_index);
@@ -238,7 +232,7 @@ pub fn generate(
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs = equivalent_legs_for(network, topology, &patterns, &selected);
+    let equivalent_legs = equivalent_legs_for(network, &patterns, &selected);
     let (retained, pattern_count, bus_stop_count) =
         RetainedCorridorSet::from_retained(network, &equivalent_legs, selected);
     stats.corridors_retained = retained.retained().len();
@@ -382,7 +376,7 @@ impl Search<'_> {
                 if !label.after_ride && self.nodes[label.node].parent.is_some() {
                     continue;
                 }
-                for shortcut in self.transfers.transfers_from(stop_id) {
+                for shortcut in self.network.transfers_from(stop_id) {
                     let cost_seconds = label.cost_seconds.saturating_add(shortcut.duration_seconds);
                     let structure = fingerprint(label.structure, &(&shortcut.from, &shortcut.to));
                     if !self.insert(
@@ -636,7 +630,6 @@ fn select(
 
 fn equivalent_legs_for(
     network: &TransitRuntime,
-    topology: &TransitTopologyIndex,
     patterns: &CorridorPatternIndex,
     corridors: &[StaticCorridor],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
@@ -647,7 +640,7 @@ fn equivalent_legs_for(
             continue;
         }
         let mut legs = Vec::new();
-        for position in topology.occurrences_at(&leg.board_stop_id) {
+        for position in network.pattern_positions_at(&leg.board_stop_id) {
             let Some(group_index) = patterns.group_index(&position.pattern_id) else {
                 continue;
             };

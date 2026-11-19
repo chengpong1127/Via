@@ -13,29 +13,17 @@ use crate::{
     },
 };
 
-use super::{
-    corridors::TransitTopologyIndex,
-    model::{EndpointStop, FailureSummary, JourneyPlanningContext, JourneyPlanningLimits},
-};
+use super::model::{EndpointStop, FailureSummary, JourneyPlanningContext, JourneyPlanningLimits};
 
 #[derive(Clone)]
 pub(crate) struct AccessDiscovery {
     network: Arc<TransitRuntime>,
-    topology: Arc<TransitTopologyIndex>,
     street: Arc<dyn StreetRouter>,
 }
 
 impl AccessDiscovery {
-    pub(crate) fn new(
-        network: Arc<TransitRuntime>,
-        topology: Arc<TransitTopologyIndex>,
-        street: Arc<dyn StreetRouter>,
-    ) -> Self {
-        Self {
-            network,
-            topology,
-            street,
-        }
+    pub(crate) fn new(network: Arc<TransitRuntime>, street: Arc<dyn StreetRouter>) -> Self {
+        Self { network, street }
     }
 
     async fn discover_endpoint_stops(
@@ -50,7 +38,6 @@ impl AccessDiscovery {
         let stop_limit = limits.max_transit_endpoint_stops;
         let stops = nearby::nearby_stops(
             &self.network,
-            &self.topology,
             endpoint,
             allowed_transit_modes,
             stop_limit,
@@ -100,7 +87,7 @@ impl AccessDiscovery {
                 .then(left.distance_metres.cmp(&right.distance_metres))
                 .then(left.stop_id.as_str().cmp(right.stop_id.as_str()))
         });
-        Ok(nearby::prune_coverage(&self.topology, walks, stop_limit))
+        Ok(nearby::prune_coverage(&self.network, walks, stop_limit))
     }
 
     pub(crate) async fn discover(
@@ -151,7 +138,7 @@ impl AccessDiscovery {
         let describe = |stop_id: &BoardingPointId, walking_seconds: u32| {
             (
                 stop_id.as_str().to_owned(),
-                nearby::modes_at_stop(&self.network, &self.topology, stop_id),
+                nearby::modes_at_stop(&self.network, stop_id),
                 walking_seconds,
             )
         };

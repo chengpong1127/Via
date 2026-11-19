@@ -22,7 +22,6 @@ use crate::{
     routing::{
         EndpointStop,
         corridors::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
-        corridors::{TransferShortcutIndex, TransitTopologyIndex},
     },
 };
 
@@ -87,9 +86,7 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> RetainedCorridorSet {
-    let topology = TransitTopologyIndex::new(network.network());
-    let transfers = TransferShortcutIndex::from_network(network.network());
-    generate(network, &topology, &transfers, query).0
+    generate(network, query).0
 }
 
 fn trip(id: &str, pattern_id: &str, stops: &[&str], minute_offsets: &[i64]) -> EffectiveTrip {
