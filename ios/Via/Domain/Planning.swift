@@ -8,6 +8,16 @@ nonisolated enum PlanningMode: String, CaseIterable, Hashable, Identifiable, Sen
     case bikeShare = "bike_share"
 
     var id: Self { self }
+
+    var transitMode: TransitMode? {
+        switch self {
+        case .bus: .bus
+        case .metro: .metro
+        case .tra: .rail
+        case .thsr: .highSpeedRail
+        case .bikeShare: nil
+        }
+    }
 }
 
 nonisolated struct PlanningRequest: Hashable, Sendable {

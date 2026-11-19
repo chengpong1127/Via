@@ -61,13 +61,7 @@ extension TransitRide {
 
 extension PlanningMode {
     var symbol: String {
-        switch self {
-        case .bus: TransitMode.bus.symbol
-        case .metro: TransitMode.metro.symbol
-        case .tra: TransitMode.rail.symbol
-        case .thsr: TransitMode.highSpeedRail.symbol
-        case .bikeShare: "bicycle"
-        }
+        transitMode?.symbol ?? "bicycle"
     }
 
     var title: LocalizedStringResource {
@@ -81,13 +75,7 @@ extension PlanningMode {
     }
 
     var color: Color {
-        switch self {
-        case .bus: TransitMode.bus.color
-        case .metro: TransitMode.metro.color
-        case .tra: TransitMode.rail.color
-        case .thsr: TransitMode.highSpeedRail.color
-        case .bikeShare: .bikeShare
-        }
+        transitMode?.color ?? .bikeShare
     }
 }
 
