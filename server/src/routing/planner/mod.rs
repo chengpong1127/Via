@@ -156,7 +156,7 @@ impl MultimodalPlanner {
         }
         let (snapshots, mut failures) = query
             .deadline
-            .run(self.load_snapshots(&query, &retained, &search, &corridors))
+            .run(self.load_snapshots(&query, &retained, &corridors))
             .await??;
         let matrix_cache = Arc::new(MatrixCache::new(route_cache));
         let bike_session = snapshots.bike_availability.map(|availability| {
@@ -220,6 +220,7 @@ impl MultimodalPlanner {
             states_expanded = stats.states_expanded,
             corridors_found = stats.unique_corridors_found,
             corridors_retained = stats.corridors_retained,
+            corridor_bus_stops = stats.corridor_bus_stops,
             latency_ms = stats.search_latency_ms,
             "static round-based corridor search"
         );
@@ -248,7 +249,6 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
         retained: &RetainedCorridorSet,
-        search: &CorridorSearchStats,
         corridors: &[EvaluationCorridor],
     ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
         let window_end = query.departure_time
@@ -333,7 +333,6 @@ impl MultimodalPlanner {
             target: "via_server::routing",
             positions_requested,
             snapshot_summary = ?timing.trace_summary(),
-            relevant_bus_stops = search.corridor_bus_stops,
             bike_share_enabled = query.allow_bike_share,
             bike_station_count = bike_station_ids.len(),
             latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
