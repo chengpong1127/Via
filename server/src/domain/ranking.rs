@@ -37,17 +37,22 @@ pub struct RankingCandidate {
     pub transfers: Vec<TransferEvidence>,
 }
 
+impl AsRef<RankingCandidate> for RankingCandidate {
+    fn as_ref(&self) -> &RankingCandidate {
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RankedJourney {
-    pub stable_key: String,
+pub struct RankedJourney<T = RankingCandidate> {
     pub class: JourneyClass,
-    pub departure_epoch_seconds: i64,
-    pub arrival_epoch_seconds: i64,
-    pub walking_seconds: u32,
-    pub bicycle_seconds: u32,
-    pub bike_share_uses: u32,
-    pub transfer_count: u32,
-    pub main_pattern_sequence: Vec<String>,
+    pub candidate: T,
+}
+
+impl<T: AsRef<RankingCandidate>> RankedJourney<T> {
+    fn metrics(&self) -> &RankingCandidate {
+        self.candidate.as_ref()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
@@ -76,7 +81,7 @@ impl Default for RankingPolicy {
 }
 
 impl RankingPolicy {
-    pub fn rank(&self, candidates: Vec<RankingCandidate>) -> Vec<RankedJourney> {
+    pub fn rank<T: AsRef<RankingCandidate>>(&self, candidates: Vec<T>) -> Vec<RankedJourney<T>> {
         let mut eligible_candidates: Vec<_> = candidates
             .into_iter()
             .filter_map(|candidate| self.classify(candidate))
@@ -100,13 +105,14 @@ impl RankingPolicy {
         selected_journeys
     }
 
-    fn classify(&self, candidate: RankingCandidate) -> Option<RankedJourney> {
-        let mut class = if candidate.timing_reliability == TimingReliability::Fallback {
+    fn classify<T: AsRef<RankingCandidate>>(&self, candidate: T) -> Option<RankedJourney<T>> {
+        let metrics = candidate.as_ref();
+        let mut class = if metrics.timing_reliability == TimingReliability::Fallback {
             JourneyClass::Feasible
         } else {
             JourneyClass::Reliable
         };
-        for transfer in &candidate.transfers {
+        for transfer in &metrics.transfers {
             if transfer.available_seconds < transfer.physical_seconds {
                 return None;
             }
@@ -119,20 +125,15 @@ impl RankingPolicy {
             }
         }
 
-        Some(RankedJourney {
-            stable_key: candidate.stable_key,
-            class,
-            departure_epoch_seconds: candidate.departure_epoch_seconds,
-            arrival_epoch_seconds: candidate.arrival_epoch_seconds,
-            walking_seconds: candidate.walking_seconds,
-            bicycle_seconds: candidate.bicycle_seconds,
-            bike_share_uses: candidate.bike_share_uses,
-            transfer_count: candidate.transfer_count,
-            main_pattern_sequence: candidate.main_pattern_sequence,
-        })
+        Some(RankedJourney { class, candidate })
     }
 
-    fn materially_different(&self, current: &RankedJourney, candidate: &RankedJourney) -> bool {
+    fn materially_different<T: AsRef<RankingCandidate>>(
+        &self,
+        current: &RankedJourney<T>,
+        candidate: &RankedJourney<T>,
+    ) -> bool {
+        let (current, candidate) = (current.metrics(), candidate.metrics());
         let fewer_transfers = candidate.transfer_count < current.transfer_count;
         let less_walking = current
             .walking_seconds
@@ -154,14 +155,20 @@ impl RankingPolicy {
             || (less_walking && !more_transfers)
     }
 
-    fn same_bicycle_use(&self, current: &RankedJourney, candidate: &RankedJourney) -> bool {
+    fn same_bicycle_use(&self, current: &RankingCandidate, candidate: &RankingCandidate) -> bool {
         current.bike_share_uses == candidate.bike_share_uses
             && current.bicycle_seconds.abs_diff(candidate.bicycle_seconds)
                 < self.material_walking_difference_seconds
     }
 
-    fn compare_ranked(&self, left: &RankedJourney, right: &RankedJourney) -> Ordering {
-        compare_primary_preference(self, left, right)
+    fn compare_ranked<T: AsRef<RankingCandidate>>(
+        &self,
+        left: &RankedJourney<T>,
+        right: &RankedJourney<T>,
+    ) -> Ordering {
+        let primary = compare_primary_preference(self, left, right);
+        let (left, right) = (left.metrics(), right.metrics());
+        primary
             .then(left.transfer_count.cmp(&right.transfer_count))
             .then(left.walking_seconds.cmp(&right.walking_seconds))
             .then(left.bicycle_seconds.cmp(&right.bicycle_seconds))
@@ -175,20 +182,22 @@ impl RankingPolicy {
     }
 }
 
-fn compare_primary_preference(
+fn compare_primary_preference<T: AsRef<RankingCandidate>>(
     policy: &RankingPolicy,
-    left: &RankedJourney,
-    right: &RankedJourney,
+    left: &RankedJourney<T>,
+    right: &RankedJourney<T>,
 ) -> Ordering {
-    let arrival_difference = left
-        .arrival_epoch_seconds
-        .abs_diff(right.arrival_epoch_seconds);
+    let (left_arrival, right_arrival) = (
+        left.metrics().arrival_epoch_seconds,
+        right.metrics().arrival_epoch_seconds,
+    );
     if left.class != right.class
-        && arrival_difference <= u64::from(policy.reliability_preference_window_seconds)
+        && left_arrival.abs_diff(right_arrival)
+            <= u64::from(policy.reliability_preference_window_seconds)
     {
         compare_classes(left.class, right.class)
     } else {
-        left.arrival_epoch_seconds.cmp(&right.arrival_epoch_seconds)
+        left_arrival.cmp(&right_arrival)
     }
 }
 
@@ -200,27 +209,41 @@ fn compare_classes(left: JourneyClass, right: JourneyClass) -> Ordering {
     }
 }
 
-fn remove_dominated(policy: &RankingPolicy, candidates: Vec<RankedJourney>) -> Vec<RankedJourney> {
-    candidates
+fn remove_dominated<T: AsRef<RankingCandidate>>(
+    policy: &RankingPolicy,
+    candidates: Vec<RankedJourney<T>>,
+) -> Vec<RankedJourney<T>> {
+    let keep = candidates
         .iter()
         .enumerate()
-        .filter(|(index, candidate)| {
+        .map(|(index, candidate)| {
             !candidates.iter().enumerate().any(|(other_index, other)| {
-                index != &other_index && dominates(policy, other, candidate)
+                index != other_index && dominates(policy, other, candidate)
             })
         })
-        .map(|(_, candidate)| candidate.clone())
+        .collect::<Vec<_>>();
+    candidates
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(candidate, keep)| keep.then_some(candidate))
         .collect()
 }
 
-fn dominates(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney) -> bool {
-    let no_worse = class_is_no_worse(policy, left, right)
+fn dominates<T: AsRef<RankingCandidate>>(
+    policy: &RankingPolicy,
+    left: &RankedJourney<T>,
+    right: &RankedJourney<T>,
+) -> bool {
+    let class_no_worse = class_is_no_worse(policy, left, right);
+    let class_strictly_better = class_is_strictly_better(policy, left, right);
+    let (left, right) = (left.metrics(), right.metrics());
+    let no_worse = class_no_worse
         && left.arrival_epoch_seconds <= right.arrival_epoch_seconds
         && left.transfer_count <= right.transfer_count
         && left.walking_seconds <= right.walking_seconds
         && left.bicycle_seconds <= right.bicycle_seconds
         && left.bike_share_uses <= right.bike_share_uses;
-    let strictly_better = class_is_strictly_better(policy, left, right)
+    let strictly_better = class_strictly_better
         || left.arrival_epoch_seconds < right.arrival_epoch_seconds
         || left.transfer_count < right.transfer_count
         || left.walking_seconds < right.walking_seconds
@@ -229,14 +252,18 @@ fn dominates(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney
     no_worse && strictly_better
 }
 
-fn class_is_no_worse(policy: &RankingPolicy, left: &RankedJourney, right: &RankedJourney) -> bool {
+fn class_is_no_worse<T: AsRef<RankingCandidate>>(
+    policy: &RankingPolicy,
+    left: &RankedJourney<T>,
+    right: &RankedJourney<T>,
+) -> bool {
     compare_primary_preference(policy, left, right) != Ordering::Greater
 }
 
-fn class_is_strictly_better(
+fn class_is_strictly_better<T: AsRef<RankingCandidate>>(
     policy: &RankingPolicy,
-    left: &RankedJourney,
-    right: &RankedJourney,
+    left: &RankedJourney<T>,
+    right: &RankedJourney<T>,
 ) -> bool {
     left.class != right.class && compare_primary_preference(policy, left, right) == Ordering::Less
 }

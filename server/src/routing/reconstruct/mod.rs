@@ -45,6 +45,12 @@ pub(super) struct JourneyCandidate {
     pub(super) option: JourneyOption,
 }
 
+impl AsRef<RankingCandidate> for JourneyCandidate {
+    fn as_ref(&self) -> &RankingCandidate {
+        &self.ranking
+    }
+}
+
 impl JourneyReconstructor {
     pub(super) fn new(
         street_router: Arc<dyn StreetRouter>,

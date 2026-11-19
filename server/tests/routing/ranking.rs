@@ -41,7 +41,7 @@ fn fallback_timing_makes_a_journey_feasible() {
 
     let classes = ranked
         .iter()
-        .map(|journey| (journey.stable_key.as_str(), journey.class))
+        .map(|journey| (journey.candidate.stable_key.as_str(), journey.class))
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(classes["realtime"], JourneyClass::Reliable);
     assert_eq!(classes["delay-adjusted"], JourneyClass::Reliable);
@@ -74,9 +74,9 @@ fn transfer_safety_boundaries_classify_exactly() {
     let ranked = RankingPolicy::default().rank(vec![bus_feasible, impossible, metro_reliable]);
 
     assert_eq!(ranked.len(), 2);
-    assert_eq!(ranked[0].stable_key, "metro-reliable");
+    assert_eq!(ranked[0].candidate.stable_key, "metro-reliable");
     assert_eq!(ranked[0].class, JourneyClass::Reliable);
-    assert_eq!(ranked[1].stable_key, "bus-feasible");
+    assert_eq!(ranked[1].candidate.stable_key, "bus-feasible");
     assert_eq!(ranked[1].class, JourneyClass::Feasible);
 }
 
@@ -94,9 +94,9 @@ fn dominance_and_near_duplicates_keep_distinct_tradeoffs() {
         RankingPolicy::default().rank(vec![less_walking, duplicate, best, fewer_transfers]);
 
     assert_eq!(ranked.len(), 3);
-    assert_eq!(ranked[0].stable_key, "blue-line");
-    assert_eq!(ranked[1].stable_key, "307");
-    assert_eq!(ranked[2].stable_key, "green-line");
+    assert_eq!(ranked[0].candidate.stable_key, "blue-line");
+    assert_eq!(ranked[1].candidate.stable_key, "307");
+    assert_eq!(ranked[2].candidate.stable_key, "green-line");
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn direct_through_journey_dominates_same_arrival_reboarding_route() {
     let ranked = RankingPolicy::default().rank(vec![reboarding, direct]);
 
     assert_eq!(ranked.len(), 1);
-    assert_eq!(ranked[0].stable_key, "red-through");
+    assert_eq!(ranked[0].candidate.stable_key, "red-through");
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn ranking_replay_is_deterministic() {
     assert_eq!(
         expected
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
@@ -151,7 +151,7 @@ fn materially_earlier_feasible_journey_beats_reliable_journey() {
 
     let ranked = RankingPolicy::default().rank(vec![walking, metro]);
 
-    assert_eq!(ranked[0].stable_key, "schedule-only-metro");
+    assert_eq!(ranked[0].candidate.stable_key, "schedule-only-metro");
 }
 
 #[test]
@@ -175,13 +175,13 @@ fn reliability_preference_obeys_exact_window_boundaries() {
         let ranked = policy.rank(vec![feasible, reliable]);
 
         assert_eq!(
-            ranked[0].stable_key, expected_key,
+            ranked[0].candidate.stable_key, expected_key,
             "gap={gap}, window={window}"
         );
         assert_eq!(
             ranked
                 .iter()
-                .find(|value| value.stable_key == "schedule-only")
+                .find(|value| value.candidate.stable_key == "schedule-only")
                 .unwrap()
                 .class,
             JourneyClass::Feasible,
@@ -210,7 +210,10 @@ fn earlier_feasible_journey_wins_outside_the_configured_reliability_window() {
 
         let ranked = policy.rank(vec![reliable, feasible]);
 
-        assert_eq!(ranked[0].stable_key, "schedule-only", "window={window}");
+        assert_eq!(
+            ranked[0].candidate.stable_key, "schedule-only",
+            "window={window}"
+        );
         assert_eq!(ranked[0].class, JourneyClass::Feasible, "window={window}");
     }
 }
@@ -222,7 +225,7 @@ fn same_class_orders_earlier_arrival_first() {
 
     let ranked = RankingPolicy::default().rank(vec![later, earlier]);
 
-    assert_eq!(ranked[0].stable_key, "earlier");
+    assert_eq!(ranked[0].candidate.stable_key, "earlier");
 }
 
 #[test]
@@ -237,8 +240,8 @@ fn same_arrival_and_class_prefers_fewer_transfers_then_less_walking() {
 
     let ranked = RankingPolicy::default().rank(vec![less_walking, fewer_transfers]);
 
-    assert_eq!(ranked[0].stable_key, "fewer-transfers");
-    assert_eq!(ranked[1].stable_key, "less-walking");
+    assert_eq!(ranked[0].candidate.stable_key, "fewer-transfers");
+    assert_eq!(ranked[1].candidate.stable_key, "less-walking");
 
     let mut more_walking = candidate("more-walking", 2_000);
     more_walking.transfer_count = 2;
@@ -254,7 +257,7 @@ fn same_arrival_and_class_prefers_fewer_transfers_then_less_walking() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["less-walking", "more-walking"]
     );
@@ -277,8 +280,8 @@ fn bike_aware_ranking_keeps_faster_bike_and_slower_zero_bike_options() {
     let ranked = RankingPolicy::default().rank(vec![transit, bike]);
 
     assert_eq!(ranked.len(), 2);
-    assert_eq!(ranked[0].stable_key, "bike");
-    assert_eq!(ranked[1].stable_key, "transit");
+    assert_eq!(ranked[0].candidate.stable_key, "bike");
+    assert_eq!(ranked[1].candidate.stable_key, "transit");
 }
 
 #[test]
@@ -292,7 +295,7 @@ fn near_duplicates_keep_the_option_preferred_by_the_ranking_policy() {
     let ranked = RankingPolicy::default().rank(vec![feasible, reliable]);
 
     assert_eq!(ranked.len(), 1);
-    assert_eq!(ranked[0].stable_key, "reliable");
+    assert_eq!(ranked[0].candidate.stable_key, "reliable");
 }
 
 fn bike_only(key: &str, arrival: i64, walking: u32, bicycle: u32) -> RankingCandidate {
@@ -316,7 +319,7 @@ fn bike_rides_from_nearby_stations_collapse_into_one_option() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["station-a"]
     );
@@ -335,7 +338,7 @@ fn materially_shorter_bike_ride_remains_a_separate_option() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["long-ride", "short-ride"]
     );
@@ -354,7 +357,7 @@ fn much_later_walk_only_option_is_not_offered_beside_a_bike_ride() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["bike"]
     );
@@ -377,7 +380,7 @@ fn much_later_alternatives_need_a_real_tradeoff() {
     assert_eq!(
         ranked
             .iter()
-            .map(|value| value.stable_key.as_str())
+            .map(|value| value.candidate.stable_key.as_str())
             .collect::<Vec<_>>(),
         vec!["metro-change", "direct-bus"]
     );

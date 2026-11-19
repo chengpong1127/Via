@@ -504,26 +504,17 @@ fn frontier_cap_preserves_complete_journeys_and_ranked_journey_options() {
                             .unwrap(),
                     );
                 }
-                let ranked = crate::domain::ranking::RankingPolicy::default().rank(
-                    candidates
-                        .iter()
-                        .map(|candidate| candidate.ranking.clone())
-                        .collect(),
-                );
-                let mut candidates_by_key = candidates
-                    .into_iter()
-                    .map(|candidate| (candidate.ranking.stable_key.clone(), candidate))
-                    .collect::<HashMap<_, _>>();
-                let options = ranked
+                let options = crate::domain::ranking::RankingPolicy::default()
+                    .rank(candidates)
                     .into_iter()
                     .enumerate()
                     .map(|(index, ranked)| {
-                        let mut candidate = candidates_by_key.remove(&ranked.stable_key).unwrap();
+                        let mut option = ranked.candidate.option;
                         super::super::super::reconstruct::assign_result_local_ids(
-                            &mut candidate.option,
+                            &mut option,
                             index,
                         );
-                        candidate.option
+                        option
                     })
                     .collect::<Vec<_>>();
                 serde_json::to_value(options).unwrap()

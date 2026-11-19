@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use time::OffsetDateTime;
 
@@ -237,33 +233,18 @@ impl RoutingService {
             .filter(|candidate| seen_keys.insert(candidate.ranking.stable_key.clone()))
             .collect::<Vec<_>>();
         let candidates_before_ranking = candidates.len();
-        let ranked_journeys = self.ranking.rank(
-            candidates
-                .iter()
-                .map(|candidate| candidate.ranking.clone())
-                .collect(),
-        );
+        let ranked_journeys = self.ranking.rank(candidates);
         tracing::debug!(
             target: "via_server::routing",
             candidates_before_ranking,
             candidates_after_ranking = ranked_journeys.len(),
             "journey candidates ranked"
         );
-        let mut candidates_by_key = candidates
-            .into_iter()
-            .map(|candidate| (candidate.ranking.stable_key.clone(), candidate))
-            .collect::<HashMap<_, _>>();
         let mut journey_options = Vec::with_capacity(ranked_journeys.len());
         for (index, ranked_journey) in ranked_journeys.into_iter().enumerate() {
-            let Some(mut candidate) = candidates_by_key.remove(&ranked_journey.stable_key) else {
-                tracing::error!(
-                    target: "via_server::routing",
-                    "ranking produced a candidate that could not be reconstructed"
-                );
-                return Err(PlanningError::Internal);
-            };
-            assign_result_local_ids(&mut candidate.option, index);
-            journey_options.push(candidate.option);
+            let mut option = ranked_journey.candidate.option;
+            assign_result_local_ids(&mut option, index);
+            journey_options.push(option);
         }
         if journey_options.is_empty() {
             return Ok(PlanningOutcome::Empty(EmptyResult {
