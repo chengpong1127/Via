@@ -216,7 +216,8 @@ fn test_planner(
         Arc::new(FakeStreetRouter::builder().build()),
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
-        crate::config::ViaConfig::default().bike_policy(),
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
     )
 }
 
@@ -479,7 +480,8 @@ async fn bike_availability_snapshot_is_loaded_once_per_planning_request() {
             calls: calls.clone(),
             requested: requested.clone(),
         }),
-        crate::config::ViaConfig::default().bike_policy(),
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
     );
     let mut bike_query = query(2)
         .with_allowed_transit_modes([TransitMode::Bus, TransitMode::Metro])
@@ -535,7 +537,8 @@ async fn walking_is_configured_independently_of_bike_share() {
         street,
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
-        crate::config::ViaConfig::default().bike_policy(),
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
     );
     let query = PlanningQuery::new(
         origin,
@@ -580,7 +583,8 @@ async fn direct_walking_is_evaluated_once_without_transit() {
         street,
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
-        crate::config::ViaConfig::default().bike_policy(),
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
     );
     let query = PlanningQuery::new(
         origin,

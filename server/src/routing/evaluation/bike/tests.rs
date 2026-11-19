@@ -67,7 +67,11 @@ fn configured_endpoint_radius_controls_snapshot_and_candidate_selection() {
             ),
         )
         .unwrap();
-        let planner = BikeShareMovementPlanner::new(network.clone(), config.bike_policy());
+        let planner = BikeShareMovementPlanner::new(
+            network.clone(),
+            config.bikeshare.clone(),
+            crate::routing::BikeAvailabilityLimits::default(),
+        );
         assert_eq!(planner.required_station_ids([&from, &to]).len(), expected);
         assert_eq!(
             planner
@@ -97,8 +101,11 @@ fn candidate_discovery_rejects_missing_or_same_station_pairs() {
             BikeStationAvailability::new(station_id, 1, 1, true, now),
         )]),
     );
-    let planner =
-        BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy());
+    let planner = BikeShareMovementPlanner::new(
+        network,
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
+    );
     let from = CorridorAnchor {
         kind: crate::routing::journey::JourneyAnchorKind::Origin,
         coordinate: Coordinate::try_new(25.0, 121.5).unwrap(),
@@ -212,9 +219,13 @@ fn required_stations_cover_all_anchors_and_availability_precedes_limits() {
     let network = Arc::new(BikeShareNetwork::new(stations).with_access_links(links));
     let policy = BikeMovementPolicy {
         max_stations_per_endpoint: 3,
-        ..crate::config::ViaConfig::default().bike_policy()
+        ..crate::config::ViaConfig::default().bikeshare
     };
-    let planner = BikeShareMovementPlanner::new(network, policy.clone());
+    let planner = BikeShareMovementPlanner::new(
+        network,
+        policy.clone(),
+        crate::routing::BikeAvailabilityLimits::default(),
+    );
     let required = planner.required_station_ids(anchors.iter().chain(anchors.iter()));
     assert_eq!(required.len(), 10);
     assert!(!required.contains(&BikeStationId::new("outside-radius")));
@@ -387,9 +398,10 @@ async fn cached_bike_availability_is_checked_at_the_request_time() {
     let snapshot = BikeAvailabilitySnapshot::new(received_at, stations);
     let planner = BikeShareMovementPlanner::new(
         bike_network,
-        BikeMovementPolicy {
-            availability_max_age_seconds: 120,
-            ..crate::config::ViaConfig::default().bike_policy()
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits {
+            max_age_seconds: 120,
+            ..Default::default()
         },
     );
 
@@ -492,8 +504,11 @@ async fn generic_endpoints_share_bicycle_realization_and_cache() {
             )
             .build(),
     )));
-    let planner =
-        BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy());
+    let planner = BikeShareMovementPlanner::new(
+        network,
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
+    );
     let from = CorridorAnchor {
         kind: JourneyAnchorKind::Origin,
         coordinate: origin,
@@ -559,7 +574,8 @@ async fn concurrent_candidate_discovery_caches_none_once() {
     let session = Arc::new(BikeShareSession::new(
         BikeShareMovementPlanner::new(
             Arc::new(BikeShareNetwork::new(Vec::new())),
-            crate::config::ViaConfig::default().bike_policy(),
+            crate::config::ViaConfig::default().bikeshare,
+            crate::routing::BikeAvailabilityLimits::default(),
         ),
         Arc::new(BikeAvailabilitySnapshot::new(now, HashMap::new())),
         now,

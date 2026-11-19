@@ -28,7 +28,9 @@ pub struct BikeAccessPolicy {
 
 impl Default for BikeAccessPolicy {
     fn default() -> Self {
-        crate::config::ViaConfig::default().bikeshare.preprocessing
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .bike_access
     }
 }
 

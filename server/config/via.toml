@@ -40,14 +40,6 @@ max_bike_distance_metres = 20000
 optimistic_walk_speed_metres_per_second = 2.0
 rental_handling_seconds = 60
 
-[bikeshare.preprocessing]
-max_geometric_radius_metres = 500
-max_walking_duration_seconds = 720
-max_walking_distance_metres = 1200
-max_geometric_candidates_per_boarding_point = 32
-max_access_stations_per_boarding_point = 16
-max_matrix_concurrency = 4
-
 [preprocessing]
 same_stop_transfer_seconds = 120
 
@@ -58,6 +50,14 @@ max_distance_metres = 800
 max_outgoing = 12
 max_concurrency = 8
 source_group_size = 128
+
+[preprocessing.bike_access]
+max_geometric_radius_metres = 500
+max_walking_duration_seconds = 720
+max_walking_distance_metres = 1200
+max_geometric_candidates_per_boarding_point = 32
+max_access_stations_per_boarding_point = 16
+max_matrix_concurrency = 4
 
 [tdx]
 api_base_url = "https://tdx.transportdata.tw/api/basic/"

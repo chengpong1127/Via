@@ -97,6 +97,7 @@ impl PlannerLimits {
 #[derive(Clone, Debug)]
 pub struct JourneyPlanningLimits {
     pub bike_policy: super::BikeMovementPolicy,
+    pub bike_availability: super::BikeAvailabilityLimits,
     pub ranking: crate::domain::ranking::RankingPolicy,
     pub planner: PlannerLimits,
     pub request_timeout: std::time::Duration,
@@ -111,6 +112,7 @@ impl JourneyPlanningLimits {
     pub(crate) fn normalized(self) -> Self {
         Self {
             bike_policy: self.bike_policy,
+            bike_availability: self.bike_availability,
             ranking: self.ranking,
             planner: self.planner.normalized(),
             request_timeout: self.request_timeout,

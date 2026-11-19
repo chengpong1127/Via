@@ -53,6 +53,7 @@ impl RoutingService {
             bike_share.clone(),
             bike_availability_source,
             limits.bike_policy.clone(),
+            limits.bike_availability,
         );
         let reconstructor = JourneyReconstructor::new(street_router.clone(), transit, bike_share)
             .with_rental_handling_seconds(limits.bike_policy.rental_handling_seconds);

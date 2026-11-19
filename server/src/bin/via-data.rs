@@ -186,7 +186,7 @@ async fn build(args: BuildArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
         &args.input,
         &output,
         street.as_ref(),
-        settings.bikeshare.preprocessing,
+        settings.preprocessing.bike_access,
         settings.preprocessing.transfers,
         settings.preprocessing.same_stop_transfer_seconds,
     )

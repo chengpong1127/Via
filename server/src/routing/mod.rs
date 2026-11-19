@@ -12,7 +12,10 @@ pub use corridors::{
     Corridor, CorridorSearchStats, StaticCorridorStep, StaticCostSource, StaticTransitLeg,
     generate as generate_static_corridors,
 };
-pub use evaluation::{CorridorEvaluationStats, bike::BikeMovementPolicy};
+pub use evaluation::{
+    CorridorEvaluationStats,
+    bike::{BikeAvailabilityLimits, BikeMovementPolicy},
+};
 pub use journey::{
     BikeRide, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
     JourneyMovementKind, JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJourneyError,

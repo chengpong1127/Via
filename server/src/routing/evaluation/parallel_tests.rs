@@ -339,7 +339,11 @@ fn real_bike_session(street: Arc<MatrixCache>, now: time::OffsetDateTime) -> Bik
         ]),
     ));
     BikeShareSession::new(
-        BikeShareMovementPlanner::new(network, crate::config::ViaConfig::default().bike_policy()),
+        BikeShareMovementPlanner::new(
+            network,
+            crate::config::ViaConfig::default().bikeshare,
+            crate::routing::BikeAvailabilityLimits::default(),
+        ),
         snapshot,
         now,
         street,

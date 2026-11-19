@@ -366,7 +366,9 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         &snapshot,
         &output,
         &street,
-        crate::config::ViaConfig::default().bikeshare.preprocessing,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .bike_access,
         crate::config::ViaConfig::default().preprocessing.transfers,
         crate::config::ViaConfig::default()
             .preprocessing
@@ -528,7 +530,9 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             &untracked,
             &temporary_path("untracked-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -547,7 +551,9 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             &incomplete,
             &temporary_path("incomplete-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -566,7 +572,9 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             &mismatched,
             &temporary_path("mismatched-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -603,7 +611,9 @@ async fn accepts_gtfs_only_fetch_snapshots() {
         &snapshot,
         &output,
         &street,
-        crate::config::ViaConfig::default().bikeshare.preprocessing,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .bike_access,
         crate::config::ViaConfig::default().preprocessing.transfers,
         crate::config::ViaConfig::default()
             .preprocessing
@@ -631,7 +641,9 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_manifest,
             &temporary_path("malformed-manifest-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -651,7 +663,9 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_bike,
             &temporary_path("malformed-bike-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -671,7 +685,9 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             &malformed_gtfs,
             &temporary_path("malformed-gtfs-output"),
             &street,
-            crate::config::ViaConfig::default().bikeshare.preprocessing,
+            crate::config::ViaConfig::default()
+                .preprocessing
+                .bike_access,
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
@@ -701,7 +717,7 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
         &snapshot,
         &output,
         &FakeStreetRouter::builder().build(),
-        config.bikeshare.preprocessing,
+        config.preprocessing.bike_access,
         config.preprocessing.transfers,
         config.preprocessing.same_stop_transfer_seconds,
     )

@@ -48,8 +48,8 @@ impl BikeShareMovementPlanner {
         let view = self.network.availability_view_with_policy(
             snapshot,
             now,
-            time::Duration::seconds(i64::from(self.settings.availability_max_age_seconds)),
-            time::Duration::seconds(i64::from(self.settings.availability_max_clock_skew_seconds)),
+            time::Duration::seconds(i64::from(self.availability.max_age_seconds)),
+            time::Duration::seconds(i64::from(self.availability.max_clock_skew_seconds)),
         );
         let pickups = endpoint_station_choices(&self.network, &view, from, true, &self.settings);
         let dropoffs = endpoint_station_choices(&self.network, &view, to, false, &self.settings);

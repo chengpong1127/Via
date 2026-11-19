@@ -175,7 +175,7 @@ fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
         96
     );
     assert_eq!(
-        config.bikeshare.preprocessing.max_geometric_radius_metres,
+        config.preprocessing.bike_access.max_geometric_radius_metres,
         42
     );
 }

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 pub struct ViaConfig {
     pub server: ServerSettings,
     pub routing: RoutingSettings,
-    pub bikeshare: BikeShareSettings,
+    pub bikeshare: crate::routing::BikeMovementPolicy,
     pub preprocessing: PreprocessingSettings,
     pub tdx: TdxSettings,
     pub valhalla: ValhallaSettings,
@@ -64,24 +64,10 @@ pub struct AccessSettings {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct BikeShareSettings {
-    pub max_pickup_stations_per_anchor: usize,
-    pub max_dropoff_stations_per_anchor: usize,
-    pub max_stations_per_endpoint: usize,
-    pub endpoint_radius_metres: u32,
-    pub max_endpoint_walk_seconds: u32,
-    pub max_bike_duration_seconds: u32,
-    pub max_bike_distance_metres: u32,
-    pub optimistic_walk_speed_metres_per_second: f64,
-    pub rental_handling_seconds: u32,
-    pub preprocessing: BikeAccessPolicy,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct PreprocessingSettings {
     pub same_stop_transfer_seconds: u32,
     pub transfers: TransferSettings,
+    pub bike_access: BikeAccessPolicy,
 }
 
 pub use crate::data::static_transfers::TransferSettings;
@@ -277,32 +263,32 @@ impl ViaConfig {
                 self.bikeshare.max_bike_distance_metres as u64,
             ),
             (
-                "bikeshare.preprocessing.max_geometric_radius_metres",
-                self.bikeshare.preprocessing.max_geometric_radius_metres as u64,
+                "preprocessing.bike_access.max_geometric_radius_metres",
+                self.preprocessing.bike_access.max_geometric_radius_metres as u64,
             ),
             (
-                "bikeshare.preprocessing.max_walking_duration_seconds",
-                self.bikeshare.preprocessing.max_walking_duration_seconds as u64,
+                "preprocessing.bike_access.max_walking_duration_seconds",
+                self.preprocessing.bike_access.max_walking_duration_seconds as u64,
             ),
             (
-                "bikeshare.preprocessing.max_walking_distance_metres",
-                self.bikeshare.preprocessing.max_walking_distance_metres as u64,
+                "preprocessing.bike_access.max_walking_distance_metres",
+                self.preprocessing.bike_access.max_walking_distance_metres as u64,
             ),
             (
-                "bikeshare.preprocessing.max_geometric_candidates_per_boarding_point",
-                self.bikeshare
-                    .preprocessing
+                "preprocessing.bike_access.max_geometric_candidates_per_boarding_point",
+                self.preprocessing
+                    .bike_access
                     .max_geometric_candidates_per_boarding_point as u64,
             ),
             (
-                "bikeshare.preprocessing.max_access_stations_per_boarding_point",
-                self.bikeshare
-                    .preprocessing
+                "preprocessing.bike_access.max_access_stations_per_boarding_point",
+                self.preprocessing
+                    .bike_access
                     .max_access_stations_per_boarding_point as u64,
             ),
             (
-                "bikeshare.preprocessing.max_matrix_concurrency",
-                self.bikeshare.preprocessing.max_matrix_concurrency as u64,
+                "preprocessing.bike_access.max_matrix_concurrency",
+                self.preprocessing.bike_access.max_matrix_concurrency as u64,
             ),
             (
                 "preprocessing.transfers.radius_metres",
@@ -484,11 +470,11 @@ impl ViaConfig {
                 )));
             }
         }
-        let bike = self.bikeshare.preprocessing;
+        let bike = self.preprocessing.bike_access;
         if bike.max_geometric_candidates_per_boarding_point > self.valhalla.max_sources
             || bike.max_geometric_candidates_per_boarding_point > self.valhalla.max_targets
         {
-            return Err(ConfigError::Invalid("bikeshare.preprocessing.max_geometric_candidates_per_boarding_point must fit both valhalla.max_sources and valhalla.max_targets".into()));
+            return Err(ConfigError::Invalid("preprocessing.bike_access.max_geometric_candidates_per_boarding_point must fit both valhalla.max_sources and valhalla.max_targets".into()));
         }
         if self.routing.access.max_transit_endpoint_stops > self.valhalla.max_targets
             || self.routing.access.max_transit_endpoint_stops > self.valhalla.max_sources
@@ -509,7 +495,7 @@ impl ViaConfig {
         if bike.max_access_stations_per_boarding_point
             > bike.max_geometric_candidates_per_boarding_point
         {
-            return Err(ConfigError::Invalid("bikeshare.preprocessing.max_access_stations_per_boarding_point must not exceed max_geometric_candidates_per_boarding_point".into()));
+            return Err(ConfigError::Invalid("preprocessing.bike_access.max_access_stations_per_boarding_point must not exceed max_geometric_candidates_per_boarding_point".into()));
         }
         for (key, count) in [
             (
@@ -552,27 +538,17 @@ impl ViaConfig {
         Ok(())
     }
 
-    pub fn bike_policy(&self) -> crate::routing::BikeMovementPolicy {
-        crate::routing::BikeMovementPolicy {
-            max_pickup_stations_per_anchor: self.bikeshare.max_pickup_stations_per_anchor,
-            max_dropoff_stations_per_anchor: self.bikeshare.max_dropoff_stations_per_anchor,
-            max_stations_per_endpoint: self.bikeshare.max_stations_per_endpoint,
-            endpoint_radius_metres: self.bikeshare.endpoint_radius_metres,
-            max_endpoint_walk_seconds: self.bikeshare.max_endpoint_walk_seconds,
-            max_bike_duration_seconds: self.bikeshare.max_bike_duration_seconds,
-            max_bike_distance_metres: self.bikeshare.max_bike_distance_metres,
-            optimistic_walk_speed_metres_per_second: self
-                .bikeshare
-                .optimistic_walk_speed_metres_per_second,
-            rental_handling_seconds: self.bikeshare.rental_handling_seconds,
-            availability_max_age_seconds: self.tdx.bikeshare.max_age_seconds,
-            availability_max_clock_skew_seconds: self.tdx.bikeshare.max_clock_skew_seconds,
+    pub fn bike_availability(&self) -> crate::routing::BikeAvailabilityLimits {
+        crate::routing::BikeAvailabilityLimits {
+            max_age_seconds: self.tdx.bikeshare.max_age_seconds,
+            max_clock_skew_seconds: self.tdx.bikeshare.max_clock_skew_seconds,
         }
     }
 
     pub fn journey_limits(&self) -> JourneyPlanningLimits {
         JourneyPlanningLimits {
-            bike_policy: self.bike_policy(),
+            bike_policy: self.bikeshare.clone(),
+            bike_availability: self.bike_availability(),
             ranking: self.routing.ranking.clone(),
             planner: self.planner_limits(),
             request_timeout: Duration::from_millis(self.server.request_timeout_ms),
@@ -645,6 +621,12 @@ impl Default for JourneyPlanningLimits {
 
 impl Default for crate::routing::BikeMovementPolicy {
     fn default() -> Self {
-        ViaConfig::default().bike_policy()
+        ViaConfig::default().bikeshare
+    }
+}
+
+impl Default for crate::routing::BikeAvailabilityLimits {
+    fn default() -> Self {
+        ViaConfig::default().bike_availability()
     }
 }

@@ -24,7 +24,8 @@ use super::{
     evaluation::{
         CorridorEvaluationStats, CorridorEvaluator,
         bike::{
-            BikeMovementPolicy, BikeMovementSource, BikeShareMovementPlanner, BikeShareSession,
+            BikeAvailabilityLimits, BikeMovementPolicy, BikeMovementSource,
+            BikeShareMovementPlanner, BikeShareSession,
         },
     },
     journey::RealizedJourney,
@@ -68,11 +69,16 @@ impl MultimodalPlanner {
         bike_share: Arc<BikeShareNetwork>,
         bike_availability: Arc<dyn BikeAvailabilitySource>,
         bike_policy: BikeMovementPolicy,
+        bike_availability_limits: BikeAvailabilityLimits,
     ) -> Self {
         Self {
             transit,
             timing_loader,
-            bike_planner: BikeShareMovementPlanner::new(bike_share, bike_policy),
+            bike_planner: BikeShareMovementPlanner::new(
+                bike_share,
+                bike_policy,
+                bike_availability_limits,
+            ),
             street_router,
             bike_availability,
         }

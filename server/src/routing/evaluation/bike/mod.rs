@@ -10,6 +10,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+
 use time::OffsetDateTime;
 
 use crate::{
@@ -30,7 +31,8 @@ use crate::routing::{
     journey::{BikeRide, BikeShareMovement},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct BikeMovementPolicy {
     pub max_pickup_stations_per_anchor: usize,
     pub max_dropoff_stations_per_anchor: usize,
@@ -41,8 +43,12 @@ pub struct BikeMovementPolicy {
     pub max_bike_distance_metres: u32,
     pub optimistic_walk_speed_metres_per_second: f64,
     pub rental_handling_seconds: u32,
-    pub availability_max_age_seconds: u32,
-    pub availability_max_clock_skew_seconds: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BikeAvailabilityLimits {
+    pub max_age_seconds: u32,
+    pub max_clock_skew_seconds: u32,
 }
 
 #[async_trait::async_trait]
@@ -57,6 +63,7 @@ pub(crate) trait BikeMovementSource: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct BikeShareMovementPlanner {
     settings: BikeMovementPolicy,
+    availability: BikeAvailabilityLimits,
     network: Arc<BikeShareNetwork>,
 }
 
@@ -69,7 +76,15 @@ pub(crate) struct BikeMovementCandidate {
 }
 
 impl BikeShareMovementPlanner {
-    pub(crate) fn new(network: Arc<BikeShareNetwork>, settings: BikeMovementPolicy) -> Self {
-        Self { network, settings }
+    pub(crate) fn new(
+        network: Arc<BikeShareNetwork>,
+        settings: BikeMovementPolicy,
+        availability: BikeAvailabilityLimits,
+    ) -> Self {
+        Self {
+            network,
+            settings,
+            availability,
+        }
     }
 }
