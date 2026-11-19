@@ -441,20 +441,7 @@ mod tests {
             maneuvers: Vec::new(),
             attribution: Vec::new(),
         };
-        let assembly = || JourneyAssembly {
-            legs: Vec::new(),
-            arrival_time: departure,
-            live_evidence: Vec::new(),
-            travel_modes: Vec::new(),
-            main_pattern_sequence: Vec::new(),
-            transfer_evidence: Vec::new(),
-            walking_seconds: 0,
-            bicycle_seconds: 0,
-            bike_share_uses: 0,
-            bike_reuse_available_at: None,
-            timing_reliability: crate::domain::transit::timing::TimingReliability::Reliable,
-            walking_tail: None,
-        };
+        let assembly = || JourneyAssembly::new(departure);
         let (a, b, c) = (place("a", 121.5), place("b", 121.501), place("c", 121.502));
 
         let mut joined = assembly();

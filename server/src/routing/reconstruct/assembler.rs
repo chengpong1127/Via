@@ -31,6 +31,25 @@ pub(super) struct JourneyAssembly {
     pub(super) walking_tail: Option<(usize, StreetPath)>,
 }
 
+impl JourneyAssembly {
+    pub(super) fn new(departure_at: OffsetDateTime) -> Self {
+        Self {
+            legs: Vec::new(),
+            arrival_time: departure_at,
+            live_evidence: Vec::new(),
+            travel_modes: Vec::new(),
+            main_pattern_sequence: Vec::new(),
+            transfer_evidence: Vec::new(),
+            walking_seconds: 0,
+            bicycle_seconds: 0,
+            bike_share_uses: 0,
+            bike_reuse_available_at: None,
+            timing_reliability: TimingReliability::Reliable,
+            walking_tail: None,
+        }
+    }
+}
+
 pub(super) struct PendingTransfer {
     pub(super) from_arrival: OffsetDateTime,
     pub(super) duration_seconds: u32,
@@ -67,20 +86,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
             reconstructor,
             journey,
             context,
-            assembly: JourneyAssembly {
-                legs: Vec::new(),
-                arrival_time: journey.departure_at(),
-                live_evidence: Vec::new(),
-                travel_modes: Vec::new(),
-                main_pattern_sequence: Vec::new(),
-                transfer_evidence: Vec::new(),
-                walking_seconds: 0,
-                bicycle_seconds: 0,
-                bike_share_uses: 0,
-                bike_reuse_available_at: None,
-                timing_reliability: TimingReliability::Reliable,
-                walking_tail: None,
-            },
+            assembly: JourneyAssembly::new(journey.departure_at()),
             pending_transfer: None,
             previous_transit: None,
             current_stop: None,

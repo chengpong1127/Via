@@ -193,7 +193,6 @@ mod tests {
             location::GeoCoordinate,
             transit::network::TransitNetwork,
             transit::runtime::TransitRuntime,
-            transit::timing::TimingReliability,
         },
         routing::{BikeRide, BikeShareMovement, PlanningDeadline},
         street::{Coordinate, FakeStreetRouter, Metres, Seconds},
@@ -259,20 +258,7 @@ mod tests {
         let request: crate::domain::planning::PlanningInput = request.into();
         let context =
             JourneyPlanningContext::new(&request, departure, PlanningDeadline::disabled());
-        let mut assembly = JourneyAssembly {
-            legs: Vec::new(),
-            arrival_time: departure,
-            live_evidence: Vec::new(),
-            travel_modes: Vec::new(),
-            main_pattern_sequence: Vec::new(),
-            transfer_evidence: Vec::new(),
-            walking_seconds: 0,
-            bicycle_seconds: 0,
-            bike_share_uses: 0,
-            bike_reuse_available_at: None,
-            timing_reliability: TimingReliability::Reliable,
-            walking_tail: None,
-        };
+        let mut assembly = JourneyAssembly::new(departure);
         let movement = |pickup: &str, dropoff: &str| {
             BikeShareMovement::new(
                 BikeStationId::new(pickup),
