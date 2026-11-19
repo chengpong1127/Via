@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use via_server::{
     app::shutdown_signal,
-    config::{Environment, TdxRuntimeConfig, ViaConfig, load_dotenv},
+    config::{Environment, ViaConfig, load_dotenv, tdx_credentials},
     live::{CachedLiveData, DirectLiveData, gateway},
     metrics,
     tdx::TdxClient,
@@ -24,8 +24,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let metrics = metrics::install_prometheus()?;
 
-    let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
-    let client = Arc::new(TdxClient::new(tdx.credentials, settings.tdx.clone())?);
+    let client = Arc::new(TdxClient::new(
+        tdx_credentials(&settings.tdx)?,
+        settings.tdx.clone(),
+    )?);
     let live = Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(client)),
         (&settings.tdx).into(),

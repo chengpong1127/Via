@@ -9,7 +9,7 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 use via_server::{
-    config::{Environment, TdxRuntimeConfig, ViaConfig, load_dotenv},
+    config::{Environment, ViaConfig, load_dotenv, tdx_credentials},
     data::{
         GtfsModeCoverage, build_from_fetch_snapshot, fetch,
         fetch::{FetchSources, fetch_snapshot},
@@ -155,9 +155,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
-    let tdx = TdxRuntimeConfig::from_settings(&settings.tdx)?;
-    let client = TdxClient::new(tdx.credentials, settings.tdx.clone())?;
-    let sources = FetchSources::production(tdx.api_base_url.as_str());
+    let client = TdxClient::new(tdx_credentials(&settings.tdx)?, settings.tdx.clone())?;
+    let api_base_url = url::Url::parse(&settings.tdx.api_base_url)?;
+    let sources = FetchSources::production(api_base_url.as_str());
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
     let latest_snapshot = update_latest_fetch_link(&snapshot.path)?;
     println!("fetch snapshot: {}", snapshot.path.display());

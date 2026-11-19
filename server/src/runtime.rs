@@ -152,14 +152,15 @@ pub async fn build_runtime(
 }
 
 pub fn live_data_source(
-    tdx: Option<crate::config::TdxRuntimeConfig>,
+    credentials: Option<crate::tdx::TdxCredentials>,
     settings: &crate::tdx::TdxSettings,
 ) -> Result<Arc<dyn LiveDataSource>, Box<dyn Error>> {
     if let Some(url) = &settings.gateway.url {
         return Ok(Arc::new(GatewayLiveData::new(url, settings)?));
     }
-    let tdx = tdx.ok_or("TDX credentials are required when tdx.gateway.url is not set")?;
-    let client = Arc::new(TdxClient::new(tdx.credentials, settings.clone())?);
+    let credentials =
+        credentials.ok_or("TDX credentials are required when tdx.gateway.url is not set")?;
+    let client = Arc::new(TdxClient::new(credentials, settings.clone())?);
     Ok(Arc::new(CachedLiveData::new(
         Arc::new(DirectLiveData::new(client)),
         settings.into(),

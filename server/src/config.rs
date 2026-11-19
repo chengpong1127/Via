@@ -114,28 +114,18 @@ impl ServerConfig {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct TdxRuntimeConfig {
-    pub api_base_url: Url,
-    pub credentials: TdxCredentials,
-}
-
-impl TdxRuntimeConfig {
-    pub fn from_settings(settings: &TdxSettings) -> Result<Self, ConfigError> {
-        Ok(Self {
-            api_base_url: parse_url("tdx.api_base_url", &settings.api_base_url)?,
-            credentials: TdxCredentials::from_client_credentials(
-                required_credential("TDX_CLIENT_ID")?,
-                required_credential("TDX_CLIENT_SECRET")?,
-            ),
-        })
-    }
+pub fn tdx_credentials(settings: &TdxSettings) -> Result<TdxCredentials, ConfigError> {
+    parse_url("tdx.api_base_url", &settings.api_base_url)?;
+    Ok(TdxCredentials::from_client_credentials(
+        required_credential("TDX_CLIENT_ID")?,
+        required_credential("TDX_CLIENT_SECRET")?,
+    ))
 }
 
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub(crate) environment: Environment,
-    pub(crate) tdx: Option<TdxRuntimeConfig>,
+    pub(crate) tdx: Option<TdxCredentials>,
     pub(crate) settings: ViaConfig,
 }
 
@@ -147,7 +137,7 @@ impl RuntimeConfig {
         settings.validate_environment(environment)?;
         let tdx = match settings.tdx.gateway.url {
             Some(_) => None,
-            None => Some(TdxRuntimeConfig::from_settings(&settings.tdx)?),
+            None => Some(tdx_credentials(&settings.tdx)?),
         };
         parse_url("valhalla.base_url", &settings.valhalla.base_url)?;
         Ok(Self {
@@ -178,9 +168,8 @@ fn parse_port(value: Option<&str>) -> Result<u16, ConfigError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigError, Environment, TdxRuntimeConfig, parse_port};
+    use super::{ConfigError, Environment, parse_port};
     use crate::tdx::TdxCredentials;
-    use url::Url;
 
     #[test]
     fn environment_accepts_only_supported_values() {
@@ -219,13 +208,5 @@ mod tests {
         assert!(!debug.contains("private-id"));
         assert!(!debug.contains("private-secret"));
         assert!(debug.contains("<redacted>"));
-
-        let config = TdxRuntimeConfig {
-            api_base_url: Url::parse(&super::ViaConfig::default().tdx.api_base_url).unwrap(),
-            credentials,
-        };
-        let debug = format!("{config:?}");
-        assert!(!debug.contains("private-id"));
-        assert!(!debug.contains("private-secret"));
     }
 }
