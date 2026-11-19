@@ -1,17 +1,20 @@
-use crate::domain::ids::BoardingPointId;
+use crate::domain::ids::{BoardingPointId, TransitPatternId};
 use crate::routing::{
-    corridors::{StaticCorridor, StaticCorridorStep, StaticTransitLeg},
     journey::{JourneyAnchorKind, WalkingMovementKind},
     model::{PlanningQuery, RoutingError},
 };
+
+use super::types::{StaticCorridorStep, StaticCostSource, StaticTransitLeg};
 use crate::{domain::transit::runtime::TransitRuntime, street::Coordinate};
 
-pub(crate) struct EvaluationCorridor {
+#[derive(Clone, Debug, PartialEq)]
+pub struct Corridor {
     anchors: Vec<CorridorAnchor>,
     edges: Vec<PlannedMovement>,
 }
 
-pub(crate) enum PlannedMovement {
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlannedMovement {
     Transit(StaticTransitLeg),
     WalkingToResolve,
     RetainedWalking {
@@ -21,7 +24,7 @@ pub(crate) enum PlannedMovement {
     },
 }
 
-impl EvaluationCorridor {
+impl Corridor {
     pub(crate) fn new(anchors: Vec<CorridorAnchor>, edges: Vec<PlannedMovement>) -> Option<Self> {
         (anchors.len() >= 2 && edges.len() == anchors.len() - 1).then_some(Self { anchors, edges })
     }
@@ -50,16 +53,31 @@ impl EvaluationCorridor {
         }
     }
 
-    pub fn from_transit(
+    pub(in crate::routing) fn from_steps(
         transit: &TransitRuntime,
-        retained: &StaticCorridor,
         query: &PlanningQuery,
+        access_stop_id: &BoardingPointId,
+        steps: &[StaticCorridorStep],
+        egress_stop_id: &BoardingPointId,
     ) -> Result<Self, RoutingError> {
-        let stops = retained
-            .anchors()
-            .ok_or_else(|| RoutingError::Internal("retained corridor has no anchors".into()))?
-            .stops()
-            .to_vec();
+        let mut stops = vec![access_stop_id.clone()];
+        for step in steps {
+            let (from, to) = match step {
+                StaticCorridorStep::Transit(leg) => (&leg.board_stop_id, &leg.alight_stop_id),
+                StaticCorridorStep::SurfaceTransfer { from, to, .. } => (from, to),
+            };
+            if stops.last() != Some(from) {
+                return Err(RoutingError::Internal(
+                    "retained corridor steps are not connected".into(),
+                ));
+            }
+            stops.push(to.clone());
+        }
+        if stops.last() != Some(egress_stop_id) {
+            return Err(RoutingError::Internal(
+                "retained corridor steps do not reach the egress stop".into(),
+            ));
+        }
         let stop_anchors = stops
             .iter()
             .map(|id| {
@@ -77,21 +95,19 @@ impl EvaluationCorridor {
                 })
             })
             .collect::<Result<Vec<_>, RoutingError>>()?;
-        let origin = query.origin;
-        let destination = query.destination;
         let mut anchors = vec![CorridorAnchor {
             kind: JourneyAnchorKind::Origin,
-            coordinate: origin,
+            coordinate: query.origin,
         }];
         anchors.extend(stop_anchors);
         anchors.push(CorridorAnchor {
             kind: JourneyAnchorKind::Destination,
-            coordinate: destination,
+            coordinate: query.destination,
         });
         let access = query
             .origin_access
             .iter()
-            .find(|a| a.stop_id == retained.access_stop_id)
+            .find(|access| &access.stop_id == access_stop_id)
             .ok_or_else(|| {
                 RoutingError::Internal("retained corridor has no matching access point".into())
             })?;
@@ -100,7 +116,7 @@ impl EvaluationCorridor {
             duration_seconds: access.walking_seconds,
             distance_metres: access.distance_metres,
         }];
-        edges.extend(retained.steps.iter().map(|step| match step {
+        edges.extend(steps.iter().map(|step| match step {
             StaticCorridorStep::Transit(leg) => PlannedMovement::Transit(leg.clone()),
             StaticCorridorStep::SurfaceTransfer {
                 walking_duration_seconds,
@@ -115,7 +131,7 @@ impl EvaluationCorridor {
         let egress = query
             .destination_egress
             .iter()
-            .find(|e| e.stop_id == retained.egress_stop_id)
+            .find(|egress| &egress.stop_id == egress_stop_id)
             .ok_or_else(|| {
                 RoutingError::Internal("retained corridor has no matching egress point".into())
             })?;
@@ -128,10 +144,55 @@ impl EvaluationCorridor {
             RoutingError::Internal("retained corridor has inconsistent anchors and edges".into())
         })
     }
+
+    pub fn pattern_sequence(&self) -> Vec<TransitPatternId> {
+        self.transit_legs()
+            .map(|leg| leg.pattern_id.clone())
+            .collect()
+    }
+
+    pub fn cost_source(&self) -> StaticCostSource {
+        super::search::cost_source(self.transit_legs())
+    }
+
+    #[cfg(test)]
+    pub(in crate::routing) fn from_transit_leg_for_test(leg: StaticTransitLeg) -> Self {
+        let coordinate = Coordinate::try_new(25.0, 121.5).expect("valid test coordinate");
+        let anchor = |kind| CorridorAnchor { kind, coordinate };
+        let walking = |kind| PlannedMovement::RetainedWalking {
+            kind,
+            duration_seconds: 0,
+            distance_metres: 0,
+        };
+        Self {
+            anchors: vec![
+                anchor(JourneyAnchorKind::Origin),
+                anchor(JourneyAnchorKind::BoardingPoint {
+                    id: leg.board_stop_id.clone(),
+                }),
+                anchor(JourneyAnchorKind::BoardingPoint {
+                    id: leg.alight_stop_id.clone(),
+                }),
+                anchor(JourneyAnchorKind::Destination),
+            ],
+            edges: vec![
+                walking(WalkingMovementKind::Access),
+                PlannedMovement::Transit(leg),
+                walking(WalkingMovementKind::Egress),
+            ],
+        }
+    }
+
+    pub fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
+        self.edges.iter().filter_map(|edge| match edge {
+            PlannedMovement::Transit(leg) => Some(leg),
+            PlannedMovement::WalkingToResolve | PlannedMovement::RetainedWalking { .. } => None,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CorridorAnchor {
+pub struct CorridorAnchor {
     pub kind: JourneyAnchorKind,
     pub coordinate: Coordinate,
 }
@@ -150,7 +211,7 @@ impl CorridorAnchor {
             _ => None,
         }
     }
-    pub fn cache_key(&self) -> CorridorAnchorKey {
+    pub(crate) fn cache_key(&self) -> CorridorAnchorKey {
         CorridorAnchorKey {
             latitude: self.coordinate.latitude().to_bits(),
             longitude: self.coordinate.longitude().to_bits(),

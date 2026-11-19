@@ -15,9 +15,9 @@ Routing modules follow the pipeline:
 | Module | Step |
 | --- | --- |
 | `access` | `access::discover` finds walkable boarding points near the origin and destination |
-| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the pattern-position and transfer indexes on `TransitRuntime` |
+| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the pattern-position and transfer indexes on `TransitRuntime`, returned as `Corridor` values |
 | `planner` | `MultimodalPlanner` runs corridor search, loads request-local snapshots and runs corridor evaluation |
-| `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator`, evaluation corridors and BikeShare movement |
+| `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator` and BikeShare movement |
 | `journey` | `RealizedJourney`, the timed result of evaluation |
 | `reconstruct` | Street geometry, timing recheck and ranking |
 | `cache` | Request-local Matrix cache and the Route cache shared by evaluation and reconstruction |
@@ -33,7 +33,7 @@ overlap transit evaluation within the configured concurrency limit. Walking is
 always enabled; selected modes are optional transit and BikeShare modes. With no
 transit mode, corridor search is skipped.
 
-`MultimodalPlanner::plan` runs corridor search, builds evaluation corridors,
+`MultimodalPlanner::plan` runs corridor search, adds the direct walking `Corridor`,
 loads request-local snapshots and hands them to `CorridorEvaluator`, which
 returns journeys, statistics and observed provider failures or a single routing
 error. For each fixed corridor it expands Transit, Walking, then BikeShare along

@@ -108,7 +108,8 @@ async fn deterministic_routing_benchmark() {
         let mut last_evaluation = None;
         for iteration in 0..WARMUP + ITERATIONS {
             let started = Instant::now();
-            let (corridors, static_stats) = generate_static_corridors(&runtime, black_box(&query));
+            let (corridors, static_stats) =
+                generate_static_corridors(&runtime, black_box(&query)).unwrap();
             let static_ns = started.elapsed().as_nanos();
             let started = Instant::now();
             let (realized_journeys, planner_stats) = planner

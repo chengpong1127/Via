@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-use super::corridor::{CorridorAnchor, CorridorAnchorKey};
+use crate::routing::corridors::{CorridorAnchor, CorridorAnchorKey};
 use crate::routing::{
     cache::RequestCache,
     journey::{BikeRide, BikeShareMovement},

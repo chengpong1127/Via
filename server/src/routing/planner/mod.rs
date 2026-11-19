@@ -19,9 +19,9 @@ use crate::{
 use super::{
     access,
     cache::{MatrixCache, RouteCache},
-    corridors::{self, CorridorSearchStats, RetainedCorridorSet},
+    corridors::{self, Corridor, CorridorSearchStats, RetainedCorridorSet},
     evaluation::{
-        CorridorEvaluationStats, CorridorEvaluator, EvaluationCorridor,
+        CorridorEvaluationStats, CorridorEvaluator,
         bike::{
             BikeMovementPolicy, BikeMovementSource, BikeShareMovementPlanner, BikeShareSession,
         },
@@ -143,17 +143,8 @@ impl MultimodalPlanner {
         } else {
             self.search_static_corridors(&query)?
         };
-        let mut corridors = vec![EvaluationCorridor::direct_walking(
-            query.origin,
-            query.destination,
-        )];
-        for corridor in retained.retained_corridors() {
-            corridors.push(EvaluationCorridor::from_transit(
-                &self.transit,
-                corridor,
-                &query,
-            )?);
-        }
+        let mut corridors = vec![Corridor::direct_walking(query.origin, query.destination)];
+        corridors.extend(retained.retained_corridors().iter().cloned());
         let (snapshots, mut failures) = query
             .deadline
             .run(self.load_snapshots(&query, &retained, &corridors))
@@ -208,7 +199,7 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
     ) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
-        let (retained, stats) = corridors::generate(&self.transit, query);
+        let (retained, stats) = corridors::generate(&self.transit, query)?;
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
@@ -224,17 +215,6 @@ impl MultimodalPlanner {
             latency_ms = stats.search_latency_ms,
             "static round-based corridor search"
         );
-        for (index, corridor) in retained.retained_corridors().iter().enumerate() {
-            tracing::debug!(
-                target: "via_server::routing",
-                corridor_rank = index + 1,
-                theoretical_duration_seconds = corridor.theoretical_duration_seconds,
-                pattern_sequence = ?corridor.pattern_sequence(),
-                structural_steps = ?corridor.steps,
-                cost_source = corridor.cost_source.as_str(),
-                "retained static corridor"
-            );
-        }
         ::metrics::counter!("via_planner_transit_reachable_boardings_total")
             .increment(stats.corridor_positions as u64);
         ::metrics::counter!("via_planner_transit_reachable_patterns_total")
@@ -249,7 +229,7 @@ impl MultimodalPlanner {
         &self,
         query: &PlanningQuery,
         retained: &RetainedCorridorSet,
-        corridors: &[EvaluationCorridor],
+        corridors: &[Corridor],
     ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
         let window_end = query.departure_time
             + Duration::seconds(i64::from(query.limits.max_journey_duration_seconds));
@@ -280,7 +260,7 @@ impl MultimodalPlanner {
             .collect::<Result<Vec<_>, RoutingError>>()?;
         let bike_station_ids = if query.allow_bike_share {
             self.bike_planner
-                .required_station_ids(corridors.iter().flat_map(EvaluationCorridor::anchors))
+                .required_station_ids(corridors.iter().flat_map(Corridor::anchors))
         } else {
             Vec::new()
         };

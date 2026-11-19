@@ -13,7 +13,7 @@ use crate::{
         },
         transit::runtime::TransitRuntime,
     },
-    routing::{EndpointStop, model::PlanningQuery},
+    routing::{EndpointStop, WalkingMovementKind, model::PlanningQuery},
 };
 
 fn id(value: &str) -> BoardingPointId {
@@ -104,7 +104,7 @@ fn query(
 
 fn run(network: &TransitNetwork, query: &PlanningQuery) -> RetainedCorridorSet {
     let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
-    generate(&runtime, query).0
+    generate(&runtime, query).unwrap().0
 }
 
 #[test]
@@ -286,7 +286,7 @@ fn mixed_bus_to_metro_can_outrank_slower_pure_bus() {
         ]
     );
     assert_eq!(
-        retained_corridors.retained_corridors()[0].cost_source,
+        retained_corridors.retained_corridors()[0].cost_source(),
         StaticCostSource::Mixed
     );
 }
@@ -311,7 +311,8 @@ fn k_two_means_two_total_corridors_not_two_per_mode() {
     let (retained_corridors, stats) = generate(
         &TransitRuntime::new(std::sync::Arc::new(network)),
         &query("o", "d", &[TransitMode::Bus, TransitMode::Metro], 0, 2),
-    );
+    )
+    .unwrap();
 
     assert_eq!(retained_corridors.retained_corridors().len(), 2);
     assert_eq!(stats.corridor_patterns, 4);
@@ -329,7 +330,7 @@ fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timi
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
     let (retained_corridors, stats) =
-        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
+        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1)).unwrap();
 
     assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
@@ -360,7 +361,7 @@ fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
     let (retained_corridors, stats) =
-        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1));
+        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1)).unwrap();
 
     assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(stats.corridor_patterns, 2);
@@ -458,7 +459,7 @@ fn bus_without_exact_schedule_uses_optimistic_geometry() {
 
     assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert_eq!(
-        retained_corridors.retained_corridors()[0].cost_source,
+        retained_corridors.retained_corridors()[0].cost_source(),
         StaticCostSource::OptimisticEstimate
     );
 }
@@ -530,8 +531,11 @@ fn static_walking_transfer_can_connect_access_to_first_boarding() {
 
     assert_eq!(retained_corridors.retained_corridors().len(), 1);
     assert!(matches!(
-        retained_corridors.retained_corridors()[0].steps.first(),
-        Some(StaticCorridorStep::SurfaceTransfer { .. })
+        retained_corridors.retained_corridors()[0].edges().get(1),
+        Some(PlannedMovement::RetainedWalking {
+            kind: WalkingMovementKind::Transfer,
+            ..
+        })
     ));
 }
 
@@ -582,10 +586,10 @@ fn direct_egress_is_retained_over_a_faster_surface_transfer_to_egress() {
 
         assert_eq!(retained_corridors.retained_corridors().len(), 1);
         let corridor = &retained_corridors.retained_corridors()[0];
-        assert_eq!(corridor.steps.len(), 1);
+        assert_eq!(corridor.edges().len(), 3);
         assert!(matches!(
-            corridor.steps.last(),
-            Some(StaticCorridorStep::Transit(leg)) if leg.alight_stop_id == id("alight")
+            &corridor.edges()[1],
+            PlannedMovement::Transit(leg) if leg.alight_stop_id == id("alight")
         ));
     }
 }
@@ -615,15 +619,19 @@ fn static_walking_transfer_can_connect_transit_rides() {
         corridor.pattern_sequence(),
         vec![TransitPatternId::new("metro"), TransitPatternId::new("bus")]
     );
-    assert_eq!(corridor.steps.len(), 3);
+    assert_eq!(corridor.edges().len(), 5);
     assert!(matches!(
-        &corridor.steps[1],
-        StaticCorridorStep::SurfaceTransfer { from, to, .. }
-            if from == &id("alight") && to == &id("board")
+        &corridor.edges()[2],
+        PlannedMovement::RetainedWalking {
+            kind: WalkingMovementKind::Transfer,
+            ..
+        }
     ));
+    assert_eq!(corridor.anchors()[2].boarding_point(), Some(&id("alight")));
+    assert_eq!(corridor.anchors()[3].boarding_point(), Some(&id("board")));
     assert!(matches!(
-        corridor.steps.last(),
-        Some(StaticCorridorStep::Transit(leg)) if leg.alight_stop_id == id("d")
+        &corridor.edges()[3],
+        PlannedMovement::Transit(leg) if leg.alight_stop_id == id("d")
     ));
 }
 
@@ -637,7 +645,7 @@ fn expired_deadline_stops_phase1_before_expanding_a_state() {
     query.deadline = super::super::model::PlanningDeadline::elapsed_for_test();
     let runtime = TransitRuntime::new(std::sync::Arc::new(network));
 
-    let (corridors, stats) = generate(&runtime, &query);
+    let (corridors, stats) = generate(&runtime, &query).unwrap();
 
     assert!(stats.deadline_exceeded);
     assert_eq!(stats.states_expanded, 0);
@@ -731,7 +739,7 @@ fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
         retained_corridors
             .retained_corridors()
             .iter()
-            .map(StaticCorridor::pattern_sequence)
+            .map(Corridor::pattern_sequence)
             .collect::<Vec<_>>(),
         vec![vec![TransitPatternId::new("direct")]]
     );
@@ -758,7 +766,7 @@ fn target_bound_drops_much_slower_corridors_when_the_cap_is_not_full() {
         retained_corridors
             .retained_corridors()
             .iter()
-            .map(StaticCorridor::pattern_sequence)
+            .map(Corridor::pattern_sequence)
             .collect::<Vec<_>>(),
         vec![vec![TransitPatternId::new("direct")]]
     );

@@ -73,20 +73,21 @@ async fn faster_walking_makes_downstream_transit_catchable() {
     let query = query(&[TransitMode::Bus], 1, 1);
     let retained = RetainedCorridorSet::from_retained_for_test(
         &network,
-        vec![StaticCorridor {
-            access_stop_id: BoardingPointId::new("origin"),
-            egress_stop_id: BoardingPointId::new("destination"),
-            theoretical_duration_seconds: 600,
-            cost_source: StaticCostSource::OptimisticEstimate,
-            steps: vec![
-                static_leg("first", "origin", "middle"),
-                static_leg("second", "middle", "destination"),
-            ],
-        }],
+        vec![
+            Corridor::from_steps(
+                &network,
+                &query,
+                &BoardingPointId::new("origin"),
+                &[
+                    static_leg("first", "origin", "middle"),
+                    static_leg("second", "middle", "destination"),
+                ],
+                &BoardingPointId::new("destination"),
+            )
+            .unwrap(),
+        ],
     );
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("first"),
@@ -139,7 +140,7 @@ async fn faster_walking_makes_downstream_transit_catchable() {
 fn direct_walking_corridor_has_one_unresolved_edge() {
     let origin = crate::street::Coordinate::try_new(25.0, 121.5).unwrap();
     let destination = crate::street::Coordinate::try_new(25.02, 121.5).unwrap();
-    let corridor = EvaluationCorridor::direct_walking(origin, destination);
+    let corridor = Corridor::direct_walking(origin, destination);
     assert_eq!(corridor.anchors().len(), 2);
     assert_eq!(corridor.anchors()[0].kind, JourneyAnchorKind::Origin);
     assert_eq!(corridor.anchors()[1].kind, JourneyAnchorKind::Destination);
@@ -154,7 +155,7 @@ fn direct_walking_corridor_has_one_unresolved_edge() {
 #[tokio::test]
 async fn walking_cache_reuses_exact_requests() {
     let query = query(&[], 0, 1);
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: calls.clone(),
@@ -184,10 +185,7 @@ async fn unreachable_walking_route_has_no_successor_or_provider_failure() {
         &query,
         &street,
         None,
-        &[EvaluationCorridor::direct_walking(
-            query.origin,
-            query.destination,
-        )],
+        &[Corridor::direct_walking(query.origin, query.destination)],
     )
     .await
     .unwrap();
@@ -204,7 +202,7 @@ async fn walking_uses_actual_route_timing_even_when_geometry_bound_exceeds_query
     let snapshot = TimingSnapshot::default();
     let origin = crate::street::Coordinate::try_new(25.0, 121.5).unwrap();
     let destination = crate::street::Coordinate::try_new(25.02, 121.5).unwrap();
-    let corridor = EvaluationCorridor::direct_walking(origin, destination);
+    let corridor = Corridor::direct_walking(origin, destination);
     {
         for actual_seconds in [29, 31] {
             let mut query = PlanningQuery::new(
@@ -289,7 +287,7 @@ async fn walking_operation_returns_local_failures_and_reuses_cached_results() {
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let query = query(&[], 0, 1);
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     for (error, transient, internal) in [
         (None, false, false),
         (Some(StreetRoutingError::Timeout), true, false),

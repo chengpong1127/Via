@@ -14,18 +14,21 @@ fn unhydrated_walking_does_not_discard_a_distinct_bike_path() {
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
-        vec![StaticCorridor {
-            access_stop_id: BoardingPointId::new("a"),
-            egress_stop_id: BoardingPointId::new("b"),
-            theoretical_duration_seconds: 60,
-            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-            steps: vec![StaticCorridorStep::SurfaceTransfer {
-                from: BoardingPointId::new("a"),
-                to: BoardingPointId::new("b"),
-                walking_duration_seconds: 60,
-                walking_distance_metres: 100,
-            }],
-        }],
+        vec![
+            Corridor::from_steps(
+                &network,
+                &query,
+                &BoardingPointId::new("a"),
+                &[StaticCorridorStep::SurfaceTransfer {
+                    from: BoardingPointId::new("a"),
+                    to: BoardingPointId::new("b"),
+                    walking_duration_seconds: 60,
+                    walking_distance_metres: 100,
+                }],
+                &BoardingPointId::new("b"),
+            )
+            .unwrap(),
+        ],
     );
     let bike = BikeShareMovement::new(
         0,
@@ -91,20 +94,22 @@ fn pareto_keeps_a_later_route_with_less_walking() {
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
         vec![
-            StaticCorridor {
-                access_stop_id: BoardingPointId::new("a"),
-                egress_stop_id: BoardingPointId::new("destination"),
-                theoretical_duration_seconds: 300,
-                cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-                steps: vec![static_leg("walky", "a", "destination")],
-            },
-            StaticCorridor {
-                access_stop_id: BoardingPointId::new("x"),
-                egress_stop_id: BoardingPointId::new("destination"),
-                theoretical_duration_seconds: 480,
-                cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-                steps: vec![static_leg("lowwalk", "x", "destination")],
-            },
+            Corridor::from_steps(
+                &network,
+                &query,
+                &BoardingPointId::new("a"),
+                &[static_leg("walky", "a", "destination")],
+                &BoardingPointId::new("destination"),
+            )
+            .unwrap(),
+            Corridor::from_steps(
+                &network,
+                &query,
+                &BoardingPointId::new("x"),
+                &[static_leg("lowwalk", "x", "destination")],
+                &BoardingPointId::new("destination"),
+            )
+            .unwrap(),
         ],
     );
     let mut snapshot = TimingSnapshot::default();

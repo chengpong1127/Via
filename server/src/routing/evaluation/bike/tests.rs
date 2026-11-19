@@ -580,7 +580,7 @@ async fn concurrent_candidate_discovery_caches_none_once() {
             let session = session.clone();
             let barrier = barrier.clone();
             tokio::spawn(async move {
-                let corridor = crate::routing::evaluation::EvaluationCorridor::direct_walking(
+                let corridor = crate::routing::evaluation::Corridor::direct_walking(
                     Coordinate::try_new(25.0, 121.5).unwrap(),
                     Coordinate::try_new(25.01, 121.5).unwrap(),
                 );

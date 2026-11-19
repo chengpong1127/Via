@@ -10,14 +10,14 @@ use crate::domain::{
     transit::runtime::TransitRuntime,
 };
 
-use crate::routing::model::PlanningQuery;
+use crate::routing::model::{PlanningQuery, RoutingError};
 
 use super::{
+    corridor::Corridor,
     retention::RetainedCorridorSet,
     types::{
-        CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridor,
-        StaticCorridorStep, StaticCostSource, StaticTransitLeg, equivalent_leg_key,
-        equivalent_steps,
+        CorridorSearchStats, EquivalentCorridorSignature, EquivalentLegKey, StaticCorridorStep,
+        StaticCostSource, StaticTransitLeg, equivalent_leg_key, equivalent_steps,
     },
 };
 
@@ -85,7 +85,25 @@ impl CostSourceTracker {
 struct Candidate {
     rides: usize,
     search_cost_seconds: u32,
-    corridor: StaticCorridor,
+    theoretical_duration_seconds: u32,
+    access_stop_id: BoardingPointId,
+    egress_stop_id: BoardingPointId,
+    steps: Vec<StaticCorridorStep>,
+}
+
+impl Candidate {
+    fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
+        self.steps.iter().filter_map(|step| match step {
+            StaticCorridorStep::Transit(leg) => Some(leg),
+            StaticCorridorStep::SurfaceTransfer { .. } => None,
+        })
+    }
+
+    fn pattern_sequence(&self) -> Vec<TransitPatternId> {
+        self.transit_legs()
+            .map(|leg| leg.pattern_id.clone())
+            .collect()
+    }
 }
 
 struct Search<'a> {
@@ -111,7 +129,7 @@ struct BagEntry {
 pub fn generate(
     transit: &TransitRuntime,
     query: &PlanningQuery,
-) -> (RetainedCorridorSet, CorridorSearchStats) {
+) -> Result<(RetainedCorridorSet, CorridorSearchStats), RoutingError> {
     let started = Instant::now();
     let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
     for egress in &query.destination_egress {
@@ -165,7 +183,7 @@ pub fn generate(
         }
         if query.deadline.is_elapsed() {
             search.stats.deadline_exceeded = true;
-            return (RetainedCorridorSet::default(), search.stats);
+            return Ok((RetainedCorridorSet::default(), search.stats));
         }
         let mut boardable_by_pattern =
             HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
@@ -209,17 +227,13 @@ pub fn generate(
                         )
                         .saturating_add(TARGET_SLACK_SECONDS),
                 );
-                let steps = search.steps(label.node);
                 candidates.push(Candidate {
                     rides,
                     search_cost_seconds,
-                    corridor: StaticCorridor {
-                        access_stop_id: search.nodes[label.node].access_stop_id.clone(),
-                        egress_stop_id: stop_id.clone(),
-                        theoretical_duration_seconds: duration,
-                        cost_source: cost_source(&steps),
-                        steps,
-                    },
+                    theoretical_duration_seconds: duration,
+                    access_stop_id: search.nodes[label.node].access_stop_id.clone(),
+                    egress_stop_id: stop_id.clone(),
+                    steps: search.steps(label.node),
                 });
             }
         }
@@ -230,13 +244,32 @@ pub fn generate(
     let mut stats = search.stats;
     let target_seconds = search.target_seconds;
     candidates.retain(|candidate| candidate.search_cost_seconds <= target_seconds);
-    let selected_corridors = select(
+    let selected_candidates = select(
         transit,
         candidates,
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs_by_key = equivalent_legs_for(transit, &selected_corridors);
+    let equivalent_legs_by_key = equivalent_legs_for(transit, &selected_candidates);
+    let mut selected_corridors = Vec::with_capacity(selected_candidates.len());
+    for (index, candidate) in selected_candidates.iter().enumerate() {
+        tracing::debug!(
+            target: "via_server::routing",
+            corridor_rank = index + 1,
+            theoretical_duration_seconds = candidate.theoretical_duration_seconds,
+            pattern_sequence = ?candidate.pattern_sequence(),
+            structural_steps = ?candidate.steps,
+            cost_source = cost_source(candidate.transit_legs()).as_str(),
+            "retained static corridor"
+        );
+        selected_corridors.push(Corridor::from_steps(
+            transit,
+            query,
+            &candidate.access_stop_id,
+            &candidate.steps,
+            &candidate.egress_stop_id,
+        )?);
+    }
     let (retained, pattern_count, bus_stop_count) =
         RetainedCorridorSet::from_retained(transit, &equivalent_legs_by_key, selected_corridors);
     stats.corridors_retained = retained.retained_corridors().len();
@@ -244,7 +277,7 @@ pub fn generate(
     stats.corridor_positions = retained.timing_positions().count();
     stats.corridor_bus_stops = bus_stop_count;
     stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    (retained, stats)
+    Ok((retained, stats))
 }
 
 impl Search<'_> {
@@ -529,22 +562,19 @@ fn select(
     candidates: Vec<Candidate>,
     limit: usize,
     stats: &mut CorridorSearchStats,
-) -> Vec<StaticCorridor> {
+) -> Vec<Candidate> {
     let mut candidate_by_signature = HashMap::<EquivalentCorridorSignature, Candidate>::new();
     for candidate in candidates {
         let structure = EquivalentCorridorSignature {
-            access_stop_id: candidate.corridor.access_stop_id.clone(),
-            steps: equivalent_steps(transit, &candidate.corridor.steps),
-            egress_stop_id: candidate.corridor.egress_stop_id.clone(),
+            access_stop_id: candidate.access_stop_id.clone(),
+            steps: equivalent_steps(transit, &candidate.steps),
+            egress_stop_id: candidate.egress_stop_id.clone(),
         };
         let replace = candidate_by_signature.get(&structure).is_none_or(|known| {
             candidate
                 .search_cost_seconds
                 .cmp(&known.search_cost_seconds)
-                .then_with(|| {
-                    corridor_order_key(&candidate.corridor)
-                        .cmp(&corridor_order_key(&known.corridor))
-                })
+                .then_with(|| corridor_order_key(&candidate).cmp(&corridor_order_key(known)))
                 .is_lt()
         });
         if replace {
@@ -554,7 +584,7 @@ fn select(
     stats.unique_corridors_found = candidate_by_signature.len();
     let mut candidates = candidate_by_signature.into_values().collect::<Vec<_>>();
     candidates.sort_by_cached_key(|candidate| {
-        let (access, egress, steps) = corridor_order_key(&candidate.corridor);
+        let (access, egress, steps) = corridor_order_key(candidate);
         (
             candidate.search_cost_seconds,
             candidate.rides,
@@ -584,25 +614,25 @@ fn select(
     }
     let mut mode_sets = chosen_indices
         .iter()
-        .map(|&index| corridor_modes(transit, &candidates[index].corridor))
+        .map(|&index| corridor_modes(transit, &candidates[index]))
         .collect::<HashSet<_>>();
     for (index, candidate) in candidates.iter().enumerate() {
         if chosen_indices.len() >= limit {
             break;
         }
-        if mode_sets.insert(corridor_modes(transit, &candidate.corridor)) {
+        if mode_sets.insert(corridor_modes(transit, candidate)) {
             chosen_indices.insert(index);
         }
     }
     let mut sequences = chosen_indices
         .iter()
-        .map(|&index| candidates[index].corridor.pattern_sequence())
+        .map(|&index| candidates[index].pattern_sequence())
         .collect::<HashSet<_>>();
     for (index, candidate) in candidates.iter().enumerate() {
         if chosen_indices.len() >= limit {
             break;
         }
-        if sequences.insert(candidate.corridor.pattern_sequence()) {
+        if sequences.insert(candidate.pattern_sequence()) {
             chosen_indices.insert(index);
         }
     }
@@ -616,16 +646,16 @@ fn select(
         .into_iter()
         .enumerate()
         .filter(|(index, _)| chosen_indices.contains(index))
-        .map(|(_, candidate)| candidate.corridor)
+        .map(|(_, candidate)| candidate)
         .collect()
 }
 
 fn equivalent_legs_for(
     transit: &TransitRuntime,
-    corridors: &[StaticCorridor],
+    candidates: &[Candidate],
 ) -> HashMap<EquivalentLegKey, Vec<StaticTransitLeg>> {
     let mut equivalent_legs_by_key = HashMap::<EquivalentLegKey, Vec<StaticTransitLeg>>::new();
-    for leg in corridors.iter().flat_map(StaticCorridor::transit_legs) {
+    for leg in candidates.iter().flat_map(Candidate::transit_legs) {
         let key = equivalent_leg_key(transit, leg);
         if equivalent_legs_by_key.contains_key(&key) {
             continue;
@@ -674,8 +704,8 @@ fn pattern_with_mode<'a>(
     allowed_modes.contains(&mode).then_some((pattern, mode))
 }
 
-fn corridor_modes(transit: &TransitRuntime, corridor: &StaticCorridor) -> Vec<TransitMode> {
-    let mut modes = corridor
+fn corridor_modes(transit: &TransitRuntime, candidate: &Candidate) -> Vec<TransitMode> {
+    let mut modes = candidate
         .transit_legs()
         .map(|leg| {
             transit
@@ -688,20 +718,20 @@ fn corridor_modes(transit: &TransitRuntime, corridor: &StaticCorridor) -> Vec<Tr
     modes
 }
 
-fn corridor_order_key(corridor: &StaticCorridor) -> (&str, &str, String) {
+fn corridor_order_key(candidate: &Candidate) -> (&str, &str, String) {
     (
-        corridor.access_stop_id.as_str(),
-        corridor.egress_stop_id.as_str(),
-        format!("{:?}", corridor.steps),
+        candidate.access_stop_id.as_str(),
+        candidate.egress_stop_id.as_str(),
+        format!("{:?}", candidate.steps),
     )
 }
 
-fn cost_source(steps: &[StaticCorridorStep]) -> StaticCostSource {
+pub(super) fn cost_source<'a>(
+    legs: impl Iterator<Item = &'a StaticTransitLeg>,
+) -> StaticCostSource {
     let mut cost_source = CostSourceTracker::default();
-    for step in steps {
-        if let StaticCorridorStep::Transit(leg) = step {
-            cost_source.push(leg.cost_source);
-        }
+    for leg in legs {
+        cost_source.push(leg.cost_source);
     }
     cost_source.finish()
 }

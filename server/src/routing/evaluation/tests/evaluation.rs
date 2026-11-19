@@ -27,21 +27,24 @@ fn long_corridor_only_checks_its_next_edges_before_exact_routing() {
     );
     let corridor = RetainedCorridorSet::from_retained_for_test(
         &network,
-        vec![StaticCorridor {
-            access_stop_id: BoardingPointId::new(&stop_names[0]),
-            egress_stop_id: BoardingPointId::new(stop_names.last().unwrap()),
-            theoretical_duration_seconds: 12 * 60,
-            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-            steps: stop_names
-                .windows(2)
-                .map(|pair| StaticCorridorStep::SurfaceTransfer {
-                    from: BoardingPointId::new(&pair[0]),
-                    to: BoardingPointId::new(&pair[1]),
-                    walking_duration_seconds: 60,
-                    walking_distance_metres: 100,
-                })
-                .collect(),
-        }],
+        vec![
+            Corridor::from_steps(
+                &network,
+                &query,
+                &BoardingPointId::new(&stop_names[0]),
+                &stop_names
+                    .windows(2)
+                    .map(|pair| StaticCorridorStep::SurfaceTransfer {
+                        from: BoardingPointId::new(&pair[0]),
+                        to: BoardingPointId::new(&pair[1]),
+                        walking_duration_seconds: 60,
+                        walking_distance_metres: 100,
+                    })
+                    .collect::<Vec<_>>(),
+                &BoardingPointId::new(stop_names.last().unwrap()),
+            )
+            .unwrap(),
+        ],
     );
     let realizations = (0..stop_names.len() - 1)
         .flat_map(|from| {
@@ -91,9 +94,7 @@ async fn transit_expansion_emits_multiple_departures_before_pruning() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -133,9 +134,7 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -195,9 +194,7 @@ async fn surface_realization_completes_alongside_transit() {
     );
     let query = query(&[TransitMode::Bus], 0, 1);
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -248,15 +245,9 @@ async fn direct_corridor_has_observable_constant_work() {
             calls: calls.clone(),
             error: None,
         }));
-        let mut corridors = vec![
-            EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-                .unwrap(),
-        ];
+        let mut corridors = vec![retained.retained_corridors()[0].clone()];
         if include_direct {
-            corridors.insert(
-                0,
-                EvaluationCorridor::direct_walking(query.origin, query.destination),
-            );
+            corridors.insert(0, Corridor::direct_walking(query.origin, query.destination));
         }
         let result = evaluate_corridors(
             &network, &retained, &snapshot, &query, &street, None, &corridors,
@@ -296,8 +287,8 @@ async fn deadline_remains_a_hard_failure_after_a_completed_corridor() {
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let corridors = [
-        EvaluationCorridor::direct_walking(query.origin, query.destination),
-        EvaluationCorridor::direct_walking(
+        Corridor::direct_walking(query.origin, query.destination),
+        Corridor::direct_walking(
             query.origin,
             crate::street::Coordinate::try_new(25.001, 121.5).unwrap(),
         ),
@@ -318,7 +309,7 @@ async fn direct_corridor_returns_both_resolved_surface_successors() {
     let query = query(&[], 0, 1);
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         error: None,
@@ -356,7 +347,7 @@ async fn every_prepared_corridor_completes_beyond_the_former_work_boundary() {
         error: None,
     }));
     let corridors = (0..2400)
-        .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
+        .map(|_| Corridor::direct_walking(query.origin, query.destination))
         .collect::<Vec<_>>();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -382,7 +373,7 @@ async fn bike_operation_records_local_failures_and_keeps_walking_fallback() {
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
     let query = query(&[], 0, 1);
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     for (error, transient, internal) in [
         (None, false, false),
         (Some(StreetRoutingError::Timeout), true, false),
@@ -434,7 +425,7 @@ async fn fatal_transit_outcome_skips_both_surface_operations() {
         .unwrap()
         .clone();
     leg.alight_index = leg.board_index;
-    let corridor = EvaluationCorridor::new(
+    let corridor = Corridor::new(
         vec![
             CorridorAnchor {
                 kind: JourneyAnchorKind::Origin,
@@ -478,9 +469,7 @@ async fn fatal_walking_outcome_skips_bike() {
     let mut query = query(&[TransitMode::Bus], 0, 1);
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),
@@ -512,7 +501,7 @@ async fn fatal_bike_outcome_keeps_the_earlier_walking_failure() {
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     let retained = RetainedCorridorSet::default();
     let snapshot = TimingSnapshot::default();
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let street = MatrixCache::new(Arc::new(CountingWalkingRouter {
         calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -544,9 +533,7 @@ async fn evaluator_propagates_a_fatal_walking_error() {
     let mut query = query(&[TransitMode::Bus], 0, 1);
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let mut snapshot = TimingSnapshot::default();
     snapshot.insert(
         TransitPatternId::new("bus"),

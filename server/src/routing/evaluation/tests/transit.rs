@@ -3,32 +3,31 @@ use super::*;
 #[test]
 fn retained_corridor_invariant_failures_are_explicit() {
     let runtime = network(Vec::new(), &["a", "b"], Vec::new());
-    let make_corridor = |access: &str, egress: &str, steps| StaticCorridor {
-        access_stop_id: BoardingPointId::new(access),
-        egress_stop_id: BoardingPointId::new(egress),
-        theoretical_duration_seconds: 0,
-        cost_source: StaticCostSource::OptimisticEstimate,
-        steps,
-    };
     let mut query = query(&[TransitMode::Bus], 0, 1);
+    let build = |query: &PlanningQuery, access: &str, egress: &str| {
+        Corridor::from_steps(
+            &runtime,
+            query,
+            &BoardingPointId::new(access),
+            &[],
+            &BoardingPointId::new(egress),
+        )
+    };
 
-    let malformed = make_corridor("a", "b", Vec::new());
     assert!(matches!(
-        EvaluationCorridor::from_transit(&runtime, &malformed, &query),
+        build(&query, "a", "b"),
         Err(RoutingError::Internal(_))
     ));
 
-    let missing_stop = make_corridor("missing", "missing", Vec::new());
     query.origin_access[0].stop_id = BoardingPointId::new("missing");
     query.destination_egress[0].stop_id = BoardingPointId::new("missing");
     assert!(matches!(
-        EvaluationCorridor::from_transit(&runtime, &missing_stop, &query),
+        build(&query, "missing", "missing"),
         Err(RoutingError::Internal(_))
     ));
 
-    let no_matching_baseline = make_corridor("a", "a", Vec::new());
     assert!(matches!(
-        EvaluationCorridor::from_transit(&runtime, &no_matching_baseline, &query),
+        build(&query, "a", "a"),
         Err(RoutingError::Internal(_))
     ));
 }
@@ -458,26 +457,28 @@ fn phase2_never_combines_different_retained_corridors() {
     );
     let query = query(&[TransitMode::Bus, TransitMode::Metro], 1, 2);
     let retained = vec![
-        StaticCorridor {
-            access_stop_id: BoardingPointId::new("origin"),
-            egress_stop_id: BoardingPointId::new("destination"),
-            theoretical_duration_seconds: 1,
-            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-            steps: vec![
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[
                 static_leg("a-bus-prefix", "origin", "middle"),
                 static_leg("b-bus-suffix", "middle", "destination"),
             ],
-        },
-        StaticCorridor {
-            access_stop_id: BoardingPointId::new("origin"),
-            egress_stop_id: BoardingPointId::new("destination"),
-            theoretical_duration_seconds: 2,
-            cost_source: crate::routing::corridors::StaticCostSource::OptimisticEstimate,
-            steps: vec![
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
+        Corridor::from_steps(
+            &network,
+            &query,
+            &BoardingPointId::new("origin"),
+            &[
                 static_leg("c-metro-prefix", "origin", "middle"),
                 static_leg("d-metro-suffix", "middle", "destination"),
             ],
-        },
+            &BoardingPointId::new("destination"),
+        )
+        .unwrap(),
     ];
     let corridor = RetainedCorridorSet::from_retained_for_test(&network, retained);
     let mut snapshot = TimingSnapshot::default();
@@ -561,9 +562,7 @@ fn transit_corridor_preserves_planned_movement_and_anchor_order() {
         .destination_egress
         .push(query.destination_egress[0].clone());
     let retained = candidate_corridor(&network, &query);
-    let corridor =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let corridor = retained.retained_corridors()[0].clone();
     let expected = [
         JourneyAnchorKind::Origin,
         JourneyAnchorKind::BoardingPoint {

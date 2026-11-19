@@ -23,7 +23,7 @@ use crate::{
     },
     routing::{
         EndpointStop,
-        corridors::{StaticCorridor, StaticCorridorStep, StaticCostSource, generate},
+        corridors::{Corridor, StaticCorridorStep, generate},
     },
 };
 
@@ -88,7 +88,7 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> RetainedCorridorSet {
-    generate(network, query).0
+    generate(network, query).unwrap().0
 }
 
 fn trip(id: &str, pattern_id: &str, stops: &[&str], minute_offsets: &[i64]) -> EffectiveTrip {
@@ -264,7 +264,7 @@ async fn evaluate_corridors(
     query: &PlanningQuery,
     street: &MatrixCache,
     bike: Option<&dyn BikeMovementSource>,
-    corridors: &[EvaluationCorridor],
+    corridors: &[Corridor],
 ) -> Result<Evaluation, RoutingError> {
     CorridorEvaluator {
         transit: network,
@@ -276,18 +276,6 @@ async fn evaluate_corridors(
     }
     .evaluate(corridors)
     .await
-}
-
-fn transit_corridors(
-    network: &TransitRuntime,
-    retained: &RetainedCorridorSet,
-    query: &PlanningQuery,
-) -> Result<Vec<EvaluationCorridor>, RoutingError> {
-    retained
-        .retained_corridors()
-        .iter()
-        .map(|corridor| EvaluationCorridor::from_transit(network, corridor, query))
-        .collect()
 }
 
 fn run_test_evaluation(
@@ -305,7 +293,7 @@ fn run_test_evaluation(
             if query.origin_access.is_empty() || query.destination_egress.is_empty() {
                 return Err(RoutingError::InvalidQuery);
             }
-            let corridors = transit_corridors(network, retained, &query)?;
+            let corridors = retained.retained_corridors().to_vec();
             let street = fake_street();
             let evaluation = evaluate_corridors(
                 network, retained, snapshot, &query, &street, bike, &corridors,
@@ -494,10 +482,7 @@ async fn evaluate_walking_replacement(
             vec![bike_movement(0, 1, 240)],
         )]))
     });
-    let make_corridor = || {
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap()
-    };
+    let make_corridor = || retained.retained_corridors()[0].clone();
     let corridors = if duplicate {
         vec![make_corridor(), make_corridor()]
     } else {

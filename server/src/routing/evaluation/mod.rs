@@ -1,5 +1,4 @@
 pub(crate) mod bike;
-mod corridor;
 mod pareto;
 mod state;
 #[cfg(test)]
@@ -14,11 +13,9 @@ use futures_util::{StreamExt, TryStreamExt, stream};
 use time::{Duration, OffsetDateTime};
 use tracing::Instrument;
 
-pub(crate) use corridor::EvaluationCorridor;
-
 use super::{
     cache::MatrixCache,
-    corridors::{RetainedCorridorSet, StaticTransitLeg},
+    corridors::{Corridor, CorridorAnchor, PlannedMovement, RetainedCorridorSet, StaticTransitLeg},
     journey::{
         BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
         RealizedJourney, WalkingMovementKind,
@@ -34,7 +31,6 @@ use crate::{
     street::{MatrixCell, RouteQuery, RoutingConstraints, StreetRoutingError, StreetTravelMode},
 };
 use bike::BikeMovementSource;
-use corridor::{CorridorAnchor, PlannedMovement};
 use pareto::{EvaluatedCandidate, pareto_candidates, prune_states};
 use state::{EvaluationState, PathMetrics};
 
@@ -82,10 +78,7 @@ struct Run<'e, 'a> {
 }
 
 impl CorridorEvaluator<'_> {
-    pub async fn evaluate(
-        &self,
-        corridors: &[EvaluationCorridor],
-    ) -> Result<Evaluation, RoutingError> {
+    pub async fn evaluate(&self, corridors: &[Corridor]) -> Result<Evaluation, RoutingError> {
         let started = std::time::Instant::now();
         let run = Run::new(self);
         let journeys = run.evaluate(corridors).await?;
@@ -136,10 +129,7 @@ impl<'e, 'a> Run<'e, 'a> {
             .record_provider(error);
     }
 
-    async fn evaluate(
-        &self,
-        corridors: &[EvaluationCorridor],
-    ) -> Result<Vec<RealizedJourney>, RoutingError> {
+    async fn evaluate(&self, corridors: &[Corridor]) -> Result<Vec<RealizedJourney>, RoutingError> {
         self.check_deadline()?;
         let concurrency = self
             .query()
@@ -171,7 +161,7 @@ impl<'e, 'a> Run<'e, 'a> {
 
     async fn evaluate_corridor(
         &self,
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         self.check_deadline()?;
         let mut states = vec![EvaluationState::initial(self.query())];
@@ -189,7 +179,7 @@ impl<'e, 'a> Run<'e, 'a> {
     async fn expand_edge(
         &self,
         states: &[EvaluationState],
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
         index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let concurrency = self
@@ -213,7 +203,7 @@ impl<'e, 'a> Run<'e, 'a> {
     async fn expand_state(
         &self,
         state: &EvaluationState,
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
         index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         self.check_deadline()?;
@@ -279,7 +269,7 @@ impl<'e, 'a> Run<'e, 'a> {
     async fn walking_successor(
         &self,
         state: &EvaluationState,
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
         edge: &PlannedMovement,
         index: usize,
     ) -> Result<Option<EvaluationState>, RoutingError> {
@@ -319,7 +309,7 @@ impl<'e, 'a> Run<'e, 'a> {
     async fn bike_successors(
         &self,
         state: &EvaluationState,
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
         index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         self.check_deadline()?;
@@ -346,7 +336,7 @@ impl<'e, 'a> Run<'e, 'a> {
 
     fn finalize(
         &self,
-        corridor: &EvaluationCorridor,
+        corridor: &Corridor,
         states: Vec<EvaluationState>,
     ) -> Result<Vec<EvaluatedCandidate>, RoutingError> {
         let query = self.query();

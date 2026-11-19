@@ -9,7 +9,7 @@ mod reconstruct;
 mod service;
 
 pub use corridors::{
-    CorridorSearchStats, RetainedCorridorSet, StaticCorridor, StaticCorridorStep, StaticCostSource,
+    Corridor, CorridorSearchStats, RetainedCorridorSet, StaticCorridorStep, StaticCostSource,
     StaticTransitLeg, generate as generate_static_corridors,
 };
 pub use evaluation::{CorridorEvaluationStats, bike::BikeMovementPolicy};

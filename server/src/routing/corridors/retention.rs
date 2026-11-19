@@ -5,11 +5,14 @@ use crate::domain::{
     transit::runtime::{PatternPosition, TransitRuntime},
 };
 
-use super::types::{EquivalentLegKey, StaticCorridor, StaticTransitLeg, equivalent_leg_key};
+use super::{
+    corridor::Corridor,
+    types::{EquivalentLegKey, StaticTransitLeg, equivalent_leg_key},
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct RetainedCorridorSet {
-    retained_corridors: Vec<StaticCorridor>,
+    retained_corridors: Vec<Corridor>,
     equivalent_legs_by_key: HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
     timing_positions: Vec<PatternPosition>,
 }
@@ -18,7 +21,7 @@ impl RetainedCorridorSet {
     #[cfg(test)]
     pub(in crate::routing) fn from_retained_for_test(
         transit: &TransitRuntime,
-        retained_corridors: Vec<StaticCorridor>,
+        retained_corridors: Vec<Corridor>,
     ) -> Self {
         Self::from_retained(transit, &HashMap::new(), retained_corridors).0
     }
@@ -26,11 +29,11 @@ impl RetainedCorridorSet {
     pub(super) fn from_retained(
         transit: &TransitRuntime,
         equivalent_legs_by_key: &HashMap<EquivalentLegKey, Vec<StaticTransitLeg>>,
-        retained_corridors: Vec<StaticCorridor>,
+        retained_corridors: Vec<Corridor>,
     ) -> (Self, usize, usize) {
         let retained_equivalent_legs_by_key = retained_corridors
             .iter()
-            .flat_map(StaticCorridor::transit_legs)
+            .flat_map(Corridor::transit_legs)
             .filter_map(|leg| {
                 let key = equivalent_leg_key(transit, leg);
                 equivalent_legs_by_key
@@ -86,7 +89,7 @@ impl RetainedCorridorSet {
         )
     }
 
-    pub fn retained_corridors(&self) -> &[StaticCorridor] {
+    pub fn retained_corridors(&self) -> &[Corridor] {
         &self.retained_corridors
     }
 
@@ -143,7 +146,7 @@ mod tests {
         ids::TransitPatternId,
         transit::network::{TransitNetwork, TransitPattern},
     };
-    use crate::routing::corridors::types::{StaticCorridorStep, StaticCostSource};
+    use crate::routing::corridors::types::StaticCostSource;
 
     #[test]
     fn finalized_equivalent_leg_storage_preserves_lookup_and_timing() {
@@ -181,13 +184,7 @@ mod tests {
             let retained_leg = &legs[0];
             let key = equivalent_leg_key(&transit, retained_leg);
             let equivalent_legs_by_key = HashMap::from([(key.clone(), legs.clone())]);
-            let corridor = StaticCorridor {
-                access_stop_id: board_stop_id,
-                egress_stop_id: alight_stop_id,
-                theoretical_duration_seconds: 100,
-                cost_source: StaticCostSource::OptimisticEstimate,
-                steps: vec![StaticCorridorStep::Transit(retained_leg.clone())],
-            };
+            let corridor = Corridor::from_transit_leg_for_test(retained_leg.clone());
 
             let (finalized, pattern_count, bus_stop_count) = RetainedCorridorSet::from_retained(
                 &transit,

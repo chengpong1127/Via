@@ -44,56 +44,6 @@ pub enum StaticCorridorStep {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StaticCorridor {
-    pub access_stop_id: BoardingPointId,
-    pub egress_stop_id: BoardingPointId,
-    pub theoretical_duration_seconds: u32,
-    pub cost_source: StaticCostSource,
-    pub steps: Vec<StaticCorridorStep>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::routing) struct CorridorAnchors {
-    stops: Vec<BoardingPointId>,
-}
-
-impl CorridorAnchors {
-    pub(in crate::routing) fn stops(&self) -> &[BoardingPointId] {
-        &self.stops
-    }
-}
-
-impl StaticCorridor {
-    pub(in crate::routing) fn anchors(&self) -> Option<CorridorAnchors> {
-        let mut stops = vec![self.access_stop_id.clone()];
-        for step in &self.steps {
-            let (from, to) = match step {
-                StaticCorridorStep::Transit(leg) => (&leg.board_stop_id, &leg.alight_stop_id),
-                StaticCorridorStep::SurfaceTransfer { from, to, .. } => (from, to),
-            };
-            if stops.last() != Some(from) {
-                return None;
-            }
-            stops.push(to.clone());
-        }
-        (stops.last() == Some(&self.egress_stop_id)).then_some(CorridorAnchors { stops })
-    }
-
-    pub fn transit_legs(&self) -> impl Iterator<Item = &StaticTransitLeg> {
-        self.steps.iter().filter_map(|step| match step {
-            StaticCorridorStep::Transit(leg) => Some(leg),
-            StaticCorridorStep::SurfaceTransfer { .. } => None,
-        })
-    }
-
-    pub fn pattern_sequence(&self) -> Vec<TransitPatternId> {
-        self.transit_legs()
-            .map(|leg| leg.pattern_id.clone())
-            .collect()
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct EquivalentCorridorSignature {
     pub(super) access_stop_id: BoardingPointId,

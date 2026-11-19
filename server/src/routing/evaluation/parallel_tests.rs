@@ -122,12 +122,10 @@ async fn measured_corridors_case(
     query.limits.max_concurrent_phase2_states = concurrency;
     query.limits.max_concurrent_phase2_corridors = corridor_concurrency;
     let retained = candidate_corridor(&network, &query);
-    let original =
-        EvaluationCorridor::from_transit(&network, &retained.retained_corridors()[0], &query)
-            .unwrap();
+    let original = retained.retained_corridors()[0].clone();
     let corridors = (0..corridor_count)
         .map(|_| {
-            EvaluationCorridor::new(
+            Corridor::new(
                 original.anchors().to_vec(),
                 vec![
                     PlannedMovement::RetainedWalking {
@@ -228,7 +226,7 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
     for concurrency in [1, 2, 4, 8] {
         let mut query = query(&[], 0, 1);
         query.limits.max_concurrent_phase2_states = concurrency;
-        let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+        let corridor = Corridor::direct_walking(query.origin, query.destination);
         let provider = Arc::new(DelayedMatrix::new(1, None));
         let street = MatrixCache::new(provider.clone());
         let evaluator = test_evaluator(&network, &retained, &snapshot, &query, &street, None);
@@ -269,7 +267,7 @@ async fn fatal_deadline_drops_outstanding_states() {
     let mut query = query(&[], 0, 1);
     query.deadline = crate::routing::PlanningDeadline::after(std::time::Duration::from_secs(1));
     query.limits.max_concurrent_phase2_states = 4;
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     let provider = Arc::new(DelayedMatrix::new(2000, None));
     let street = MatrixCache::new(provider.clone());
     let states = (0..10)
@@ -436,7 +434,7 @@ async fn real_bike_failures_are_cached_with_their_classification() {
         let provider = Arc::new(DelayedMatrix::new(1, Some(error.clone())));
         let matrix = Arc::new(MatrixCache::new(provider.clone()));
         let session = real_bike_session(matrix, datetime!(2026-09-21 10:00 UTC));
-        let corridor = EvaluationCorridor::direct_walking(
+        let corridor = Corridor::direct_walking(
             Coordinate::try_new(25.0, 121.5).unwrap(),
             Coordinate::try_new(25.002, 121.5).unwrap(),
         );
@@ -529,10 +527,10 @@ async fn forced_reverse_completion_preserves_successor_order() {
     for concurrency in [1, 4] {
         let mut query = query(&[], 0, 1);
         query.limits.max_concurrent_phase2_states = concurrency;
-        let direct = EvaluationCorridor::direct_walking(query.origin, query.destination);
+        let direct = Corridor::direct_walking(query.origin, query.destination);
         let anchors = vec![direct.anchors()[0].clone(); 6];
         let edges = (0..5).map(|_| PlannedMovement::WalkingToResolve).collect();
-        let corridor = EvaluationCorridor::new(anchors, edges).unwrap();
+        let corridor = Corridor::new(anchors, edges).unwrap();
         let street = MatrixCache::new(Arc::new(DelayedMatrix::new(0, None)));
         let started = Arc::new(tokio::sync::Semaphore::new(0));
         let completed = Arc::new(tokio::sync::Semaphore::new(0));
@@ -596,7 +594,7 @@ async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
     let snapshot = TimingSnapshot::default();
     let mut query = query(&[], 0, 1);
     query.limits.max_concurrent_phase2_states = 4;
-    let corridor = EvaluationCorridor::direct_walking(query.origin, query.destination);
+    let corridor = Corridor::direct_walking(query.origin, query.destination);
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let started = Arc::new(tokio::sync::Semaphore::new(0));
     let mut provider = DelayedMatrix::new(0, None);
@@ -757,7 +755,7 @@ async fn corridor_deadline_cancels_pending_provider_operations() {
     let street = MatrixCache::new(provider.clone());
     let corridors = (0..8)
         .map(|i| {
-            EvaluationCorridor::direct_walking(
+            Corridor::direct_walking(
                 Coordinate::try_new(25.0 + i as f64 / 1000.0, 121.5).unwrap(),
                 Coordinate::try_new(25.1, 121.5).unwrap(),
             )
@@ -807,7 +805,7 @@ async fn corridors_start_in_order_and_overlap_without_reordering_journeys() {
         query.limits.max_concurrent_phase2_corridors = concurrency;
         let corridors = (0..8)
             .map(|i| {
-                EvaluationCorridor::direct_walking(
+                Corridor::direct_walking(
                     Coordinate::try_new(25.0 + i as f64 / 1000.0, 121.5).unwrap(),
                     Coordinate::try_new(25.1, 121.5).unwrap(),
                 )
@@ -864,7 +862,7 @@ async fn corridor_provider_failures_keep_classification_and_reuse_cache() {
         let provider = Arc::new(DelayedMatrix::new(5, Some(error)));
         let street = MatrixCache::new(provider.clone());
         let corridors = (0..8)
-            .map(|_| EvaluationCorridor::direct_walking(query.origin, query.destination))
+            .map(|_| Corridor::direct_walking(query.origin, query.destination))
             .collect::<Vec<_>>();
         let report = evaluate_corridors(
             &network, &retained, &snapshot, &query, &street, None, &corridors,
@@ -927,13 +925,13 @@ async fn fatal_corridor_race_returns_first_observed_error_and_cancels_pending_wo
         .unwrap()
         .clone();
     let corridor = |index: usize, invalid_alight: usize| {
-        let direct = EvaluationCorridor::direct_walking(
+        let direct = Corridor::direct_walking(
             Coordinate::try_new(25.0 + index as f64 / 1000.0, 121.5).unwrap(),
             Coordinate::try_new(25.1, 121.5).unwrap(),
         );
         let mut bad_leg = leg.clone();
         bad_leg.alight_index = invalid_alight;
-        EvaluationCorridor::new(
+        Corridor::new(
             vec![
                 direct.anchors()[0].clone(),
                 direct.anchors()[1].clone(),
