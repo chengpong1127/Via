@@ -30,6 +30,14 @@ impl PlanningDeadline {
         matches!(self, Self::At(expires_at) if Instant::now() >= expires_at)
     }
 
+    pub fn check(self) -> Result<(), RoutingError> {
+        if self.is_elapsed() {
+            Err(RoutingError::DeadlineExceeded)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) async fn run<F: std::future::Future>(
         self,
         future: F,
@@ -148,11 +156,9 @@ impl<'a> JourneyPlanningContext<'a> {
     }
 
     pub(crate) fn ensure_before_deadline(&self) -> Result<(), PlanningError> {
-        if self.deadline.is_elapsed() {
-            Err(PlanningError::TemporarilyUnavailable)
-        } else {
-            Ok(())
-        }
+        self.deadline
+            .check()
+            .map_err(|_| PlanningError::TemporarilyUnavailable)
     }
 
     fn local_time(&self, instant: OffsetDateTime) -> time::PrimitiveDateTime {
@@ -241,12 +247,6 @@ impl PlanningQuery {
         self.allow_bike_share = allow;
         self
     }
-
-    #[cfg(test)]
-    pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
-        self.limits.max_static_corridors = max_static_corridors.max(1);
-        self
-    }
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -257,8 +257,6 @@ pub enum RoutingError {
     DeadlineExceeded,
     #[error("routing invariant failed: {0}")]
     Internal(String),
-    #[error("timing snapshot could not be loaded: {0}")]
-    Timing(#[from] DepartureError),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -283,7 +281,6 @@ impl FailureSummary {
 
     pub(crate) fn record_routing(&mut self, error: &RoutingError) {
         match error {
-            RoutingError::Timing(timing) => self.transient |= timing.is_transient(),
             RoutingError::Internal(_) => self.internal = true,
             RoutingError::InvalidQuery | RoutingError::DeadlineExceeded => {}
         }

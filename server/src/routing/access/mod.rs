@@ -26,7 +26,13 @@ async fn discover_endpoint_stops(
 ) -> Result<Vec<EndpointStop>, StreetRoutingError> {
     let endpoint = Coordinate::try_new(endpoint.latitude, endpoint.longitude)?;
     let stop_limit = limits.max_transit_endpoint_stops;
-    let stops = nearby::nearby_stops(transit, endpoint, allowed_transit_modes, stop_limit, limits);
+    let stops = nearby::nearby_stops(
+        transit,
+        endpoint,
+        allowed_transit_modes,
+        limits.max_walking_radius_metres,
+        stop_limit,
+    );
     if stops.is_empty() {
         return Ok(Vec::new());
     }
@@ -79,13 +85,13 @@ pub(crate) async fn discover(
     street_router: &dyn StreetRouter,
     context: &JourneyPlanningContext<'_>,
     limits: &JourneyPlanningLimits,
-    modes: &[TransitMode],
     failures: &mut FailureSummary,
 ) -> Result<(Vec<EndpointStop>, Vec<EndpointStop>), PlanningError> {
+    let request = context.request;
+    let modes = &request.transit_modes;
     if modes.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
-    let request = context.request;
     let started = Instant::now();
     let access = discover_endpoint_stops(
         transit,

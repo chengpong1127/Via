@@ -15,7 +15,6 @@ use crate::{
 };
 
 use super::{
-    cache::RouteCache,
     journey::RealizedJourney,
     model::{
         FailureSummary, JourneyPlanningContext, JourneyPlanningLimits, PlanningDeadline,
@@ -27,7 +26,6 @@ use super::{
 
 #[derive(Clone)]
 pub struct RoutingService {
-    street_router: Arc<dyn StreetRouter>,
     planner: MultimodalPlanner,
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
@@ -54,11 +52,10 @@ impl RoutingService {
             limits.bike_policy.clone(),
             limits.bike_availability,
         );
-        let reconstructor = JourneyReconstructor::new(street_router.clone(), transit, bike_share)
+        let reconstructor = JourneyReconstructor::new(street_router, transit, bike_share)
             .with_rental_handling_seconds(limits.bike_policy.rental_handling_seconds)
             .with_max_journey_duration_seconds(limits.planner.max_journey_duration_seconds);
         Self {
-            street_router,
             planner,
             reconstructor,
             ranking: RankingPolicy {
@@ -158,11 +155,9 @@ impl RoutingService {
         query: PlanningQuery,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<(Vec<JourneyCandidate>, FailureSummary), RoutingError> {
-        let route_cache = Arc::new(RouteCache::new(self.street_router.clone()));
+        let route_cache = self.planner.route_cache();
         let planned = self.planner.plan(query, route_cache.clone()).await?;
-        context
-            .ensure_before_deadline()
-            .map_err(|_| RoutingError::DeadlineExceeded)?;
+        context.deadline.check()?;
         let realtime_evidence_values: usize = planned
             .journeys
             .iter()

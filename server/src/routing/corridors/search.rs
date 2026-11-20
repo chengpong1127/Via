@@ -186,9 +186,7 @@ pub fn generate(
         if current.is_empty() {
             break;
         }
-        if query.deadline.is_elapsed() {
-            return Err(RoutingError::DeadlineExceeded);
-        }
+        query.deadline.check()?;
         let mut boardable_by_pattern =
             HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
         for stop_id in current.keys() {
@@ -702,18 +700,14 @@ fn pattern_with_mode<'a>(
     allowed_modes: &[TransitMode],
 ) -> Option<(&'a TransitPattern, TransitMode)> {
     let pattern = transit.pattern(pattern_id)?;
-    let mode = transit.required_route(&pattern.route_id).mode;
+    let mode = transit.pattern_mode(pattern_id);
     allowed_modes.contains(&mode).then_some((pattern, mode))
 }
 
 fn corridor_modes(transit: &TransitRuntime, candidate: &Candidate) -> Vec<TransitMode> {
     let mut modes = candidate
         .transit_legs()
-        .map(|leg| {
-            transit
-                .required_route(&transit.required_pattern(&leg.pattern_id).route_id)
-                .mode
-        })
+        .map(|leg| transit.pattern_mode(&leg.pattern_id))
         .collect::<Vec<_>>();
     modes.sort_unstable();
     modes.dedup();

@@ -9,7 +9,7 @@ use crate::domain::{
     spatial::SpatialPointIndex,
     taipei_offset,
     transit::network::{
-        ServiceCalendar, TransferEdge, TransitFrequency, TransitNetwork,
+        ServiceCalendar, TransferEdge, TransitFrequency, TransitMode, TransitNetwork,
         TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
 };
@@ -70,6 +70,11 @@ impl TransitRuntime {
             self.indexes.lookup.position_by_route_id.get(id),
         )
         .expect("validated transit route id")
+    }
+
+    pub fn pattern_mode(&self, id: &TransitPatternId) -> TransitMode {
+        self.required_route(&self.required_pattern(id).route_id)
+            .mode
     }
 
     pub fn calendar(&self, id: &ServiceCalendarId) -> Option<&ServiceCalendar> {

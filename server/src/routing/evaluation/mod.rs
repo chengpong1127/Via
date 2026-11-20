@@ -114,11 +114,7 @@ impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
     }
 
     fn check_deadline(&self) -> Result<(), RoutingError> {
-        if self.query().deadline.is_elapsed() {
-            Err(RoutingError::DeadlineExceeded)
-        } else {
-            Ok(())
-        }
+        self.query().deadline.check()
     }
 
     fn record_failure(&self, error: &StreetRoutingError) {

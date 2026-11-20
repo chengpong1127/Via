@@ -98,7 +98,7 @@ impl DepartureQuery {
         let pattern = transit
             .pattern(&self.pattern_id)
             .ok_or(DepartureError::InvalidQuery)?;
-        if transit.required_route(&pattern.route_id).mode != mode
+        if transit.pattern_mode(&self.pattern_id) != mode
             || !pattern.stops.contains(&self.board_stop_id)
         {
             return Err(DepartureError::InvalidQuery);

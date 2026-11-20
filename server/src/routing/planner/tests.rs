@@ -221,7 +221,7 @@ fn test_planner(
 }
 
 fn test_routes(planner: &MultimodalPlanner) -> Arc<RouteCache> {
-    Arc::new(RouteCache::new(planner.street_router.clone()))
+    planner.route_cache()
 }
 
 fn query(k: usize) -> PlanningQuery {
@@ -237,11 +237,11 @@ fn query(k: usize) -> PlanningQuery {
             max_candidates: 16,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            max_static_corridors: k,
             ..crate::routing::PlannerLimits::default()
         },
     )
     .with_allowed_transit_modes([TransitMode::Bus])
-    .with_max_static_corridors(k)
 }
 
 #[tokio::test]

@@ -80,11 +80,11 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
             max_candidates: 16,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            max_static_corridors: max_corridors,
             ..crate::routing::PlannerLimits::default()
         },
     )
     .with_allowed_transit_modes(modes.iter().copied())
-    .with_max_static_corridors(max_corridors)
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> Vec<Corridor> {
