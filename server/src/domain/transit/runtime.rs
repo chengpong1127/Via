@@ -12,6 +12,7 @@ use crate::domain::{
         ServiceCalendar, TransferEdge, TransitFrequency, TransitNetwork,
         TransitNetworkValidationError, TransitPattern, TransitRoute, TransitStop, TransitTrip,
     },
+    transit::topology::DenseTopology,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -108,6 +109,10 @@ impl TransitRuntime {
     pub fn transfers_from(&self, stop: &BoardingPointId) -> &[TransferEdge] {
         self.indexes.topology.transfers_from(stop)
     }
+
+    pub fn dense(&self) -> &DenseTopology {
+        &self.indexes.dense
+    }
 }
 
 impl TransitRuntime {
@@ -179,6 +184,7 @@ struct TransitRuntimeIndexes {
     lookup: LookupIndex,
     schedule: ScheduleIndex,
     topology: TopologyIndex,
+    dense: DenseTopology,
 }
 
 impl TransitRuntimeIndexes {
@@ -188,6 +194,7 @@ impl TransitRuntimeIndexes {
             lookup: LookupIndex::build(network),
             schedule: ScheduleIndex::build(network),
             topology: TopologyIndex::build(network),
+            dense: DenseTopology::build(network),
         }
     }
 }
