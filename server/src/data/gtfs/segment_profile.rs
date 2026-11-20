@@ -133,16 +133,18 @@ fn stop_distances_on_shape(
     let mut points = shape.to_vec();
     points.sort_by_key(|point| point.sequence);
     let mut cumulative = 0.0;
-    let mut previous = None;
+    let mut previous: Option<GeoCoordinate> = None;
     let mut distances = Vec::with_capacity(points.len());
     for point in &points {
         if let Some(distance) = point.dist_traveled.map(f64::from).filter(|d| d.is_finite()) {
             cumulative = distance;
-        } else if let Some((latitude, longitude)) = previous {
-            cumulative +=
-                geographic_distance_metres(latitude, longitude, point.latitude, point.longitude);
+        } else if let Some(previous) = previous {
+            cumulative += point_distance(previous, point);
         }
-        previous = Some((point.latitude, point.longitude));
+        previous = Some(GeoCoordinate {
+            latitude: point.latitude,
+            longitude: point.longitude,
+        });
         distances.push(cumulative);
     }
 
@@ -172,17 +174,6 @@ fn point_distance(stop: GeoCoordinate, point: &Shape) -> f64 {
     stop.distance_metres(GeoCoordinate {
         latitude: point.latitude,
         longitude: point.longitude,
-    })
-}
-
-fn geographic_distance_metres(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    GeoCoordinate {
-        latitude: lat1,
-        longitude: lon1,
-    }
-    .distance_metres(GeoCoordinate {
-        latitude: lat2,
-        longitude: lon2,
     })
 }
 

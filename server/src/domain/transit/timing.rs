@@ -654,7 +654,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::GeoCoordinate,
+        domain::location::GeoCoordinate,
         domain::transit::network::{
             ScheduledStopTime, TransitMode, TransitNetwork, TransitPattern, TransitStop,
             TransitTrip,

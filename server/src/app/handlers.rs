@@ -14,11 +14,13 @@ use crate::{
     api::PlanningRequest,
     domain::journey::{PlanningError, PlanningOutcome},
     domain::location::GeoCoordinate,
+};
+
+use super::{
+    AppState,
     health::{DependencyHealthReport, ReadinessReport},
     nearby::{DEFAULT_RADIUS_METRES, MAX_RADIUS_METRES, NearbyStops},
 };
-
-use super::AppState;
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct LivenessResponse {
@@ -88,7 +90,7 @@ pub(super) async fn readiness(State(state): State<AppState>) -> Response {
 }
 
 pub(super) async fn openapi_document_endpoint(State(state): State<AppState>) -> Response {
-    no_store((StatusCode::OK, Json(state.openapi.clone())))
+    no_store((StatusCode::OK, Json(state.openapi.as_ref())))
 }
 
 #[utoipa::path(

@@ -1,13 +1,13 @@
-use std::{error::Error, path::PathBuf, time::Duration};
+use std::{error::Error, path::PathBuf};
 
 use clap::Parser;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use via_server::{
     api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace},
+    app::{profiling, runtime::build_runtime},
     config::{Environment, RuntimeConfig, ViaConfig, load_dotenv},
     data::load_static_artifact,
     domain::{journey::PlanningOutcome, realtime::FreshnessState},
-    runtime::{RuntimeOptions, build_runtime},
 };
 
 #[derive(Parser, Debug)]
@@ -52,17 +52,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "via_server::routing=debug,via_server::providers::timing=debug",
         )
     });
-    let _trace_guard = via_server::profiling::init(log_filter)?;
+    let _trace_guard = profiling::init(log_filter)?;
     let mut settings = ViaConfig::load(cli.config.as_deref())?;
     settings.apply_environment()?;
-    let options = options_from_cli(&cli, &mut settings)?;
+    apply_cli_overrides(&cli, &mut settings)?;
     let max_static_corridors = settings.routing.max_static_corridors;
     let via_static = load_static_artifact(&cli.static_path)?;
     let static_revision = via_static.revisions.transit_static.clone();
     let schedule_revision = via_static.revisions.schedule.clone();
     let runtime_config =
         RuntimeConfig::from_settings(Environment::from_env_or_development()?, settings)?;
-    let runtime = build_runtime(via_static, options, runtime_config).await?;
+    let runtime = build_runtime(via_static, runtime_config).await?;
     let request = request_from_cli(&cli)?;
     if cli.trace {
         eprintln!("  max static corridors={max_static_corridors}");
@@ -106,10 +106,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn options_from_cli(
+fn apply_cli_overrides(
     cli: &Cli,
     settings: &mut ViaConfig,
-) -> Result<RuntimeOptions, via_server::config::ConfigError> {
+) -> Result<(), via_server::config::ConfigError> {
     if let Some(value) = cli.max_departures_per_query {
         settings.routing.max_departures_per_query = value;
     }
@@ -118,17 +118,9 @@ fn options_from_cli(
     }
     if let Some(value) = cli.valhalla_timeout_ms {
         settings.valhalla.request_timeout_ms = value;
+        settings.server.request_timeout_ms = value.saturating_mul(5);
     }
-    settings.validate()?;
-    let mut limits = settings.journey_limits();
-    let valhalla_timeout = cli.valhalla_timeout_ms.map(Duration::from_millis);
-    if let Some(timeout) = valhalla_timeout {
-        limits.request_timeout = timeout.saturating_mul(5);
-    }
-    Ok(RuntimeOptions {
-        limits: Some(limits),
-        valhalla_request_timeout: valhalla_timeout,
-    })
+    settings.validate()
 }
 
 fn request_from_cli(cli: &Cli) -> Result<PlanningRequest, Box<dyn Error>> {
@@ -320,33 +312,19 @@ mod tests {
             "2200",
         ]);
         let mut config = via_server::config::ViaConfig::default();
-        let options = super::options_from_cli(&cli, &mut config).unwrap();
+        super::apply_cli_overrides(&cli, &mut config).unwrap();
+        let limits = config.journey_limits();
+        assert_eq!(limits.planner.max_static_corridors, 7);
+        assert_eq!(limits.planner.max_departures_per_query, 9);
         assert_eq!(
-            options
-                .limits
-                .as_ref()
+            config
+                .valhalla
+                .provider_config(false)
                 .unwrap()
-                .planner
-                .max_static_corridors,
-            7
+                .request_timeout,
+            std::time::Duration::from_millis(2200)
         );
-        assert_eq!(
-            options
-                .limits
-                .as_ref()
-                .unwrap()
-                .planner
-                .max_departures_per_query,
-            9
-        );
-        assert_eq!(
-            options.valhalla_request_timeout,
-            Some(std::time::Duration::from_millis(2200))
-        );
-        assert_eq!(
-            options.limits.as_ref().unwrap().request_timeout,
-            std::time::Duration::from_secs(11)
-        );
+        assert_eq!(limits.request_timeout, std::time::Duration::from_secs(11));
     }
 
     #[test]

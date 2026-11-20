@@ -331,7 +331,7 @@ fn best_rank(
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::GeoCoordinate,
+        domain::location::GeoCoordinate,
         domain::{
             bikeshare::{BikeShareNetwork, BikeStation, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId},

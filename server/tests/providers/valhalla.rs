@@ -18,11 +18,10 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use time::macros::datetime;
 use via_server::{
-    health::DependencyHealth,
     providers::{OperationalEvent, OperationalEventObserver, ValhallaConfig, ValhallaProvider},
     street::{
-        Coordinate, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
-        RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
+        Coordinate, DependencyHealth, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery,
+        RouteQuery, RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
         StreetTravelMode,
     },
 };

@@ -5,13 +5,14 @@ use axum::Router;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 use via_server::{
-    app::build_router,
+    app::{
+        build_router,
+        runtime::{ViaRuntime, ViaRuntimeDependencies},
+    },
     domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork},
-    health::DependencyHealth,
     providers::{UnavailableBikeAvailabilitySource, tdx_bindings::TdxProviderBindings},
     routing::JourneyPlanningLimits,
-    runtime::{ViaRuntime, ViaRuntimeDependencies},
-    street::{StreetRouter, StreetRoutingError},
+    street::{DependencyHealth, StreetRouter, StreetRoutingError},
     tdx::{TdxClient, TdxCredentials},
 };
 
@@ -76,8 +77,6 @@ where
 {
     let bike_availability_source: Arc<dyn BikeAvailabilitySource> =
         Arc::new(UnavailableBikeAvailabilitySource);
-    let street: Arc<dyn StreetRouter> = provider.clone();
-    let street_health: Arc<dyn DependencyHealth> = provider.clone();
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
         environment: via_server::config::Environment::Development,
         transit_network,
@@ -85,17 +84,14 @@ where
         bike_share_network: Arc::new(
             BikeShareNetwork::new(Vec::new()).with_revision("fixture-disabled"),
         ),
-        street,
-        street_health,
+        street: provider,
         live: Arc::new(via_server::live::DirectLiveData::new(failing_tdx_client())),
         realtime: via_server::config::ViaConfig::default().tdx.realtime,
         bike_availability: bike_availability_source,
         limits: JourneyPlanningLimits::default(),
     });
     Ok(build_router(
-        runtime.routing,
-        runtime.health,
-        runtime.nearby,
+        runtime,
         metrics,
         via_server::config::Environment::Development,
         &via_server::config::ViaConfig::default().server,

@@ -231,7 +231,7 @@ pub(super) fn push_example(examples: &mut Vec<String>, value: impl Into<String>)
     }
 }
 
-fn mode_name(mode: TransitMode) -> &'static str {
+pub(super) fn mode_name(mode: TransitMode) -> &'static str {
     match mode {
         TransitMode::Bus => "bus",
         TransitMode::Metro => "metro",

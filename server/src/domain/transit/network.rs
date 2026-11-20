@@ -339,11 +339,7 @@ impl TransitNetwork {
                     stop.id.clone(),
                 ));
             }
-            if !stop.coordinate.latitude.is_finite()
-                || !(-90.0..=90.0).contains(&stop.coordinate.latitude)
-                || !stop.coordinate.longitude.is_finite()
-                || !(-180.0..=180.0).contains(&stop.coordinate.longitude)
-            {
+            if !stop.coordinate.validate() {
                 return Err(TransitNetworkValidationError::InvalidStopCoordinate(
                     stop.id.clone(),
                 ));

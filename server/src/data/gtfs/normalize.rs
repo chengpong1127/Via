@@ -24,6 +24,7 @@ use crate::{
 use super::{
     GtfsBuildDiagnostics,
     bindings::{self, BindingInputs},
+    mode_name,
     patterns::{self, GtfsIndexes},
 };
 
@@ -523,14 +524,5 @@ pub(super) fn via_mode(route_type: RouteType, route_id: &str) -> Option<TransitM
         RouteType::Rail => Some(TransitMode::Rail),
         RouteType::Extended(ExtendedRouteType::HighSpeedRail) => Some(TransitMode::HighSpeedRail),
         _ => None,
-    }
-}
-
-fn mode_name(mode: TransitMode) -> &'static str {
-    match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
-        TransitMode::HighSpeedRail => "high_speed_rail",
     }
 }

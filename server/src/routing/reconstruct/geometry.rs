@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 use crate::{
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
@@ -169,5 +169,5 @@ pub(in crate::routing) fn to_street_coordinate(
 }
 
 pub(in crate::routing) fn taipei_now() -> OffsetDateTime {
-    OffsetDateTime::now_utc().to_offset(UtcOffset::from_hms(8, 0, 0).unwrap())
+    crate::domain::normalize_to_taipei(OffsetDateTime::now_utc())
 }

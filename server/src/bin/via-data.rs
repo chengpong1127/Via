@@ -19,9 +19,8 @@ use via_server::{
     domain::{
         ids::BoardingPointId, transit::network::TransitMode, transit::runtime::TransitRuntime,
     },
-    health::DependencyHealth,
     providers::valhalla::ValhallaProvider,
-    street::StreetRouter,
+    street::{DependencyHealth, StreetRouter},
     tdx::TdxClient,
 };
 
@@ -616,21 +615,18 @@ fn coordinate(
     latitude: f64,
     longitude: f64,
 ) -> Result<via_server::api::GeoCoordinate, Box<dyn Error>> {
-    if !latitude.is_finite()
-        || !(-90.0..=90.0).contains(&latitude)
-        || !longitude.is_finite()
-        || !(-180.0..=180.0).contains(&longitude)
-    {
+    let coordinate = via_server::api::GeoCoordinate {
+        latitude,
+        longitude,
+    };
+    if !coordinate.validate() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid coordinate {latitude},{longitude}"),
         )
         .into());
     }
-    Ok(via_server::api::GeoCoordinate {
-        latitude,
-        longitude,
-    })
+    Ok(coordinate)
 }
 
 fn pattern_labels(transit: &TransitRuntime, stop_id: &BoardingPointId) -> String {

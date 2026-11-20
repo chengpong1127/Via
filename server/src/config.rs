@@ -26,7 +26,6 @@ impl Environment {
         Self::from_str(&value)
     }
 
-    /// Matches the live-routing CLI's existing default when VIA_ENV is absent.
     pub fn from_env_or_development() -> Result<Self, ConfigError> {
         match env::var("VIA_ENV") {
             Ok(value) => Self::from_str(&value),

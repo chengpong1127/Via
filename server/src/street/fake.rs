@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 
-use crate::health::DependencyHealth;
+use super::DependencyHealth;
 
 use super::{
     Coordinate, MatrixCell, MatrixQuery, MatrixResult, Metres, RouteQuery, Seconds, StreetPath,

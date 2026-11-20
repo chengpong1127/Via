@@ -1,6 +1,13 @@
 mod handlers;
+pub mod health;
+pub mod metrics;
 mod middleware;
+pub mod nearby;
 mod openapi;
+pub mod profiling;
+pub mod runtime;
+
+use std::sync::Arc;
 
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -10,7 +17,10 @@ use tower_http::{
 };
 use utoipa::openapi::OpenApi;
 
-use crate::{config::Environment, health::Health, nearby::NearbyService, routing::RoutingService};
+use crate::{config::Environment, routing::RoutingService};
+use health::Health;
+use nearby::NearbyService;
+use runtime::ViaRuntime;
 
 #[derive(Clone)]
 struct AppState {
@@ -18,28 +28,26 @@ struct AppState {
     health: Health,
     nearby: NearbyService,
     metrics: PrometheusHandle,
-    openapi: OpenApi,
+    openapi: Arc<OpenApi>,
 }
 
 pub fn build_router(
-    routing: RoutingService,
-    health: Health,
-    nearby: NearbyService,
+    runtime: ViaRuntime,
     metrics: PrometheusHandle,
     environment: Environment,
     settings: &crate::config::ServerSettings,
 ) -> Router {
     let (router, openapi) = openapi::documented_router().split_for_parts();
-    let openapi = openapi::configure_openapi(openapi);
+    let openapi = Arc::new(openapi::configure_openapi(openapi));
     let router = router
         .route(
             "/openapi.json",
             axum::routing::get(handlers::openapi_document_endpoint),
         )
         .with_state(AppState {
-            routing,
-            health,
-            nearby,
+            routing: runtime.routing,
+            health: runtime.health,
+            nearby: runtime.nearby,
             metrics,
             openapi,
         })

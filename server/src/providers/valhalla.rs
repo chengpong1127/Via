@@ -17,13 +17,10 @@ use tokio::{
 };
 use url::Url;
 
-use crate::{
-    health::DependencyHealth,
-    street::{
-        Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixLimits, MatrixQuery,
-        MatrixResult, Metres, RouteQuery, RoutingConstraints, Seconds, StreetPath, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+use crate::street::{
+    Attribution, Coordinate, DependencyHealth, Maneuver, ManeuverKind, MatrixCell, MatrixLimits,
+    MatrixQuery, MatrixResult, Metres, RouteQuery, RoutingConstraints, Seconds, StreetPath,
+    StreetRouter, StreetRoutingError, StreetTravelMode,
 };
 
 const OSM_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
