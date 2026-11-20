@@ -303,7 +303,33 @@ fn main() {
                         )
                     })
                     .collect();
-                serde_json::json!({"rides": rides, "anchors": anchors})
+                let stops: Vec<BoardingPointId> = c
+                    .anchors()
+                    .iter()
+                    .filter_map(|a| a.boarding_point().cloned())
+                    .collect();
+                let mut seconds = access
+                    .iter()
+                    .find(|e| Some(&e.stop_id) == stops.first())
+                    .map_or(0, |e| e.walking_seconds)
+                    + egress
+                        .iter()
+                        .find(|e| Some(&e.stop_id) == stops.last())
+                        .map_or(0, |e| e.walking_seconds);
+                for pair in stops.windows(2) {
+                    if let Some(g) = groups.iter().find(|g| g.0 == pair[0] && g.1 == pair[1]) {
+                        seconds += g.3;
+                    } else {
+                        seconds += runtime
+                            .transfers_from(&pair[0])
+                            .iter()
+                            .filter(|t| t.to == pair[1])
+                            .map(|t| t.duration_seconds)
+                            .min()
+                            .unwrap_or(0);
+                    }
+                }
+                serde_json::json!({"rides": rides, "anchors": anchors, "static_seconds": seconds, "transfers": groups.len().saturating_sub(1)})
             })
             .collect();
         writeln!(
