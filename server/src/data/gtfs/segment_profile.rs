@@ -68,12 +68,7 @@ pub(super) fn segment_profile(
 }
 
 fn estimated_segments(pattern: &[u32], mode: TransitMode, stops: &[TransitStop]) -> Vec<u32> {
-    let kmh = match mode {
-        TransitMode::Bus => 60.0,
-        TransitMode::Metro => 100.0,
-        TransitMode::Rail => 160.0,
-        TransitMode::HighSpeedRail => 350.0,
-    };
+    let kmh = mode.estimated_speed_kmh();
     pattern
         .windows(2)
         .map(|pair| {

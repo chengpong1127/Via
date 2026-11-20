@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
@@ -12,11 +12,20 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
+use crate::data::DataError;
 use crate::data::via_static::ViaStaticSource;
 use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_STATION_ORDER: &str = "StationUID asc";
+pub const GTFS_SOURCE_NAME: &str = "gtfs";
+pub const GTFS_FILE_NAME: &str = "gtfs.zip";
+pub const MANIFEST_FILE_NAME: &str = "manifest.json";
+pub const MANIFEST_VERSION: u32 = 1;
+
+pub fn bike_station_source_name(slug: &str) -> String {
+    format!("bike-stations-{slug}")
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +56,8 @@ pub enum FetchError {
     InvalidTimestamp(String),
     #[error("fetch snapshot already exists at {0}")]
     SnapshotExists(PathBuf),
+    #[error("fetch manifest could not be serialized: {0}")]
+    InvalidManifest(String),
 }
 
 #[derive(Clone, Debug)]
@@ -118,7 +129,7 @@ async fn populate_snapshot(
     client: &TdxClient,
     sources: &FetchSources,
 ) -> Result<FetchSnapshot, FetchError> {
-    let gtfs_path = temporary.join("gtfs.zip");
+    let gtfs_path = temporary.join(GTFS_FILE_NAME);
     let gtfs_source = if let Some(source_path) = gtfs_file {
         fs::copy(source_path, &gtfs_path)
             .map_err(|error| FetchError::Io(source_path.into(), error))?;
@@ -142,28 +153,27 @@ async fn populate_snapshot(
     validate_gtfs_zip(&gtfs_path)?;
 
     let mut manifest = FetchManifest {
-        manifest_version: 1,
+        manifest_version: MANIFEST_VERSION,
         fetched_at: time::OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_else(|_| timestamp.to_owned()),
         sources: BTreeMap::new(),
     };
-    manifest.sources.insert("gtfs".to_owned(), gtfs_source);
+    manifest
+        .sources
+        .insert(GTFS_SOURCE_NAME.to_owned(), gtfs_source);
     let mut bike_station_counts = BTreeMap::new();
     for (city, slug) in BIKE_CITIES {
         let url = station_url(&sources.bike_api_base_url, city)?;
         let (body, count) = fetch_stations(client, &url, city).await?;
-        let source_name = format!("bike-stations-{slug}");
+        let source_name = bike_station_source_name(slug);
         let source = write_station_source(temporary, &source_name, &body, &url)?;
         manifest.sources.insert(source_name, source);
         bike_station_counts.insert((*city).to_owned(), count);
     }
-    let manifest_path = temporary.join("manifest.json");
-    let manifest_body =
-        serde_json::to_vec_pretty(&manifest).map_err(|error| FetchError::InvalidBikeResponse {
-            city: "manifest".to_owned(),
-            detail: error.to_string(),
-        })?;
+    let manifest_path = temporary.join(MANIFEST_FILE_NAME);
+    let manifest_body = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| FetchError::InvalidManifest(error.to_string()))?;
     fs::write(&manifest_path, manifest_body)
         .map_err(|error| FetchError::Io(manifest_path, error))?;
     Ok(FetchSnapshot {
@@ -267,20 +277,137 @@ fn write_station_source(
 }
 
 pub fn source_file_name(source_name: &str) -> Option<String> {
-    if source_name == "gtfs" {
-        return Some("gtfs.zip".to_owned());
+    if source_name == GTFS_SOURCE_NAME {
+        return Some(GTFS_FILE_NAME.to_owned());
     }
     BIKE_CITIES
         .iter()
-        .find(|(_, slug)| source_name == format!("bike-stations-{slug}"))
-        .map(|(_, slug)| format!("bike-stations-{slug}.json"))
+        .find(|(_, slug)| source_name == bike_station_source_name(slug))
+        .map(|(_, slug)| format!("{}.json", bike_station_source_name(slug)))
 }
 
 pub fn bike_station_city(source_name: &str) -> Option<&'static str> {
     BIKE_CITIES
         .iter()
-        .find(|(_, slug)| source_name == format!("bike-stations-{slug}"))
+        .find(|(_, slug)| source_name == bike_station_source_name(slug))
         .map(|(city, _)| *city)
+}
+
+pub(crate) struct SnapshotInputs {
+    pub(crate) manifest: FetchManifest,
+    pub(crate) gtfs_path: PathBuf,
+    pub(crate) bike_station_catalogs: Vec<(String, String)>,
+}
+
+pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
+    let required_files = [GTFS_FILE_NAME, MANIFEST_FILE_NAME]
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut actual_files = HashSet::new();
+    for entry in fs::read_dir(input).map_err(|error| DataError::Io(input.into(), error))? {
+        let entry = entry.map_err(|error| DataError::Io(input.into(), error))?;
+        let filename = entry.file_name().into_string().map_err(|_| {
+            DataError::InvalidFetchSnapshot("snapshot contains a non-UTF-8 filename".to_owned())
+        })?;
+        if !required_files.contains(filename.as_str())
+            && !BIKE_CITIES
+                .iter()
+                .any(|(_, slug)| filename == format!("{}.json", bike_station_source_name(slug)))
+        {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "untracked source file {filename}"
+            )));
+        }
+        if !entry
+            .file_type()
+            .map_err(|error| DataError::Io(input.into(), error))?
+            .is_file()
+        {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "snapshot entry {filename} is not a regular file"
+            )));
+        }
+        actual_files.insert(filename);
+    }
+    if !required_files
+        .iter()
+        .all(|filename| actual_files.contains(*filename))
+    {
+        let missing_files = required_files
+            .iter()
+            .filter(|filename| !actual_files.contains(**filename))
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(DataError::InvalidFetchSnapshot(format!(
+            "snapshot is missing required files: {}",
+            missing_files.join(", ")
+        )));
+    }
+
+    let manifest_path = input.join(MANIFEST_FILE_NAME);
+    let manifest_body = fs::read_to_string(&manifest_path)
+        .map_err(|error| DataError::Io(manifest_path.clone(), error))?;
+    let manifest = serde_json::from_str::<FetchManifest>(&manifest_body)
+        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?;
+    if manifest.manifest_version != MANIFEST_VERSION
+        || time::OffsetDateTime::parse(&manifest.fetched_at, &Rfc3339).is_err()
+    {
+        return Err(DataError::InvalidFetchSnapshot(
+            "unsupported manifest version or invalid fetch timestamp".to_owned(),
+        ));
+    }
+    if !manifest.sources.contains_key(GTFS_SOURCE_NAME) {
+        return Err(DataError::InvalidFetchSnapshot(
+            "manifest must contain a gtfs source".to_owned(),
+        ));
+    }
+    let expected_files = manifest
+        .sources
+        .keys()
+        .filter_map(|name| source_file_name(name))
+        .chain(std::iter::once(MANIFEST_FILE_NAME.to_owned()))
+        .collect::<HashSet<_>>();
+    if expected_files != actual_files {
+        return Err(DataError::InvalidFetchSnapshot(
+            "snapshot files do not match manifest sources".to_owned(),
+        ));
+    }
+    let mut bike_station_catalogs = Vec::new();
+    for (source_name, source) in &manifest.sources {
+        if source.source_id.trim().is_empty() || !source.has_valid_sha256() {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "{source_name} has invalid provenance metadata"
+            )));
+        }
+        let filename = source_file_name(source_name).ok_or_else(|| {
+            DataError::InvalidFetchSnapshot(format!("unknown source {source_name}"))
+        })?;
+        let source_path = input.join(filename);
+        let metadata = fs::metadata(&source_path)
+            .map_err(|error| DataError::Io(source_path.clone(), error))?;
+        if source.byte_size != metadata.len()
+            || source.sha256
+                != sha256_file(&source_path)
+                    .map_err(|error| DataError::Io(source_path.clone(), error))?
+        {
+            return Err(DataError::InvalidFetchSnapshot(format!(
+                "{source_name} does not match its fetch provenance"
+            )));
+        }
+        if let Some(city) = bike_station_city(source_name) {
+            bike_station_catalogs.push((
+                city.to_owned(),
+                fs::read_to_string(&source_path)
+                    .map_err(|error| DataError::Io(source_path.clone(), error))?,
+            ));
+        }
+    }
+
+    Ok(SnapshotInputs {
+        gtfs_path: input.join(GTFS_FILE_NAME),
+        manifest,
+        bike_station_catalogs,
+    })
 }
 
 fn station_url(base_url: &str, city: &str) -> Result<String, FetchError> {
@@ -327,19 +454,27 @@ fn validate_gtfs_zip(path: &Path) -> Result<(), FetchError> {
 }
 
 fn hash_file(path: &Path) -> Result<String, FetchError> {
-    let mut file = File::open(path).map_err(|error| FetchError::Io(path.into(), error))?;
+    sha256_file(path).map_err(|error| FetchError::Io(path.into(), error))
+}
+
+pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0; 1024 * 1024];
     loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| FetchError::Io(path.into(), error))?;
+        let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    format!("{:x}", digest.finalize())
 }
 
 fn file_size(path: &Path) -> Result<u64, FetchError> {

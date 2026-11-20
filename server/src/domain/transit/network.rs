@@ -33,6 +33,26 @@ pub enum TransitMode {
     HighSpeedRail,
 }
 
+impl TransitMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bus => "bus",
+            Self::Metro => "metro",
+            Self::Rail => "rail",
+            Self::HighSpeedRail => "high_speed_rail",
+        }
+    }
+
+    pub const fn estimated_speed_kmh(self) -> f64 {
+        match self {
+            Self::Bus => 60.0,
+            Self::Metro => 100.0,
+            Self::Rail => 160.0,
+            Self::HighSpeedRail => 350.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransitStop {
@@ -251,7 +271,8 @@ pub struct TransitNetwork {
 
     #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
-    pub default_transfer_seconds: u32,
+    #[serde(rename = "default_transfer_seconds")]
+    pub same_stop_transfer_seconds: u32,
 
     #[serde(default)]
     pub static_network_revision: String,
@@ -286,7 +307,7 @@ impl TransitNetwork {
             trips,
             frequencies: Vec::new(),
             transfer_edges: Vec::new(),
-            default_transfer_seconds: 120,
+            same_stop_transfer_seconds: 120,
             static_network_revision: String::new(),
             schedule_revision: String::new(),
         }
@@ -324,9 +345,7 @@ impl TransitNetwork {
     }
 
     pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
-        if self.static_network_revision.trim().is_empty()
-            || self.schedule_revision.trim().is_empty()
-        {
+        if !self.has_revisions() {
             return Err(TransitNetworkValidationError::MissingRevision);
         }
         if self.stops.is_empty() {
@@ -547,8 +566,8 @@ impl TransitNetwork {
             .map(|_| network)
     }
 
-    pub fn revisions(&self) -> (&str, &str) {
-        (&self.static_network_revision, &self.schedule_revision)
+    pub fn has_revisions(&self) -> bool {
+        !self.static_network_revision.trim().is_empty() && !self.schedule_revision.trim().is_empty()
     }
 }
 
@@ -643,12 +662,7 @@ impl TransitNetwork {
                     }
                 }
             }
-            let kmh = match mode {
-                TransitMode::Bus => 60.0,
-                TransitMode::Metro => 100.0,
-                TransitMode::Rail => 160.0,
-                TransitMode::HighSpeedRail => 350.0,
-            };
+            let kmh = mode.estimated_speed_kmh();
             pattern.static_profile.segments = pattern
                 .stops
                 .windows(2)

@@ -24,7 +24,6 @@ use crate::{
 use super::{
     GtfsBuildDiagnostics,
     bindings::{self, BindingInputs},
-    mode_name,
     patterns::{self, GtfsIndexes},
 };
 
@@ -255,7 +254,7 @@ fn record_pattern_modes(
         let mode = via_mode(route.route_type, &route.id).expect("normalized route is supported");
         *diagnostics
             .patterns_loaded_by_mode
-            .entry(mode_name(mode).to_owned())
+            .entry(mode.as_str().to_owned())
             .or_default() += 1;
     }
 }
@@ -509,7 +508,7 @@ fn route_modes(
             mode_by_route.insert(route.id.clone(), mode);
             *diagnostics
                 .routes_loaded_by_mode
-                .entry(mode_name(mode).to_owned())
+                .entry(mode.as_str().to_owned())
                 .or_default() += 1;
         }
     }

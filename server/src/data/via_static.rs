@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::data::{DataError, fetch::sha256_hex};
 use crate::domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork};
 use crate::providers::tdx_bindings::TdxProviderBindings;
 
@@ -17,6 +18,12 @@ pub struct ViaStaticSource {
     pub source_url: Option<String>,
     pub sha256: String,
     pub byte_size: u64,
+}
+
+impl ViaStaticSource {
+    pub fn has_valid_sha256(&self) -> bool {
+        self.sha256.len() == 64 && self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,12 +40,38 @@ pub struct ViaStaticCounts {
     pub bike_access_links: usize,
 }
 
+impl ViaStaticCounts {
+    pub fn of(transit: &TransitNetwork, bike_share: &BikeShareNetwork) -> Self {
+        Self {
+            stops: transit.stops.len(),
+            routes: transit.routes.len(),
+            patterns: transit.patterns.len(),
+            trips: transit.trips.len(),
+            calendars: transit.calendars.len(),
+            frequencies: transit.frequencies.len(),
+            transfers: transit.transfer_edges.len(),
+            bike_stations: bike_share.stations.len(),
+            bike_access_links: bike_share.access_links.len(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViaStaticRevisions {
     pub transit_static: String,
     pub schedule: String,
     pub bike_share: String,
+}
+
+impl ViaStaticRevisions {
+    pub fn of(transit: &TransitNetwork, bike_share: &BikeShareNetwork) -> Self {
+        Self {
+            transit_static: transit.static_network_revision.clone(),
+            schedule: transit.schedule_revision.clone(),
+            bike_share: bike_share.static_network_revision.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,6 +114,32 @@ pub enum ViaStaticValidationError {
 }
 
 impl ViaStatic {
+    pub fn compose(
+        transit: TransitNetwork,
+        provider_bindings: TdxProviderBindings,
+        bike_share: BikeShareNetwork,
+        fetched_at: String,
+        sources: BTreeMap<String, ViaStaticSource>,
+    ) -> Result<Self, DataError> {
+        let static_revision = static_network_revision(&transit)?;
+        let schedule = schedule_revision(&transit)?;
+        let transit = transit.with_revisions(static_revision, schedule);
+        let bike_revision = bike_share_revision(&bike_share)?;
+        let bike_share = bike_share.with_revision(bike_revision);
+        let via_static = Self {
+            schema_version: VIA_STATIC_SCHEMA_VERSION,
+            fetched_at,
+            sources,
+            revisions: ViaStaticRevisions::of(&transit, &bike_share),
+            counts: ViaStaticCounts::of(&transit, &bike_share),
+            transit,
+            provider_bindings,
+            bike_share,
+        };
+        via_static.validate()?;
+        Ok(via_static)
+    }
+
     pub fn validate(&self) -> Result<(), ViaStaticValidationError> {
         if self.schema_version != VIA_STATIC_SCHEMA_VERSION {
             return Err(ViaStaticValidationError::UnsupportedSchemaVersion(
@@ -99,8 +158,7 @@ impl ViaStatic {
             if name.trim().is_empty()
                 || source.source_id.trim().is_empty()
                 || source.byte_size == 0
-                || source.sha256.len() != 64
-                || !source.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !source.has_valid_sha256()
                 || source.source_url.as_ref().is_some_and(|url| {
                     url.contains("client_secret") || url.contains("access_token")
                 })
@@ -130,25 +188,10 @@ impl ViaStatic {
                 ));
             }
         }
-        if self.revisions.transit_static != self.transit.static_network_revision
-            || self.revisions.schedule != self.transit.schedule_revision
-            || self.revisions.bike_share != self.bike_share.static_network_revision
-        {
+        if self.revisions != ViaStaticRevisions::of(&self.transit, &self.bike_share) {
             return Err(ViaStaticValidationError::RevisionsMismatch);
         }
-        if self.counts
-            != (ViaStaticCounts {
-                stops: self.transit.stops.len(),
-                routes: self.transit.routes.len(),
-                patterns: self.transit.patterns.len(),
-                trips: self.transit.trips.len(),
-                calendars: self.transit.calendars.len(),
-                frequencies: self.transit.frequencies.len(),
-                transfers: self.transit.transfer_edges.len(),
-                bike_stations: self.bike_share.stations.len(),
-                bike_access_links: self.bike_share.access_links.len(),
-            })
-        {
+        if self.counts != ViaStaticCounts::of(&self.transit, &self.bike_share) {
             return Err(ViaStaticValidationError::CountsMismatch);
         }
         Ok(())
@@ -160,6 +203,39 @@ impl ViaStatic {
         artifact.validate()?;
         Ok(artifact)
     }
+}
+
+fn static_network_revision(network: &TransitNetwork) -> Result<String, DataError> {
+    let mut network = network.clone();
+    network.static_network_revision.clear();
+    network.schedule_revision.clear();
+    network.trips.clear();
+    network.calendars.clear();
+    network.frequencies.clear();
+    content_revision(&network.canonicalize())
+}
+
+fn schedule_revision(network: &TransitNetwork) -> Result<String, DataError> {
+    let mut network = network.clone();
+    network.static_network_revision.clear();
+    network.schedule_revision.clear();
+    network.stops.clear();
+    network.routes.clear();
+    network.patterns.clear();
+    network.transfer_edges.clear();
+    content_revision(&network.canonicalize())
+}
+
+fn bike_share_revision(network: &BikeShareNetwork) -> Result<String, DataError> {
+    let mut network = network.clone();
+    network.static_network_revision.clear();
+    content_revision(&network.canonicalize())
+}
+
+fn content_revision(value: &impl Serialize) -> Result<String, DataError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
+    Ok(format!("sha256:{}", sha256_hex(&bytes)))
 }
 
 #[cfg(test)]
