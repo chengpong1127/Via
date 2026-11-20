@@ -26,9 +26,13 @@ pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
             }
         }
     }
+    polyline_geometry(&points)
+}
+
+pub(super) fn polyline_geometry(points: &[Coordinate]) -> Geometry {
     Geometry {
         encoding: "polyline6",
-        points: encode_polyline6(&points),
+        points: encode_polyline6(points),
     }
 }
 
@@ -39,10 +43,7 @@ pub(super) fn stop_geometry(stops: impl IntoIterator<Item = GeoCoordinate>) -> G
             Coordinate::try_new(stop.latitude, stop.longitude).expect("validated coordinate")
         })
         .collect::<Vec<_>>();
-    Geometry {
-        encoding: "polyline6",
-        points: encode_polyline6(&points),
-    }
+    polyline_geometry(&points)
 }
 
 pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {

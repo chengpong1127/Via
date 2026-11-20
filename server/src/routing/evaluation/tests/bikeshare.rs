@@ -890,7 +890,7 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
         matrix_cache: &street,
         bike_movements: Some(&bike),
     };
-    let next = Run::new(&evaluator)
+    let next = CorridorEvaluationRun::new(&evaluator)
         .expand_state(&EvaluationState::initial(&query), &corridor, 0)
         .await
         .unwrap();
@@ -907,10 +907,10 @@ async fn absent_bike_candidate_does_not_attempt_or_realize() {
 fn pure_bike_transitions_preserve_order_and_continue_one_rental() {
     let query = query(&[], 0, 1);
     let state = EvaluationState::initial(&query);
-    let next = bike_successors(
+    let next = state.after_bike_shares(
         &query,
-        &state,
         vec![bike_movement(0, 1, 60), bike_movement(0, 1, 120)],
+        state.bike_departure(0),
         0,
     );
     assert_eq!(
@@ -919,7 +919,12 @@ fn pure_bike_transitions_preserve_order_and_continue_one_rental() {
             .collect::<Vec<_>>(),
         vec![60, 120]
     );
-    let continued = bike_successors(&query, &next[0], vec![bike_movement(0, 2, 180)], 1);
+    let continued = next[0].after_bike_shares(
+        &query,
+        vec![bike_movement(0, 2, 180)],
+        next[0].bike_departure(1),
+        1,
+    );
     assert_eq!(continued.len(), 1);
     assert_eq!(continued[0].movements.len(), 1);
     assert_eq!(continued[0].movements[0].from_anchor, 0);
@@ -928,9 +933,22 @@ fn pure_bike_transitions_preserve_order_and_continue_one_rental() {
         continued[0].ready_at,
         query.departure_time + Duration::seconds(180)
     );
-    assert!(bike_successors(&query, &state, Vec::new(), 0).is_empty());
+    assert!(
+        state
+            .after_bike_shares(&query, Vec::new(), state.bike_departure(0), 0)
+            .is_empty()
+    );
     let mut limited = query.clone();
     limited.limits.max_journey_duration_seconds = 59;
-    assert!(bike_successors(&limited, &state, vec![bike_movement(0, 1, 60)], 0).is_empty());
+    assert!(
+        state
+            .after_bike_shares(
+                &limited,
+                vec![bike_movement(0, 1, 60)],
+                state.bike_departure(0),
+                0
+            )
+            .is_empty()
+    );
     assert!(state.movements.is_empty());
 }

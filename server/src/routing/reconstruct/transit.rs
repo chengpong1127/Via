@@ -68,7 +68,7 @@ impl ReconstructionState<'_, '_> {
             .map(evidence::from_realtime_value)
             .collect::<Vec<_>>();
         self.assembly.live_evidence.extend(live_evidence);
-        let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
+        let leg_id = self.assembly.next_leg_id();
         self.assembly.legs.push(transit_leg(
             leg_id.clone(),
             pattern,

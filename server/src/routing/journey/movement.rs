@@ -11,6 +11,15 @@ pub enum JourneyAnchorKind {
     Destination,
 }
 
+impl JourneyAnchorKind {
+    pub(in crate::routing) fn boarding_point(&self) -> Option<&BoardingPointId> {
+        match self {
+            Self::BoardingPoint { id } => Some(id),
+            Self::Origin | Self::Destination => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct JourneyAnchor {
     pub kind: JourneyAnchorKind,
@@ -40,6 +49,25 @@ pub enum JourneyMovementKind {
         board_index: usize,
         alight_index: usize,
     },
+}
+
+impl JourneyMovementKind {
+    pub(in crate::routing) fn walking_seconds(&self) -> u32 {
+        match self {
+            Self::Walking {
+                duration_seconds, ..
+            } => *duration_seconds,
+            Self::BikeShare { movement } => movement.walking_seconds(),
+            Self::Transit { .. } => 0,
+        }
+    }
+
+    pub(in crate::routing) fn bicycle_seconds(&self) -> u32 {
+        match self {
+            Self::BikeShare { movement } => movement.bicycle_duration_seconds,
+            Self::Walking { .. } | Self::Transit { .. } => 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

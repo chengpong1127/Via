@@ -212,6 +212,12 @@ impl PlanningQuery {
         }
     }
 
+    pub(in crate::routing) fn admits(&self, time: OffsetDateTime) -> bool {
+        time >= self.departure_time
+            && time - self.departure_time
+                <= time::Duration::seconds(i64::from(self.limits.max_journey_duration_seconds))
+    }
+
     pub(crate) fn validate_access_egress(&self) -> Result<(), RoutingError> {
         if has_conflicting_stops(&self.origin_access)
             || has_conflicting_stops(&self.destination_egress)

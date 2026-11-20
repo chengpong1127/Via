@@ -14,7 +14,13 @@ impl BikeShareMovementPlanner {
         let mut candidate = candidate.clone();
         if let Some(endpoint) = candidate.pickup_endpoint {
             candidate.pickups = self
-                .exact_station_walks(street, endpoint, &candidate.pickups, true, limits)
+                .exact_station_walks(
+                    street,
+                    endpoint,
+                    &candidate.pickups,
+                    StationRole::Pickup,
+                    limits,
+                )
                 .await?;
             if candidate.pickups.is_empty() {
                 return Ok(Vec::new());
@@ -22,7 +28,13 @@ impl BikeShareMovementPlanner {
         }
         if let Some(endpoint) = candidate.dropoff_endpoint {
             candidate.dropoffs = self
-                .exact_station_walks(street, endpoint, &candidate.dropoffs, false, limits)
+                .exact_station_walks(
+                    street,
+                    endpoint,
+                    &candidate.dropoffs,
+                    StationRole::Dropoff,
+                    limits,
+                )
                 .await?;
             if candidate.dropoffs.is_empty() {
                 return Ok(Vec::new());
@@ -105,34 +117,23 @@ impl BikeShareMovementPlanner {
         street: &dyn StreetRouter,
         endpoint: Coordinate,
         choices: &[StationChoice],
-        pickup: bool,
+        role: StationRole,
         limits: MatrixLimits,
     ) -> Result<Vec<StationChoice>, StreetRoutingError> {
         let mut exact_choices = Vec::new();
         let mut failure = None;
-        for chunk in choices.chunks(if pickup {
-            limits.max_targets
-        } else {
-            limits.max_sources
-        }) {
+        for chunk in choices.chunks(role.chunk_size(limits)) {
             let coordinates = chunk
                 .iter()
                 .map(|choice| station_coordinate(&self.network, &choice.station_id))
                 .collect::<Vec<_>>();
+            let (sources, targets) = role.walking_endpoints(endpoint, coordinates);
             let result = street
                 .matrix(MatrixQuery {
-                    orientation: if pickup {
-                        MatrixOrientation::OneToMany
-                    } else {
-                        MatrixOrientation::ManyToOne
-                    },
+                    orientation: role.walking_orientation(),
                     travel_mode: StreetTravelMode::Walking,
-                    sources: if pickup {
-                        vec![endpoint]
-                    } else {
-                        coordinates.clone()
-                    },
-                    targets: if pickup { coordinates } else { vec![endpoint] },
+                    sources,
+                    targets,
                     constraints: RoutingConstraints::default(),
                 })
                 .await;
@@ -143,19 +144,12 @@ impl BikeShareMovementPlanner {
                     continue;
                 }
             };
-            if !matrix_has_shape(
-                &result,
-                if pickup { 1 } else { chunk.len() },
-                if pickup { chunk.len() } else { 1 },
-            ) {
+            let (rows, columns) = role.walking_shape(chunk.len());
+            if !matrix_has_shape(&result, rows, columns) {
                 continue;
             }
             for (index, choice) in chunk.iter().enumerate() {
-                let cell = if pickup {
-                    &result.cells[0][index]
-                } else {
-                    &result.cells[index][0]
-                };
+                let cell = role.walking_cell(&result, index);
                 if let Some(walking) = walking_access(cell, self.settings.max_endpoint_walk_seconds)
                 {
                     exact_choices.push(StationChoice {

@@ -326,14 +326,14 @@ fn prune_states_reference(mut states: Vec<EvaluationState>, limit: usize) -> Vec
     let mut frontier = Vec::<EvaluationState>::new();
     for state in states {
         let metrics = state.metrics();
-        if frontier.iter().any(|known| {
-            pareto::same_capability(known, &state) && pareto::no_worse(&known.metrics(), &metrics)
-        }) {
+        if frontier
+            .iter()
+            .any(|known| known.same_capability(&state) && known.metrics().no_worse_than(&metrics))
+        {
             continue;
         }
         frontier.retain(|known| {
-            !(pareto::same_capability(&state, known)
-                && pareto::no_worse(&metrics, &known.metrics()))
+            !(state.same_capability(known) && metrics.no_worse_than(&known.metrics()))
         });
         frontier.push(state);
     }
