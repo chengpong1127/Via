@@ -67,7 +67,7 @@ pub enum SegmentTimeSource {
     Estimated,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SegmentTravelTime {
     pub seconds: u32,
