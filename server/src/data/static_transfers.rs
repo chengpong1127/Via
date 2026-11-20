@@ -37,8 +37,7 @@ pub struct TransferStatistics {
 }
 
 fn coordinate(network: &TransitNetwork, index: usize) -> Coordinate {
-    let point = network.stops[index].coordinate;
-    Coordinate::try_new(point.latitude, point.longitude).expect("validated GTFS stop coordinate")
+    Coordinate::try_from(network.stops[index].coordinate).expect("validated GTFS stop coordinate")
 }
 
 fn mode_name(mode: TransitMode) -> &'static str {
@@ -83,7 +82,7 @@ pub async fn enrich_network_with_static_transfers(
         best_by_pair,
         &mut stats,
         policy,
-        network.default_transfer_seconds,
+        network.same_stop_transfer_seconds,
     );
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
@@ -651,7 +650,7 @@ mod tests {
             );
         }
         let mut network = network(stops);
-        network.default_transfer_seconds = 120;
+        network.same_stop_transfer_seconds = 120;
         enrich_network_with_static_transfers(
             &mut network,
             &builder.build(),

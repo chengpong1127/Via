@@ -13,10 +13,9 @@ pub struct Health {
 
 impl Health {
     pub(crate) fn new(street: Arc<dyn DependencyHealth>, transit: &TransitRuntime) -> Self {
-        let revisions = transit.revisions();
         Self {
             street,
-            static_network: !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty(),
+            static_network: transit.has_revisions(),
             transit_artifact: transit.validate().is_ok(),
         }
     }

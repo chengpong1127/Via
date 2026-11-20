@@ -22,7 +22,10 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use tokio::sync::Mutex;
 use via_server::{
     domain::{
-        bikeshare::{BikeShareNetwork, BikeStation, BikeStationAccess, BikeWalkingAccess},
+        bikeshare::{
+            BikeShareNetwork, BikeStation, BikeStationAccess, BikeWalkingAccess,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        },
         ids::{BikeStationId, BoardingPointId},
         location::GeoCoordinate,
     },
@@ -258,6 +261,8 @@ async fn merges_taipei_and_new_taipei_with_canonical_ids_and_counts() {
     );
 }
 
+const AVAILABILITY_MAX_AGE: TimeDuration = TimeDuration::seconds(120);
+
 #[tokio::test]
 async fn unusable_counts_status_stale_observations_and_directionality_are_filtered() {
     let source = source_with_routes(
@@ -280,30 +285,55 @@ async fn unusable_counts_status_stale_observations_and_directionality_are_filter
         .unwrap();
     let network = network();
     let pickup = network
-        .availability_view(&snapshot)
+        .availability_view_with_policy(
+            &snapshot,
+            OffsetDateTime::now_utc(),
+            AVAILABILITY_MAX_AGE,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        )
         .usable_pickups(&BoardingPointId::new("pickup"));
     assert_eq!(pickup.len(), 1);
     assert_eq!(pickup[0].station_id.as_str(), "tdx:Taipei:TPE-1");
     let dropoff = network
-        .availability_view(&snapshot)
+        .availability_view_with_policy(
+            &snapshot,
+            OffsetDateTime::now_utc(),
+            AVAILABILITY_MAX_AGE,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        )
         .usable_dropoffs(&BoardingPointId::new("dropoff"));
     assert_eq!(dropoff.len(), 1);
     assert_eq!(dropoff[0].station_id.as_str(), "tdx:Taipei:TPE-1");
     assert!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("disabled"))
             .is_empty()
     );
     assert!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("stale"))
             .is_empty()
     );
     assert_eq!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_dropoffs(&BoardingPointId::new("dropoff"))[0]
             .walk_from_station,
         Some(BikeWalkingAccess::new(30, 150))
@@ -330,7 +360,12 @@ async fn provider_clock_skew_within_the_allowance_is_tolerated_but_excess_is_rej
     );
     assert_eq!(
         network()
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("pickup"))
             .len(),
         1

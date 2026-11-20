@@ -36,8 +36,8 @@ impl TransitRuntime {
         &self.network
     }
 
-    pub fn revisions(&self) -> (&str, &str) {
-        self.network.revisions()
+    pub fn has_revisions(&self) -> bool {
+        self.network.has_revisions()
     }
 
     pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
@@ -147,7 +147,7 @@ impl TransitRuntime {
 
 impl TransitRuntime {
     pub fn same_stop_transfer_seconds(&self) -> u32 {
-        self.network.default_transfer_seconds
+        self.network.same_stop_transfer_seconds
     }
 
     pub fn service_day(&self, instant: OffsetDateTime) -> Date {
