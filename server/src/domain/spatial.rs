@@ -36,7 +36,7 @@ pub(crate) struct SpatialPointIndex {
     tree: RTree<GeomWithData<[f64; 3], usize>>,
 }
 
-const CHORD_PADDING: f64 = 64.0 * f64::EPSILON;
+const CHORD_ROUNDING_TOLERANCE: f64 = 64.0 * f64::EPSILON;
 
 impl SpatialPointIndex {
     pub(crate) fn build(points: &[impl SpatialPoint]) -> Self {
@@ -65,7 +65,7 @@ impl SpatialPointIndex {
             .tree
             .locate_within_distance(
                 coordinate.unit_sphere_point(),
-                (chord + CHORD_PADDING).powi(2),
+                (chord + CHORD_ROUNDING_TOLERANCE).powi(2),
             )
             .map(|point| {
                 let index = point.data;
