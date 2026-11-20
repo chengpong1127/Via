@@ -7,7 +7,7 @@ use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
     transit::network::{SegmentTimeSource, TransitMode, TransitPattern},
     transit::runtime::TransitRuntime,
-    transit::topology::{DenseTopology, PatternIndex, StopIndex},
+    transit::topology::{DenseTopology, PatternIndex, PlaceIndex, StopIndex},
 };
 
 use crate::routing::model::{PlanningQuery, RoutingError};
@@ -712,10 +712,27 @@ fn select(
             chosen_indices.insert(index);
         }
     }
+    let mut place_sequences = chosen_indices
+        .iter()
+        .map(|&index| place_sequence(transit, &candidates[index]))
+        .collect::<HashSet<_>>();
     let mut sequences = chosen_indices
         .iter()
         .map(|&index| candidates[index].pattern_sequence())
         .collect::<HashSet<_>>();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if chosen_indices.len() >= limit {
+            break;
+        }
+        let place_sequence = place_sequence(transit, candidate);
+        if place_sequences.contains(&place_sequence) {
+            continue;
+        }
+        if sequences.insert(candidate.pattern_sequence()) {
+            place_sequences.insert(place_sequence);
+            chosen_indices.insert(index);
+        }
+    }
     for (index, candidate) in candidates.iter().enumerate() {
         if chosen_indices.len() >= limit {
             break;
@@ -804,6 +821,23 @@ fn corridor_modes(transit: &TransitRuntime, candidate: &Candidate) -> Vec<Transi
     modes.sort_unstable();
     modes.dedup();
     modes
+}
+
+fn place_sequence(
+    transit: &TransitRuntime,
+    candidate: &Candidate,
+) -> Vec<(TransitMode, Option<PlaceIndex>, Option<PlaceIndex>)> {
+    let dense = transit.dense();
+    let place = |stop_id: &BoardingPointId| dense.stop_index(stop_id).map(|stop| dense.place(stop));
+    candidate
+        .transit_legs()
+        .map(|leg| {
+            let mode = transit
+                .required_route(&transit.required_pattern(&leg.pattern_id).route_id)
+                .mode;
+            (mode, place(&leg.board_stop_id), place(&leg.alight_stop_id))
+        })
+        .collect()
 }
 
 fn corridor_order_key(candidate: &Candidate) -> (&str, &str, String) {
