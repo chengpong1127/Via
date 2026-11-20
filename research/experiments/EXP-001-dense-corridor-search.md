@@ -1,7 +1,7 @@
 # EXP-001 — Dense-index corridor search
 
 - Branch: `research/exp-001-dense-corridor-search`
-- Status: retained (PR candidate)
+- Status: retained — PR https://github.com/chengpong1127/Via/pull/15
 - Date: 2026-11-21
 
 ## References
