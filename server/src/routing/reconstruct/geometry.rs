@@ -14,10 +14,8 @@ pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
     for leg in legs {
         let fallback = || {
             vec![
-                Coordinate::try_new(leg.from.coordinate.latitude, leg.from.coordinate.longitude)
-                    .expect("validated coordinate"),
-                Coordinate::try_new(leg.to.coordinate.latitude, leg.to.coordinate.longitude)
-                    .expect("validated coordinate"),
+                Coordinate::try_from(leg.from.coordinate).expect("validated coordinate"),
+                Coordinate::try_from(leg.to.coordinate).expect("validated coordinate"),
             ]
         };
         for point in decode_polyline6(&leg.geometry.points).unwrap_or_else(fallback) {
@@ -39,9 +37,7 @@ pub(super) fn polyline_geometry(points: &[Coordinate]) -> Geometry {
 pub(super) fn stop_geometry(stops: impl IntoIterator<Item = GeoCoordinate>) -> Geometry {
     let points = stops
         .into_iter()
-        .map(|stop| {
-            Coordinate::try_new(stop.latitude, stop.longitude).expect("validated coordinate")
-        })
+        .map(|stop| Coordinate::try_from(stop).expect("validated coordinate"))
         .collect::<Vec<_>>();
     polyline_geometry(&points)
 }

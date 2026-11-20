@@ -70,7 +70,7 @@ pub(super) fn nearby_stops(
             {
                 return None;
             }
-            Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
+            Coordinate::try_from(stop.coordinate)
                 .ok()
                 .map(|coordinate| NearbyStopCandidate {
                     stop_id: stop.id.clone(),
@@ -286,7 +286,7 @@ mod tests {
         let limits = JourneyPlanningLimits::default();
         let nearby = nearby_stops(
             &transit,
-            Coordinate::try_new(origin.latitude, origin.longitude).unwrap(),
+            Coordinate::try_from(origin).unwrap(),
             &[
                 TransitMode::Bus,
                 TransitMode::Metro,
@@ -351,7 +351,7 @@ mod tests {
         );
         let transit = TransitRuntime::new(std::sync::Arc::new(network));
         let limits = JourneyPlanningLimits::default();
-        let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
+        let coordinate = Coordinate::try_from(origin).unwrap();
 
         let metro_only = nearby_stops(
             &transit,

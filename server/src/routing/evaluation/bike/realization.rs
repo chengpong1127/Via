@@ -232,6 +232,5 @@ fn finalize_bike_movements(mut bike_movements: Vec<BikeShareMovement>) -> Vec<Bi
 
 fn station_coordinate(network: &BikeShareNetwork, id: &BikeStationId) -> Coordinate {
     let station = network.required_station(id);
-    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
-        .expect("validated bike station coordinate")
+    Coordinate::try_from(station.coordinate).expect("validated bike station coordinate")
 }

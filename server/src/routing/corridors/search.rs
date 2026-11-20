@@ -10,7 +10,8 @@ use crate::domain::{
     transit::runtime::TransitRuntime,
 };
 
-use crate::routing::model::{PlanningQuery, RoutingError};
+use crate::domain::ranking::TransferKind;
+use crate::routing::model::{EndpointStop, PlannerLimits, PlanningQuery, RoutingError};
 
 use super::{
     corridor::Corridor,
@@ -107,12 +108,10 @@ impl Candidate {
 
 struct Search<'a> {
     transit: &'a TransitRuntime,
+    limits: PlannerLimits,
     nodes: Vec<Node>,
     entries_by_stop: HashMap<BoardingPointId, Vec<BagEntry>>,
-    max_seconds: u32,
     target_seconds: u32,
-    metro_transfer_penalty_seconds: u32,
-    bus_transfer_penalty_seconds: u32,
     stats: CorridorSearchStats,
 }
 
@@ -136,47 +135,9 @@ pub fn generate(
         return Ok((Vec::new(), CorridorSearchStats::default()));
     }
     let started = Instant::now();
-    let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
-    for egress in &query.destination_egress {
-        egress_by_stop
-            .entry(&egress.stop_id)
-            .and_modify(|walking| *walking = (*walking).min(egress.walking_seconds))
-            .or_insert(egress.walking_seconds);
-    }
-    let mut search = Search {
-        transit,
-        nodes: Vec::new(),
-        entries_by_stop: HashMap::new(),
-        max_seconds: query.limits.max_journey_duration_seconds,
-        target_seconds: query.limits.max_journey_duration_seconds,
-        metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
-        bus_transfer_penalty_seconds: query.limits.bus_transfer_penalty_seconds,
-        stats: CorridorSearchStats::default(),
-    };
-    let mut current = RoundLabels::new();
-    for access in &query.origin_access {
-        let node = search.nodes.len();
-        search.nodes.push(Node {
-            parent: None,
-            access_stop_id: access.stop_id.clone(),
-            step: None,
-        });
-        let structure = fingerprint(0, &access.stop_id);
-        if search.insert(&access.stop_id, access.walking_seconds, structure, None) {
-            current
-                .entry(access.stop_id.clone())
-                .or_default()
-                .push(Label {
-                    cost_seconds: access.walking_seconds,
-                    penalty_seconds: 0,
-                    last_mode: None,
-                    node,
-                    structure,
-                    last_line: None,
-                    after_ride: false,
-                });
-        }
-    }
+    let egress_seconds_by_stop = egress_seconds_by_stop(&query.destination_egress);
+    let mut search = Search::new(transit, query.limits);
+    let mut current = search.seed_access(&query.origin_access);
     search.relax_transfers(&mut current);
 
     let mut candidates = Vec::new();
@@ -187,58 +148,13 @@ pub fn generate(
             break;
         }
         query.deadline.check()?;
-        let mut boardable_by_pattern =
-            HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
-        for stop_id in current.keys() {
-            for position in transit.pattern_positions_at(stop_id) {
-                let Some((pattern, mode)) =
-                    pattern_with_mode(transit, &position.pattern_id, &query.allowed_transit_modes)
-                else {
-                    continue;
-                };
-                let (_, _, first_board_index) = boardable_by_pattern
-                    .entry(&position.pattern_id)
-                    .or_insert((pattern, mode, position.stop_index));
-                *first_board_index = (*first_board_index).min(position.stop_index);
-            }
-        }
-        let mut boardable_patterns = boardable_by_pattern.into_values().collect::<Vec<_>>();
-        boardable_patterns
-            .sort_unstable_by(|left, right| left.0.id.as_str().cmp(right.0.id.as_str()));
         let mut next = RoundLabels::new();
-        for (pattern, mode, first_board_index) in boardable_patterns {
+        for (pattern, mode, first_board_index) in
+            boardable_patterns(transit, &current, &query.allowed_transit_modes)
+        {
             search.scan_pattern(pattern, mode, first_board_index, &current, &mut next);
         }
-        for stop_id in sorted_stops(&next) {
-            let Some(egress_seconds) = egress_by_stop.get(stop_id) else {
-                continue;
-            };
-            for label in &next[stop_id] {
-                let duration = label
-                    .cost_seconds
-                    .saturating_sub(label.penalty_seconds)
-                    .saturating_add(*egress_seconds);
-                if duration > search.max_seconds {
-                    continue;
-                }
-                let search_cost_seconds = label.cost_seconds.saturating_add(*egress_seconds);
-                search.target_seconds = search.target_seconds.min(
-                    search_cost_seconds
-                        .saturating_add(
-                            search_cost_seconds.saturating_mul(TARGET_SLACK_PERCENT) / 100,
-                        )
-                        .saturating_add(TARGET_SLACK_SECONDS),
-                );
-                candidates.push(Candidate {
-                    rides,
-                    search_cost_seconds,
-                    theoretical_duration_seconds: duration,
-                    access_stop_id: search.nodes[label.node].access_stop_id.clone(),
-                    egress_stop_id: stop_id.clone(),
-                    steps: search.steps(label.node),
-                });
-            }
-        }
+        candidates.extend(search.egress_candidates(rides, &next, &egress_seconds_by_stop));
         search.relax_transfers(&mut next);
         current = next;
     }
@@ -252,7 +168,54 @@ pub fn generate(
         query.limits.max_static_corridors.max(1),
         &mut stats,
     );
-    let equivalent_legs_by_key = equivalent_legs_for(transit, &selected_candidates);
+    let selected_corridors = build_corridors(transit, query, &selected_candidates)?;
+    stats.corridors_retained = selected_corridors.len();
+    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    Ok((selected_corridors, stats))
+}
+
+fn egress_seconds_by_stop(egress: &[EndpointStop]) -> HashMap<&BoardingPointId, u32> {
+    let mut egress_seconds_by_stop = HashMap::<&BoardingPointId, u32>::new();
+    for egress in egress {
+        egress_seconds_by_stop
+            .entry(&egress.stop_id)
+            .and_modify(|walking| *walking = (*walking).min(egress.walking_seconds))
+            .or_insert(egress.walking_seconds);
+    }
+    egress_seconds_by_stop
+}
+
+fn boardable_patterns<'a>(
+    transit: &'a TransitRuntime,
+    current: &RoundLabels,
+    allowed_modes: &[TransitMode],
+) -> Vec<(&'a TransitPattern, TransitMode, usize)> {
+    let mut boardable_by_pattern =
+        HashMap::<&TransitPatternId, (&TransitPattern, TransitMode, usize)>::new();
+    for stop_id in current.keys() {
+        for position in transit.pattern_positions_at(stop_id) {
+            let Some((pattern, mode)) =
+                pattern_with_mode(transit, &position.pattern_id, allowed_modes)
+            else {
+                continue;
+            };
+            let (_, _, first_board_index) = boardable_by_pattern
+                .entry(&position.pattern_id)
+                .or_insert((pattern, mode, position.stop_index));
+            *first_board_index = (*first_board_index).min(position.stop_index);
+        }
+    }
+    let mut boardable_patterns = boardable_by_pattern.into_values().collect::<Vec<_>>();
+    boardable_patterns.sort_unstable_by(|left, right| left.0.id.as_str().cmp(right.0.id.as_str()));
+    boardable_patterns
+}
+
+fn build_corridors(
+    transit: &TransitRuntime,
+    query: &PlanningQuery,
+    selected_candidates: &[Candidate],
+) -> Result<Vec<Corridor>, RoutingError> {
+    let equivalent_legs_by_key = equivalent_legs_for(transit, selected_candidates);
     let mut selected_corridors = Vec::with_capacity(selected_candidates.len());
     for (index, candidate) in selected_candidates.iter().enumerate() {
         tracing::debug!(
@@ -275,9 +238,88 @@ pub fn generate(
             .with_equivalent_legs(transit, &equivalent_legs_by_key),
         );
     }
-    stats.corridors_retained = selected_corridors.len();
-    stats.search_latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    Ok((selected_corridors, stats))
+    Ok(selected_corridors)
+}
+
+impl<'a> Search<'a> {
+    fn new(transit: &'a TransitRuntime, limits: PlannerLimits) -> Self {
+        Self {
+            transit,
+            limits,
+            nodes: Vec::new(),
+            entries_by_stop: HashMap::new(),
+            target_seconds: limits.max_journey_duration_seconds,
+            stats: CorridorSearchStats::default(),
+        }
+    }
+
+    fn seed_access(&mut self, origin_access: &[EndpointStop]) -> RoundLabels {
+        let mut current = RoundLabels::new();
+        for access in origin_access {
+            let node = self.nodes.len();
+            self.nodes.push(Node {
+                parent: None,
+                access_stop_id: access.stop_id.clone(),
+                step: None,
+            });
+            let structure = fingerprint(0, &access.stop_id);
+            if self.insert(&access.stop_id, access.walking_seconds, structure, None) {
+                current
+                    .entry(access.stop_id.clone())
+                    .or_default()
+                    .push(Label {
+                        cost_seconds: access.walking_seconds,
+                        penalty_seconds: 0,
+                        last_mode: None,
+                        node,
+                        structure,
+                        last_line: None,
+                        after_ride: false,
+                    });
+            }
+        }
+        current
+    }
+
+    fn egress_candidates(
+        &mut self,
+        rides: usize,
+        next: &RoundLabels,
+        egress_seconds_by_stop: &HashMap<&BoardingPointId, u32>,
+    ) -> Vec<Candidate> {
+        let mut candidates = Vec::new();
+        for stop_id in sorted_stops(next) {
+            let Some(egress_seconds) = egress_seconds_by_stop.get(stop_id) else {
+                continue;
+            };
+            for label in &next[stop_id] {
+                let duration = label
+                    .cost_seconds
+                    .saturating_sub(label.penalty_seconds)
+                    .saturating_add(*egress_seconds);
+                if duration > self.limits.max_journey_duration_seconds {
+                    continue;
+                }
+                let search_cost_seconds = label.cost_seconds.saturating_add(*egress_seconds);
+                self.target_seconds = self.target_seconds.min(
+                    search_cost_seconds
+                        .saturating_add(
+                            search_cost_seconds.saturating_mul(TARGET_SLACK_PERCENT) / 100,
+                        )
+                        .saturating_add(TARGET_SLACK_SECONDS),
+                );
+                candidates.push(Candidate {
+                    rides,
+                    search_cost_seconds,
+                    theoretical_duration_seconds: duration,
+                    access_stop_id: self.nodes[label.node].access_stop_id.clone(),
+                    egress_stop_id: stop_id.clone(),
+                    steps: self.steps(label.node),
+                });
+            }
+        }
+        candidates
+    }
 }
 
 impl Search<'_> {
@@ -351,13 +393,10 @@ impl Search<'_> {
                 if label.last_line.as_ref() == Some(&line) {
                     continue;
                 }
-                let transfer_penalty_seconds = match label.last_mode {
-                    None => 0,
-                    Some(TransitMode::Metro) if mode == TransitMode::Metro => {
-                        self.metro_transfer_penalty_seconds
-                    }
-                    Some(_) => self.bus_transfer_penalty_seconds,
-                };
+                let transfer_penalty_seconds = label.last_mode.map_or(0, |last_mode| {
+                    self.limits
+                        .transfer_penalty_seconds(TransferKind::between(Some(last_mode), mode))
+                });
                 let board_cost_seconds = label
                     .cost_seconds
                     .saturating_add(if label.after_ride {

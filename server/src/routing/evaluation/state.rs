@@ -35,6 +35,14 @@ impl EvaluationState {
         next
     }
 
+    pub fn transit_ready_at(&self, transfer_seconds: u32) -> OffsetDateTime {
+        if self.last_was_transit {
+            self.ready_at + Duration::seconds(i64::from(transfer_seconds))
+        } else {
+            self.ready_at
+        }
+    }
+
     pub fn metrics(&self) -> PathMetrics {
         PathMetrics::from_movements(&self.movements, self.ready_at)
     }

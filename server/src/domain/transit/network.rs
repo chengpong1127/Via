@@ -113,14 +113,18 @@ pub struct ServiceCalendar {
 
 impl ServiceCalendar {
     pub fn runs_on(&self, service_day: Date) -> bool {
-        calendar_runs_on(
-            service_day,
-            &self.weekdays,
-            self.start_date,
-            self.end_date,
-            &self.added_dates,
-            &self.removed_dates,
-        )
+        if self.removed_dates.contains(&service_day) {
+            return false;
+        }
+        if self.added_dates.contains(&service_day) {
+            return true;
+        }
+        if self.start_date.is_some_and(|start| service_day < start)
+            || self.end_date.is_some_and(|end| service_day > end)
+        {
+            return false;
+        }
+        self.weekdays.contains(&service_day.weekday())
     }
 }
 
@@ -210,26 +214,14 @@ pub struct TransitFrequency {
     pub template_stop_times: Vec<ScheduledStopTime>,
 }
 
-fn calendar_runs_on(
-    service_day: Date,
-    active_weekdays: &[Weekday],
-    start_date: Option<Date>,
-    end_date: Option<Date>,
-    added_service_days: &[Date],
-    removed_service_days: &[Date],
-) -> bool {
-    if removed_service_days.contains(&service_day) {
-        return false;
-    }
-    if added_service_days.contains(&service_day) {
-        return true;
-    }
-    if start_date.is_some_and(|start| service_day < start)
-        || end_date.is_some_and(|end| service_day > end)
-    {
-        return false;
-    }
-    active_weekdays.contains(&service_day.weekday())
+fn stop_times_are_chronological(stop_times: &[ScheduledStopTime]) -> bool {
+    !(stop_times
+        .last()
+        .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
+        || stop_times.windows(2).any(|times| {
+            times[0].arrival_seconds > times[0].departure_seconds
+                || times[0].departure_seconds > times[1].arrival_seconds
+        }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +340,22 @@ impl TransitNetwork {
         if !self.has_revisions() {
             return Err(TransitNetworkValidationError::MissingRevision);
         }
+        let stop_ids = self.validate_stops()?;
+        let route_ids = self.validate_routes()?;
+        self.validate_patterns(&stop_ids, &route_ids)?;
+        let calendar_ids = self.validate_calendars()?;
+        let pattern_by_id = self
+            .patterns
+            .iter()
+            .map(|pattern| (&pattern.id, pattern))
+            .collect::<HashMap<_, _>>();
+        self.validate_trip_shapes(&pattern_by_id, &calendar_ids)?;
+        let frequency_ids = self.validate_frequencies(&pattern_by_id, &calendar_ids)?;
+        self.validate_trip_ids(&frequency_ids)?;
+        self.validate_transfer_edges(&stop_ids)
+    }
+
+    fn validate_stops(&self) -> Result<HashSet<BoardingPointId>, TransitNetworkValidationError> {
         if self.stops.is_empty() {
             return Err(TransitNetworkValidationError::EmptyStops);
         }
@@ -364,6 +372,10 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(stop_ids)
+    }
+
+    fn validate_routes(&self) -> Result<HashSet<TransitRouteId>, TransitNetworkValidationError> {
         let mut route_ids = HashSet::new();
         for route in &self.routes {
             if !route_ids.insert(route.id.clone()) {
@@ -372,6 +384,14 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(route_ids)
+    }
+
+    fn validate_patterns(
+        &self,
+        stop_ids: &HashSet<BoardingPointId>,
+        route_ids: &HashSet<TransitRouteId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         let mut pattern_ids = HashSet::new();
         let mut pattern_topologies = HashSet::new();
         for pattern in &self.patterns {
@@ -420,6 +440,12 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_calendars(
+        &self,
+    ) -> Result<HashSet<ServiceCalendarId>, TransitNetworkValidationError> {
         let mut calendar_ids = HashSet::new();
         for calendar in &self.calendars {
             if !calendar_ids.insert(calendar.id.clone()) {
@@ -438,11 +464,14 @@ impl TransitNetwork {
                 ));
             }
         }
-        let pattern_by_id = self
-            .patterns
-            .iter()
-            .map(|pattern| (&pattern.id, pattern))
-            .collect::<HashMap<_, _>>();
+        Ok(calendar_ids)
+    }
+
+    fn validate_trip_shapes(
+        &self,
+        pattern_by_id: &HashMap<&TransitPatternId, &TransitPattern>,
+        calendar_ids: &HashSet<ServiceCalendarId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         for trip in &self.trips {
             let Some(pattern) = pattern_by_id.get(&trip.pattern_id).copied() else {
                 return Err(TransitNetworkValidationError::UnknownTripPattern(
@@ -456,20 +485,20 @@ impl TransitNetwork {
                     trip.id.clone(),
                 ));
             }
-            if trip
-                .stop_times
-                .last()
-                .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
-                || trip.stop_times.windows(2).any(|times| {
-                    times[0].arrival_seconds > times[0].departure_seconds
-                        || times[0].departure_seconds > times[1].arrival_seconds
-                })
-            {
+            if !stop_times_are_chronological(&trip.stop_times) {
                 return Err(TransitNetworkValidationError::NonChronologicalTrip(
                     trip.id.clone(),
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_frequencies(
+        &self,
+        pattern_by_id: &HashMap<&TransitPatternId, &TransitPattern>,
+        calendar_ids: &HashSet<ServiceCalendarId>,
+    ) -> Result<HashSet<TransitTripId>, TransitNetworkValidationError> {
         let mut frequency_ids = HashSet::new();
         for frequency in &self.frequencies {
             let Some(pattern) = pattern_by_id.get(&frequency.pattern_id).copied() else {
@@ -482,20 +511,20 @@ impl TransitNetwork {
                 || frequency.headway_seconds == 0
                 || frequency.template_stop_times.len() != pattern.stops.len()
                 || !calendar_ids.contains(&frequency.calendar_id)
-                || frequency
-                    .template_stop_times
-                    .last()
-                    .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
-                || frequency.template_stop_times.windows(2).any(|times| {
-                    times[0].arrival_seconds > times[0].departure_seconds
-                        || times[0].departure_seconds > times[1].arrival_seconds
-                })
+                || !stop_times_are_chronological(&frequency.template_stop_times)
             {
                 return Err(TransitNetworkValidationError::InvalidFrequencyShape(
                     frequency.id.clone(),
                 ));
             }
         }
+        Ok(frequency_ids)
+    }
+
+    fn validate_trip_ids(
+        &self,
+        frequency_ids: &HashSet<TransitTripId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         let mut trip_ids = HashSet::new();
         for trip in &self.trips {
             if !trip_ids.insert(trip.id.clone()) || frequency_ids.contains(&trip.id) {
@@ -504,6 +533,13 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_transfer_edges(
+        &self,
+        stop_ids: &HashSet<BoardingPointId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         for edge in &self.transfer_edges {
             if !stop_ids.contains(&edge.from) || !stop_ids.contains(&edge.to) {
                 return Err(TransitNetworkValidationError::UnknownTransferEndpoint {

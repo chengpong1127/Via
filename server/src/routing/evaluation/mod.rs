@@ -228,7 +228,7 @@ impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
             query,
             ..
         } = *self.evaluator;
-        let ready_at = transit_ready_at(state, transit.same_stop_transfer_seconds());
+        let ready_at = state.transit_ready_at(transit.same_stop_transfer_seconds());
         let mut successors = Vec::new();
         for leg in legs {
             self.check_deadline()?;
@@ -386,14 +386,6 @@ fn walking_kind(from: &CorridorAnchor, to: &CorridorAnchor) -> WalkingMovementKi
         (JourneyAnchorKind::Origin, _) => WalkingMovementKind::Access,
         (_, JourneyAnchorKind::Destination) => WalkingMovementKind::Egress,
         _ => WalkingMovementKind::Transfer,
-    }
-}
-
-fn transit_ready_at(state: &EvaluationState, transfer_seconds: u32) -> OffsetDateTime {
-    if state.last_was_transit {
-        state.ready_at + Duration::seconds(i64::from(transfer_seconds))
-    } else {
-        state.ready_at
     }
 }
 

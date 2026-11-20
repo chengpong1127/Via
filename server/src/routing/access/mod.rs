@@ -24,7 +24,7 @@ async fn discover_endpoint_stops(
     allowed_transit_modes: &[TransitMode],
     limits: &JourneyPlanningLimits,
 ) -> Result<Vec<EndpointStop>, StreetRoutingError> {
-    let endpoint = Coordinate::try_new(endpoint.latitude, endpoint.longitude)?;
+    let endpoint = Coordinate::try_from(endpoint)?;
     let stop_limit = limits.max_transit_endpoint_stops;
     let stops = nearby::nearby_stops(
         transit,

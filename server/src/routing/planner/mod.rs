@@ -3,7 +3,7 @@ mod tests;
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tracing::Instrument;
 
 use crate::{
@@ -241,20 +241,17 @@ impl MultimodalPlanner {
         (positions, bus_stop_ids.len())
     }
 
-    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = corridors.iter().filter(|corridor| corridor.transit_legs().next().is_some()).count()))]
-    async fn load_snapshots(
+    fn timing_queries(
         &self,
         query: &PlanningQuery,
-        corridors: &[Corridor],
-    ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
-        let window_end = query.departure_time
-            + Duration::seconds(i64::from(query.limits.max_journey_duration_seconds));
+        positions: Vec<PatternPosition>,
+    ) -> Result<Vec<DepartureQuery>, RoutingError> {
+        let window_end = query.latest_arrival();
         let departures_per_position = usize::try_from(query.limits.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
             .saturating_add(1)
             .max(query.limits.max_departures_per_query);
-        let (timing_positions, bus_stop_count) = self.timing_positions(corridors);
-        let timing_queries = timing_positions
+        positions
             .into_iter()
             .map(|position| {
                 let stop_id = self
@@ -274,7 +271,17 @@ impl MultimodalPlanner {
                 )
                 .until(window_end))
             })
-            .collect::<Result<Vec<_>, RoutingError>>()?;
+            .collect()
+    }
+
+    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = corridors.iter().filter(|corridor| corridor.transit_legs().next().is_some()).count()))]
+    async fn load_snapshots(
+        &self,
+        query: &PlanningQuery,
+        corridors: &[Corridor],
+    ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
+        let (timing_positions, bus_stop_count) = self.timing_positions(corridors);
+        let timing_queries = self.timing_queries(query, timing_positions)?;
         let bike_station_ids = if query.allow_bike_share {
             self.bike_planner
                 .required_station_ids(corridors.iter().flat_map(Corridor::anchors))

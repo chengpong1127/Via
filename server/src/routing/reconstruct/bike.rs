@@ -3,7 +3,7 @@ use time::Duration;
 use crate::{
     domain::journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
     routing::{
-        JourneyAnchorKind, JourneyMovement, journey::BIKE_REUSE_COOLDOWN,
+        BikeShareMovement, JourneyAnchorKind, JourneyMovement, journey::BIKE_REUSE_COOLDOWN,
         model::JourneyPlanningContext,
     },
     street::{StreetPath, StreetTravelMode},
@@ -21,7 +21,7 @@ impl ReconstructionState<'_, '_> {
     pub(super) async fn append_bike(
         &mut self,
         movement: &JourneyMovement,
-        bike_movement: &crate::routing::BikeShareMovement,
+        bike_movement: &BikeShareMovement,
     ) -> Result<bool, PlanningError> {
         if matches!(
             self.journey.anchors()[movement.from_anchor].kind,
@@ -67,7 +67,7 @@ async fn append_bike_share(
     context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
-    bike_movement: &crate::routing::BikeShareMovement,
+    bike_movement: &BikeShareMovement,
     assembly: &mut JourneyAssembly,
 ) -> Result<bool, PlanningError> {
     let pickup = reconstructor.bike_station_place(&bike_movement.pickup_station_id)?;
@@ -104,8 +104,7 @@ async fn append_bike_share(
     append_bicycle(
         &pickup,
         &dropoff,
-        &bike_movement.pickup_station_id,
-        &bike_movement.dropoff_station_id,
+        bike_movement,
         bicycle,
         reconstructor.rental_handling_seconds,
         assembly,
@@ -132,8 +131,7 @@ async fn append_bike_share(
 fn append_bicycle(
     pickup: &Place,
     dropoff: &Place,
-    pickup_station_id: &crate::domain::ids::BikeStationId,
-    dropoff_station_id: &crate::domain::ids::BikeStationId,
+    bike_movement: &BikeShareMovement,
     path: StreetPath,
     rental_handling_seconds: u32,
     assembly: &mut JourneyAssembly,
@@ -161,9 +159,9 @@ fn append_bicycle(
         .chain(geometry::guidance(&path.maneuvers))
         .collect(),
         details: LegDetails::BikeShare {
-            pickup_station_id: pickup_station_id.as_str().into(),
+            pickup_station_id: bike_movement.pickup_station_id.as_str().into(),
             pickup_station_name: pickup.display_name.clone(),
-            dropoff_station_id: dropoff_station_id.as_str().into(),
+            dropoff_station_id: bike_movement.dropoff_station_id.as_str().into(),
             dropoff_station_name: dropoff.display_name.clone(),
         },
         attribution: path.attribution.clone(),

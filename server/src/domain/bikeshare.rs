@@ -174,30 +174,29 @@ impl<'a> BikeAvailabilityView<'a> {
     }
 
     pub fn can_pick_up_at(&self, station_id: &BikeStationId) -> bool {
-        self.station_is_serviceable(station_id)
-            && self
-                .snapshot
-                .station(station_id)
-                .is_some_and(|availability| availability.available_bikes > 0)
+        self.serviceable_with(station_id, |availability| availability.available_bikes > 0)
     }
 
     pub fn can_return_at(&self, station_id: &BikeStationId) -> bool {
-        self.station_is_serviceable(station_id)
-            && self
-                .snapshot
-                .station(station_id)
-                .is_some_and(|availability| availability.available_return_slots > 0)
+        self.serviceable_with(station_id, |availability| {
+            availability.available_return_slots > 0
+        })
     }
 
-    fn station_is_serviceable(&self, station_id: &BikeStationId) -> bool {
-        self.network.station(station_id).is_some_and(|_| {
-            self.snapshot
+    fn serviceable_with(
+        &self,
+        station_id: &BikeStationId,
+        has_capacity: impl Fn(&BikeStationAvailability) -> bool,
+    ) -> bool {
+        self.network.station(station_id).is_some()
+            && self
+                .snapshot
                 .station(station_id)
                 .is_some_and(|availability| {
                     availability.is_fresh_with_skew(self.now, self.max_age, self.max_clock_skew)
                         && availability.in_service
+                        && has_capacity(availability)
                 })
-        })
     }
 }
 

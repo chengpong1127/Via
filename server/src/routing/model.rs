@@ -3,7 +3,10 @@ use tokio::time::Instant;
 
 use crate::{
     domain::planning::PlanningInput,
-    domain::{journey::PlanningError, normalize_to_taipei, transit::network::TransitMode},
+    domain::{
+        journey::PlanningError, normalize_to_taipei, ranking::TransferKind,
+        transit::network::TransitMode,
+    },
     street::{ProviderFailureClass, RoutingConstraints, RoutingTime, StreetRoutingError},
 };
 
@@ -87,6 +90,13 @@ pub struct PlannerLimits {
 }
 
 impl PlannerLimits {
+    pub(crate) fn transfer_penalty_seconds(&self, kind: TransferKind) -> u32 {
+        match kind {
+            TransferKind::MetroToMetro => self.metro_transfer_penalty_seconds,
+            TransferKind::BusInvolved => self.bus_transfer_penalty_seconds,
+        }
+    }
+
     pub(crate) fn normalized(self) -> Self {
         Self {
             max_transfers: self.max_transfers,
@@ -218,10 +228,13 @@ impl PlanningQuery {
         }
     }
 
+    pub(in crate::routing) fn latest_arrival(&self) -> OffsetDateTime {
+        self.departure_time
+            + time::Duration::seconds(i64::from(self.limits.max_journey_duration_seconds))
+    }
+
     pub(in crate::routing) fn admits(&self, time: OffsetDateTime) -> bool {
-        time >= self.departure_time
-            && time - self.departure_time
-                <= time::Duration::seconds(i64::from(self.limits.max_journey_duration_seconds))
+        time >= self.departure_time && time <= self.latest_arrival()
     }
 
     pub(crate) fn validate_access_egress(&self) -> Result<(), RoutingError> {

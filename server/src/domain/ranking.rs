@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use crate::domain::transit::timing::TimingReliability;
+use crate::domain::transit::{network::TransitMode, timing::TimingReliability};
 
 pub const MAX_RESULT_LIMIT: usize = 5;
 
@@ -14,6 +14,16 @@ pub enum JourneyClass {
 pub enum TransferKind {
     MetroToMetro,
     BusInvolved,
+}
+
+impl TransferKind {
+    pub fn between(from: Option<TransitMode>, to: TransitMode) -> Self {
+        if from == Some(TransitMode::Metro) && to == TransitMode::Metro {
+            Self::MetroToMetro
+        } else {
+            Self::BusInvolved
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,16 +126,20 @@ impl RankingPolicy {
             if transfer.available_seconds < transfer.physical_seconds {
                 return None;
             }
-            let buffer = match transfer.kind {
-                TransferKind::MetroToMetro => self.metro_transfer_buffer_seconds,
-                TransferKind::BusInvolved => self.bus_transfer_buffer_seconds,
-            };
+            let buffer = self.transfer_buffer_seconds(transfer.kind);
             if transfer.available_seconds < transfer.physical_seconds.saturating_add(buffer) {
                 class = JourneyClass::Feasible;
             }
         }
 
         Some(RankedJourney { class, candidate })
+    }
+
+    fn transfer_buffer_seconds(&self, kind: TransferKind) -> u32 {
+        match kind {
+            TransferKind::MetroToMetro => self.metro_transfer_buffer_seconds,
+            TransferKind::BusInvolved => self.bus_transfer_buffer_seconds,
+        }
     }
 
     fn materially_different<T: AsRef<RankingCandidate>>(

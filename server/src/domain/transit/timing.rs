@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     sync::Arc,
 };
@@ -9,7 +10,10 @@ use time::{Date, OffsetDateTime};
 use crate::domain::{
     ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
     realtime::NormalizedRealtimeValue,
-    transit::{network::TransitMode, runtime::TransitRuntime},
+    transit::{
+        network::{TransitFrequency, TransitMode, TransitPattern},
+        runtime::TransitRuntime,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,6 +77,10 @@ impl DepartureQuery {
     pub fn until(mut self, before: OffsetDateTime) -> Self {
         self.before = Some(before);
         self
+    }
+
+    fn window_contains(&self, departure_at: OffsetDateTime) -> bool {
+        departure_at >= self.after && self.before.is_none_or(|before| departure_at <= before)
     }
 
     pub fn resolve_board_index(&self, transit: &TransitRuntime) -> Result<usize, DepartureError> {
@@ -180,22 +188,12 @@ impl TimingSnapshot {
         board_index: usize,
         mut departures: SnapshotDepartures,
     ) {
-        let sort = |trips: &mut Vec<EffectiveTrip>| {
-            trips.sort_by(|left, right| {
-                left.stop_times
-                    .get(board_index)
-                    .map(|stop| stop.departure_at)
-                    .cmp(
-                        &right
-                            .stop_times
-                            .get(board_index)
-                            .map(|stop| stop.departure_at),
-                    )
-                    .then(left.id.as_str().cmp(right.id.as_str()))
-            });
-        };
-        sort(&mut departures.preferred_trips);
-        sort(&mut departures.fallback_trips);
+        departures
+            .preferred_trips
+            .sort_by(departure_order(board_index));
+        departures
+            .fallback_trips
+            .sort_by(departure_order(board_index));
         if let Some(failure) = departures.failure.clone() {
             self.failures.push(failure);
         }
@@ -295,12 +293,8 @@ impl TimingSnapshot {
                         .is_none_or(|id| !observed.contains(id))
                 }),
         );
-        preferred.sort_by(|left, right| {
-            left.stop_times[board_index]
-                .departure_at
-                .cmp(&right.stop_times[board_index].departure_at)
-                .then_with(|| left.id.as_str().cmp(right.id.as_str()))
-        });
+        let order = departure_order(board_index);
+        preferred.sort_by(|left, right| order(left, right));
         preferred.truncate(limit);
         preferred
     }
@@ -370,7 +364,7 @@ impl EffectiveTrip {
     pub fn from_frequency(
         transit: &TransitRuntime,
         service_day: Date,
-        frequency: &super::network::TransitFrequency,
+        frequency: &TransitFrequency,
         first_departure_seconds: u32,
     ) -> Option<Self> {
         if !transit
@@ -471,9 +465,6 @@ impl ScheduleTiming {
         Self { transit }
     }
 
-    pub fn transit(&self) -> &Arc<TransitRuntime> {
-        &self.transit
-    }
     pub async fn next_departures(
         &self,
         query: DepartureQuery,
@@ -481,21 +472,9 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if !pattern.stops.contains(&query.board_stop_id) {
-            return Err(DepartureError::InvalidQuery);
-        }
-        let board_index = query.resolve_board_index(&self.transit)?;
-        let first_service_day = self.transit.service_day(query.after);
-        let last_service_day = query
-            .before
-            .map(|before| self.transit.service_day(before))
-            .unwrap_or(first_service_day);
-        let mut service_day = first_service_day;
+        let (_, board_index) = self.board_position(&query)?;
         let mut departures = Vec::new();
-        loop {
+        for service_day in self.service_days(&query) {
             departures.extend(
                 self.transit
                     .scheduled_trips_boarding_at(&query.pattern_id, board_index)
@@ -509,24 +488,9 @@ impl ScheduleTiming {
                             .flatten()
                     }),
             );
-            if service_day >= last_service_day {
-                break;
-            }
-            let Some(next_day) = service_day.next_day() else {
-                break;
-            };
-            service_day = next_day;
         }
-        departures.retain(|trip| {
-            let departure_at = trip.stop_times[board_index].departure_at;
-            departure_at >= query.after && query.before.is_none_or(|before| departure_at <= before)
-        });
-        departures.sort_by(|left, right| {
-            left.stop_times[board_index]
-                .departure_at
-                .cmp(&right.stop_times[board_index].departure_at)
-                .then(left.id.as_str().cmp(right.id.as_str()))
-        });
+        departures.retain(|trip| query.window_contains(trip.stop_times[board_index].departure_at));
+        departures.sort_by(departure_order(board_index));
         departures.truncate(query.limit);
         Ok(departures)
     }
@@ -538,21 +502,9 @@ impl ScheduleTiming {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if !pattern.stops.contains(&query.board_stop_id) {
-            return Err(DepartureError::InvalidQuery);
-        }
-        let board_index = query.resolve_board_index(&self.transit)?;
-        let first_service_day = self.transit.service_day(query.after);
-        let last_service_day = query
-            .before
-            .map(|before| self.transit.service_day(before))
-            .unwrap_or(first_service_day);
+        let (pattern, board_index) = self.board_position(&query)?;
         let mut departures = Vec::new();
-        let mut service_day = first_service_day;
-        loop {
+        for service_day in self.service_days(&query) {
             let day_start = self.transit.service_day_start(service_day);
             let after_seconds =
                 u32::try_from((query.after - day_start).whole_seconds().max(0)).unwrap_or(u32::MAX);
@@ -607,35 +559,63 @@ impl ScheduleTiming {
                         service_day,
                         frequency,
                         first_departure_seconds,
-                    ) {
-                        let board_departure = trip.stop_times[board_index].departure_at;
-                        if board_departure >= query.after
-                            && query.before.is_none_or(|before| board_departure <= before)
-                        {
-                            departures.push(trip);
-                        }
+                    ) && query.window_contains(trip.stop_times[board_index].departure_at)
+                    {
+                        departures.push(trip);
                     }
                 }
             }
-            if service_day >= last_service_day {
-                break;
-            }
-            let Some(next_day) = service_day.next_day() else {
-                break;
-            };
-            service_day = next_day;
         }
-        departures.sort_by(|left, right| {
-            left.stop_times[board_index]
-                .departure_at
-                .cmp(&right.stop_times[board_index].departure_at)
-                .then(left.id.as_str().cmp(right.id.as_str()))
-        });
+        departures.sort_by(departure_order(board_index));
         departures.dedup_by(|left, right| {
             left.stop_times[board_index].departure_at == right.stop_times[board_index].departure_at
         });
         departures.truncate(query.limit);
         Ok(departures)
+    }
+
+    fn board_position(
+        &self,
+        query: &DepartureQuery,
+    ) -> Result<(&TransitPattern, usize), DepartureError> {
+        let pattern = self
+            .transit
+            .pattern(&query.pattern_id)
+            .ok_or(DepartureError::InvalidQuery)?;
+        if !pattern.stops.contains(&query.board_stop_id) {
+            return Err(DepartureError::InvalidQuery);
+        }
+        Ok((pattern, query.resolve_board_index(&self.transit)?))
+    }
+
+    fn service_days(&self, query: &DepartureQuery) -> impl Iterator<Item = Date> + use<> {
+        let first_service_day = self.transit.service_day(query.after);
+        let last_service_day = query
+            .before
+            .map(|before| self.transit.service_day(before))
+            .unwrap_or(first_service_day);
+        std::iter::successors(Some(first_service_day), move |service_day| {
+            if *service_day >= last_service_day {
+                None
+            } else {
+                service_day.next_day()
+            }
+        })
+    }
+}
+
+fn departure_order(board_index: usize) -> impl Fn(&EffectiveTrip, &EffectiveTrip) -> Ordering {
+    move |left, right| {
+        left.stop_times
+            .get(board_index)
+            .map(|stop| stop.departure_at)
+            .cmp(
+                &right
+                    .stop_times
+                    .get(board_index)
+                    .map(|stop| stop.departure_at),
+            )
+            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
     }
 }
 

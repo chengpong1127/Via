@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use time::{Time, Weekday, macros::datetime};
+use time::{Duration, Time, Weekday, macros::datetime};
 
 use super::*;
 use crate::{
