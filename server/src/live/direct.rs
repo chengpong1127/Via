@@ -7,7 +7,7 @@ use super::{
     BikeAvailabilityRecord, BusArrival, LiveBatch, LiveDataSource, MetroBoard, MetroPair, TraDelay,
     UnavailableReason,
 };
-use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError, odata_in_filter};
+use crate::tdx::{TdxClient, TdxClientError, is_bike_city, odata_in_filter};
 
 const BUS_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const BIKE_AVAILABILITY_PATH: &str = "v2/Bike/Availability/City";
@@ -125,7 +125,7 @@ impl LiveDataSource for DirectLiveData {
         city: &str,
         station_uids: &[String],
     ) -> LiveBatch<BikeAvailabilityRecord> {
-        if !BIKE_CITIES.iter().any(|(scope, _)| *scope == city) {
+        if !is_bike_city(city) {
             return LiveBatch::unavailable_all(
                 station_uids,
                 UnavailableReason::InvalidConfiguration,
@@ -154,9 +154,8 @@ impl LiveDataSource for DirectLiveData {
             {
                 Ok(records) => batch.records.extend(records.into_iter().filter(|record| {
                     record
-                        .station_uid
-                        .as_deref()
-                        .is_none_or(|uid| stations.iter().any(|station| station == uid.trim()))
+                        .station_key()
+                        .is_none_or(|uid| stations.iter().any(|station| station == uid))
                 })),
                 Err(error) => Failure::from(error).record(&mut batch, stations),
             }

@@ -29,9 +29,13 @@ pub const BIKE_CITIES: &[(&str, &str)] = &[
     ("YunlinCounty", "yunlin-county"),
 ];
 
+pub fn is_bike_city(city: &str) -> bool {
+    BIKE_CITIES.iter().any(|(scope, _)| *scope == city)
+}
+
 pub fn tdx_bike_station_parts(id: &crate::domain::ids::BikeStationId) -> Option<(&str, &str)> {
     let (city, uid) = id.as_str().strip_prefix("tdx:")?.split_once(':')?;
-    if !BIKE_CITIES.iter().any(|(scope, _)| *scope == city)
+    if !is_bike_city(city)
         || uid.is_empty()
         || uid.trim() != uid
         || uid.contains(':')
@@ -145,21 +149,15 @@ impl TdxClient {
         if api_base_url.host_str().is_none() || token_url.host_str().is_none() {
             return Err(TdxClientError::InvalidConfiguration);
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
-            .timeout(Duration::from_millis(settings.request_timeout_ms))
-            .user_agent("via-data/1.0")
-            .build()
-            .map_err(TdxClientError::ApiRequest)?;
-        let download_client = Client::builder()
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
-            .timeout(Duration::from_secs(settings.download_timeout_seconds))
-            .user_agent("via-data/1.0")
-            .build()
-            .map_err(TdxClientError::ApiRequest)?;
         Ok(Self {
-            client,
-            download_client,
+            client: http_client(
+                &settings,
+                Duration::from_millis(settings.request_timeout_ms),
+            )?,
+            download_client: http_client(
+                &settings,
+                Duration::from_secs(settings.download_timeout_seconds),
+            )?,
             credentials,
             api_base_url,
             token_url,
@@ -335,6 +333,15 @@ impl TdxClient {
     }
 }
 
+fn http_client(settings: &TdxSettings, timeout: Duration) -> Result<Client, TdxClientError> {
+    Client::builder()
+        .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
+        .timeout(timeout)
+        .user_agent("via-data/1.0")
+        .build()
+        .map_err(TdxClientError::ApiRequest)
+}
+
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
@@ -437,18 +444,41 @@ mod tests {
 
     use super::{TdxClient, TdxCredentials};
 
+    fn token_response() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"access_token":"mock-token","expires_in":300}"#,
+            ))
+            .unwrap()
+    }
+
+    async fn spawn_client(app: Router) -> (TdxClient, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = TdxClient::new(
+            TdxCredentials::from_client_credentials("client", "secret"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/api/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
+        )
+        .unwrap();
+        (client, base_url)
+    }
+
     async fn mock_response(
         State(body): State<Arc<Vec<u8>>>,
         request: Request<Body>,
     ) -> Response<Body> {
         if request.uri().path() == "/token" {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"access_token":"mock-token","expires_in":300}"#,
-                ))
-                .unwrap();
+            return token_response();
         }
         Response::builder()
             .status(StatusCode::OK)
@@ -461,13 +491,7 @@ mod tests {
         request: Request<Body>,
     ) -> Response<Body> {
         if request.uri().path() == "/token" {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"access_token":"mock-token","expires_in":300}"#,
-                ))
-                .unwrap();
+            return token_response();
         }
         if requests.fetch_add(1, Ordering::SeqCst) == 0 {
             return Response::builder()
@@ -515,21 +539,7 @@ mod tests {
         let app = Router::new()
             .fallback(any(rate_limited_once))
             .with_state((Arc::new(expected.clone()), requests.clone()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, _) = spawn_client(app).await;
 
         let response = client.get_bytes("availability", &[]).await.unwrap();
 
@@ -543,21 +553,7 @@ mod tests {
         let app = Router::new()
             .fallback(any(rate_limited_once))
             .with_state((Arc::new(b"[]".to_vec()), requests.clone()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, _) = spawn_client(app).await;
 
         let realtime = client.get_json::<serde_json::Value>("live", &[]).await;
 
@@ -574,21 +570,7 @@ mod tests {
         let expected_size = crate::config::ViaConfig::default().tdx.max_response_bytes + 1;
         let body = Arc::new(vec![0x5a; expected_size]);
         let app = Router::new().fallback(any(mock_response)).with_state(body);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, base_url) = spawn_client(app).await;
         let path = std::env::temp_dir().join(format!(
             "via-tdx-large-download-{}.bin",
             uuid::Uuid::new_v4().simple()

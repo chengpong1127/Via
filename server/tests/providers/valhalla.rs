@@ -6,6 +6,7 @@ use std::{
 use crate::support::{
     ProviderContractFixture, assert_cancellation_follow_up_succeeds, assert_malformed_response,
     assert_provider_contract, assert_rate_limited, assert_timeout, assert_unreachable,
+    street::coordinate,
 };
 use axum::{
     Json, Router,
@@ -20,8 +21,8 @@ use time::macros::datetime;
 use via_server::{
     providers::{OperationalEvent, OperationalEventObserver, ValhallaConfig, ValhallaProvider},
     street::{
-        Coordinate, DependencyHealth, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery,
-        RouteQuery, RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
+        DependencyHealth, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
+        RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
         StreetTravelMode,
     },
 };
@@ -84,10 +85,6 @@ async fn spawn_fixture() -> (url::Url, FixtureState) {
         url::Url::parse(&format!("http://{address}/")).unwrap(),
         state,
     )
-}
-
-fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
-    Coordinate::try_new(latitude, longitude).unwrap()
 }
 
 fn config(base_url: url::Url) -> ValhallaConfig {

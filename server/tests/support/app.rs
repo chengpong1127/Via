@@ -13,22 +13,15 @@ use via_server::{
     providers::{UnavailableBikeAvailabilitySource, tdx_bindings::TdxProviderBindings},
     routing::JourneyPlanningLimits,
     street::{DependencyHealth, StreetRouter, StreetRoutingError},
-    tdx::{TdxClient, TdxCredentials},
 };
 
-fn failing_tdx_client() -> Arc<TdxClient> {
-    Arc::new(
-        TdxClient::new(
-            TdxCredentials::from_client_credentials("fixture-client", "fixture-secret"),
-            via_server::tdx::TdxSettings {
-                api_base_url: "http://127.0.0.1:1/".into(),
-                token_url: "http://127.0.0.1:1/".into(),
-                ..via_server::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap(),
-    )
-}
+#[path = "street.rs"]
+pub mod street;
+#[allow(dead_code)]
+#[path = "tdx.rs"]
+pub mod tdx;
+
+use tdx::failing_tdx_client;
 
 pub async fn build_test_router<P>(provider: Arc<P>) -> Result<Router, StreetRoutingError>
 where

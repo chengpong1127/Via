@@ -1,20 +1,13 @@
 use via_server::domain::transit::network::{TransitNetwork, TransitStop};
 use via_server::street::{
-    Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
+    Coordinate, FakeStreetRouter, Metres, Seconds, StreetPath, StreetTravelMode,
 };
 
-pub fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
-    Coordinate::try_new(latitude, longitude).unwrap()
-}
+pub use super::street::coordinate;
+use super::street::straight_path;
 
 pub fn path(from: Coordinate, to: Coordinate, duration: u32) -> StreetPath {
-    StreetPath {
-        duration: Seconds(duration),
-        distance: Metres(duration * 5),
-        geometry: vec![from, to],
-        maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
-        attribution: Vec::new(),
-    }
+    straight_path(from, to, Seconds(duration), Metres(duration * 5))
 }
 
 pub fn stop_coordinate(network: &TransitNetwork, id: &str) -> Coordinate {
