@@ -173,7 +173,7 @@ fn bike_availability_outcome(error: &BikeAvailabilityError) -> &'static str {
 }
 
 fn normalize_record(city: &str, record: BikeAvailabilityRecord) -> Option<BikeStationAvailability> {
-    let station_uid = record.station_uid?.trim().to_owned();
+    let station_uid = record.station_key()?.to_owned();
     if station_uid.is_empty() {
         return None;
     }

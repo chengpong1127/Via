@@ -120,7 +120,6 @@ fn candidate_targets(
         .into_iter()
         .filter(|&target| target != source && indices.binary_search(&target).is_ok())
         .collect::<Vec<_>>();
-    // Preserve artifact-position order for matrix batching.
     targets.sort_unstable();
     targets
 }

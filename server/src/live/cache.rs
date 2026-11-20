@@ -175,10 +175,7 @@ impl CachedLiveData {
             }
             let records = Arc::new(records_by_id.remove(id).unwrap_or_default());
             batch.records.extend(records.iter().cloned());
-            cache
-                .entries
-                .insert((scope.to_owned(), id.clone()), records)
-                .await;
+            cache.store(scope, id.clone(), records).await;
         }
         batch.unavailable = fetched.unavailable;
         batch.upstream_requests = fetched.upstream_requests;
@@ -209,12 +206,7 @@ impl LiveDataSource for CachedLiveData {
             &self.bike,
             city,
             station_uids,
-            |record| {
-                record
-                    .station_uid
-                    .as_deref()
-                    .map(|station_uid| station_uid.trim().to_owned())
-            },
+            |record| record.station_key().map(str::to_owned),
             |missing| async move { self.inner.bike_availability(city, &missing).await },
         )
         .await
@@ -316,6 +308,10 @@ where
     fn reusable_while(mut self, reusable: impl Fn(&T) -> bool + Send + Sync + 'static) -> Self {
         self.reusable = Some(Box::new(reusable));
         self
+    }
+
+    async fn store(&self, scope: &str, id: K, records: Arc<Vec<T>>) {
+        self.entries.insert((scope.to_owned(), id), records).await;
     }
 
     async fn take_cached(&self, scope: &str, ids: Vec<K>, records: &mut Vec<T>) -> Vec<K> {

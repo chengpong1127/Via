@@ -188,6 +188,10 @@ async fn fetch_stations(
     url: &str,
     city: &str,
 ) -> Result<(Vec<u8>, usize), FetchError> {
+    let invalid = |detail: String| FetchError::InvalidBikeResponse {
+        city: city.to_owned(),
+        detail,
+    };
     let mut skip = 0usize;
     let mut stations = Vec::<Box<RawValue>>::new();
     let mut page_digests = HashSet::new();
@@ -208,18 +212,11 @@ async fn fetch_stations(
                 ],
             )
             .await?;
-        let page = serde_json::from_slice::<Vec<Box<RawValue>>>(&body).map_err(|error| {
-            FetchError::InvalidBikeResponse {
-                city: city.to_owned(),
-                detail: error.to_string(),
-            }
-        })?;
+        let page = serde_json::from_slice::<Vec<Box<RawValue>>>(&body)
+            .map_err(|error| invalid(error.to_string()))?;
         let digest: [u8; 32] = Sha256::digest(&body).into();
         if !page.is_empty() && !page_digests.insert(digest) {
-            return Err(FetchError::InvalidBikeResponse {
-                city: city.to_owned(),
-                detail: "TDX repeated a non-empty station page".to_owned(),
-            });
+            return Err(invalid("TDX repeated a non-empty station page".to_owned()));
         }
         if page.is_empty() {
             break;
@@ -227,33 +224,21 @@ async fn fetch_stations(
         for station in &page {
             let identity =
                 serde_json::from_str::<StationIdentity>(station.get()).map_err(|error| {
-                    FetchError::InvalidBikeResponse {
-                        city: city.to_owned(),
-                        detail: format!("station identifier could not be read: {error}"),
-                    }
+                    invalid(format!("station identifier could not be read: {error}"))
                 })?;
             let station_id = identity
                 .station_uid
                 .map(|station_id| station_id.trim().to_owned())
                 .filter(|station_id| !station_id.is_empty())
-                .ok_or_else(|| FetchError::InvalidBikeResponse {
-                    city: city.to_owned(),
-                    detail: "station record is missing StationUID".to_owned(),
-                })?;
+                .ok_or_else(|| invalid("station record is missing StationUID".to_owned()))?;
             if !station_ids.insert(station_id.clone()) {
-                return Err(FetchError::InvalidBikeResponse {
-                    city: city.to_owned(),
-                    detail: format!("duplicate StationUID {station_id}"),
-                });
+                return Err(invalid(format!("duplicate StationUID {station_id}")));
             }
         }
         skip = skip.saturating_add(page.len());
         stations.extend(page);
     }
-    let body = serde_json::to_vec(&stations).map_err(|error| FetchError::InvalidBikeResponse {
-        city: city.to_owned(),
-        detail: error.to_string(),
-    })?;
+    let body = serde_json::to_vec(&stations).map_err(|error| invalid(error.to_string()))?;
     Ok((body, skip))
 }
 
@@ -283,17 +268,18 @@ pub fn source_file_name(source_name: &str) -> Option<String> {
     if source_name == GTFS_SOURCE_NAME {
         return Some(GTFS_FILE_NAME.to_owned());
     }
-    BIKE_CITIES
-        .iter()
-        .find(|(_, slug)| source_name == bike_station_source_name(slug))
+    bike_city_source(source_name)
         .map(|(_, slug)| format!("{}.json", bike_station_source_name(slug)))
 }
 
 pub fn bike_station_city(source_name: &str) -> Option<&'static str> {
+    bike_city_source(source_name).map(|(city, _)| *city)
+}
+
+fn bike_city_source(source_name: &str) -> Option<&'static (&'static str, &'static str)> {
     BIKE_CITIES
         .iter()
         .find(|(_, slug)| source_name == bike_station_source_name(slug))
-        .map(|(city, _)| *city)
 }
 
 pub(crate) struct SnapshotInputs {

@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::{
     domain::{
-        realtime::{
-            ArrivalEstimate, ArrivalState, FreshnessState, LiveStatusTimes, NormalizedRealtimeValue,
-        },
+        realtime::{ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
         transit::timing::{
             DepartureError, DepartureQuery, EffectiveTrip, TimingBasis, TimingReliability,
@@ -17,7 +15,9 @@ use crate::{
 };
 
 use super::{
-    context::TdxTimingContext, live_error::departure_error, realtime_check::RealtimeCheck,
+    context::TdxTimingContext,
+    live_error::departure_error,
+    realtime_check::{RealtimeCheck, parse_timestamp},
     source::TransitDepartureSource,
 };
 
@@ -263,13 +263,7 @@ fn parse_tra_delays(
         let observed_at = parse_timestamp(&delay.update_time)?;
         realtime_check.reject_future(observed_at, received_at)?;
         let evidence_at = observed_at.min(board_evidence_at);
-        let freshness = realtime_check.freshness.evaluate(
-            LiveStatusTimes {
-                published_at: Some(evidence_at),
-                received_at,
-            },
-            received_at,
-        );
+        let freshness = realtime_check.freshness_of(evidence_at, received_at);
         if freshness != FreshnessState::Fresh {
             continue;
         }
@@ -289,8 +283,4 @@ fn parse_tra_delays(
         }
     }
     Ok(observation_by_train)
-}
-
-fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
-    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
 }
