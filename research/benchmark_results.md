@@ -9,6 +9,7 @@ Machine: Apple Silicon Mac, single-threaded, quiet. Artifact 2026-11-20 GTFS (10
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | baseline `4769cf7` | 418.4 | 989.4 | 1118.5 | 1689.3 | 462.0 | 1.43 GB | — |
 | EXP-001 dense indices | 95.3 | 214.8 | 271.6 | 383.6 | 102.6 | 1.26 GB | identical (100/100) |
+| EXP-001 after review cleanups `perf/dense-corridor-search` | 85.0 | 189.1 | 233.4 | 374.4 | 95.2 | — | identical (100/100) |
 
 Per-scenario speedup median 4.49×, max 5.67×. Two scenarios with no usable access stops go from ~0.001 ms to ~0.28 ms
 (fixed allocation of per-stop label arrays).

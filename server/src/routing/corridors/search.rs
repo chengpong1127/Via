@@ -143,9 +143,8 @@ impl RoundLabels {
         self.touched.is_empty()
     }
 
-    fn sorted_stops(&mut self) -> Vec<StopIndex> {
+    fn sort_stops(&mut self) {
         self.touched.sort_unstable();
-        self.touched.clone()
     }
 
     fn clear(&mut self) {
@@ -261,7 +260,8 @@ pub fn generate(
         for (pattern, first_board_index) in boardable_patterns {
             search.scan_pattern(pattern, first_board_index, &current, &mut next);
         }
-        for stop in next.sorted_stops() {
+        next.sort_stops();
+        for &stop in &next.touched {
             let Some(egress_seconds) = egress_by_stop.get(&stop) else {
                 continue;
             };
@@ -459,7 +459,8 @@ impl Search<'_> {
     fn relax_transfers(&mut self, labels: &mut RoundLabels) {
         let dense = self.dense;
         let mut walked = Vec::<(StopIndex, Label)>::new();
-        for stop in labels.sorted_stops() {
+        labels.sort_stops();
+        for &stop in &labels.touched {
             for label in labels.get(stop) {
                 if !label.after_ride && self.nodes[label.node as usize].parent.is_some() {
                     continue;

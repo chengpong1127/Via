@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::network::{SegmentTimeSource, TransitMode, TransitNetwork},
+    transit::network::{SegmentTravelTime, TransitMode, TransitNetwork},
 };
 
 pub type StopIndex = u32;
@@ -21,19 +21,12 @@ pub struct DenseTransfer {
     pub edge: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DenseSegment {
-    pub seconds: u32,
-    pub source: SegmentTimeSource,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DensePattern {
-    pub network_position: usize,
     pub mode: TransitMode,
     pub line: u64,
     pub stops: Vec<StopIndex>,
-    pub segments: Vec<DenseSegment>,
+    pub segments: Vec<SegmentTravelTime>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,19 +95,10 @@ impl DenseTopology {
             };
             pattern_ids.push(pattern.id.clone());
             patterns.push(DensePattern {
-                network_position,
                 mode,
                 line,
                 stops: pattern.stops.iter().map(|id| stop_by_id[id]).collect(),
-                segments: pattern
-                    .static_profile
-                    .segments
-                    .iter()
-                    .map(|segment| DenseSegment {
-                        seconds: segment.seconds,
-                        source: segment.source,
-                    })
-                    .collect(),
+                segments: pattern.static_profile.segments.clone(),
             });
         }
         let pattern_by_id = pattern_ids
@@ -134,27 +118,35 @@ impl DenseTopology {
         }
 
         let mut transfers_by_stop = vec![Vec::<DenseTransfer>::new(); stop_ids.len()];
-        let mut seen = vec![Vec::<usize>::new(); stop_ids.len()];
-        for (edge_index, edge) in network.transfer_edges.iter().enumerate() {
-            let from = stop_by_id[&edge.from] as usize;
-            if seen[from]
-                .iter()
-                .any(|known| network.transfer_edges[*known] == *edge)
-            {
-                continue;
-            }
-            seen[from].push(edge_index);
-            transfers_by_stop[from].push(DenseTransfer {
+        let mut edge_order = (0..network.transfer_edges.len()).collect::<Vec<_>>();
+        edge_order.sort_by_key(|index| {
+            let edge = &network.transfer_edges[*index];
+            (
+                stop_by_id[&edge.from],
+                stop_by_id[&edge.to],
+                edge.duration_seconds,
+                edge.distance_metres,
+                *index,
+            )
+        });
+        edge_order.dedup_by(|later, earlier| {
+            network.transfer_edges[*later] == network.transfer_edges[*earlier]
+        });
+        edge_order.sort_by_key(|index| {
+            let edge = &network.transfer_edges[*index];
+            (
+                stop_by_id[&edge.from],
+                stop_by_id[&edge.to],
+                edge.duration_seconds,
+                *index,
+            )
+        });
+        for edge_index in edge_order {
+            let edge = &network.transfer_edges[edge_index];
+            transfers_by_stop[stop_by_id[&edge.from] as usize].push(DenseTransfer {
                 to: stop_by_id[&edge.to],
                 duration_seconds: edge.duration_seconds,
                 edge: edge_index as u32,
-            });
-        }
-        for outgoing in &mut transfers_by_stop {
-            outgoing.sort_by(|left, right| {
-                left.to
-                    .cmp(&right.to)
-                    .then(left.duration_seconds.cmp(&right.duration_seconds))
             });
         }
 
@@ -199,5 +191,85 @@ impl DenseTopology {
 
     pub fn transfers_from(&self, stop: StopIndex) -> &[DenseTransfer] {
         &self.transfers_by_stop[stop as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::domain::transit::{
+        network::{TransferEdge, TransitNetwork},
+        runtime::TransitRuntime,
+    };
+
+    fn runtime() -> TransitRuntime {
+        let mut network = TransitNetwork::from_artifact_json(include_str!(
+            "../../../fixtures/routing/network.json"
+        ))
+        .unwrap();
+        let first = network.transfer_edges[0].clone();
+        let mut longer = first.clone();
+        longer.distance_metres += 40;
+        let mut reversed = first.clone();
+        std::mem::swap(&mut reversed.from, &mut reversed.to);
+        network
+            .transfer_edges
+            .extend([longer.clone(), first.clone(), reversed, longer]);
+        network.transfer_edges.push(TransferEdge {
+            duration_seconds: first.duration_seconds + 30,
+            ..first
+        });
+        TransitRuntime::new(Arc::new(network))
+    }
+
+    #[test]
+    fn dense_indices_follow_sorted_ids() {
+        let transit = runtime();
+        let dense = transit.dense();
+        let stops = (0..dense.stop_count() as u32)
+            .map(|index| dense.stop_id(index).as_str())
+            .collect::<Vec<_>>();
+        assert!(stops.windows(2).all(|pair| pair[0] < pair[1]));
+        let patterns = (0..transit.network().patterns.len() as u32)
+            .map(|index| dense.pattern_id(index).as_str())
+            .collect::<Vec<_>>();
+        assert!(patterns.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn dense_topology_matches_string_topology() {
+        let transit = runtime();
+        let dense = transit.dense();
+        for index in 0..dense.stop_count() as u32 {
+            let stop_id = dense.stop_id(index);
+            let positions = dense
+                .positions_at(index)
+                .iter()
+                .map(|position| {
+                    (
+                        dense.pattern_id(position.pattern).clone(),
+                        position.stop_index as usize,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expected_positions = transit
+                .pattern_positions_at(stop_id)
+                .iter()
+                .map(|position| (position.pattern_id.clone(), position.stop_index))
+                .collect::<Vec<_>>();
+            assert_eq!(positions, expected_positions);
+            let transfers = dense
+                .transfers_from(index)
+                .iter()
+                .map(|transfer| {
+                    let edge = &transit.network().transfer_edges[transfer.edge as usize];
+                    assert_eq!(dense.stop_id(transfer.to), &edge.to);
+                    assert_eq!(transfer.duration_seconds, edge.duration_seconds);
+                    edge.clone()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(transfers, transit.transfers_from(stop_id));
+        }
     }
 }
