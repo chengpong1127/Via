@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use axum::Router;
 use via_server::{
+    domain::transit::runtime::TransitRuntime,
     live::{CachedLiveData, DirectLiveData, LiveDataSource},
-    tdx::{TdxClient, TdxCredentials},
+    providers::{TdxBikeAvailabilitySource, TdxTimingContext, tdx_bindings::TdxProviderBindings},
+    tdx::{BikeAvailabilitySettings, TdxClient, TdxCredentials, TdxSettings},
 };
 
 #[allow(dead_code)]
@@ -13,6 +15,42 @@ pub fn bus_feed(tdx: Arc<TdxClient>, path: &str) -> Arc<dyn LiveDataSource> {
         Arc::new(DirectLiveData::new(tdx).with_bus_arrival_path(path)),
         &cache,
     ))
+}
+
+#[allow(dead_code)]
+pub fn timing_context(
+    transit: Arc<TransitRuntime>,
+    tdx: Arc<TdxClient>,
+    bindings: Arc<TdxProviderBindings>,
+) -> TdxTimingContext {
+    let settings = tdx.settings().clone();
+    TdxTimingContext::new(
+        transit,
+        Arc::new(CachedLiveData::new(
+            Arc::new(DirectLiveData::new(tdx)),
+            &settings,
+        )),
+        &settings.realtime,
+        bindings,
+    )
+}
+
+#[allow(dead_code)]
+pub fn bike_availability_source(
+    tdx: Arc<TdxClient>,
+    bikeshare: BikeAvailabilitySettings,
+) -> TdxBikeAvailabilitySource {
+    let cache = TdxSettings {
+        bikeshare: bikeshare.clone(),
+        ..tdx.settings().clone()
+    };
+    TdxBikeAvailabilitySource::new(
+        Arc::new(CachedLiveData::new(
+            Arc::new(DirectLiveData::new(tdx)),
+            &cache,
+        )),
+        bikeshare,
+    )
 }
 
 pub async fn spawn_tdx_fixture(app: Router) -> Arc<TdxClient> {

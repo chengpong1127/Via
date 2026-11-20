@@ -140,9 +140,10 @@ enum InspectCommand {
 async fn main() -> Result<(), Box<dyn Error>> {
     load_dotenv();
     let cli = Cli::parse();
-    let mut settings = ViaConfig::load(cli.config.as_deref())?;
-    settings.apply_environment()?;
-    settings.validate_environment(Environment::from_env_or_development()?)?;
+    let settings = ViaConfig::load_for(
+        cli.config.as_deref(),
+        Environment::from_env_or_development()?,
+    )?;
     match cli.command {
         Command::ValidateConfig => println!("configuration is valid"),
         Command::Fetch(args) => fetch(args, &settings).await?,
@@ -154,7 +155,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
-    let client = TdxClient::new(tdx_credentials(&settings.tdx)?, settings.tdx.clone())?;
+    let client = TdxClient::new(tdx_credentials()?, settings.tdx.clone())?;
     let api_base_url = url::Url::parse(&settings.tdx.api_base_url)?;
     let sources = FetchSources::production(api_base_url.as_str());
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;

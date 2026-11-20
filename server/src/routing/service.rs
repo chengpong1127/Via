@@ -32,7 +32,6 @@ pub struct RoutingService {
     reconstructor: JourneyReconstructor,
     ranking: RankingPolicy,
     limits: JourneyPlanningLimits,
-    request_timeout: Option<std::time::Duration>,
     request_slots: Arc<tokio::sync::Semaphore>,
 }
 
@@ -44,7 +43,6 @@ impl RoutingService {
         bike_share: Arc<BikeShareNetwork>,
         bike_availability_source: Arc<dyn BikeAvailabilitySource>,
         limits: JourneyPlanningLimits,
-        request_timeouts_enabled: bool,
     ) -> Self {
         let limits = limits.normalized();
         let planner = MultimodalPlanner::new(
@@ -71,7 +69,6 @@ impl RoutingService {
                 ..limits.ranking.clone()
             },
             request_slots: Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent_requests)),
-            request_timeout: request_timeouts_enabled.then_some(limits.request_timeout),
             limits,
         }
     }
@@ -81,6 +78,7 @@ impl RoutingService {
     #[tracing::instrument(target = "via_profile", name = "Routing Request", skip_all)]
     pub async fn plan(&self, request: PlanningInput) -> Result<PlanningOutcome, PlanningError> {
         let deadline = self
+            .limits
             .request_timeout
             .map_or_else(PlanningDeadline::disabled, PlanningDeadline::after);
         match deadline
@@ -103,7 +101,7 @@ impl RoutingService {
             Err(_) => {
                 tracing::warn!(
                     target: "via_server::routing",
-                    timeout_ms = self.limits.request_timeout.as_millis().min(u128::from(u64::MAX)) as u64,
+                    timeout_ms = self.limits.request_timeout.unwrap_or_default().as_millis().min(u128::from(u64::MAX)) as u64,
                     "journey planning timed out"
                 );
                 Err(PlanningError::TemporarilyUnavailable)

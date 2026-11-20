@@ -5,14 +5,14 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use super::realtime_check::RealtimeCheck;
 use crate::{
     domain::{
-        ids::{BoardingPointId, TransitPatternId},
+        ids::{
+            BoardingPointId, TransitPatternId, boarding_point_id, tdx_sub_route_uid,
+            transit_service_id, transit_service_id_for_direction,
+        },
         realtime::{ArrivalEstimate, ArrivalState, LiveStatusTimes, NormalizedRealtimeValue},
         transit::timing::DepartureError,
     },
     live::BusArrival,
-    tdx::{
-        boarding_point_id, tdx_sub_route_uid, transit_service_id, transit_service_id_for_direction,
-    },
 };
 
 pub(super) fn parse_bus_arrivals(

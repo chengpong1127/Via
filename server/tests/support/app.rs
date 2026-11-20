@@ -78,7 +78,6 @@ where
     let bike_availability_source: Arc<dyn BikeAvailabilitySource> =
         Arc::new(UnavailableBikeAvailabilitySource);
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
-        environment: via_server::config::Environment::Development,
         transit_network,
         provider_bindings: TdxProviderBindings::default(),
         bike_share_network: Arc::new(
@@ -93,7 +92,9 @@ where
     Ok(build_router(
         runtime,
         metrics,
-        via_server::config::Environment::Development,
-        &via_server::config::ViaConfig::default().server,
+        None,
+        via_server::config::ViaConfig::default()
+            .server
+            .max_body_bytes,
     ))
 }

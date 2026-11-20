@@ -742,7 +742,6 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
                 calls: availability_calls.clone(),
             }),
             limits,
-            false,
         );
         let request = serde_json::from_value::<via_server::api::PlanningRequest>(request(
             origin,
@@ -903,7 +902,6 @@ async fn ranking_corridor_fixture(iterations: usize) {
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(UnavailableBikeAvailabilitySource),
         limits,
-        false,
     );
     let mut stable_key = None;
     let mut latency_us = Vec::new();

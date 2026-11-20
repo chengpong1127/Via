@@ -15,7 +15,6 @@ use via_server::{
         bikeshare::BikeShareNetwork,
         ids::BoardingPointId,
         journey::PlanningError,
-        realtime::FreshnessPolicy,
         transit::network::{TransferEdge, TransitNetwork},
         transit::runtime::TransitRuntime,
         transit::timing::{DepartureQuery, TimingSnapshot, TimingSnapshotLoader},
@@ -24,7 +23,7 @@ use via_server::{
         UnavailableBikeAvailabilitySource,
         timing::{
             BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxProviderBindings,
-            ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
+            TdxTimingContext, ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
         },
     },
     routing::{JourneyPlanningLimits, RoutingService},
@@ -32,11 +31,11 @@ use via_server::{
         Coordinate, FakeStreetRouter, MatrixQuery, MatrixResult, RouteQuery, StreetPath,
         StreetRouter, StreetRoutingError,
     },
-    tdx::TdxClient,
+    tdx::{RealtimeSettings, TdxClient},
 };
 
 pub(crate) use crate::support::routing::{near_stop, transit_street};
-use crate::support::tdx::{failing_tdx_client, spawn_tdx_fixture};
+use crate::support::tdx::{failing_tdx_client, spawn_tdx_fixture, timing_context};
 
 const NETWORK_JSON: &str = include_str!("../../fixtures/routing/network.json");
 const BINDINGS_JSON: &str = include_str!("../../fixtures/routing/provider-bindings.json");
@@ -100,7 +99,6 @@ pub(crate) async fn route_body_with_sources(
         bike_network,
         availability,
         JourneyPlanningLimits::default(),
-        false,
     );
     serde_json::to_value(service.plan(request.into()).await.unwrap()).unwrap()
 }
@@ -253,20 +251,26 @@ pub(crate) async fn route_body_inner(
         None
     }
     .unwrap_or_else(failing_tdx_client);
-    let bus = Arc::new(
-        BusDepartureSource::with_live_data(
-            network.clone(),
-            crate::support::tdx::bus_feed(tdx.clone(), "feed"),
-            &tdx.settings().realtime,
-        )
-        .with_bindings(Arc::new(bindings))
-        .with_freshness_policy(FreshnessPolicy {
-            fresh_through: time::Duration::days(30),
-            degraded_through: time::Duration::days(31),
-        }),
-    );
-    let metro = Arc::new(MetroDepartureSource::new(network.clone(), tdx.clone()));
-    let tra = Arc::new(TraDepartureSource::new(network.clone(), tdx));
+    let bus = Arc::new(BusDepartureSource::new(TdxTimingContext::new(
+        network.clone(),
+        crate::support::tdx::bus_feed(tdx.clone(), "feed"),
+        &RealtimeSettings {
+            fresh_seconds: 30 * 86_400,
+            degraded_seconds: 31 * 86_400,
+            ..tdx.settings().realtime.clone()
+        },
+        Arc::new(bindings),
+    )));
+    let metro = Arc::new(MetroDepartureSource::new(timing_context(
+        network.clone(),
+        tdx.clone(),
+        Default::default(),
+    )));
+    let tra = Arc::new(TraDepartureSource::new(timing_context(
+        network.clone(),
+        tdx,
+        Default::default(),
+    )));
     let thsr = Arc::new(ThsrDepartureSource::new(network.clone()));
     let departure = Arc::new(DepartureResolver::new(
         network.clone(),
@@ -291,7 +295,6 @@ pub(crate) async fn route_body_inner(
         bike_network,
         availability_source,
         limits,
-        false,
     );
     Ok(serde_json::to_value(service.plan(request.into()).await?).unwrap())
 }

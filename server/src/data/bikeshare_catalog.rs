@@ -2,12 +2,10 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-use crate::{
-    domain::{
-        bikeshare::{BikeShareNetwork, BikeStation},
-        location::GeoCoordinate,
-    },
-    tdx::bike_station_id,
+use crate::domain::{
+    bikeshare::{BikeShareNetwork, BikeStation},
+    ids::bike_station_id,
+    location::GeoCoordinate,
 };
 
 use super::DataError;
