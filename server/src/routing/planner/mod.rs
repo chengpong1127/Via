@@ -139,14 +139,7 @@ impl MultimodalPlanner {
             return Err(RoutingError::DeadlineExceeded);
         }
         query.validate_access_egress()?;
-        let (transit_corridors, search) = if query.allowed_transit_modes.is_empty()
-            || query.origin_access.is_empty()
-            || query.destination_egress.is_empty()
-        {
-            (Vec::new(), CorridorSearchStats::default())
-        } else {
-            self.search_static_corridors(&query)?
-        };
+        let (transit_corridors, search) = self.search_static_corridors(&query)?;
         let mut corridors = vec![Corridor::direct_walking(query.origin, query.destination)];
         corridors.extend(transit_corridors);
         let (snapshots, mut failures) = query

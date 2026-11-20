@@ -129,6 +129,12 @@ pub fn generate(
     transit: &TransitRuntime,
     query: &PlanningQuery,
 ) -> Result<(Vec<Corridor>, CorridorSearchStats), RoutingError> {
+    if query.allowed_transit_modes.is_empty()
+        || query.origin_access.is_empty()
+        || query.destination_egress.is_empty()
+    {
+        return Ok((Vec::new(), CorridorSearchStats::default()));
+    }
     let started = Instant::now();
     let mut egress_by_stop = HashMap::<&BoardingPointId, u32>::new();
     for egress in &query.destination_egress {
