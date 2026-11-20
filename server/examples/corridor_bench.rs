@@ -219,7 +219,7 @@ fn main() {
             access.clone(),
             egress.clone(),
             departure,
-            limits.clone(),
+            limits,
         )
         .with_allowed_transit_modes(modes.clone());
         let mut samples = Vec::new();
