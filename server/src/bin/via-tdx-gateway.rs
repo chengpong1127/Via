@@ -10,10 +10,9 @@ use via_server::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_dotenv();
 
-    let mut settings = ViaConfig::load(None)?;
-    settings.apply_environment()?;
-    settings.tdx.gateway.url = None;
-    settings.validate_environment(Environment::required_from_env()?)?;
+    let settings = ViaConfig::load_for_with(None, Environment::required_from_env()?, |settings| {
+        settings.tdx.gateway.url = None;
+    })?;
 
     let _trace_guard = profiling::init(Some(
         tracing_subscriber::EnvFilter::try_from_default_env()
@@ -22,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let metrics = metrics::install_prometheus()?;
 
-    let live = direct_live_data(tdx_credentials(&settings.tdx)?, &settings.tdx)?;
+    let live = direct_live_data(tdx_credentials()?, &settings.tdx)?;
     let router = gateway::router(live, metrics, settings.tdx.gateway.max_ids_per_request);
 
     let address = SocketAddr::from(([0, 0, 0, 0], settings.tdx.gateway.port));

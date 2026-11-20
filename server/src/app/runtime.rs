@@ -2,7 +2,7 @@ use std::{error::Error, sync::Arc};
 
 use super::{health::Health, nearby::NearbyService};
 use crate::{
-    config::{Environment, RuntimeConfig},
+    config::RuntimeConfig,
     data::ViaStatic,
     domain::{
         bikeshare::{BikeAvailabilitySource, BikeShareNetwork},
@@ -11,7 +11,7 @@ use crate::{
     live::{CachedLiveData, DirectLiveData, GatewayLiveData, LiveDataSource},
     providers::{
         BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxBikeAvailabilitySource,
-        ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
+        TdxTimingContext, ThsrDepartureSource, TraDepartureSource, TracingOperationalEventObserver,
         TransitDepartureSource, ValhallaProvider, tdx_bindings::TdxProviderBindings,
     },
     routing::{JourneyPlanningLimits, RoutingService},
@@ -26,7 +26,6 @@ pub struct ViaRuntime {
 }
 
 pub struct ViaRuntimeDependencies {
-    pub environment: Environment,
     pub transit_network: TransitNetwork,
     pub provider_bindings: TdxProviderBindings,
     pub bike_share_network: Arc<BikeShareNetwork>,
@@ -40,22 +39,16 @@ pub struct ViaRuntimeDependencies {
 impl ViaRuntime {
     pub fn from_dependencies(dependencies: ViaRuntimeDependencies) -> Self {
         let transit = Arc::new(TransitRuntime::new(Arc::new(dependencies.transit_network)));
-        let bindings = Arc::new(dependencies.provider_bindings);
-        let live = dependencies.live;
-        let realtime = &dependencies.realtime;
+        let context = TdxTimingContext::new(
+            transit.clone(),
+            dependencies.live,
+            &dependencies.realtime,
+            Arc::new(dependencies.provider_bindings),
+        );
         let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
-            Arc::new(
-                BusDepartureSource::with_live_data(transit.clone(), live.clone(), realtime)
-                    .with_bindings(bindings.clone()),
-            ),
-            Arc::new(
-                MetroDepartureSource::with_live_data(transit.clone(), live.clone(), realtime)
-                    .with_bindings(bindings.clone()),
-            ),
-            Arc::new(
-                TraDepartureSource::with_live_data(transit.clone(), live, realtime)
-                    .with_bindings(bindings),
-            ),
+            Arc::new(BusDepartureSource::new(context.clone())),
+            Arc::new(MetroDepartureSource::new(context.clone())),
+            Arc::new(TraDepartureSource::new(context)),
             Arc::new(ThsrDepartureSource::new(transit.clone())),
         ];
         let departure_resolver = Arc::new(DepartureResolver::new(transit.clone(), sources));
@@ -72,7 +65,6 @@ impl ViaRuntime {
             dependencies.bike_share_network,
             dependencies.bike_availability,
             dependencies.limits,
-            dependencies.environment.is_production(),
         );
         Self {
             routing,
@@ -96,13 +88,10 @@ pub async fn build_runtime(
     }
 
     let live = live_data_source(config.tdx, &config.settings.tdx)?;
-    let bike_availability: Arc<dyn BikeAvailabilitySource> =
-        Arc::new(TdxBikeAvailabilitySource::with_live_data(
-            live.clone(),
-            config.settings.tdx.bikeshare.clone(),
-        ));
+    let bike_availability: Arc<dyn BikeAvailabilitySource> = Arc::new(
+        TdxBikeAvailabilitySource::new(live.clone(), config.settings.tdx.bikeshare.clone()),
+    );
     Ok(ViaRuntime::from_dependencies(ViaRuntimeDependencies {
-        environment: config.environment,
         transit_network: via_static.transit,
         provider_bindings: via_static.provider_bindings,
         bike_share_network: Arc::new(via_static.bike_share),
@@ -110,7 +99,7 @@ pub async fn build_runtime(
         live,
         realtime: config.settings.tdx.realtime.clone(),
         bike_availability,
-        limits: config.settings.journey_limits(),
+        limits: config.settings.journey_limits(config.environment),
     }))
 }
 
@@ -143,6 +132,7 @@ mod tests {
     use crate::{
         api::PlanningRequest,
         app::build_router,
+        config::Environment,
         domain::journey::{PlanningError, PlanningOutcome},
         providers::UnavailableBikeAvailabilitySource,
         street::{
@@ -188,7 +178,6 @@ mod tests {
     fn runtime(environment: Environment) -> ViaRuntime {
         let street = Arc::new(SlowStreetRouter);
         ViaRuntime::from_dependencies(ViaRuntimeDependencies {
-            environment,
             transit_network: TransitNetwork::default().with_revisions("static", "schedule"),
             provider_bindings: TdxProviderBindings::default(),
             bike_share_network: Arc::new(BikeShareNetwork::new(Vec::new()).with_revision("test")),
@@ -206,7 +195,7 @@ mod tests {
             ))),
             realtime: crate::config::ViaConfig::default().tdx.realtime,
             bike_availability: Arc::new(UnavailableBikeAvailabilitySource),
-            limits: JourneyPlanningLimits::default(),
+            limits: crate::config::ViaConfig::default().journey_limits(environment),
         })
     }
 
@@ -242,11 +231,12 @@ mod tests {
     async fn slow_http_response(environment: Environment) -> StatusCode {
         let runtime = runtime(environment);
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let settings = crate::config::ViaConfig::default().server;
         let router = build_router(
             runtime,
             recorder.handle(),
-            environment,
-            &crate::config::ViaConfig::default().server,
+            settings.http_timeout(environment),
+            settings.max_body_bytes,
         );
         router
             .oneshot(

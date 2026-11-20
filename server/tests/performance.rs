@@ -34,18 +34,21 @@ fn network() -> via_server::domain::transit::network::TransitNetwork {
 async fn deterministic_routing_benchmark() {
     let runtime = Arc::new(TransitRuntime::new(Arc::new(network())));
     let sources: Vec<Arc<dyn TransitDepartureSource>> = vec![
-        Arc::new(BusDepartureSource::new(
+        Arc::new(BusDepartureSource::new(tdx::timing_context(
             runtime.clone(),
             tdx::failing_tdx_client(),
-        )),
-        Arc::new(MetroDepartureSource::new(
+            Default::default(),
+        ))),
+        Arc::new(MetroDepartureSource::new(tdx::timing_context(
             runtime.clone(),
             tdx::failing_tdx_client(),
-        )),
-        Arc::new(TraDepartureSource::new(
+            Default::default(),
+        ))),
+        Arc::new(TraDepartureSource::new(tdx::timing_context(
             runtime.clone(),
             tdx::failing_tdx_client(),
-        )),
+            Default::default(),
+        ))),
         Arc::new(ThsrDepartureSource::new(runtime.clone())),
     ];
     let planner = MultimodalPlanner::new(

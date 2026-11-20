@@ -7,7 +7,7 @@ mod openapi;
 pub mod profiling;
 pub mod runtime;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::Router;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -17,7 +17,7 @@ use tower_http::{
 };
 use utoipa::openapi::OpenApi;
 
-use crate::{config::Environment, routing::RoutingService};
+use crate::routing::RoutingService;
 use health::Health;
 use nearby::NearbyService;
 use runtime::ViaRuntime;
@@ -34,8 +34,8 @@ struct AppState {
 pub fn build_router(
     runtime: ViaRuntime,
     metrics: PrometheusHandle,
-    environment: Environment,
-    settings: &crate::config::ServerSettings,
+    http_timeout: Option<Duration>,
+    max_body_bytes: usize,
 ) -> Router {
     let (router, openapi) = openapi::documented_router().split_for_parts();
     let openapi = Arc::new(openapi::configure_openapi(openapi));
@@ -51,41 +51,30 @@ pub fn build_router(
             metrics,
             openapi,
         })
-        .layer(axum::extract::DefaultBodyLimit::max(
-            settings.max_body_bytes,
-        ));
-    with_http_timeout(
-        router,
-        environment,
-        std::time::Duration::from_millis(settings.http_timeout_ms),
-    )
-    .layer(PropagateRequestIdLayer::x_request_id())
-    .layer(
-        TraceLayer::new_for_http()
-            .make_span_with(middleware::make_request_span)
-            .on_response(middleware::on_http_response)
-            .on_failure(()),
-    )
-    .layer(SetRequestIdLayer::x_request_id(
-        middleware::ViaMakeRequestId,
-    ))
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes));
+    with_http_timeout(router, http_timeout)
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(middleware::make_request_span)
+                .on_response(middleware::on_http_response)
+                .on_failure(()),
+        )
+        .layer(SetRequestIdLayer::x_request_id(
+            middleware::ViaMakeRequestId,
+        ))
 }
 
 pub fn openapi_document() -> OpenApi {
     openapi::openapi_document()
 }
 
-fn with_http_timeout(
-    router: Router,
-    environment: Environment,
-    timeout: std::time::Duration,
-) -> Router {
-    if environment.is_production() {
-        router.layer(axum::middleware::from_fn(move |request, next| {
+fn with_http_timeout(router: Router, timeout: Option<Duration>) -> Router {
+    match timeout {
+        Some(timeout) => router.layer(axum::middleware::from_fn(move |request, next| {
             middleware::http_timeout(request, next, timeout)
-        }))
-    } else {
-        router
+        })),
+        None => router,
     }
 }
 

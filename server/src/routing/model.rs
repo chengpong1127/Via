@@ -100,7 +100,7 @@ pub struct JourneyPlanningLimits {
     pub bike_availability: super::BikeAvailabilityLimits,
     pub ranking: crate::domain::ranking::RankingPolicy,
     pub planner: PlannerLimits,
-    pub request_timeout: std::time::Duration,
+    pub request_timeout: Option<std::time::Duration>,
     pub max_concurrent_requests: usize,
     pub max_concurrent_reconstruction_candidates: usize,
     pub max_transit_endpoint_stops: usize,

@@ -198,7 +198,10 @@ async fn fetch_stations(
             .get_bytes(
                 url,
                 &[
-                    ("$top", &client.settings.bike_catalog_page_size.to_string()),
+                    (
+                        "$top",
+                        &client.settings().bike_catalog_page_size.to_string(),
+                    ),
                     ("$skip", skip_value.as_str()),
                     ("$orderby", BIKE_STATION_ORDER),
                     ("$format", "JSON"),

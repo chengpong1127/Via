@@ -9,7 +9,7 @@ use time::{Date, OffsetDateTime};
 use crate::domain::{
     ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
     realtime::NormalizedRealtimeValue,
-    transit::runtime::TransitRuntime,
+    transit::{network::TransitMode, runtime::TransitRuntime},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -88,6 +88,22 @@ impl DepartureQuery {
                 .position(|stop| stop == &self.board_stop_id)
                 .ok_or(DepartureError::InvalidQuery),
         }
+    }
+
+    pub fn validate_for(
+        &self,
+        transit: &TransitRuntime,
+        mode: TransitMode,
+    ) -> Result<(), DepartureError> {
+        let pattern = transit
+            .pattern(&self.pattern_id)
+            .ok_or(DepartureError::InvalidQuery)?;
+        if transit.required_route(&pattern.route_id).mode != mode
+            || !pattern.stops.contains(&self.board_stop_id)
+        {
+            return Err(DepartureError::InvalidQuery);
+        }
+        Ok(())
     }
 }
 

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use via_server::{
     app::{build_router, metrics, profiling, runtime::build_runtime, shutdown_signal},
-    config::{RuntimeConfig, ServerConfig, ViaConfig, load_dotenv},
+    config::{Environment, RuntimeConfig, ServerConfig, ViaConfig, load_dotenv},
     data::load_static_artifact,
 };
 
@@ -9,8 +9,8 @@ use via_server::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_dotenv();
 
-    let mut settings = ViaConfig::load(None)?;
-    settings.apply_environment()?;
+    let environment = Environment::required_from_env()?;
+    let settings = ViaConfig::load_for(None, environment)?;
     let config = ServerConfig::from_settings(&settings)?;
 
     let _trace_guard = profiling::init(Some(
@@ -22,10 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let via_static = load_static_artifact(&config.static_path)
         .map_err(|error| format!("VIA_STATIC is invalid: {error}"))?;
-    let server_settings = settings.server.clone();
-    let runtime_config = RuntimeConfig::from_settings(config.environment, settings)?;
+    let http_timeout = settings.server.http_timeout(environment);
+    let max_body_bytes = settings.server.max_body_bytes;
+    let runtime_config = RuntimeConfig::from_settings(environment, settings)?;
     let runtime = build_runtime(via_static, runtime_config).await?;
-    let router = build_router(runtime, metrics, config.environment, &server_settings);
+    let router = build_router(runtime, metrics, http_timeout, max_body_bytes);
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(port = config.port, "Via server listening");
