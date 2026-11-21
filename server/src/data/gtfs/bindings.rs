@@ -127,6 +127,7 @@ pub(super) fn build(
                                 .to_owned(),
                             realtime_scope,
                             tdx_route_uid: None,
+                            headway_seconds_by_period: Vec::new(),
                         },
                     );
                 }

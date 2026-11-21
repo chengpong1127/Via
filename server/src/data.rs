@@ -31,6 +31,7 @@ pub struct BuildDiagnostics {
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
     pub headways: bus_headways::HeadwayDiagnostics,
     pub bus_parent_routes: usize,
+    pub bus_estimate_headways: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +85,8 @@ pub async fn build_from_fetch_snapshot(
     let (pattern_headways, headways) =
         bus_headways::pattern_headways(&network, &fetch_inputs.bus_schedules, weekday, weekend);
     network.pattern_headways = pattern_headways;
+    let bus_estimate_headways =
+        bus_headways::attach_estimate_headways(&mut provider_bindings, &network);
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
         street,
@@ -110,6 +113,7 @@ pub async fn build_from_fetch_snapshot(
             bike_access,
             headways,
             bus_parent_routes,
+            bus_estimate_headways,
         },
     )
 }

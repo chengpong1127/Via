@@ -306,6 +306,7 @@ fn bindings(network: &TransitNetwork, scopes: &[(&str, &str)]) -> Arc<TdxProvide
                     tdx_service_id: pattern.id.as_str().into(),
                     realtime_scope: scope.into(),
                     tdx_route_uid: None,
+                    headway_seconds_by_period: Vec::new(),
                 },
             )
         })
@@ -546,6 +547,84 @@ async fn realtime_effective_trip_uses_estimated_segments_without_static_shape() 
         trip.stop_times[1].arrival_at - trip.stop_times[0].departure_at,
         Duration::seconds(120)
     );
+}
+
+#[tokio::test]
+async fn headway_estimates_follow_a_predicted_bus_that_leaves_too_early() {
+    let pattern_id = TransitPatternId::new("service-a");
+    let update = recent_update();
+    let (tdx, _) = fixture_client(
+        json!([arrival("service-a", "stop-x", 60, &update)]),
+        StatusCode::OK,
+    )
+    .await;
+    let mut network = network_for(std::slice::from_ref(&pattern_id));
+    network.trips.clear();
+    let network = runtime(network);
+    let mut bindings = (*bindings(network.network(), &[])).clone();
+    for binding in bindings.bus_patterns.values_mut() {
+        binding.headway_seconds_by_period = vec![Some(600); 6];
+    }
+    let bus = Arc::new(
+        BusDepartureSource::with_live_data(
+            network.clone(),
+            crate::support::tdx::bus_feed(tdx.clone(), "feed"),
+            &tdx.settings().realtime,
+        )
+        .with_bindings(Arc::new(bindings)),
+    );
+    let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
+    let published = OffsetDateTime::parse(&update, &Rfc3339).unwrap();
+    let predicted = published + Duration::seconds(60);
+
+    let trips = resolver
+        .next_departures(query(
+            "service-a",
+            "stop-x",
+            predicted + Duration::seconds(300),
+        ))
+        .await
+        .unwrap();
+
+    let departures = trips
+        .iter()
+        .map(|trip| trip.stop_times[0].departure_at - predicted)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        departures,
+        [600, 1200, 1800].map(Duration::seconds).to_vec()
+    );
+    assert!(trips.iter().all(|trip| {
+        trip.timing_basis == TimingBasis::FrequencyEstimate
+            && trip.timing_reliability == TimingReliability::Fallback
+            && trip.evidence.is_empty()
+            && trip.scheduled_trip_id.is_none()
+    }));
+}
+
+#[tokio::test]
+async fn buses_without_headways_get_no_estimates() {
+    let pattern_id = TransitPatternId::new("service-a");
+    let update = recent_update();
+    let (tdx, _) = fixture_client(
+        json!([arrival("service-a", "stop-x", 60, &update)]),
+        StatusCode::OK,
+    )
+    .await;
+    let mut network = network_for(std::slice::from_ref(&pattern_id));
+    network.trips.clear();
+    let resolver = bus_resolver(runtime(network), tdx);
+    let published = OffsetDateTime::parse(&update, &Rfc3339).unwrap();
+
+    let trips = resolver
+        .next_departures(query(
+            "service-a",
+            "stop-x",
+            published + Duration::seconds(360),
+        ))
+        .await;
+
+    assert!(trips.unwrap_or_default().is_empty());
 }
 
 #[tokio::test]

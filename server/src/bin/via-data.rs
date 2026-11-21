@@ -521,6 +521,10 @@ fn print_build_diagnostics(diagnostics: &via_server::data::BuildDiagnostics) {
         "bus bindings with a TDX parent route: {}",
         diagnostics.bus_parent_routes
     );
+    println!(
+        "bus bindings with estimated departures from headways: {}",
+        diagnostics.bus_estimate_headways
+    );
     println!("GTFS stops loaded: {}", gtfs.stops_loaded);
     println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(

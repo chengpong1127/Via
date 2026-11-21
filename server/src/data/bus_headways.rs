@@ -335,11 +335,46 @@ pub fn attach_parent_routes(
     attached
 }
 
+pub fn attach_estimate_headways(
+    bindings: &mut TdxProviderBindings,
+    network: &TransitNetwork,
+) -> usize {
+    let scheduled = network
+        .trips
+        .iter()
+        .map(|trip| &trip.pattern_id)
+        .chain(
+            network
+                .frequencies
+                .iter()
+                .map(|frequency| &frequency.pattern_id),
+        )
+        .collect::<HashSet<_>>();
+    let headways_by_pattern = network
+        .pattern_headways
+        .iter()
+        .filter(|headways| !scheduled.contains(&headways.pattern_id))
+        .map(|headways| (&headways.pattern_id, &headways.seconds_by_period))
+        .collect::<HashMap<_, _>>();
+    let mut attached = 0;
+    for (pattern_id, binding) in &mut bindings.bus_patterns {
+        binding.headway_seconds_by_period = headways_by_pattern
+            .get(pattern_id)
+            .map(|seconds| (*seconds).clone())
+            .unwrap_or_default();
+        attached += usize::from(!binding.headway_seconds_by_period.is_empty());
+    }
+    attached
+}
+
 #[cfg(test)]
 mod tests {
     use time::macros::date;
 
-    use super::{BusSchedule, attach_parent_routes, clock_minutes, pattern_headways};
+    use super::{
+        BusSchedule, attach_estimate_headways, attach_parent_routes, clock_minutes,
+        pattern_headways,
+    };
     use crate::domain::{
         ids::{BoardingPointId, TransitPatternId, TransitRouteId},
         location::GeoCoordinate,
@@ -395,6 +430,60 @@ mod tests {
                 })
                 .to_vec(),
         )
+    }
+
+    #[test]
+    fn estimate_headways_attach_only_to_bus_patterns_without_trips() {
+        use crate::domain::ids::{ServiceCalendarId, TransitTripId};
+        use crate::domain::transit::network::{ScheduledStopTime, TransitTrip};
+        use crate::domain::transit::service::PatternHeadways;
+        use crate::providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings};
+
+        let mut network = network();
+        let ids = network
+            .patterns
+            .iter()
+            .map(|pattern| pattern.id.clone())
+            .collect::<Vec<_>>();
+        network.trips.push(TransitTrip::new(
+            TransitTripId::new("trip"),
+            ids[1].clone(),
+            ServiceCalendarId::new("daily"),
+            vec![
+                ScheduledStopTime::new(3600, 3600),
+                ScheduledStopTime::new(3660, 3660),
+            ],
+        ));
+        network.pattern_headways = ids
+            .iter()
+            .map(|id| PatternHeadways {
+                pattern_id: id.clone(),
+                seconds_by_period: vec![Some(600); 6],
+            })
+            .collect();
+        let mut bindings = TdxProviderBindings::default();
+        for id in &ids {
+            bindings.bus_patterns.insert(
+                id.clone(),
+                BusPatternBinding {
+                    tdx_service_id: id.as_str().to_owned(),
+                    realtime_scope: "Taipei".to_owned(),
+                    tdx_route_uid: None,
+                    headway_seconds_by_period: Vec::new(),
+                },
+            );
+        }
+
+        assert_eq!(attach_estimate_headways(&mut bindings, &network), 1);
+        assert_eq!(
+            bindings.bus_patterns[&ids[0]].headway_seconds_by_period,
+            vec![Some(600); 6]
+        );
+        assert!(
+            bindings.bus_patterns[&ids[1]]
+                .headway_seconds_by_period
+                .is_empty()
+        );
     }
 
     #[test]
@@ -529,6 +618,7 @@ mod tests {
             tdx_service_id: service.to_owned(),
             realtime_scope: "NewTaipei".to_owned(),
             tdx_route_uid: None,
+            headway_seconds_by_period: Vec::new(),
         };
         let mut bindings = TdxProviderBindings {
             bus_patterns: std::collections::HashMap::from([

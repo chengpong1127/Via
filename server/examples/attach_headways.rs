@@ -36,6 +36,9 @@ fn main() {
             bus_headways::attach_parent_routes(&mut artifact.provider_bindings, &schedules);
         eprintln!("bus bindings with a TDX parent route: {attached}");
     }
+    let estimates =
+        bus_headways::attach_estimate_headways(&mut artifact.provider_bindings, &artifact.transit);
+    eprintln!("bus bindings with estimated departures from headways: {estimates}");
     artifact.transit.validate().expect("valid network");
     std::fs::write(&args[3], serde_json::to_vec(&artifact).unwrap()).unwrap();
 }

@@ -127,6 +127,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|name| {
             let mut network = artifact.transit.clone();
             let mut bindings = artifact.provider_bindings.clone();
+            if !name.contains("est") {
+                for binding in bindings.bus_patterns.values_mut() {
+                    binding.headway_seconds_by_period.clear();
+                }
+            }
             if !name.contains("parents") {
                 for binding in bindings.bus_patterns.values_mut() {
                     binding.tdx_route_uid = None;
