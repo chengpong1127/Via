@@ -18,7 +18,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payload = client
         .get_json::<serde_json::Value>(
             &args[1],
-            &[("$filter", args[2].as_str()), ("$format", "JSON")],
+            &args[2..]
+                .chunks(2)
+                .map(|pair| (pair[0].as_str(), pair[1].as_str()))
+                .chain([("$format", "JSON")])
+                .collect::<Vec<_>>(),
         )
         .await?;
     println!("{}", serde_json::to_string(&payload)?);
