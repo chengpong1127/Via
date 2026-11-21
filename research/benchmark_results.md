@@ -14,3 +14,17 @@ Machine: Apple Silicon Mac, single-threaded, quiet. Artifact 2026-11-20 GTFS (10
 Per-scenario speedup median 4.49×, max 5.67×. Two scenarios with no usable access stops go from ~0.001 ms to ~0.28 ms
 (fixed allocation of per-stop label arrays).
 Baseline states expanded per query: median ≈146 k, max ≈657 k (2026-11-02 artifact).
+
+## EXP-004 static headway waits — `corridor_bench` with departure time (100 scenarios, 3 iterations)
+
+Artifact: 2026-11-20 GTFS plus TDX Bus/Schedule headways fetched 2026-11-21 (`examples/attach_headways.rs`).
+Command: `corridor_bench <artifact> out.jsonl 3 <RFC3339 departure>`. Cap = `MAX_EXPECTED_WAIT_SECONDS`.
+
+| Variant | Mon 08:30 p50 / p95 / p99 ms | Wed 12:00 p50 / p99 ms | Sat 10:30 p50 / p99 ms | no-service corridors (Mon / Wed / Sat) |
+| --- | --- | --- | --- | --- |
+| base (no headways) | 91 / 203 / 247 | 91 / 245 | — | 496 / 767 / 1,024 |
+| cap 0 (no-service only) | 74 / 179 / 261 | 77 / 273 | 76 / 292 | 9 / 13 / 25 |
+| cap 300 s | 67 / 182 / 261 | 70 / 268 | 68 / 285 | 21 / 53 / 78 |
+| cap 900 s | 63 / 219 / 302 | 69 / 300 | — | 41 / 114 / 184 |
+
+Live (20 scenarios, Saturday 10:25, cap 900 vs base): 3 earlier, 3 later, 14 same; see `experiments/EXP-004-headway-waits.md`.
