@@ -28,3 +28,8 @@ Command: `corridor_bench <artifact> out.jsonl 3 <RFC3339 departure>`. Cap = `MAX
 | cap 900 s | 63 / 219 / 302 | 69 / 300 | — | 41 / 114 / 184 |
 
 Live cap 900 vs base, two Saturday runs (40 paired plans): 5 earlier, 4 later, 31 same; no-service only (run 2): 1 / 1 / 18; see `experiments/EXP-004-headway-waits.md`.
+
+## EXP-005 bus parent routes — live, base vs base+parents (20 scenarios, Sat 2026-11-21 14:06)
+
+2 earlier (−13.5, −39 min), 0 later, 18 same; walking only 4 / 4; median planning
+latency 494 → 442 ms. See `experiments/EXP-005-bus-parent-routes.md`.

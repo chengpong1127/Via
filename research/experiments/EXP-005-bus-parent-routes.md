@@ -1,7 +1,7 @@
 # EXP-005: New Taipei bus realtime dropped by parent-route guessing
 
 Branch: `fix/bus-parent-route-realtime` (prototype on top of EXP-004 `89d6762`)
-Status: fix implemented; live comparison in progress
+Status: keep — 2 earlier / 0 later / 18 same live; PR off main pending owner approval
 Type: correctness / data bug found during EXP-004 live runs
 
 ## Symptom
@@ -54,10 +54,38 @@ estimates give only the next bus per stop, and if it leaves before the walk to
 the stop ends, there is no later departure: Taipei/New Taipei buses have no GTFS
 trips or frequencies to fall back on. That is the next limit (see backlog).
 
-## Live comparison
+## Live comparison (Saturday 2026-11-21 14:06–15:10 +08:00)
 
-In progress: same 20 scenarios, `live_compare ... base,base+parents`, no headways
-in either variant, order rotated, 60 s per TDX request.
+Same 20 scenarios, `live_compare <artifact> live-scenarios.json out.jsonl
+base,base+parents`, both variants without headways, order rotated, one shared
+realtime cache, 60 s per TDX request (1–5 requests per scenario).
+
+| parents vs base | count |
+| --- | --- |
+| arrives > 30 s earlier | 2 |
+| arrives > 30 s later | 0 |
+| same | 18 |
+| walking only (base / parents) | 4 / 4 |
+| median / max planning latency | 494 / 1,030 ms vs 442 / 1,013 ms |
+
+Wins:
+- songshan_airport_to_wanhua −13.5 min: base walks 37 min to Zhongxiao Fuxing for
+  BL; with parents, Bus 630 (大都會) then 673 from a stop 5 min away. Both are
+  Taipei routes whose estimates arrived without a usable sub-route under the guess.
+- random_003 −39 min: base walks 56 min to Xinpu for BL; with parents, New Taipei
+  Bus 920 from a stop 3 min away.
+
+The four walking-only scenarios (random_000, 001, 008, 009) stay walking only in
+both variants: the predicted next bus at each candidate stop leaves before the
+access walk ends (B18). Earlier runs had 7 walking only; the count varies with
+which buses happen to be near at query time.
+
+## Decision
+
+Keep. It is a correctness fix (realtime rows that TDX returned were discarded),
+no scenario got worse, and latency is unchanged. Ship as its own PR off `main`
+together with the Bus/Schedule fetch it depends on, without the EXP-004 headway
+waits. Waiting for owner approval to open it.
 
 ## Known limitations
 
