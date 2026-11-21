@@ -39,7 +39,8 @@ the canonical path. Static transfer shortcut lookups are directional; Bus realti
 is fetched by unique stop and scope and filtered locally.
 
 GTFS is the only static source of transit topology and trips. TDX Bus Schedule
-snapshots only supply static headways for Bus routes that have no GTFS trips. Do not
+snapshots only supply static headways for Bus routes that have no GTFS trips and the
+parent RouteUID of each Bus sub-route for realtime matching. Do not
 fabricate scheduled Bus trips from sparse stop times or headways. Derived segment costs are not timetable data. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add

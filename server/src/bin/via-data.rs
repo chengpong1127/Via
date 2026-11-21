@@ -517,6 +517,10 @@ fn print_build_diagnostics(diagnostics: &via_server::data::BuildDiagnostics) {
     for sub_route in &headways.unmapped_tdx_sub_routes {
         println!("unmapped TDX bus sub-route: {sub_route}");
     }
+    println!(
+        "bus bindings with a TDX parent route: {}",
+        diagnostics.bus_parent_routes
+    );
     println!("GTFS stops loaded: {}", gtfs.stops_loaded);
     println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(

@@ -77,7 +77,10 @@ snapshots, spacing TDX calls by a minute. The build derives `PatternHeadways` pe
 Bus and Metro route and direction for six service periods: from GTFS trips when the
 route has any, otherwise from TDX Bus Schedule timetables and frequencies matched
 directly on SubRouteUID and direction, with unmatched sub-routes reported. Rail
-and High Speed Rail carry no headways. Sparse Bus stop
+and High Speed Rail carry no headways. The same snapshots give each Bus binding
+its TDX parent RouteUID, because New Taipei arrival estimates name only the parent
+route; realtime parsing prefers it over guessing the parent from the SubRouteUID.
+Sparse Bus stop
 times never become fabricated scheduled trips; derived segment costs support
 static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
