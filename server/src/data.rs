@@ -16,6 +16,7 @@ use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod bikeshare_catalog;
+pub mod bus_headways;
 pub mod fetch;
 pub mod gtfs;
 pub mod static_transfers;
@@ -28,6 +29,7 @@ pub struct BuildDiagnostics {
     pub gtfs: GtfsBuildDiagnostics,
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
+    pub headways: bus_headways::HeadwayDiagnostics,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +77,10 @@ pub async fn build_from_fetch_snapshot(
 
     let (mut network, provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
     network.default_transfer_seconds = same_stop_transfer_seconds;
+    let (weekday, weekend) = headway_reference_days(&fetch_inputs.manifest.fetched_at)?;
+    let (pattern_headways, headways) =
+        bus_headways::pattern_headways(&network, &fetch_inputs.bus_schedules, weekday, weekend);
+    network.pattern_headways = pattern_headways;
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
         street,
@@ -99,6 +105,7 @@ pub async fn build_from_fetch_snapshot(
             gtfs,
             static_transfers: Some(static_transfers),
             bike_access,
+            headways,
         },
     )
 }
@@ -107,6 +114,24 @@ struct FetchInputs {
     manifest: fetch::FetchManifest,
     gtfs_path: PathBuf,
     bike_station_catalogs: Vec<(String, String)>,
+    bus_schedules: Vec<bus_headways::BusSchedule>,
+}
+
+fn headway_reference_days(fetched_at: &str) -> Result<(time::Date, time::Date), DataError> {
+    let fetched = time::OffsetDateTime::parse(fetched_at, &Rfc3339)
+        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?
+        .to_offset(crate::domain::taipei_offset())
+        .date();
+    let next = |weekday: time::Weekday| {
+        let days_ahead = (7 + weekday.number_days_from_monday()
+            - fetched.weekday().number_days_from_monday())
+            % 7;
+        fetched + time::Duration::days(i64::from(days_ahead))
+    };
+    Ok((
+        next(time::Weekday::Wednesday),
+        next(time::Weekday::Saturday),
+    ))
 }
 
 fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
@@ -123,6 +148,9 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
             && !crate::tdx::BIKE_CITIES
                 .iter()
                 .any(|(_, slug)| filename == format!("bike-stations-{slug}.json"))
+            && !bus_headways::BUS_SCHEDULE_CITIES
+                .iter()
+                .any(|(_, slug)| filename == format!("bus-schedule-{slug}.json"))
         {
             return Err(DataError::InvalidFetchSnapshot(format!(
                 "untracked source file {filename}"
@@ -183,6 +211,7 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
         ));
     }
     let mut bike_station_catalogs = Vec::new();
+    let mut bus_schedules = Vec::new();
     for (source_name, source) in &manifest.sources {
         if source.source_id.trim().is_empty()
             || source.sha256.len() != 64
@@ -210,6 +239,15 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
                     .map_err(|error| DataError::Io(source_path.clone(), error))?,
             ));
         }
+        if fetch::is_bus_schedule_source(source_name) {
+            let body = fs::read(&source_path)
+                .map_err(|error| DataError::Io(source_path.clone(), error))?;
+            bus_schedules.extend(
+                serde_json::from_slice::<Vec<bus_headways::BusSchedule>>(&body).map_err(
+                    |error| DataError::InvalidFetchSnapshot(format!("{source_name}: {error}")),
+                )?,
+            );
+        }
     }
 
     let gtfs_path = input.join("gtfs.zip");
@@ -217,6 +255,7 @@ fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
         manifest,
         gtfs_path,
         bike_station_catalogs,
+        bus_schedules,
     })
 }
 

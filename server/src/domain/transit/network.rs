@@ -7,6 +7,7 @@ use crate::domain::ids::{
     BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
 };
 use crate::domain::location::GeoCoordinate;
+use crate::domain::transit::service::{PatternHeadways, ServicePeriod};
 
 pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")
@@ -250,6 +251,9 @@ pub struct TransitNetwork {
     pub frequencies: Vec<TransitFrequency>,
 
     #[serde(default)]
+    pub pattern_headways: Vec<PatternHeadways>,
+
+    #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
     pub default_transfer_seconds: u32,
 
@@ -285,6 +289,7 @@ impl TransitNetwork {
             calendars: Vec::new(),
             trips,
             frequencies: Vec::new(),
+            pattern_headways: Vec::new(),
             transfer_edges: Vec::new(),
             default_transfer_seconds: 120,
             static_network_revision: String::new(),
@@ -310,6 +315,11 @@ impl TransitNetwork {
 
     pub fn with_frequencies(mut self, frequencies: Vec<TransitFrequency>) -> Self {
         self.frequencies = frequencies;
+        self
+    }
+
+    pub fn with_pattern_headways(mut self, pattern_headways: Vec<PatternHeadways>) -> Self {
+        self.pattern_headways = pattern_headways;
         self
     }
 
@@ -455,6 +465,18 @@ impl TransitNetwork {
                 ));
             }
         }
+        let mut headway_patterns = HashSet::new();
+        for headways in &self.pattern_headways {
+            if !pattern_by_id.contains_key(&headways.pattern_id)
+                || !headway_patterns.insert(&headways.pattern_id)
+                || headways.seconds_by_period.len() != ServicePeriod::ALL.len()
+                || headways.seconds_by_period.contains(&Some(0))
+            {
+                return Err(TransitNetworkValidationError::InvalidPatternHeadways(
+                    headways.pattern_id.clone(),
+                ));
+            }
+        }
         let mut frequency_ids = HashSet::new();
         for frequency in &self.frequencies {
             let Some(pattern) = pattern_by_id.get(&frequency.pattern_id).copied() else {
@@ -529,6 +551,8 @@ impl TransitNetwork {
                 .then(left.start_seconds.cmp(&right.start_seconds))
                 .then(left.id.as_str().cmp(right.id.as_str()))
         });
+        self.pattern_headways
+            .sort_by(|left, right| left.pattern_id.as_str().cmp(right.pattern_id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
                 .as_str()
@@ -731,6 +755,8 @@ pub enum TransitNetworkValidationError {
     UnknownPatternRoute(TransitPatternId),
     #[error("Transit Pattern {0:?} has an invalid static profile")]
     InvalidPatternProfile(TransitPatternId),
+    #[error("Transit Pattern {0:?} has invalid service headways")]
+    InvalidPatternHeadways(TransitPatternId),
     #[error("Transit Pattern {0:?} duplicates another route/direction/stop sequence")]
     DuplicatePatternTopology(TransitPatternId),
     #[error("duplicate Service Calendar {0:?}")]

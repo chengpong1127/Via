@@ -3,6 +3,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -12,11 +13,12 @@ use thiserror::Error;
 use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
-use crate::data::via_static::ViaStaticSource;
+use crate::data::{bus_headways::BUS_SCHEDULE_CITIES, via_static::ViaStaticSource};
 use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_STATION_ORDER: &str = "StationUID asc";
+const PRODUCTION_REQUEST_INTERVAL: Duration = Duration::from_secs(61);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,8 @@ pub enum FetchError {
     Tdx(#[from] TdxClientError),
     #[error("TDX Bike Station response for {city} was invalid: {detail}")]
     InvalidBikeResponse { city: String, detail: String },
+    #[error("TDX Bus Schedule response for {city} was invalid: {detail}")]
+    InvalidBusSchedule { city: String, detail: String },
     #[error("downloaded GTFS data is not a valid ZIP archive")]
     InvalidGtfsArchive,
     #[error("fetch snapshot timestamp {0} is invalid")]
@@ -53,6 +57,7 @@ pub enum FetchError {
 pub struct FetchSources {
     pub gtfs_static_url: String,
     pub bike_api_base_url: String,
+    pub request_interval: Duration,
 }
 
 impl FetchSources {
@@ -60,7 +65,29 @@ impl FetchSources {
         Self {
             gtfs_static_url: TDX_GTFS_STATIC_URL.to_owned(),
             bike_api_base_url: bike_api_base_url.into(),
+            request_interval: PRODUCTION_REQUEST_INTERVAL,
         }
+    }
+}
+
+struct RequestPacer {
+    interval: Duration,
+    last: Option<tokio::time::Instant>,
+}
+
+impl RequestPacer {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last: None,
+        }
+    }
+
+    async fn wait(&mut self) {
+        if let Some(last) = self.last {
+            tokio::time::sleep_until(last + self.interval).await;
+        }
+        self.last = Some(tokio::time::Instant::now());
     }
 }
 
@@ -118,6 +145,7 @@ async fn populate_snapshot(
     client: &TdxClient,
     sources: &FetchSources,
 ) -> Result<FetchSnapshot, FetchError> {
+    let mut pacer = RequestPacer::new(sources.request_interval);
     let gtfs_path = temporary.join("gtfs.zip");
     let gtfs_source = if let Some(source_path) = gtfs_file {
         fs::copy(source_path, &gtfs_path)
@@ -129,6 +157,7 @@ async fn populate_snapshot(
             byte_size: file_size(&gtfs_path)?,
         }
     } else {
+        pacer.wait().await;
         let byte_size = client
             .download_url_to_path(&sources.gtfs_static_url, &gtfs_path)
             .await?;
@@ -152,11 +181,29 @@ async fn populate_snapshot(
     let mut bike_station_counts = BTreeMap::new();
     for (city, slug) in BIKE_CITIES {
         let url = station_url(&sources.bike_api_base_url, city)?;
-        let (body, count) = fetch_stations(client, &url, city).await?;
+        let (body, count) = fetch_stations(client, &mut pacer, &url, city).await?;
         let source_name = format!("bike-stations-{slug}");
         let source = write_station_source(temporary, &source_name, &body, &url)?;
         manifest.sources.insert(source_name, source);
         bike_station_counts.insert((*city).to_owned(), count);
+    }
+    for (city, slug) in BUS_SCHEDULE_CITIES {
+        let url = bus_schedule_url(&sources.bike_api_base_url, city)?;
+        let source_name = format!("bus-schedule-{slug}");
+        let path = temporary.join(format!("{source_name}.json"));
+        pacer.wait().await;
+        client.download_url_to_path(&url, &path).await?;
+        let body = fs::read(&path).map_err(|error| FetchError::Io(path.clone(), error))?;
+        serde_json::from_slice::<Vec<crate::data::bus_headways::BusSchedule>>(&body).map_err(
+            |error| FetchError::InvalidBusSchedule {
+                city: (*city).to_owned(),
+                detail: error.to_string(),
+            },
+        )?;
+        manifest.sources.insert(
+            source_name,
+            source_metadata("tdx-bus-schedule-city", url, &path)?,
+        );
     }
     let manifest_path = temporary.join("manifest.json");
     let manifest_body =
@@ -175,6 +222,7 @@ async fn populate_snapshot(
 
 async fn fetch_stations(
     client: &TdxClient,
+    pacer: &mut RequestPacer,
     url: &str,
     city: &str,
 ) -> Result<(Vec<u8>, usize), FetchError> {
@@ -184,6 +232,7 @@ async fn fetch_stations(
     let mut station_ids = HashSet::new();
     loop {
         let skip_value = skip.to_string();
+        pacer.wait().await;
         let body = client
             .get_bytes(
                 url,
@@ -273,7 +322,18 @@ pub fn source_file_name(source_name: &str) -> Option<String> {
     BIKE_CITIES
         .iter()
         .find(|(_, slug)| source_name == format!("bike-stations-{slug}"))
-        .map(|(_, slug)| format!("bike-stations-{slug}.json"))
+        .or_else(|| {
+            BUS_SCHEDULE_CITIES
+                .iter()
+                .find(|(_, slug)| source_name == format!("bus-schedule-{slug}"))
+        })
+        .map(|_| format!("{source_name}.json"))
+}
+
+pub fn is_bus_schedule_source(source_name: &str) -> bool {
+    BUS_SCHEDULE_CITIES
+        .iter()
+        .any(|(_, slug)| source_name == format!("bus-schedule-{slug}"))
 }
 
 pub fn bike_station_city(source_name: &str) -> Option<&'static str> {
@@ -291,6 +351,17 @@ fn station_url(base_url: &str, city: &str) -> Result<String, FetchError> {
             city: city.to_owned(),
             detail: error.to_string(),
         })
+}
+
+fn bus_schedule_url(base_url: &str, city: &str) -> Result<String, FetchError> {
+    let mut url = url::Url::parse(base_url)
+        .and_then(|base| base.join(&format!("v2/Bus/Schedule/City/{city}")))
+        .map_err(|error| FetchError::InvalidBusSchedule {
+            city: city.to_owned(),
+            detail: error.to_string(),
+        })?;
+    url.query_pairs_mut().append_pair("$format", "JSON");
+    Ok(url.to_string())
 }
 
 fn source_metadata(
@@ -463,6 +534,15 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
         }
+        if path.starts_with("/basic/v2/Bus/Schedule/City/") {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"[{"SubRouteUID":"TPE1","Direction":0,"Frequencys":[],"Timetables":[]}]"#,
+                ))
+                .unwrap();
+        }
         if path.starts_with("/basic/v2/Bike/Station/City/") {
             let body = match (path.contains("NewTaipei"), skip) {
                 (false, _) if !path.starts_with("/basic/v2/Bike/Station/City/Taipei?") => "[]",
@@ -526,6 +606,7 @@ mod tests {
         let sources = FetchSources {
             gtfs_static_url: format!("{base_url}/gtfs"),
             bike_api_base_url: format!("{base_url}/basic/"),
+            request_interval: std::time::Duration::ZERO,
         };
         (client, sources, state)
     }
@@ -603,9 +684,20 @@ mod tests {
             .iter()
             .map(|(_, slug)| format!("bike-stations-{slug}.json"))
             .collect::<Vec<_>>();
+        expected_filenames.extend(
+            BUS_SCHEDULE_CITIES
+                .iter()
+                .map(|(_, slug)| format!("bus-schedule-{slug}.json")),
+        );
         expected_filenames.extend(["gtfs.zip".to_owned(), "manifest.json".to_owned()]);
         expected_filenames.sort();
         assert_eq!(filenames, expected_filenames);
+        assert_eq!(
+            snapshot.manifest.sources["bus-schedule-taipei"]
+                .source_url
+                .as_deref(),
+            Some(format!("{}v2/Bus/Schedule/City/Taipei", sources.bike_api_base_url).as_str())
+        );
         let requests = state.requests.lock().unwrap();
         for path in requests
             .iter()
@@ -641,6 +733,11 @@ mod tests {
         let mut expected_sources = BIKE_CITIES
             .iter()
             .map(|(_, slug)| format!("bike-stations-{slug}"))
+            .chain(
+                BUS_SCHEDULE_CITIES
+                    .iter()
+                    .map(|(_, slug)| format!("bus-schedule-{slug}")),
+            )
             .collect::<Vec<_>>();
         expected_sources.push("gtfs".to_owned());
         expected_sources.sort();

@@ -506,6 +506,17 @@ fn print_build_diagnostics(diagnostics: &via_server::data::BuildDiagnostics) {
             stats.build_wall_clock_milliseconds
         );
     }
+    let headways = &diagnostics.headways;
+    println!(
+        "service headways: from_gtfs={} from_tdx={} without={} unmapped_tdx_sub_routes={}",
+        headways.from_gtfs,
+        headways.from_tdx,
+        headways.without_headways,
+        headways.unmapped_tdx_sub_routes.len()
+    );
+    for sub_route in &headways.unmapped_tdx_sub_routes {
+        println!("unmapped TDX bus sub-route: {sub_route}");
+    }
     println!("GTFS stops loaded: {}", gtfs.stops_loaded);
     println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(

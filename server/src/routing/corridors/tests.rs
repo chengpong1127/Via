@@ -755,6 +755,49 @@ fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
 }
 
 #[test]
+fn expected_wait_prefers_a_running_line_over_a_faster_line_without_service() {
+    let base = network(
+        vec![
+            pattern("commuter", TransitMode::Bus, &["o", "d"]),
+            pattern("frequent", TransitMode::Bus, &["o", "d2"]),
+        ],
+        vec![
+            trip("commuter-trip", "commuter", &[0, 300]),
+            trip("frequent-trip", "frequent", &[0, 400]),
+        ],
+    );
+    let mut query = query("o", "d", &[TransitMode::Bus], 0, 1);
+    query
+        .destination_egress
+        .push(EndpointStop::new(id("d2"), 60, 75));
+    assert_eq!(
+        run(&base, &query)
+            .iter()
+            .map(pattern_sequence)
+            .collect::<Vec<_>>(),
+        vec![vec![TransitPatternId::new("commuter")]]
+    );
+
+    let with_headways = base.with_pattern_headways(vec![
+        crate::domain::transit::service::PatternHeadways {
+            pattern_id: TransitPatternId::new("commuter"),
+            seconds_by_period: vec![None, Some(1800), None, None, None, None],
+        },
+        crate::domain::transit::service::PatternHeadways {
+            pattern_id: TransitPatternId::new("frequent"),
+            seconds_by_period: vec![Some(600); 6],
+        },
+    ]);
+    assert_eq!(
+        run(&with_headways, &query)
+            .iter()
+            .map(pattern_sequence)
+            .collect::<Vec<_>>(),
+        vec![vec![TransitPatternId::new("frequent")]]
+    );
+}
+
+#[test]
 fn target_bound_drops_much_slower_corridors_when_the_cap_is_not_full() {
     let network = network(
         vec![

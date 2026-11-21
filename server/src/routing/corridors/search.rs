@@ -7,7 +7,7 @@ use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
     transit::network::{SegmentTimeSource, TransitMode, TransitPattern},
     transit::runtime::TransitRuntime,
-    transit::topology::{DenseTopology, PatternIndex, PlaceIndex, StopIndex},
+    transit::topology::{DensePattern, DenseTopology, PatternIndex, PlaceIndex, StopIndex},
 };
 
 use crate::routing::model::{PlanningQuery, RoutingError};
@@ -24,6 +24,8 @@ const LABELS_PER_STOP: usize = 4;
 const ROUTE_VARIANTS_PER_STRUCTURE: usize = 2;
 const TARGET_SLACK_PERCENT: u32 = 50;
 const TARGET_SLACK_SECONDS: u32 = 600;
+const MAX_EXPECTED_WAIT_SECONDS: u32 = 900;
+const NO_SERVICE_WAIT_SECONDS: u32 = 1800;
 const ORIGIN_TAG: u64 = 1 << 62;
 const TRANSFER_TAG: u64 = 1 << 61;
 
@@ -163,6 +165,7 @@ struct Search<'a> {
     target_seconds: u32,
     metro_transfer_penalty_seconds: u32,
     bus_transfer_penalty_seconds: u32,
+    service_period: usize,
     stats: CorridorSearchStats,
 }
 
@@ -199,6 +202,7 @@ pub fn generate(
         target_seconds: query.limits.max_journey_duration_seconds,
         metro_transfer_penalty_seconds: query.limits.metro_transfer_penalty_seconds,
         bus_transfer_penalty_seconds: query.limits.bus_transfer_penalty_seconds,
+        service_period: query.service_period().index(),
         stats: CorridorSearchStats::default(),
     };
     let mut current = RoundLabels::new(stop_count);
@@ -346,6 +350,7 @@ impl Search<'_> {
         let pattern = dense.pattern(pattern_index);
         let mode = pattern.mode;
         let line = pattern.line;
+        let wait_seconds = expected_wait_seconds(pattern, self.service_period);
         let mut boarded = Vec::<Boarded>::new();
         for stop_index in first_board_index as usize..pattern.stops.len() {
             let stop = pattern.stops[stop_index];
@@ -409,13 +414,14 @@ impl Search<'_> {
                 if label.last_line == Some(line) {
                     continue;
                 }
-                let transfer_penalty_seconds = match label.last_mode {
+                let boarding_penalty_seconds = match label.last_mode {
                     None => 0,
                     Some(TransitMode::Metro) if mode == TransitMode::Metro => {
                         self.metro_transfer_penalty_seconds
                     }
                     Some(_) => self.bus_transfer_penalty_seconds,
-                };
+                }
+                .saturating_add(wait_seconds);
                 let board_cost_seconds = label
                     .cost_seconds
                     .saturating_add(if label.after_ride {
@@ -423,14 +429,14 @@ impl Search<'_> {
                     } else {
                         0
                     })
-                    .saturating_add(transfer_penalty_seconds);
+                    .saturating_add(boarding_penalty_seconds);
                 boarded.push(Boarded {
                     label: *label,
                     board_index: stop_index as u32,
                     board_cost_seconds,
                     penalty_seconds: label
                         .penalty_seconds
-                        .saturating_add(transfer_penalty_seconds),
+                        .saturating_add(boarding_penalty_seconds),
                     ride_seconds: 0,
                     cost_source: CostSourceTracker::default(),
                 });
@@ -631,6 +637,15 @@ impl Search<'_> {
         }
         steps.reverse();
         steps
+    }
+}
+
+fn expected_wait_seconds(pattern: &DensePattern, service_period: usize) -> u32 {
+    match pattern.headways {
+        None => 0,
+        Some(headways) => headways[service_period].map_or(NO_SERVICE_WAIT_SECONDS, |headway| {
+            (headway / 2).min(MAX_EXPECTED_WAIT_SECONDS)
+        }),
     }
 }
 

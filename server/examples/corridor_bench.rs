@@ -19,6 +19,15 @@ use via_server::{
     street::Coordinate,
 };
 
+type RideGroup = (
+    BoardingPointId,
+    BoardingPointId,
+    Vec<String>,
+    u32,
+    TransitMode,
+    Vec<String>,
+);
+
 const WALK_SPEED_MPS: f64 = 1.25;
 const DETOUR_FACTOR: f64 = 1.3;
 const MAX_WALK_SECONDS: u32 = 1800;
@@ -206,7 +215,13 @@ fn main() {
         TransitMode::Rail,
         TransitMode::HighSpeedRail,
     ];
-    let departure = datetime!(2026-11-23 08:30 +08:00);
+    let departure = args
+        .get(4)
+        .map(|value| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .unwrap()
+        })
+        .unwrap_or(datetime!(2026-11-23 08:30 +08:00));
     let mut out = std::fs::File::create(&out_path).unwrap();
     let mut all_ms = Vec::new();
     for (name, from, to) in scenarios() {
@@ -254,13 +269,7 @@ fn main() {
         let described: Vec<_> = corridors
             .iter()
             .map(|c| {
-                let mut groups: Vec<(
-                    BoardingPointId,
-                    BoardingPointId,
-                    Vec<String>,
-                    u32,
-                    TransitMode,
-                )> = Vec::new();
+                let mut groups: Vec<RideGroup> = Vec::new();
                 for leg in c.transit_legs() {
                     let pattern = runtime.pattern(&leg.pattern_id).unwrap();
                     let route = runtime.required_route(&pattern.route_id);
@@ -275,6 +284,7 @@ fn main() {
                                 g.2.push(route.label.clone());
                             }
                             g.3 = g.3.min(secs);
+                            g.5.push(leg.pattern_id.as_str().to_owned());
                         }
                         _ => groups.push((
                             leg.board_stop_id.clone(),
@@ -282,6 +292,7 @@ fn main() {
                             vec![route.label.clone()],
                             secs,
                             route.mode,
+                            vec![leg.pattern_id.as_str().to_owned()],
                         )),
                     }
                 }
@@ -329,7 +340,8 @@ fn main() {
                             .unwrap_or(0);
                     }
                 }
-                serde_json::json!({"rides": rides, "anchors": anchors, "static_seconds": seconds, "transfers": groups.len().saturating_sub(1)})
+                let ride_patterns: Vec<_> = groups.iter().map(|g| g.5.clone()).collect();
+                serde_json::json!({"ride_patterns": ride_patterns, "rides": rides, "anchors": anchors, "static_seconds": seconds, "transfers": groups.len().saturating_sub(1)})
             })
             .collect();
         writeln!(

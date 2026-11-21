@@ -185,6 +185,10 @@ pub struct PlanningQuery {
 }
 
 impl PlanningQuery {
+    pub fn service_period(&self) -> crate::domain::transit::service::ServicePeriod {
+        crate::domain::transit::service::ServicePeriod::at(self.departure_time)
+    }
+
     pub fn new(
         origin: crate::street::Coordinate,
         destination: crate::street::Coordinate,

@@ -23,7 +23,8 @@ request snapshots.
 discovery and fixed-corridor evaluation. Each round adds one ride; keep the best
 corridor for each ride count, then the cheapest corridor for each set of transit
 modes, plus near-best corridors up to `max_static_corridors`,
-weighting transfers with the ranking transfer buffers, without an expansion cap.
+weighting transfers with the ranking transfer buffers and each boarding with the
+expected wait from static headways, without an expansion cap.
 Include the direct walking corridor outside that set and evaluate it first. Skip transit search when no transit mode is selected;
 `selected_modes` contains only optional non-walking modes. All corridors use one
 evaluation pass. Expand Transit, Walking, then BikeShare and collect feasible
@@ -37,8 +38,9 @@ and identity; reconstruction consumes it directly. Do not add a RouteGraph to
 the canonical path. Static transfer shortcut lookups are directional; Bus realtime
 is fetched by unique stop and scope and filtered locally.
 
-GTFS is the only static transit source. Do not fabricate scheduled Bus trips from
-sparse stop times. Derived segment costs are not timetable data. BikeShare station
+GTFS is the only static source of transit topology and trips. TDX Bus Schedule
+snapshots only supply static headways for Bus routes that have no GTFS trips. Do not
+fabricate scheduled Bus trips from sparse stop times or headways. Derived segment costs are not timetable data. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.

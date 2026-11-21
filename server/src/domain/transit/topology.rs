@@ -2,12 +2,17 @@ use std::collections::HashMap;
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::network::{SegmentTravelTime, TransitMode, TransitNetwork},
+    transit::{
+        network::{SegmentTravelTime, TransitMode, TransitNetwork},
+        service::ServicePeriod,
+    },
 };
 
 pub type StopIndex = u32;
 pub type PatternIndex = u32;
 pub type PlaceIndex = u32;
+
+pub const SERVICE_PERIOD_COUNT: usize = ServicePeriod::ALL.len();
 
 const PLACE_RADIUS_METRES: f64 = 100.0;
 
@@ -30,6 +35,7 @@ pub struct DensePattern {
     pub line: u64,
     pub stops: Vec<StopIndex>,
     pub segments: Vec<SegmentTravelTime>,
+    pub headways: Option<[Option<u32>; SERVICE_PERIOD_COUNT]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -84,6 +90,11 @@ impl DenseTopology {
                 .as_str()
                 .cmp(network.patterns[*right].id.as_str())
         });
+        let headways_by_pattern = network
+            .pattern_headways
+            .iter()
+            .map(|headways| (&headways.pattern_id, headways))
+            .collect::<HashMap<_, _>>();
         let mut pattern_ids = Vec::with_capacity(pattern_order.len());
         let mut patterns = Vec::with_capacity(pattern_order.len());
         for network_position in pattern_order {
@@ -103,6 +114,11 @@ impl DenseTopology {
                 line,
                 stops: pattern.stops.iter().map(|id| stop_by_id[id]).collect(),
                 segments: pattern.static_profile.segments.clone(),
+                headways: headways_by_pattern.get(&pattern.id).map(|headways| {
+                    std::array::from_fn(|period| {
+                        headways.seconds_by_period.get(period).copied().flatten()
+                    })
+                }),
             });
         }
         let pattern_by_id = pattern_ids

@@ -27,7 +27,9 @@ round adds one ride; it keeps the best corridor for each ride count, then
 the cheapest corridor for each set of transit modes, so optimistic derived Bus
 costs cannot crowd out Metro or Rail, plus near-best corridors up to the
 configured cap, with transfers weighted by the
-ranking buffers. Corridor evaluation uses request-local snapshots to evaluate
+ranking buffers. Each boarding also costs half the line's static headway for the
+query's `ServicePeriod` (capped at 15 minutes, or 30 minutes when the line has no
+service in that period); patterns without headways add no wait. Corridor evaluation uses request-local snapshots to evaluate
 fixed corridors plus the direct walking corridor, which starts first and may
 overlap transit evaluation within the configured concurrency limit. Walking is
 always enabled; selected modes are optional transit and BikeShare modes. With no
@@ -69,8 +71,13 @@ live cache; the single gateway owns both. The `live` module knows TDX records
 only: providers keep the GTFS-to-TDX bindings, schedule fallback and freshness
 policy, and the gateway never loads the static artifact.
 
-`via-data build` consumes local GTFS and optional TDX station snapshots; it does
-not download them. `via-data fetch` can create source snapshots. Sparse Bus stop
+`via-data build` consumes local GTFS and optional TDX station and Bus Schedule
+snapshots; it does not download them. `via-data fetch` can create source
+snapshots, spacing TDX calls by a minute. The build derives `PatternHeadways` per
+Bus and Metro route and direction for six service periods: from GTFS trips when the
+route has any, otherwise from TDX Bus Schedule timetables and frequencies matched
+directly on SubRouteUID and direction, with unmatched sub-routes reported. Rail
+and High Speed Rail carry no headways. Sparse Bus stop
 times never become fabricated scheduled trips; derived segment costs support
 static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
