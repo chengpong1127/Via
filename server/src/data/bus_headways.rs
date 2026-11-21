@@ -121,7 +121,13 @@ impl ServiceCounts {
                 continue;
             }
             let (window_start, window_end) = period.window_minutes();
-            let overlap = end.min(window_end).saturating_sub(start.max(window_start));
+            let overlap = [0, 1440]
+                .into_iter()
+                .map(|shift| {
+                    end.min(window_end + shift)
+                        .saturating_sub(start.max(window_start + shift))
+                })
+                .sum::<u32>();
             if overlap > 0 {
                 self.departures[period.index()] += f64::from(overlap) / headway;
             }
@@ -259,7 +265,8 @@ pub fn pattern_headways(
                 };
                 let headway =
                     f64::from(frequency.min_headway_minutes + frequency.max_headway_minutes) / 2.0;
-                if headway > 0.0 && end > start {
+                let end = if end <= start { end + 1440 } else { end };
+                if headway > 0.0 {
                     counts.add_frequency(is_weekend, start, end, headway);
                 }
             }
@@ -414,6 +421,26 @@ mod tests {
         assert!(headways.iter().all(|headways| {
             headways.seconds_by_period == vec![None, Some(900), None, None, None, Some(5400)]
         }));
+    }
+
+    #[test]
+    fn frequency_bands_crossing_midnight_count_toward_evening_and_night() {
+        let weekdays = r#"{"Monday":1,"Tuesday":1,"Wednesday":1,"Thursday":1,"Friday":1,"Saturday":0,"Sunday":0}"#;
+        let schedules: Vec<BusSchedule> = serde_json::from_str(&format!(
+            r#"[{{"SubRouteUID":"TPE1","Direction":0,
+                "Frequencys":[{{"StartTime":"22:00","EndTime":"01:00","MinHeadwayMins":30,"MaxHeadwayMins":30,"ServiceDay":{weekdays}}}]}}]"#
+        ))
+        .unwrap();
+        let (headways, _) = pattern_headways(
+            &network(),
+            &schedules,
+            date!(2026 - 11 - 25),
+            date!(2026 - 11 - 28),
+        );
+        assert_eq!(
+            headways[0].seconds_by_period,
+            vec![Some(10_800), None, None, None, Some(4_500), None]
+        );
     }
 
     #[test]
