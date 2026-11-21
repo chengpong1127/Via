@@ -31,6 +31,11 @@ fn main() {
         eprintln!("unmapped {id}");
     }
     artifact.transit.pattern_headways = headways;
+    if args.get(4).is_none_or(|flag| flag != "--no-parent-routes") {
+        let attached =
+            bus_headways::attach_parent_routes(&mut artifact.provider_bindings, &schedules);
+        eprintln!("bus bindings with a TDX parent route: {attached}");
+    }
     artifact.transit.validate().expect("valid network");
     std::fs::write(&args[3], serde_json::to_vec(&artifact).unwrap()).unwrap();
 }

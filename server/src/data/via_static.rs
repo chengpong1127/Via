@@ -289,6 +289,7 @@ mod tests {
                 BusPatternBinding {
                     tdx_service_id: "service".to_owned(),
                     realtime_scope: "Taipei".to_owned(),
+                    tdx_route_uid: None,
                 },
             )]),
             ..TdxProviderBindings::default()

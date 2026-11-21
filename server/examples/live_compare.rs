@@ -116,36 +116,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live: Arc<dyn LiveDataSource> =
         Arc::new(CachedLiveData::new(counter.clone(), &settings.tdx));
     let bike_share = Arc::new(artifact.bike_share);
-    let variants = ["base", "noservice", "headway"].map(|name| {
-        let mut network = artifact.transit.clone();
-        match name {
-            "base" => network.pattern_headways.clear(),
-            "noservice" => {
+    let names: Vec<String> = args
+        .get(4)
+        .map_or("base,noservice,headway", String::as_str)
+        .split(',')
+        .map(str::to_owned)
+        .collect();
+    let variants: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let mut network = artifact.transit.clone();
+            let mut bindings = artifact.provider_bindings.clone();
+            if !name.contains("parents") {
+                for binding in bindings.bus_patterns.values_mut() {
+                    binding.tdx_route_uid = None;
+                }
+            }
+            if name.contains("noservice") {
                 for headways in &mut network.pattern_headways {
                     for seconds in headways.seconds_by_period.iter_mut().flatten() {
                         *seconds = 1;
                     }
                 }
+            } else if !name.contains("headway") {
+                network.pattern_headways.clear();
             }
-            _ => {}
-        }
-        let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
-            environment,
-            transit_network: network,
-            provider_bindings: artifact.provider_bindings.clone(),
-            bike_share_network: bike_share.clone(),
-            street: valhalla.clone(),
-            street_health: valhalla.clone(),
-            live: live.clone(),
-            realtime: settings.tdx.realtime.clone(),
-            bike_availability: Arc::new(TdxBikeAvailabilitySource::with_live_data(
-                live.clone(),
-                settings.tdx.bikeshare.clone(),
-            )),
-            limits: settings.journey_limits(),
-        });
-        (name, runtime)
-    });
+            let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
+                environment,
+                transit_network: network,
+                provider_bindings: bindings,
+                bike_share_network: bike_share.clone(),
+                street: valhalla.clone(),
+                street_health: valhalla.clone(),
+                live: live.clone(),
+                realtime: settings.tdx.realtime.clone(),
+                bike_availability: Arc::new(TdxBikeAvailabilitySource::with_live_data(
+                    live.clone(),
+                    settings.tdx.bikeshare.clone(),
+                )),
+                limits: settings.journey_limits(),
+            });
+            (name.as_str(), runtime)
+        })
+        .collect();
     for (index, (name, from_lat, from_lon, to_lat, to_lon)) in scenarios.into_iter().enumerate() {
         let before = counter.requests.load(Ordering::SeqCst);
         let departure = time::OffsetDateTime::now_utc();

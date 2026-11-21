@@ -3,9 +3,16 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde::Deserialize;
 use time::{Date, Weekday};
 
-use crate::domain::transit::{
-    network::{ServiceCalendar, TransitMode, TransitNetwork},
-    service::{PatternHeadways, ServicePeriod},
+use crate::{
+    domain::{
+        ids::TransitPatternId,
+        transit::{
+            network::{ServiceCalendar, TransitMode, TransitNetwork},
+            service::{PatternHeadways, ServicePeriod},
+        },
+    },
+    providers::tdx_bindings::TdxProviderBindings,
+    tdx::tdx_sub_route_uid,
 };
 
 pub const BUS_SCHEDULE_CITIES: &[(&str, &str)] = &[
@@ -23,6 +30,8 @@ pub const BUS_SCHEDULE_CITIES: &[(&str, &str)] = &[
 pub struct BusSchedule {
     #[serde(rename = "SubRouteUID")]
     pub sub_route_uid: String,
+    #[serde(rename = "RouteUID", default)]
+    pub route_uid: Option<String>,
     #[serde(rename = "Direction")]
     pub direction: u8,
     #[serde(rename = "Timetables", default)]
@@ -301,11 +310,36 @@ fn clock_minutes(value: &str) -> Option<u32> {
     (minutes < 60).then_some(hours * 60 + minutes)
 }
 
+pub fn attach_parent_routes(
+    bindings: &mut TdxProviderBindings,
+    schedules: &[BusSchedule],
+) -> usize {
+    let route_by_sub_route = schedules
+        .iter()
+        .filter_map(|schedule| {
+            schedule
+                .route_uid
+                .as_deref()
+                .filter(|route_uid| !route_uid.is_empty() && *route_uid != schedule.sub_route_uid)
+                .map(|route_uid| (schedule.sub_route_uid.as_str(), route_uid))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut attached = 0;
+    for binding in bindings.bus_patterns.values_mut() {
+        let service = TransitPatternId::new(binding.tdx_service_id.as_str());
+        binding.tdx_route_uid = route_by_sub_route
+            .get(tdx_sub_route_uid(&service))
+            .map(|route_uid| (*route_uid).to_owned());
+        attached += usize::from(binding.tdx_route_uid.is_some());
+    }
+    attached
+}
+
 #[cfg(test)]
 mod tests {
     use time::macros::date;
 
-    use super::{BusSchedule, clock_minutes, pattern_headways};
+    use super::{BusSchedule, attach_parent_routes, clock_minutes, pattern_headways};
     use crate::domain::{
         ids::{BoardingPointId, TransitPatternId, TransitRouteId},
         location::GeoCoordinate,
@@ -486,5 +520,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["TPE9:0".to_owned()]
         );
+    }
+
+    #[test]
+    fn schedules_attach_tdx_parent_routes_to_bus_bindings() {
+        use crate::providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings};
+        let binding = |service: &str| BusPatternBinding {
+            tdx_service_id: service.to_owned(),
+            realtime_scope: "NewTaipei".to_owned(),
+            tdx_route_uid: None,
+        };
+        let mut bindings = TdxProviderBindings {
+            bus_patterns: std::collections::HashMap::from([
+                (
+                    TransitPatternId::new("a"),
+                    binding("NWT157552::direction=0"),
+                ),
+                (TransitPatternId::new("b"), binding("TAO1001::direction=0")),
+                (
+                    TransitPatternId::new("c"),
+                    binding("NWT999999::direction=1"),
+                ),
+            ]),
+            ..TdxProviderBindings::default()
+        };
+        let schedules: Vec<BusSchedule> = serde_json::from_value(serde_json::json!([
+            {"SubRouteUID": "NWT157552", "RouteUID": "NWT16517", "Direction": 0},
+            {"SubRouteUID": "TAO1001", "RouteUID": "TAO1001", "Direction": 0}
+        ]))
+        .unwrap();
+
+        assert_eq!(attach_parent_routes(&mut bindings, &schedules), 1);
+        let parent = |id: &str| {
+            bindings.bus_patterns[&TransitPatternId::new(id)]
+                .tdx_route_uid
+                .clone()
+        };
+        assert_eq!(parent("a").as_deref(), Some("NWT16517"));
+        assert_eq!(parent("b"), None);
+        assert_eq!(parent("c"), None);
     }
 }

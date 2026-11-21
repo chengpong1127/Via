@@ -30,6 +30,7 @@ pub struct BuildDiagnostics {
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
     pub headways: bus_headways::HeadwayDiagnostics,
+    pub bus_parent_routes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -75,7 +76,9 @@ pub async fn build_from_fetch_snapshot(
     )?;
     let sources = fetch_inputs.manifest.sources.clone();
 
-    let (mut network, provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
+    let (mut network, mut provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
+    let bus_parent_routes =
+        bus_headways::attach_parent_routes(&mut provider_bindings, &fetch_inputs.bus_schedules);
     network.default_transfer_seconds = same_stop_transfer_seconds;
     let (weekday, weekend) = headway_reference_days(&fetch_inputs.manifest.fetched_at)?;
     let (pattern_headways, headways) =
@@ -106,6 +109,7 @@ pub async fn build_from_fetch_snapshot(
             static_transfers: Some(static_transfers),
             bike_access,
             headways,
+            bus_parent_routes,
         },
     )
 }
