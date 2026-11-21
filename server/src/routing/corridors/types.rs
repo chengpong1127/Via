@@ -33,6 +33,16 @@ pub struct StaticTransitLeg {
     pub cost_source: StaticCostSource,
 }
 
+impl StaticTransitLeg {
+    pub(in crate::routing) fn order_key(&self) -> (&str, usize, usize) {
+        (
+            self.pattern_id.as_str(),
+            self.board_index,
+            self.alight_index,
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticCorridorStep {
     Transit(StaticTransitLeg),
@@ -91,9 +101,8 @@ pub(super) fn equivalent_leg_key(
     transit: &TransitRuntime,
     leg: &StaticTransitLeg,
 ) -> EquivalentLegKey {
-    let pattern = transit.required_pattern(&leg.pattern_id);
     EquivalentLegKey {
-        mode: transit.required_route(&pattern.route_id).mode,
+        mode: transit.pattern_mode(&leg.pattern_id),
         board_stop_id: leg.board_stop_id.clone(),
         alight_stop_id: leg.alight_stop_id.clone(),
     }

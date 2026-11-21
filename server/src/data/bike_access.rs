@@ -159,10 +159,7 @@ fn source_candidates(
         .stops
         .iter()
         .map(|boarding_point| {
-            let coordinate = Coordinate::try_new(
-                boarding_point.coordinate.latitude,
-                boarding_point.coordinate.longitude,
-            )?;
+            let coordinate = Coordinate::try_from(boarding_point.coordinate)?;
             let mut candidates = stations
                 .within_radius(
                     &bike_share.stations,
@@ -172,11 +169,10 @@ fn source_candidates(
                 .into_iter()
                 .map(|index| {
                     let station = &bike_share.stations[index];
-                    Coordinate::try_new(station.coordinate.latitude, station.coordinate.longitude)
-                        .map(|coordinate| Candidate {
-                            id: station.id.clone(),
-                            coordinate,
-                        })
+                    Coordinate::try_from(station.coordinate).map(|coordinate| Candidate {
+                        id: station.id.clone(),
+                        coordinate,
+                    })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             candidates.truncate(policy.max_geometric_candidates_per_boarding_point);
@@ -331,7 +327,7 @@ fn best_rank(
 #[cfg(test)]
 mod tests {
     use crate::{
-        api::GeoCoordinate,
+        domain::location::GeoCoordinate,
         domain::{
             bikeshare::{BikeShareNetwork, BikeStation, BikeWalkingAccess},
             ids::{BikeStationId, BoardingPointId},

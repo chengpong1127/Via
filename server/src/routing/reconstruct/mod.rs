@@ -10,7 +10,7 @@ use std::sync::Arc;
 use futures_util::{StreamExt, stream};
 
 use crate::{
-    domain::planning::PlanningInput,
+    domain::planning::PlanningEndpoint,
     domain::{
         bikeshare::BikeShareNetwork,
         ids::BikeStationId,
@@ -26,6 +26,8 @@ use super::{
     journey::RealizedJourney,
     model::{FailureSummary, JourneyPlanningContext},
 };
+
+use assembler::ReconstructionState;
 
 const BASELINE_MATCHING_KEY_VERSION: &str = "candidate:v2";
 const BIKE_MATCHING_KEY_VERSION: &str = "candidate:bike:v1";
@@ -131,7 +133,10 @@ impl JourneyReconstructor {
         journey: &RealizedJourney,
         context: &JourneyPlanningContext<'_>,
     ) -> Result<Option<JourneyCandidate>, PlanningError> {
-        let Some(assembled) = assembler::assemble(self, journey, context).await? else {
+        let Some(assembled) = ReconstructionState::new(self, journey, context)
+            .assemble()
+            .await?
+        else {
             return Ok(None);
         };
         let duration_seconds =
@@ -177,22 +182,6 @@ impl JourneyReconstructor {
         }))
     }
 
-    pub(super) fn origin_place(&self, request: &PlanningInput) -> Place {
-        Place {
-            display_name: request.origin.display_text.clone(),
-            coordinate: request.origin.coordinate,
-            via_id: None,
-        }
-    }
-
-    pub(super) fn destination_place(&self, request: &PlanningInput) -> Place {
-        Place {
-            display_name: request.destination.display_text.clone(),
-            coordinate: request.destination.coordinate,
-            via_id: None,
-        }
-    }
-
     pub(super) fn stop_place(
         &self,
         stop_id: &crate::domain::ids::BoardingPointId,
@@ -215,6 +204,14 @@ impl JourneyReconstructor {
                 via_id: Some(station.id.as_str().into()),
             })
             .ok_or(PlanningError::Internal)
+    }
+}
+
+pub(super) fn endpoint_place(endpoint: &PlanningEndpoint) -> Place {
+    Place {
+        display_name: endpoint.display_text.clone(),
+        coordinate: endpoint.coordinate,
+        via_id: None,
     }
 }
 

@@ -2,6 +2,7 @@ mod source;
 
 mod bus;
 mod bus_realtime;
+mod context;
 mod live_error;
 mod metro;
 mod metro_realtime;
@@ -14,6 +15,7 @@ pub use crate::providers::tdx_bindings::{
 };
 pub use bus::BusDepartureSource;
 pub use bus_realtime::normalize_n1;
+pub use context::TdxTimingContext;
 pub use metro::MetroDepartureSource;
 pub use source::{DepartureResolver, TransitDepartureSource};
 pub use thsr::ThsrDepartureSource;

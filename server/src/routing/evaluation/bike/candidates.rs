@@ -51,8 +51,20 @@ impl BikeShareMovementPlanner {
             time::Duration::seconds(i64::from(self.availability.max_age_seconds)),
             time::Duration::seconds(i64::from(self.availability.max_clock_skew_seconds)),
         );
-        let pickups = endpoint_station_choices(&self.network, &view, from, true, &self.settings);
-        let dropoffs = endpoint_station_choices(&self.network, &view, to, false, &self.settings);
+        let pickups = endpoint_station_choices(
+            &self.network,
+            &view,
+            from,
+            StationRole::Pickup,
+            &self.settings,
+        );
+        let dropoffs = endpoint_station_choices(
+            &self.network,
+            &view,
+            to,
+            StationRole::Dropoff,
+            &self.settings,
+        );
         if pickups.is_empty() || dropoffs.is_empty() {
             return None;
         }
@@ -82,16 +94,12 @@ pub(super) struct StationChoice {
 
 pub(super) fn station_choices<'a>(
     accesses: impl IntoIterator<Item = &'a BikeStationAccess>,
-    pickup: bool,
+    role: StationRole,
     settings: &BikeMovementPolicy,
 ) -> Vec<StationChoice> {
     let mut access_by_station = HashMap::<BikeStationId, BikeWalkingAccess>::new();
     for access in accesses {
-        let Some(walking) = (if pickup {
-            access.walk_to_station
-        } else {
-            access.walk_from_station
-        }) else {
+        let Some(walking) = role.walking(access) else {
             continue;
         };
         access_by_station
@@ -121,11 +129,7 @@ pub(super) fn station_choices<'a>(
             )
             .then(left.station_id.as_str().cmp(right.station_id.as_str()))
     });
-    choices.truncate(if pickup {
-        settings.max_pickup_stations_per_anchor
-    } else {
-        settings.max_dropoff_stations_per_anchor
-    });
+    choices.truncate(role.max_per_anchor(settings));
     choices
 }
 
@@ -138,33 +142,19 @@ fn endpoint_coordinate(endpoint: &CorridorAnchor) -> GeoCoordinate {
 
 fn endpoint_station_choices(
     network: &BikeShareNetwork,
-    view: &crate::domain::bikeshare::BikeAvailabilityView<'_>,
+    view: &BikeAvailabilityView<'_>,
     endpoint: &CorridorAnchor,
-    pickup: bool,
+    role: StationRole,
     settings: &BikeMovementPolicy,
 ) -> Vec<StationChoice> {
     if let Some(id) = endpoint.boarding_point() {
-        return station_choices(
-            if pickup {
-                view.usable_pickups(id)
-            } else {
-                view.usable_dropoffs(id)
-            },
-            pickup,
-            settings,
-        );
+        return station_choices(role.usable_accesses(view, id), role, settings);
     }
     let point = endpoint_coordinate(endpoint);
     let mut choices = network
         .stations_within_radius(point, f64::from(settings.endpoint_radius_metres))
         .into_iter()
-        .filter(|station| {
-            if pickup {
-                view.can_pick_up_at(&station.id)
-            } else {
-                view.can_return_at(&station.id)
-            }
-        })
+        .filter(|station| role.is_available(view, &station.id))
         .map(|station| {
             let distance = point.distance_metres(station.coordinate);
             StationChoice {

@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 use crate::domain::{
     ids::EffectiveTripId,
     journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError, StopVisit},
-    ranking::TransferEvidence,
+    ranking::{TransferEvidence, TransferKind},
     transit::network::TransitMode,
     transit::timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
 };
@@ -68,7 +68,7 @@ impl ReconstructionState<'_, '_> {
             .map(evidence::from_realtime_value)
             .collect::<Vec<_>>();
         self.assembly.live_evidence.extend(live_evidence);
-        let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
+        let leg_id = self.assembly.next_leg_id();
         self.assembly.legs.push(transit_leg(
             leg_id.clone(),
             pattern,
@@ -147,9 +147,8 @@ fn record_transfer(
 ) -> Result<(), PlanningError> {
     let available_seconds =
         seconds_between(pending.from_arrival, departure).ok_or(PlanningError::Internal)?;
-    let kind = evidence::transfer_kind(pending.from_mode, Some(to_mode));
     assembly.transfer_evidence.push(TransferEvidence {
-        kind,
+        kind: TransferKind::between(pending.from_mode, to_mode),
         physical_seconds: pending.duration_seconds,
         available_seconds,
     });

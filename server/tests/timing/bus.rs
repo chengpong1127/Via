@@ -28,7 +28,7 @@ use via_server::{
     },
     providers::timing::{
         BusDepartureSource, BusPatternBinding, DepartureResolver, TdxProviderBindings,
-        TransitDepartureSource,
+        TdxTimingContext, TransitDepartureSource,
     },
     tdx::TdxClient,
 };
@@ -325,14 +325,12 @@ fn query(pattern_id: &str, board_stop_id: &str, after: OffsetDateTime) -> Depart
 }
 
 fn bus_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> DepartureResolver {
-    let bus = Arc::new(
-        BusDepartureSource::with_live_data(
-            network.clone(),
-            crate::support::tdx::bus_feed(tdx.clone(), "feed"),
-            &tdx.settings().realtime,
-        )
-        .with_bindings(bindings(network.network(), &[])),
-    );
+    let bus = Arc::new(BusDepartureSource::new(TdxTimingContext::new(
+        network.clone(),
+        crate::support::tdx::bus_feed(tdx.clone(), "feed"),
+        &tdx.settings().realtime,
+        bindings(network.network(), &[]),
+    )));
     DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>])
 }
 
@@ -402,7 +400,11 @@ async fn unscoped_bus_service_skips_tdx_and_falls_back_to_static_schedule() {
     let pattern_id = TransitPatternId::new("service-without-scope");
     let (tdx, stats) = fixture_client(json!([]), StatusCode::OK).await;
     let network = runtime(network_for(std::slice::from_ref(&pattern_id)));
-    let source = BusDepartureSource::new(network.clone(), tdx.clone());
+    let source = BusDepartureSource::new(crate::support::tdx::timing_context(
+        network.clone(),
+        tdx.clone(),
+        Default::default(),
+    ));
 
     let realtime = source
         .realtime_departures_batch(vec![query("service-without-scope", "stop-x", NOW)])
@@ -474,10 +476,13 @@ async fn failed_bus_batch_only_falls_back_for_its_scope() {
     )
     .await;
     let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
-    let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx)
-            .with_bindings(bindings(network.network(), &scopes)),
-    );
+    let bus = Arc::new(BusDepartureSource::new(
+        crate::support::tdx::timing_context(
+            network.clone(),
+            tdx,
+            bindings(network.network(), &scopes),
+        ),
+    ));
     let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
 
     let results = resolver
@@ -661,10 +666,13 @@ async fn bus_needs_are_deduplicated_by_stop_and_grouped_by_realtime_scope() {
     );
     let (tdx, stats) = fixture_client(payload, StatusCode::OK).await;
     let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
-    let bus = Arc::new(
-        BusDepartureSource::new(network.clone(), tdx)
-            .with_bindings(bindings(network.network(), &scopes)),
-    );
+    let bus = Arc::new(BusDepartureSource::new(
+        crate::support::tdx::timing_context(
+            network.clone(),
+            tdx,
+            bindings(network.network(), &scopes),
+        ),
+    ));
     let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
     let needs = pattern_ids
         .iter()

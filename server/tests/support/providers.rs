@@ -3,6 +3,8 @@ use via_server::street::{
     Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
 };
 
+#[path = "street.rs"]
+pub mod street;
 #[path = "tdx.rs"]
 pub mod tdx;
 

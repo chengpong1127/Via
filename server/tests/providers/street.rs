@@ -1,24 +1,16 @@
 use std::sync::Arc;
 
-use crate::support::{ProviderContractFixture, assert_provider_contract};
+use crate::support::{
+    ProviderContractFixture, assert_provider_contract,
+    street::{coordinate, straight_path},
+};
 use via_server::street::{
-    Coordinate, FakeStreetRouter, Maneuver, ManeuverKind, MatrixCell, MatrixOrientation,
-    MatrixQuery, Metres, RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError,
-    StreetTravelMode,
+    Coordinate, FakeStreetRouter, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, Metres,
+    RouteQuery, Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
 };
 
-fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
-    Coordinate::try_new(latitude, longitude).unwrap()
-}
-
 fn path(origin: Coordinate, destination: Coordinate) -> StreetPath {
-    StreetPath {
-        duration: Seconds(620),
-        distance: Metres(3_900),
-        geometry: vec![origin, destination],
-        maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
-        attribution: Vec::new(),
-    }
+    straight_path(origin, destination, Seconds(620), Metres(3_900))
 }
 
 #[tokio::test]

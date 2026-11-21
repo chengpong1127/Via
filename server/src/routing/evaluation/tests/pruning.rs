@@ -260,9 +260,11 @@ fn state_pruning_preserves_rental_and_transit_capabilities_across_modes() {
     let bike = initial
         .after_bike_share(
             bike_movement(0, 1, 60),
-            0,
+            crate::routing::evaluation::state::ActiveBikeRental {
+                start_anchor: 0,
+                started_at: query.departure_time,
+            },
             1,
-            query.departure_time,
             query.departure_time + Duration::seconds(60),
             query.departure_time,
         )
