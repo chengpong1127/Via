@@ -327,12 +327,17 @@ impl BusDepartureSource {
             .collect::<Vec<_>>();
         stop_uids.sort();
         let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
+        let mut parent_route_by_service = HashMap::<String, String>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
             if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
                 patterns_by_service
                     .entry(binding.tdx_service_id.clone())
                     .or_default()
                     .push(pattern_id.clone());
+                if let Some(route_uid) = &binding.tdx_route_uid {
+                    parent_route_by_service
+                        .insert(binding.tdx_service_id.clone(), route_uid.clone());
+                }
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
@@ -358,20 +363,24 @@ impl BusDepartureSource {
                     .insert(pair.clone(), departure_error(*reason));
             }
         }
-        let values =
-            match parse_bus_arrivals(&batch.records, &patterns_by_service, &self.realtime_check) {
-                Ok(values) => values,
-                Err(error) => {
-                    ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
-                    for pair in scope_pairs {
-                        results
-                            .errors_by_pair
-                            .entry(pair)
-                            .or_insert_with(|| error.clone());
-                    }
-                    return;
+        let values = match parse_bus_arrivals(
+            &batch.records,
+            &patterns_by_service,
+            &parent_route_by_service,
+            &self.realtime_check,
+        ) {
+            Ok(values) => values,
+            Err(error) => {
+                ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
+                for pair in scope_pairs {
+                    results
+                        .errors_by_pair
+                        .entry(pair)
+                        .or_insert_with(|| error.clone());
                 }
-            };
+                return;
+            }
+        };
         results.rows_received += values.len();
         for value in values {
             let arrival = &value.value;

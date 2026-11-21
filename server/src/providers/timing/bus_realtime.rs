@@ -18,10 +18,11 @@ use crate::{
 pub(super) fn parse_bus_arrivals(
     records: &[BusArrival],
     patterns_by_service: &HashMap<String, Vec<TransitPatternId>>,
+    parent_route_by_service: &HashMap<String, String>,
     realtime_check: &RealtimeCheck,
 ) -> Result<Vec<NormalizedRealtimeValue>, DepartureError> {
     let received_at = OffsetDateTime::now_utc();
-    let parent_services = parent_route_services(patterns_by_service);
+    let parent_services = parent_route_services(patterns_by_service, parent_route_by_service);
     let mut normalized = Vec::new();
     for record in records {
         let Ok(published_at) = OffsetDateTime::parse(&record.update_time, &Rfc3339) else {
@@ -78,15 +79,21 @@ pub(super) fn parse_bus_arrivals(
 
 fn parent_route_services(
     patterns_by_service: &HashMap<String, Vec<TransitPatternId>>,
+    parent_route_by_service: &HashMap<String, String>,
 ) -> HashMap<String, Vec<TransitPatternId>> {
     let mut patterns_by_parent_service = HashMap::<String, Vec<TransitPatternId>>::new();
     for (service_id, patterns) in patterns_by_service {
         let service = TransitPatternId::new(service_id.as_str());
         let sub_route_uid = tdx_sub_route_uid(&service);
         let direction_suffix = &service_id[sub_route_uid.len()..];
-        let Some(route_uid) = sub_route_uid
-            .strip_suffix(|character: char| character.is_ascii_digit())
-            .filter(|route_uid| !route_uid.is_empty())
+        let Some(route_uid) = parent_route_by_service
+            .get(service_id)
+            .map(String::as_str)
+            .or_else(|| {
+                sub_route_uid
+                    .strip_suffix(|character: char| character.is_ascii_digit())
+                    .filter(|route_uid| !route_uid.is_empty())
+            })
         else {
             continue;
         };
@@ -155,6 +162,7 @@ mod tests {
         let values = parse_bus_arrivals(
             &records,
             &patterns_by_service,
+            &HashMap::new(),
             &RealtimeCheck::with_policy(FreshnessPolicy::tdx_default(), 300),
         )
         .unwrap();
@@ -217,6 +225,7 @@ mod tests {
         let values = parse_bus_arrivals(
             &records,
             &patterns_by_service,
+            &HashMap::new(),
             &RealtimeCheck::with_policy(FreshnessPolicy::tdx_default(), 300),
         )
         .unwrap();
@@ -227,5 +236,56 @@ mod tests {
             values[0].value.boarding_point_id,
             boarding_point_id("TPE30141")
         );
+    }
+
+    #[test]
+    fn bound_parent_routes_map_estimates_without_subroute_uid() {
+        let pattern_id = TransitPatternId::new("pattern:NWT157552::direction=0::variant=0");
+        let service_id = transit_service_id_for_direction("NWT157552", 0)
+            .as_str()
+            .to_owned();
+        let patterns_by_service = HashMap::from([(service_id.clone(), vec![pattern_id.clone()])]);
+        let parent_route_by_service = HashMap::from([(service_id, "NWT16517".to_owned())]);
+        let update_time = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+        let payload = serde_json::json!([
+            {
+                "RouteUID": "NWT16517",
+                "StopUID": "NWT131498",
+                "Direction": 0,
+                "StopStatus": 0,
+                "EstimateTime": 519,
+                "UpdateTime": update_time,
+            },
+            {
+                "RouteUID": "NWT16517",
+                "StopUID": "NWT131498",
+                "Direction": 1,
+                "StopStatus": 0,
+                "EstimateTime": 60,
+                "UpdateTime": update_time,
+            }
+        ]);
+
+        let records = serde_json::from_value::<Vec<BusArrival>>(payload).unwrap();
+        let realtime_check = RealtimeCheck::with_policy(FreshnessPolicy::tdx_default(), 300);
+        let values = parse_bus_arrivals(
+            &records,
+            &patterns_by_service,
+            &parent_route_by_service,
+            &realtime_check,
+        )
+        .unwrap();
+        let guessed = parse_bus_arrivals(
+            &records,
+            &patterns_by_service,
+            &HashMap::new(),
+            &realtime_check,
+        )
+        .unwrap();
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].value.transit_pattern_id, pattern_id);
+        assert_eq!(values[0].value.state, ArrivalState::Predicted);
+        assert!(guessed.is_empty());
     }
 }
