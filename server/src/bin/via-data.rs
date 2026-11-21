@@ -506,6 +506,10 @@ fn print_build_diagnostics(diagnostics: &via_server::data::BuildDiagnostics) {
             stats.build_wall_clock_milliseconds
         );
     }
+    println!(
+        "bus bindings with a TDX parent route: {}",
+        diagnostics.bus_parent_routes
+    );
     println!("GTFS stops loaded: {}", gtfs.stops_loaded);
     println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(
