@@ -116,10 +116,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live: Arc<dyn LiveDataSource> =
         Arc::new(CachedLiveData::new(counter.clone(), &settings.tdx));
     let bike_share = Arc::new(artifact.bike_share);
-    let variants = [("base", true), ("headway", false)].map(|(name, clear)| {
+    let variants = ["base", "noservice", "headway"].map(|name| {
         let mut network = artifact.transit.clone();
-        if clear {
-            network.pattern_headways.clear();
+        match name {
+            "base" => network.pattern_headways.clear(),
+            "noservice" => {
+                for headways in &mut network.pattern_headways {
+                    for seconds in headways.seconds_by_period.iter_mut().flatten() {
+                        *seconds = 1;
+                    }
+                }
+            }
+            _ => {}
         }
         let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
             environment,
@@ -138,11 +146,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         (name, runtime)
     });
-    for (name, from_lat, from_lon, to_lat, to_lon) in scenarios {
+    for (index, (name, from_lat, from_lon, to_lat, to_lon)) in scenarios.into_iter().enumerate() {
         let before = counter.requests.load(Ordering::SeqCst);
         let departure = time::OffsetDateTime::now_utc();
         let mut record = serde_json::json!({"name": name, "planned_at": departure.to_string()});
-        for (variant, runtime) in &variants {
+        for offset in 0..variants.len() {
+            let (variant, runtime) = &variants[(index + offset) % variants.len()];
             let request = PlanningRequest {
                 origin: SelectedPlace {
                     coordinate: via_server::api::GeoCoordinate {
