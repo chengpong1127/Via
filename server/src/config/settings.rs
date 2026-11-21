@@ -498,15 +498,11 @@ impl ViaConfig {
                 "tdx.realtime.cache_ttl_seconds must be less than fresh_seconds".into(),
             ));
         }
-        for (key, value) in [(
-            "routing.ranking.max_sequence_only_option_delay_seconds",
-            self.routing.ranking.max_sequence_only_option_delay_seconds,
-        )] {
-            if value <= 0 || value > i64::from(u32::MAX) {
-                return Err(ConfigError::Invalid(format!(
-                    "{key} must be positive and fit supported duration range"
-                )));
-            }
+        let sequence_only_delay = self.routing.ranking.max_sequence_only_option_delay_seconds;
+        if sequence_only_delay <= 0 || sequence_only_delay > i64::from(u32::MAX) {
+            return Err(ConfigError::Invalid(
+                "routing.ranking.max_sequence_only_option_delay_seconds must be positive and fit supported duration range".into(),
+            ));
         }
         let bike = self.preprocessing.bike_access;
         if bike.max_geometric_candidates_per_boarding_point > self.valhalla.max_sources
