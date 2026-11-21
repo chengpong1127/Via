@@ -27,4 +27,4 @@ Command: `corridor_bench <artifact> out.jsonl 3 <RFC3339 departure>`. Cap = `MAX
 | cap 300 s | 67 / 182 / 261 | 70 / 268 | 68 / 285 | 21 / 53 / 78 |
 | cap 900 s | 63 / 219 / 302 | 69 / 300 | — | 41 / 114 / 184 |
 
-Live (20 scenarios, Saturday 10:25, cap 900 vs base): 3 earlier, 3 later, 14 same; see `experiments/EXP-004-headway-waits.md`.
+Live cap 900 vs base, two Saturday runs (40 paired plans): 5 earlier, 4 later, 31 same; no-service only (run 2): 1 / 1 / 18; see `experiments/EXP-004-headway-waits.md`.

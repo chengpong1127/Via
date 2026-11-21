@@ -4,7 +4,7 @@ Priority: Q = journey quality, P = performance. Ordered by expected impact / cos
 
 | ID | Pri | Idea | Rationale | Status |
 | --- | --- | --- | --- | --- |
-| B1 | Q | Headway-aware static boarding cost (expected wait = f(headway)) — owner approved TDX Bus/Schedule headways 2026-11-21; EXP-004 | Phase 1 cost is pure ride+walk+penalty; infrequent lines look as good as frequent ones, so the 24 retained corridors can be dominated by impractical options and Phase 2 never sees the practical one | in progress (EXP-004) |
+| B1 | Q | Headway-aware static boarding cost (expected wait = f(headway)) — owner approved TDX Bus/Schedule headways 2026-11-21; EXP-004 | Phase 1 cost is pure ride+walk+penalty; infrequent lines look as good as frequent ones, so the 24 retained corridors can be dominated by impractical options and Phase 2 never sees the practical one | parked (EXP-004): neutral live, revisit after B15 |
 | B2 | Q | Replace LABELS_PER_STOP / structure-hash bag with true Pareto bags (cost, rides, walk) per round (McRAPTOR-style) | Current bag truncation is heuristic; may drop low-walk or low-transfer options | todo |
 | B3 | P | (done: EXP-001) Dense integer stop/pattern indices instead of `HashMap<BoardingPointId,_>` and String-ID clones in the hot loop | Classic RAPTOR uses contiguous arrays (Delling et al. 2012); hashing + cloning Strings dominates small graphs | todo |
 | B4 | P | Remove `format!("{:?}", steps)` sort keys in `select` / `corridor_order_key` | Allocation per comparison | todo |

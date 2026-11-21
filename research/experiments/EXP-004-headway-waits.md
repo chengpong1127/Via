@@ -1,7 +1,7 @@
 # EXP-004 — Static headway waits in Phase 1
 
 Branch: `research/exp-004-headway-waits` (on top of EXP-002 research head `0b7778d`)
-Status: live run 1 mixed; three-way live run (base / no-service only / full wait) in progress
+Status: parked — live quality neutral (40 paired plans), latency lower; no PR until B15 / EXP-002 dedup
 Owner decision: 2026-11-21, TDX Bus/Schedule may be used as a static headway source (B1 unblocked)
 
 ## Hypothesis
@@ -130,8 +130,41 @@ O → BL instead of a 3-hour walk, again partly a BR-gap artefact).
 Latency (base 775 ms median vs headway 284 ms) is biased: base always ran first and
 paid the TDX fetches into the shared cache. Run 2 rotates the order.
 
-### Run 2: base vs no-service only vs cap 900
+### Run 2: base vs no-service only vs cap 900, Saturday 2026-11-21 12:02–13:47 +08:00
 
-In progress, Saturday 2026-11-21 from about 12:05 +08:00, same scenarios, variant
-order rotated per scenario. The no-service variant sets every known headway to 1 s,
-so running lines cost 0 and lines without service cost 1,800 s.
+Same scenarios, variant order rotated per scenario so each variant pays the TDX
+fetches into the shared cache equally often. The no-service variant sets every known
+headway to 1 s (running lines cost 0, lines without service 1,800 s).
+
+| vs base | earlier | later | same |
+| --- | --- | --- | --- |
+| no-service only | 1 (xinzhuang_to_muzha −73 min) | 1 (banqiao_to_neihu +17 min) | 18 |
+| cap 900 | 2 (xinzhuang_to_muzha −73, songshan_airport_to_wanhua −8) | 1 (banqiao_to_neihu +17) | 17 |
+
+Median / max planning latency: base 523 / 1,001 ms, no-service 409 / 827 ms,
+cap 900 300 / 843 ms.
+
+Both outliers are dominated by the missing Wenhu (BR) line: the base Banqiao → Neihu
+option (265區 + 310 then a 70-min walk) and the new Xinzhuang → Muzha option
+(O → BL then an 80-min walk) both end in long walks no real journey would take.
+Run 1's lucky-bus losses (669, 306) did not repeat at 12:00.
+
+## Decision
+
+Across both runs (40 paired plans) cap 900 is 5 earlier / 4 later / 31 same; the
+non-BR-gap changes are small in both directions (−8 to +5 min). Offline gains are
+measured with the same expected-wait model the variant optimises, so they are not
+independent evidence of better journeys. Planning is faster (fewer corridors on
+lines that are not running).
+
+Parked, not discarded: keep the branch and the headway data path. Revisit after
+B15 (combined frequency over equivalent lines) and EXP-002 place dedup, which
+target the two observed failure modes (trunk segments under-rewarded, freed slots
+refilled with stop-level duplicates). If only one variant ships, no-service only is
+the lower-risk choice: it never penalises a running line.
+
+## Side finding
+
+7 of 10 random live scenarios return walking only (60–164 min walks) under every
+variant, e.g. random_001 (25.136, 121.434) → (25.078, 121.472), a 107-min walk where
+Tamsui-line and Luzhou-area transit exists. Tracked as EXP-005.
