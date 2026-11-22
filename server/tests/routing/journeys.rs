@@ -142,7 +142,7 @@ fn three_stop_red_line_network() -> TransitNetwork {
         .retain(|trip| trip.pattern_id.as_str() == "fixture-mrt-red");
     let red = &mut network.patterns[0];
     red.stops.push(BoardingPointId::new("F-M3-BLUE"));
-    let segment = red.static_profile.segments[0].clone();
+    let segment = red.static_profile.segments[0];
     red.static_profile.segments.push(segment);
     for trip in &mut network.trips {
         let next = trip.stop_times.last().unwrap().departure_seconds + 300;
