@@ -305,6 +305,7 @@ fn bindings(network: &TransitNetwork, scopes: &[(&str, &str)]) -> Arc<TdxProvide
                 BusPatternBinding {
                     tdx_service_id: pattern.id.as_str().into(),
                     realtime_scope: scope.into(),
+                    tdx_route_uid: None,
                 },
             )
         })

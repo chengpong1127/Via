@@ -125,6 +125,7 @@ pub(super) fn build(
                                 .as_str()
                                 .to_owned(),
                             realtime_scope,
+                            tdx_route_uid: None,
                         },
                     );
                 }

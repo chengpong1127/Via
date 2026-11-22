@@ -10,6 +10,7 @@ use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod bikeshare_catalog;
+pub mod bus_routes;
 pub mod fetch;
 pub mod gtfs;
 pub mod static_transfers;
@@ -22,6 +23,7 @@ pub struct BuildDiagnostics {
     pub gtfs: GtfsBuildDiagnostics,
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
+    pub bus_parent_routes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -66,7 +68,9 @@ pub async fn build_from_fetch_snapshot(
             .map(|(city, body)| (city.as_str(), body.as_str())),
     )?;
 
-    let (mut network, provider_bindings, gtfs) = gtfs::build_network(&snapshot.gtfs_path)?;
+    let (mut network, mut provider_bindings, gtfs) = gtfs::build_network(&snapshot.gtfs_path)?;
+    let bus_parent_routes =
+        bus_routes::attach_parent_routes(&mut provider_bindings, &snapshot.bus_routes);
     network.same_stop_transfer_seconds = same_stop_transfer_seconds;
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
@@ -95,6 +99,7 @@ pub async fn build_from_fetch_snapshot(
             gtfs,
             static_transfers: Some(static_transfers),
             bike_access,
+            bus_parent_routes,
         },
     })
 }

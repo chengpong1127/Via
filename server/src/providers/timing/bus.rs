@@ -287,12 +287,17 @@ impl BusDepartureSource {
             .collect::<Vec<_>>();
         stop_uids.sort();
         let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
+        let mut parent_route_by_service = HashMap::<String, String>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
             if let Some(binding) = self.context.bindings.bus_patterns.get(pattern_id) {
                 patterns_by_service
                     .entry(binding.tdx_service_id.clone())
                     .or_default()
                     .push(pattern_id.clone());
+                if let Some(route_uid) = &binding.tdx_route_uid {
+                    parent_route_by_service
+                        .insert(binding.tdx_service_id.clone(), route_uid.clone());
+                }
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
@@ -321,6 +326,7 @@ impl BusDepartureSource {
         let values = match parse_bus_arrivals(
             &batch.records,
             &patterns_by_service,
+            &parent_route_by_service,
             &self.context.realtime_check,
         ) {
             Ok(values) => values,
