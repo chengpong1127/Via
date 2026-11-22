@@ -7,7 +7,7 @@ use super::{
     BikeAvailabilityRecord, BusArrival, LiveBatch, LiveDataSource, MetroBoard, MetroPair, TraDelay,
     UnavailableReason,
 };
-use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError, odata_in_filter};
+use crate::tdx::{TdxClient, TdxClientError, is_bike_city, odata_in_filter};
 
 const BUS_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const BIKE_AVAILABILITY_PATH: &str = "v2/Bike/Availability/City";
@@ -18,13 +18,11 @@ const TRA_TRAIN_LIVE_BOARD_PATH: &str = "v3/Rail/TRA/TrainLiveBoard";
 pub struct DirectLiveData {
     tdx: Arc<TdxClient>,
     bus_arrival_path: Option<String>,
-    bike_batch_size: usize,
 }
 
 impl DirectLiveData {
     pub fn new(tdx: Arc<TdxClient>) -> Self {
         Self {
-            bike_batch_size: tdx.settings.batch.bike_stations,
             tdx,
             bus_arrival_path: None,
         }
@@ -32,11 +30,6 @@ impl DirectLiveData {
 
     pub fn with_bus_arrival_path(mut self, path: impl Into<String>) -> Self {
         self.bus_arrival_path = Some(path.into());
-        self
-    }
-
-    pub fn with_bike_batch_size(mut self, batch_size: usize) -> Self {
-        self.bike_batch_size = batch_size.max(1);
         self
     }
 
@@ -70,7 +63,7 @@ impl DirectLiveData {
 
     async fn metro_chunk(&self, pairs: &[MetroPair]) -> Result<Vec<MetroBoard>, Failure> {
         let filter = metro_filter(pairs);
-        let response_limit = self.tdx.settings.batch.metro_response_limit;
+        let response_limit = self.tdx.settings().batch.metro_response_limit;
         let top = response_limit.to_string();
         let boards = self
             .tdx
@@ -113,7 +106,7 @@ impl LiveDataSource for DirectLiveData {
             return LiveBatch::unavailable_all(stop_uids, UnavailableReason::InvalidConfiguration);
         };
         let mut batch = LiveBatch::default();
-        for stops in stop_uids.chunks(self.tdx.settings.batch.bus_stops.max(1)) {
+        for stops in stop_uids.chunks(self.tdx.settings().batch.bus_stops.max(1)) {
             if batch.is_rate_limited() {
                 batch.mark_unavailable(stops, UnavailableReason::RateLimited);
                 continue;
@@ -132,7 +125,7 @@ impl LiveDataSource for DirectLiveData {
         city: &str,
         station_uids: &[String],
     ) -> LiveBatch<BikeAvailabilityRecord> {
-        if !BIKE_CITIES.iter().any(|(scope, _)| *scope == city) {
+        if !is_bike_city(city) {
             return LiveBatch::unavailable_all(
                 station_uids,
                 UnavailableReason::InvalidConfiguration,
@@ -140,7 +133,7 @@ impl LiveDataSource for DirectLiveData {
         }
         let path = format!("{BIKE_AVAILABILITY_PATH}/{city}");
         let mut batch = LiveBatch::default();
-        for stations in station_uids.chunks(self.bike_batch_size) {
+        for stations in station_uids.chunks(self.tdx.settings().batch.bike_stations.max(1)) {
             let filter = odata_in_filter("StationUID", stations);
             let top = stations.len().to_string();
             batch.upstream_requests += 1;
@@ -161,9 +154,8 @@ impl LiveDataSource for DirectLiveData {
             {
                 Ok(records) => batch.records.extend(records.into_iter().filter(|record| {
                     record
-                        .station_uid
-                        .as_deref()
-                        .is_none_or(|uid| stations.iter().any(|station| station == uid.trim()))
+                        .station_key()
+                        .is_none_or(|uid| stations.iter().any(|station| station == uid))
                 })),
                 Err(error) => Failure::from(error).record(&mut batch, stations),
             }
@@ -173,7 +165,7 @@ impl LiveDataSource for DirectLiveData {
 
     async fn metro_boards(&self, pairs: &[MetroPair]) -> LiveBatch<MetroBoard, MetroPair> {
         let mut batch = LiveBatch::default();
-        for chunk in pairs.chunks(self.tdx.settings.batch.metro_pairs.max(1)) {
+        for chunk in pairs.chunks(self.tdx.settings().batch.metro_pairs.max(1)) {
             batch.upstream_requests += 1;
             match self.metro_chunk(chunk).await {
                 Ok(records) => batch.records.extend(records),

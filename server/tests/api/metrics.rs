@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::support::{build_test_router_with_metrics, build_test_router_with_network_and_metrics};
+use crate::support::{
+    build_test_router_with_metrics, build_test_router_with_network_and_metrics,
+    street::{coordinate, straight_path},
+};
 use axum::{
     body::Body,
     http::{Request, StatusCode, header::CACHE_CONTROL, header::CONTENT_TYPE},
@@ -109,23 +112,19 @@ fn assert_metric_positive(rendered: &str, name: &str) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn planning_request_counter_counts_successful_options_once() {
-    let origin = via_server::street::Coordinate::try_new(25.04776, 121.51706).unwrap();
-    let destination = via_server::street::Coordinate::try_new(25.03396, 121.56447).unwrap();
+    let origin = coordinate(25.04776, 121.51706);
+    let destination = coordinate(25.03396, 121.56447);
     let provider = FakeStreetRouter::builder()
         .path(
             via_server::street::StreetTravelMode::Walking,
             origin,
             destination,
-            via_server::street::StreetPath {
-                duration: via_server::street::Seconds(620),
-                distance: via_server::street::Metres(3900),
-                geometry: vec![origin, destination],
-                maneuvers: vec![
-                    via_server::street::Maneuver::depart(0),
-                    via_server::street::Maneuver::arrive(1),
-                ],
-                attribution: vec![],
-            },
+            straight_path(
+                origin,
+                destination,
+                via_server::street::Seconds(620),
+                via_server::street::Metres(3900),
+            ),
         )
         .build();
     let (status, rendered) = planning_response(provider, planning_request()).await;
@@ -211,10 +210,10 @@ async fn successful_transit_discovery_records_candidate_stops() {
     let network =
         TransitNetwork::from_artifact_json(include_str!("../../fixtures/routing/network.json"))
             .unwrap();
-    let origin = via_server::street::Coordinate::try_new(25.1101, 121.5101).unwrap();
-    let bus_a = via_server::street::Coordinate::try_new(25.11, 121.51).unwrap();
-    let bus_b = via_server::street::Coordinate::try_new(25.111, 121.511).unwrap();
-    let destination = via_server::street::Coordinate::try_new(25.1111, 121.5111).unwrap();
+    let origin = coordinate(25.1101, 121.5101);
+    let bus_a = coordinate(25.11, 121.51);
+    let bus_b = coordinate(25.111, 121.511);
+    let destination = coordinate(25.1111, 121.5111);
     let provider = FakeStreetRouter::builder()
         .matrix_leg(
             via_server::street::StreetTravelMode::Walking,

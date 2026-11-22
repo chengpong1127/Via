@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 use crate::{
     domain::journey::{Geometry, Guidance, Leg, PlanningError},
@@ -14,10 +14,8 @@ pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
     for leg in legs {
         let fallback = || {
             vec![
-                Coordinate::try_new(leg.from.coordinate.latitude, leg.from.coordinate.longitude)
-                    .expect("validated coordinate"),
-                Coordinate::try_new(leg.to.coordinate.latitude, leg.to.coordinate.longitude)
-                    .expect("validated coordinate"),
+                Coordinate::try_from(leg.from.coordinate).expect("validated coordinate"),
+                Coordinate::try_from(leg.to.coordinate).expect("validated coordinate"),
             ]
         };
         for point in decode_polyline6(&leg.geometry.points).unwrap_or_else(fallback) {
@@ -26,23 +24,22 @@ pub(super) fn overview_geometry(legs: &[Leg]) -> Geometry {
             }
         }
     }
+    polyline_geometry(&points)
+}
+
+pub(super) fn polyline_geometry(points: &[Coordinate]) -> Geometry {
     Geometry {
         encoding: "polyline6",
-        points: encode_polyline6(&points),
+        points: encode_polyline6(points),
     }
 }
 
 pub(super) fn stop_geometry(stops: impl IntoIterator<Item = GeoCoordinate>) -> Geometry {
     let points = stops
         .into_iter()
-        .map(|stop| {
-            Coordinate::try_new(stop.latitude, stop.longitude).expect("validated coordinate")
-        })
+        .map(|stop| Coordinate::try_from(stop).expect("validated coordinate"))
         .collect::<Vec<_>>();
-    Geometry {
-        encoding: "polyline6",
-        points: encode_polyline6(&points),
-    }
+    polyline_geometry(&points)
 }
 
 pub(super) fn guidance(maneuvers: &[Maneuver]) -> Vec<Guidance> {
@@ -169,5 +166,5 @@ pub(in crate::routing) fn to_street_coordinate(
 }
 
 pub(in crate::routing) fn taipei_now() -> OffsetDateTime {
-    OffsetDateTime::now_utc().to_offset(UtcOffset::from_hms(8, 0, 0).unwrap())
+    crate::domain::normalize_to_taipei(OffsetDateTime::now_utc())
 }

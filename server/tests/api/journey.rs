@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::support::build_test_router;
+use crate::support::{
+    build_test_router,
+    street::{coordinate, straight_path},
+};
 use axum::{
     body::Body,
     http::{Request, StatusCode, header::CACHE_CONTROL},
@@ -8,13 +11,7 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use via_server::street::{
-    Coordinate, FakeStreetRouter, Maneuver, Metres, Seconds, StreetPath, StreetTravelMode,
-};
-
-fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
-    Coordinate::try_new(latitude, longitude).unwrap()
-}
+use via_server::street::{FakeStreetRouter, Metres, Seconds, StreetTravelMode};
 
 fn request_body() -> Value {
     json!({
@@ -40,13 +37,7 @@ async fn journey_endpoint_returns_one_coherent_provider_neutral_result() {
             StreetTravelMode::Walking,
             origin,
             destination,
-            StreetPath {
-                duration: Seconds(620),
-                distance: Metres(3_900),
-                geometry: vec![origin, destination],
-                maneuvers: vec![Maneuver::depart(0), Maneuver::arrive(1)],
-                attribution: vec![],
-            },
+            straight_path(origin, destination, Seconds(620), Metres(3_900)),
         )
         .build();
     let app = build_test_router(Arc::new(provider)).await.unwrap();

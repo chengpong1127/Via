@@ -254,7 +254,7 @@ fn record_pattern_modes(
         let mode = via_mode(route.route_type, &route.id).expect("normalized route is supported");
         *diagnostics
             .patterns_loaded_by_mode
-            .entry(mode_name(mode).to_owned())
+            .entry(mode.as_str().to_owned())
             .or_default() += 1;
     }
 }
@@ -508,7 +508,7 @@ fn route_modes(
             mode_by_route.insert(route.id.clone(), mode);
             *diagnostics
                 .routes_loaded_by_mode
-                .entry(mode_name(mode).to_owned())
+                .entry(mode.as_str().to_owned())
                 .or_default() += 1;
         }
     }
@@ -523,14 +523,5 @@ pub(super) fn via_mode(route_type: RouteType, route_id: &str) -> Option<TransitM
         RouteType::Rail => Some(TransitMode::Rail),
         RouteType::Extended(ExtendedRouteType::HighSpeedRail) => Some(TransitMode::HighSpeedRail),
         _ => None,
-    }
-}
-
-fn mode_name(mode: TransitMode) -> &'static str {
-    match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
-        TransitMode::HighSpeedRail => "high_speed_rail",
     }
 }

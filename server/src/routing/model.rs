@@ -3,7 +3,10 @@ use tokio::time::Instant;
 
 use crate::{
     domain::planning::PlanningInput,
-    domain::{journey::PlanningError, normalize_to_taipei, transit::network::TransitMode},
+    domain::{
+        journey::PlanningError, normalize_to_taipei, ranking::TransferKind,
+        transit::network::TransitMode,
+    },
     street::{ProviderFailureClass, RoutingConstraints, RoutingTime, StreetRoutingError},
 };
 
@@ -28,6 +31,14 @@ impl PlanningDeadline {
 
     pub fn is_elapsed(self) -> bool {
         matches!(self, Self::At(expires_at) if Instant::now() >= expires_at)
+    }
+
+    pub fn check(self) -> Result<(), RoutingError> {
+        if self.is_elapsed() {
+            Err(RoutingError::DeadlineExceeded)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) async fn run<F: std::future::Future>(
@@ -79,6 +90,13 @@ pub struct PlannerLimits {
 }
 
 impl PlannerLimits {
+    pub(crate) fn transfer_penalty_seconds(&self, kind: TransferKind) -> u32 {
+        match kind {
+            TransferKind::MetroToMetro => self.metro_transfer_penalty_seconds,
+            TransferKind::BusInvolved => self.bus_transfer_penalty_seconds,
+        }
+    }
+
     pub(crate) fn normalized(self) -> Self {
         Self {
             max_transfers: self.max_transfers,
@@ -100,7 +118,7 @@ pub struct JourneyPlanningLimits {
     pub bike_availability: super::BikeAvailabilityLimits,
     pub ranking: crate::domain::ranking::RankingPolicy,
     pub planner: PlannerLimits,
-    pub request_timeout: std::time::Duration,
+    pub request_timeout: Option<std::time::Duration>,
     pub max_concurrent_requests: usize,
     pub max_concurrent_reconstruction_candidates: usize,
     pub max_transit_endpoint_stops: usize,
@@ -148,11 +166,9 @@ impl<'a> JourneyPlanningContext<'a> {
     }
 
     pub(crate) fn ensure_before_deadline(&self) -> Result<(), PlanningError> {
-        if self.deadline.is_elapsed() {
-            Err(PlanningError::TemporarilyUnavailable)
-        } else {
-            Ok(())
-        }
+        self.deadline
+            .check()
+            .map_err(|_| PlanningError::TemporarilyUnavailable)
     }
 
     fn local_time(&self, instant: OffsetDateTime) -> time::PrimitiveDateTime {
@@ -212,6 +228,15 @@ impl PlanningQuery {
         }
     }
 
+    pub(in crate::routing) fn latest_arrival(&self) -> OffsetDateTime {
+        self.departure_time
+            + time::Duration::seconds(i64::from(self.limits.max_journey_duration_seconds))
+    }
+
+    pub(in crate::routing) fn admits(&self, time: OffsetDateTime) -> bool {
+        time >= self.departure_time && time <= self.latest_arrival()
+    }
+
     pub(crate) fn validate_access_egress(&self) -> Result<(), RoutingError> {
         if has_conflicting_stops(&self.origin_access)
             || has_conflicting_stops(&self.destination_egress)
@@ -235,12 +260,6 @@ impl PlanningQuery {
         self.allow_bike_share = allow;
         self
     }
-
-    #[cfg(test)]
-    pub fn with_max_static_corridors(mut self, max_static_corridors: usize) -> Self {
-        self.limits.max_static_corridors = max_static_corridors.max(1);
-        self
-    }
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -251,8 +270,6 @@ pub enum RoutingError {
     DeadlineExceeded,
     #[error("routing invariant failed: {0}")]
     Internal(String),
-    #[error("timing snapshot could not be loaded: {0}")]
-    Timing(#[from] DepartureError),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -277,7 +294,6 @@ impl FailureSummary {
 
     pub(crate) fn record_routing(&mut self, error: &RoutingError) {
         match error {
-            RoutingError::Timing(timing) => self.transient |= timing.is_transient(),
             RoutingError::Internal(_) => self.internal = true,
             RoutingError::InvalidQuery | RoutingError::DeadlineExceeded => {}
         }

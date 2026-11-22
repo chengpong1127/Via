@@ -1,7 +1,6 @@
 use geo::{Distance, HaversineMeasure, Point};
 use serde::{Deserialize, Serialize};
 
-// Preserve the sphere used by existing routing distance estimates.
 pub(crate) const EARTH_RADIUS_METRES: f64 = 6_371_000.0;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, utoipa::ToSchema)]
@@ -22,7 +21,6 @@ impl GeoCoordinate {
             && (-180.0..=180.0).contains(&self.longitude)
     }
 
-    /// Spherical great-circle distance in metres.
     pub fn distance_metres(self, other: Self) -> f64 {
         HaversineMeasure::new(EARTH_RADIUS_METRES).distance(self.point(), other.point())
     }

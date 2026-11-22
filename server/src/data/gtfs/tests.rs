@@ -84,7 +84,7 @@ fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
         ViaStaticSource {
             source_id: source_id.to_owned(),
             source_url: None,
-            sha256: crate::data::sha256_hex(&bytes),
+            sha256: crate::data::fetch::sha256_hex(&bytes),
             byte_size: bytes.len() as u64,
         }
     };
@@ -117,7 +117,7 @@ fn refresh_fetch_source(snapshot: &Path, source_name: &str) {
     let source = manifest.sources.get_mut(source_name).unwrap();
     let source_path = snapshot.join(crate::data::fetch::source_file_name(source_name).unwrap());
     let bytes = std::fs::read(source_path).unwrap();
-    source.sha256 = crate::data::sha256_hex(&bytes);
+    source.sha256 = crate::data::fetch::sha256_hex(&bytes);
     source.byte_size = bytes.len() as u64;
     std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 }
@@ -721,7 +721,7 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
     .await
     .unwrap();
     let artifact = crate::data::load_static_artifact(&output.join(".via-static.json")).unwrap();
-    assert_eq!(built.via_static.transit.default_transfer_seconds, 75);
+    assert_eq!(built.via_static.transit.same_stop_transfer_seconds, 75);
     assert_eq!(
         TransitRuntime::new(std::sync::Arc::new(artifact.transit)).same_stop_transfer_seconds(),
         75

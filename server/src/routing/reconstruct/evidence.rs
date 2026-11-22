@@ -1,8 +1,6 @@
 use crate::domain::{
     journey::{LegMode, LiveStatusSummary},
-    ranking::TransferKind,
     realtime::{FreshnessState, NormalizedRealtimeValue},
-    transit::network::TransitMode,
 };
 
 pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatusSummary {
@@ -15,14 +13,6 @@ pub(super) fn from_realtime_value(status: &NormalizedRealtimeValue) -> LiveStatu
 pub(super) fn push_unique_mode(modes: &mut Vec<LegMode>, mode: LegMode) {
     if !modes.contains(&mode) {
         modes.push(mode);
-    }
-}
-
-pub(super) fn transfer_kind(from: Option<TransitMode>, to: Option<TransitMode>) -> TransferKind {
-    if from == Some(TransitMode::Metro) && to == Some(TransitMode::Metro) {
-        TransferKind::MetroToMetro
-    } else {
-        TransferKind::BusInvolved
     }
 }
 

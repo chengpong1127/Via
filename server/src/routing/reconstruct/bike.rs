@@ -1,8 +1,11 @@
 use time::Duration;
 
 use crate::{
-    domain::journey::{Geometry, Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
-    routing::{JourneyAnchorKind, JourneyMovement, model::JourneyPlanningContext},
+    domain::journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError},
+    routing::{
+        BikeShareMovement, JourneyAnchorKind, JourneyMovement, journey::BIKE_REUSE_COOLDOWN,
+        model::JourneyPlanningContext,
+    },
     street::{StreetPath, StreetTravelMode},
 };
 
@@ -10,7 +13,7 @@ use super::{
     JourneyReconstructor,
     assembler::{JourneyAssembly, ReconstructionState},
     evidence, geometry,
-    street::{anchor_boarding_point, anchor_place, append_routed_walking, hydrate_path},
+    street::{append_routed_walking, hydrate_path},
     transit::register_pending_transfer,
 };
 
@@ -18,7 +21,7 @@ impl ReconstructionState<'_, '_> {
     pub(super) async fn append_bike(
         &mut self,
         movement: &JourneyMovement,
-        bike_movement: &crate::routing::BikeShareMovement,
+        bike_movement: &BikeShareMovement,
     ) -> Result<bool, PlanningError> {
         if matches!(
             self.journey.anchors()[movement.from_anchor].kind,
@@ -29,25 +32,15 @@ impl ReconstructionState<'_, '_> {
         ) {
             return Ok(false);
         }
-        let source_stop = anchor_boarding_point(self.journey, movement.from_anchor);
+        let source_stop = self.anchor_boarding_point(movement.from_anchor);
         if source_stop
             .as_ref()
             .is_some_and(|source_stop| self.current_stop.as_ref() != Some(source_stop))
         {
             return Ok(false);
         }
-        let from = anchor_place(
-            self.reconstructor,
-            self.context.request,
-            self.journey,
-            movement.from_anchor,
-        )?;
-        let to = anchor_place(
-            self.reconstructor,
-            self.context.request,
-            self.journey,
-            movement.to_anchor,
-        )?;
+        let from = self.anchor_place(movement.from_anchor)?;
+        let to = self.anchor_place(movement.to_anchor)?;
         if !append_bike_share(
             self.reconstructor,
             self.context,
@@ -61,7 +54,7 @@ impl ReconstructionState<'_, '_> {
             return Ok(false);
         }
         register_pending_transfer(&self.assembly, &mut self.pending_transfer);
-        if let Some(to_stop) = anchor_boarding_point(self.journey, movement.to_anchor) {
+        if let Some(to_stop) = self.anchor_boarding_point(movement.to_anchor) {
             self.current_stop = Some(to_stop);
         }
 
@@ -74,7 +67,7 @@ async fn append_bike_share(
     context: &JourneyPlanningContext<'_>,
     from: &Place,
     to: &Place,
-    bike_movement: &crate::routing::BikeShareMovement,
+    bike_movement: &BikeShareMovement,
     assembly: &mut JourneyAssembly,
 ) -> Result<bool, PlanningError> {
     let pickup = reconstructor.bike_station_place(&bike_movement.pickup_station_id)?;
@@ -111,14 +104,13 @@ async fn append_bike_share(
     append_bicycle(
         &pickup,
         &dropoff,
-        &bike_movement.pickup_station_id,
-        &bike_movement.dropoff_station_id,
+        bike_movement,
         bicycle,
         reconstructor.rental_handling_seconds,
         assembly,
     );
 
-    assembly.bike_reuse_available_at = Some(assembly.arrival_time + Duration::minutes(15));
+    assembly.bike_reuse_available_at = Some(assembly.arrival_time + BIKE_REUSE_COOLDOWN);
 
     let Some(from_dropoff) = hydrate_path(
         reconstructor,
@@ -139,8 +131,7 @@ async fn append_bike_share(
 fn append_bicycle(
     pickup: &Place,
     dropoff: &Place,
-    pickup_station_id: &crate::domain::ids::BikeStationId,
-    dropoff_station_id: &crate::domain::ids::BikeStationId,
+    bike_movement: &BikeShareMovement,
     path: StreetPath,
     rental_handling_seconds: u32,
     assembly: &mut JourneyAssembly,
@@ -148,7 +139,7 @@ fn append_bicycle(
     let departure = assembly.arrival_time;
     let duration_seconds = path.duration.0.saturating_add(rental_handling_seconds);
     let arrival = departure + Duration::seconds(i64::from(duration_seconds));
-    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    let leg_id = assembly.next_leg_id();
     assembly.legs.push(Leg {
         id: leg_id,
         mode: LegMode::Bicycle,
@@ -157,10 +148,7 @@ fn append_bicycle(
         departure_time: departure,
         arrival_time: arrival,
         duration_seconds,
-        geometry: Geometry {
-            encoding: "polyline6",
-            points: geometry::encode_polyline6(&path.geometry),
-        },
+        geometry: geometry::polyline_geometry(&path.geometry),
         guidance: std::iter::once(Guidance {
             code: "bike_share",
             parameters: std::collections::BTreeMap::from([
@@ -171,9 +159,9 @@ fn append_bicycle(
         .chain(geometry::guidance(&path.maneuvers))
         .collect(),
         details: LegDetails::BikeShare {
-            pickup_station_id: pickup_station_id.as_str().into(),
+            pickup_station_id: bike_movement.pickup_station_id.as_str().into(),
             pickup_station_name: pickup.display_name.clone(),
-            dropoff_station_id: dropoff_station_id.as_str().into(),
+            dropoff_station_id: bike_movement.dropoff_station_id.as_str().into(),
             dropoff_station_name: dropoff.display_name.clone(),
         },
         attribution: path.attribution.clone(),
