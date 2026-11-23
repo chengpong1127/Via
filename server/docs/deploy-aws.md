@@ -122,10 +122,10 @@ The data volume and the artifact bucket carry `prevent_destroy`, so `tofu destro
 
 Infrastructure logs must not outlive 7 days (the privacy policy keeps only IP and timestamp for 7 days; Traefik access logs are off and Valhalla and the server log no locations, see the overlay README). `install-k3s.sh` enforces this idempotently:
 
-- journald: `/etc/systemd/journald.conf.d/via.conf` sets `MaxRetentionSec=7day` and `MaxFileSec=1day` (retention is enforced per journal file, so files must roll daily).
+- journald: `/etc/systemd/journald.conf.d/via.conf` sets `MaxRetentionSec=6day` and `MaxFileSec=1day` (retention is enforced per journal file, so files must roll daily; 6 days plus up to a day of file age keeps everything within 7).
 - kubelet: a `kubelet.conf.d` drop-in under the k3s data directory (`/var/lib/via/k3s/agent/etc/kubelet.conf.d/10-via-logs.conf`; k3s passes this directory to the kubelet as `config-dir`) sets `containerLogMaxSize: 5Mi` and `containerLogMaxFiles: 2`, so each container keeps its active log plus one rotated file.
-- cleanup: `via-log-cleanup.timer` runs daily and deletes rotated pod logs (`/var/log/pods/**/*.log.*`) older than 7 days, and dangling symlinks in `/var/log/containers`. Active log files and live symlinks are never touched.
+- cleanup: `via-log-cleanup.timer` runs daily and deletes rotated pod logs (`/var/log/pods/**/*.log.*`) older than 6 days (`-mmin +8640`; with the daily run a file lives at most about 7 days), and dangling symlinks in `/var/log/containers`. Active log files and live symlinks are never touched.
 
-The honest bound: rotated files are gone after 7 days, and an active log file is bounded by size (5Mi), not by age. A very quiet container could therefore hold lines older than 7 days in its active file until it fills or the pod is replaced (every rollout replaces the pods). At the expected volume (access logs off, only method, path and status logged) this is acceptable; if a hard age bound is required, restart the deployments weekly.
+The honest bound: rotated files are gone within 7 days, and an active log file is bounded by size (5Mi), not by age. A very quiet container could therefore hold lines older than 7 days in its active file until it fills or the pod is replaced (every rollout replaces the pods). At the expected volume (access logs off, only method, path and status logged) this is acceptable; if a hard age bound is required, restart the deployments weekly.
 
 Re-running the script on an existing node rewrites these files only when they differ, restarting journald or k3s only then.
