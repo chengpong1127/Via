@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "$*" >>"$KUBECTL_LOG"
+if [[ "$*" == *"rollout status"* ]] && [ -f "$KUBECTL_FAIL_FLAG" ]; then
+  exit 1
+fi

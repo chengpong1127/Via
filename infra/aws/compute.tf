@@ -22,11 +22,13 @@ resource "aws_instance" "node" {
   iam_instance_profile        = aws_iam_instance_profile.node.name
 
   user_data = templatefile("${path.module}/../../server/deploy/aws/bootstrap/cloud-init.yaml", {
-    region      = var.region
-    repo_url    = var.repo_url
-    repo_ref    = var.repo_ref
-    ssm_prefix  = var.ssm_parameter_prefix
-    data_volume = replace(aws_ebs_volume.data.id, "-", "")
+    region          = var.region
+    repo_url        = var.repo_url
+    repo_ref        = var.repo_ref
+    artifact_bucket = aws_s3_bucket.artifacts.bucket
+    ssm_prefix      = var.ssm_parameter_prefix
+    artifact_bucket = aws_s3_bucket.artifacts.bucket
+    data_volume     = replace(aws_ebs_volume.data.id, "-", "")
   })
   user_data_replace_on_change = false
 

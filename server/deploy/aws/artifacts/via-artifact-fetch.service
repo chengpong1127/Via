@@ -1,0 +1,9 @@
+[Unit]
+Description=Fetch and activate the latest Via static artifact and Valhalla tiles
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/via-bootstrap.env
+ExecStart=/opt/via/server/deploy/aws/artifacts/fetch.sh

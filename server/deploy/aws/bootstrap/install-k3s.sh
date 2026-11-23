@@ -57,6 +57,10 @@ verify_sha256() {
 mount_data_volume
 mkdir -p "$DATA_DIR/static" "$DATA_DIR/valhalla" "$DATA_DIR/k3s"
 
+if ! command -v zstd >/dev/null 2>&1; then
+  apt-get install -y zstd
+fi
+
 if ! command -v aws >/dev/null 2>&1; then
   snap install aws-cli --classic
 fi
@@ -91,5 +95,12 @@ verify_sha256 "$tmp/cert-manager.yaml" "$CERT_MANAGER_SHA256"
 kubectl apply -f "$tmp/cert-manager.yaml"
 rm -rf "$tmp"
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /opt/via/server/deploy/aws/artifacts ]; then
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.service /etc/systemd/system/
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now via-artifact-fetch.timer
+fi
 
 echo "k3s ${K3S_VERSION} and cert-manager ${CERT_MANAGER_VERSION} ready"

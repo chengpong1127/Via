@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = s3 ] && [ "$2" = cp ] || { echo "unsupported: $*" >&2; exit 2; }
+src="$3"
+dst="$4"
+to_path() { echo "$FAKE_S3/${1#s3://}"; }
+if [[ "$src" == s3://* ]]; then
+  p="$(to_path "$src")"
+  if [ ! -f "$p" ]; then
+    echo "fatal error: An error occurred (404) when calling the HeadObject operation: Key \"${src}\" does not exist" >&2
+    exit 1
+  fi
+  if [ "$dst" = - ]; then cat "$p"; else cp "$p" "$dst"; fi
+else
+  p="$(to_path "$dst")"
+  mkdir -p "$(dirname "$p")"
+  cp "$src" "$p"
+fi

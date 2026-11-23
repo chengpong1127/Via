@@ -56,9 +56,28 @@ Values never go through OpenTofu. Create them once:
     aws ssm put-parameter --region ap-east-2 --type SecureString --name /via/prod/TDX_CLIENT_ID --value '...'
     aws ssm put-parameter --region ap-east-2 --type SecureString --name /via/prod/TDX_CLIENT_SECRET --value '...'
 
-## 4. Data
+## 4. Data: publish and load
 
-Put the static artifact and Valhalla files on the data volume before the first deploy, otherwise the server's startup probe times out: copy a static build to `/var/lib/via/static/<build-id>`, point the relative symlink `current` at it (`ln -sfn <build-id> /var/lib/via/static/current`), and put Valhalla tiles and `valhalla.json` in `/var/lib/via/valhalla`. The artifact fetch job (separate task) automates this; until then use `aws s3 sync` from a Session Manager shell.
+Artifacts travel through the private artifact bucket (`artifact_bucket` output). Nothing in the cluster holds AWS credentials: `fetch.sh` runs on the node host as root and uses the instance profile (IMDS hop limit 1 keeps pods out).
+
+Publish from a machine with AWS credentials (owner or CI), with `VIA_ARTIFACT_BUCKET` set:
+
+    server/deploy/aws/artifacts/publish.sh server/data/build/<build-id> \
+      --tiles server/var/valhalla --tiles-id <tiles-id>
+
+The static file is zstd-compressed with its sha256 and uploaded to `static/<build-id>/`; the `static/latest` pointer is written last. Tiles (without `*.osm.pbf`) go to `valhalla/<tiles-id>/` with `valhalla/latest`. Re-publishing the same id with identical content is a no-op; different content under an existing id is refused.
+
+On the node (bootstrap already installed zstd and enabled a daily timer, `via-artifact-fetch.timer`, 05:00 Asia/Taipei), the first load is manual, before the first deploy so the server's startup probe finds data:
+
+    sudo /opt/via/server/deploy/aws/artifacts/fetch.sh
+
+It downloads the pointer target, verifies sha256, unpacks to `/var/lib/via/static/builds/<id>`, validates, atomically switches the relative `current` symlink and restarts and waits for `deploy/server`; tiles are unpacked into `/var/lib/via/valhalla` (the previous tiles move to `/var/lib/via/valhalla-builds`) and `deploy/valhalla` is restarted. If the deployments do not exist yet (brand-new node), the restart is skipped, so the first load can run before the first deploy. The last 3 builds are kept.
+
+Validation uses `via-data validate` when the binary is on the host's PATH. The server image does not ship `via-data`, so by default offline validation is reduced to a non-empty check and the readiness gate does the real work: if the server is not ready after the restart, the previous `current` is restored and the build is marked `<id>.rejected` (remove that file to retry). Set `VIA_VALIDATE_CMD` to use another validator.
+
+Refresh: publish a new build id, then wait for the timer, or run `fetch.sh --static` / `fetch.sh --tiles` on the node.
+
+Data rollback: `sudo fetch.sh --static <previous-id>` (kept builds are re-activated without re-downloading) and `sudo fetch.sh --tiles <previous-tiles-id>`; to point `latest` back for the timer, re-run `publish.sh` on the older build directory (identical content only rewrites the pointer).
 
 ## 5. First deploy
 

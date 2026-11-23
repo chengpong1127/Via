@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Via artifact refresh check
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 Asia/Taipei
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

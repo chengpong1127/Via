@@ -4,6 +4,7 @@ packages:
   - git
   - curl
   - unzip
+  - zstd
 write_files:
   - path: /etc/via-bootstrap.env
     permissions: "0644"
@@ -11,6 +12,7 @@ write_files:
       VIA_REGION=${region}
       VIA_SSM_PREFIX=${ssm_prefix}
       VIA_DATA_VOLUME_ID=${data_volume}
+      VIA_ARTIFACT_BUCKET=${artifact_bucket}
   - path: /usr/local/sbin/via-bootstrap
     permissions: "0755"
     content: |
