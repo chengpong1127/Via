@@ -1,7 +1,7 @@
 variable "region" {
-  description = "AWS region. ap-east-2 (Taipei) must be opted in on the account first."
+  description = "AWS region. Defaults to ap-southeast-2 (Sydney), the region a free-plan account is locked to for Taiwan contacts."
   type        = string
-  default     = "ap-east-2"
+  default     = "ap-southeast-2"
 }
 
 variable "instance_type" {
