@@ -60,3 +60,33 @@ Command (from `server/`): `VIA_PLACE=0|1 corridor_bench data/build/20261120T1633
   TDX request per scope. The live run checks this.
 - Latency was **not measurable**: the load average was ~490 (other agents compiling), and base
   p50 was 954 ms against 85 ms on a quiet machine. Rerun on a quiet machine before any PR.
+
+## Research artifact (2026-11-24 01:35)
+
+The Valhalla rebuild is blocked (OrbStack down), so the parent routes and headways are
+attached offline to the 2026-11-20 artifact:
+
+```
+attach_headways data/build/20261120T163303Z/.via-static.json data/fetch/bus-schedule-20261121 \
+  data/build/research-20261124/.via-static.json data/fetch/20261123T170000Z
+```
+
+- Bus/Route fetched 2026-11-24 01:02–01:28 with 61 s pacing (`examples/fetch_bus_routes.rs`):
+  22 cities, 3,108 routes, **2,958 bindings with a parent route**. The production artifact has 0.
+- Headways (Bus/Schedule 2026-11-21): 2,675 patterns from GTFS, 2,125 from TDX, 1,966 without,
+  223 unmapped TDX sub-routes; **2,128 Bus bindings carry estimate headways** (no GTFS trips).
+- Corridor search on the new artifact is identical to the old one in 100/100 scenarios
+  (the network is unchanged; only bindings differ).
+
+## Live run plan (daytime, needs Valhalla on :8002)
+
+```
+cd server && VIA_CONFIG=<via.toml with tdx.connect_timeout_ms=5000> VIA_VALHALLA_URL=http://127.0.0.1:8002/ \
+  live_compare data/build/research-20261124/.via-static.json ../research/live-scenarios.json out.jsonl \
+  base,place,est,place+est
+```
+
+Metrics: arrival > 30 s earlier or later vs base, walking-only count, transfers, walk
+time, TDX requests per variant, planning latency. ETA accuracy against TDX live: for
+each realtime bus leg, compare the departure Via used with a later N1 estimate for the same stop
+(follow-up probe).
