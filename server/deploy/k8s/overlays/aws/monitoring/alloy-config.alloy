@@ -158,7 +158,7 @@ prometheus.relabel "node" {
 
 	rule {
 		source_labels = ["__name__"]
-		regex         = "node_cpu_seconds_total|node_load(1|5|15)|node_memory_(MemTotal|MemAvailable|SwapTotal|SwapFree)_bytes|via_disk_(avail|size)_bytes|via_artifact_fetch_.*|up"
+		regex         = "node_cpu_seconds_total|node_load(1|5|15)|node_memory_(MemTotal|MemAvailable|SwapTotal|SwapFree)_bytes|via_disk_.*|via_artifact_fetch_.*|up"
 		action        = "keep"
 	}
 }

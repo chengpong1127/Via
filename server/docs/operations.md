@@ -103,6 +103,9 @@ The last `via-artifact-fetch.service` run failed (also fires as ArtifactFetchSta
 ### NodeMetricsMissing
 `node_memory_MemAvailable_bytes` or `via_disk_avail_bytes` has been absent for 15 minutes, so the node alerts are blind. Check Alloy (`kubectl -n via logs deploy/alloy`), then on the node `systemctl status via-disk-metric.timer` and `ls -l /var/lib/via/textfile`.
 
+### NodeDiskMetricStale
+`via_disk_last_run_timestamp_seconds` is older than 10 minutes: the timer is stopped or `df` is failing, so NodeDiskLow would use old values. `systemctl status via-disk-metric.timer via-disk-metric.service`, `journalctl -u via-disk-metric.service -n 20`, then `systemctl start via-disk-metric.service`. Staleness of the artifact fetch metric is covered by ArtifactFetchStale (no success for 3 days, which includes a stopped timer).
+
 ### ArtifactFetchMetricMissing
 No `via_artifact_fetch_last_run_timestamp_seconds` for a day: `systemctl list-timers via-artifact-fetch.timer`, `systemctl cat via-artifact-fetch.service` must show the `metrics.conf` drop-in, and `/var/lib/via/textfile/via_artifact_fetch.prom` must exist. `systemctl start via-artifact-fetch.service` writes it.
 

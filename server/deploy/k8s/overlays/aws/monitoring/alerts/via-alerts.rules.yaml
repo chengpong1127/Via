@@ -103,3 +103,10 @@ groups:
         annotations:
           summary: via-artifact-fetch has never written its metric (timer not installed or textfile unreadable)
           runbook: server/docs/operations.md#artifactfetchmetricmissing
+      - alert: NodeDiskMetricStale
+        expr: time() - via_disk_last_run_timestamp_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: via-disk-metric has not run for 10 minutes, so disk values are stale
+          runbook: server/docs/operations.md#nodediskmetricstale
