@@ -44,3 +44,19 @@ equivalent set is usually a single line.
   `examples/attach_headways.rs` from the 2026-11-21 Bus/Schedule snapshot.
 - Harness: `examples/live_compare.rs` with variants `base,place,est,place+est` in one
   process, one shared realtime cache, order rotated per scenario, 60 s per TDX request.
+
+## Offline result (2026-11-24 00:25, `corridor_bench`, 100 scenarios, 2026-11-20 artifact)
+
+Command (from `server/`): `VIA_PLACE=0|1 corridor_bench data/build/20261120T163303Z/.via-static.json out.jsonl 3`
+
+| | transit edges | legs / edge | routes / edge | edges with >1 route | first-ride routes | bus board stops / query (mean, p95) |
+| --- | --- | --- | --- | --- | --- | --- |
+| base (exact stop IDs) | 6,170 | 2.01 | 1.25 | 19.8 % | 1.27 | 23.5, 32 |
+| place (common lines) | 6,170 | 3.56 | 2.73 | 47.6 % | 1.72 | 39.1, 65 |
+
+- The retained corridors are identical in 100/100 scenarios. Place equivalence only widens the
+  set of lines that Phase 2 may board on each edge.
+- Realtime stops per plan rise by about 66 %, but `tdx.batch.bus_stops = 200` keeps them to one
+  TDX request per scope. The live run checks this.
+- Latency was **not measurable**: the load average was ~490 (other agents compiling), and base
+  p50 was 954 ms against 85 ms on a quiet machine. Rerun on a quiet machine before any PR.
