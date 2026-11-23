@@ -90,7 +90,7 @@ Via is under active development. Journey planning and nearby stops work end to e
 
 ## GitHub Pages
 
-The privacy policy and support pages live in `docs/` (plain static HTML, zh-Hant and
+GitHub Pages needs a public repository (or a plan that allows Pages on private ones). The privacy policy and support pages live in `docs/` (plain static HTML, zh-Hant and
 English). To publish them, enable Settings → Pages → Deploy from a branch → `main` /
 `docs`. They are then served at `https://chengpong1127.github.io/Via/privacy/` and
 `https://chengpong1127.github.io/Via/support/`, which the app's About screen links to.

@@ -12,11 +12,14 @@
 
 <section id="zh" lang="zh-Hant">
 <h1>Via 隱私權政策</h1>
-<p class="muted">最後更新：2026-11-23</p>
-<!-- OWNER: confirm -->
-<p>Via 是一款臺灣大眾運輸行程規劃 App。本政策說明 Via 會處理哪些資料，以及如何處理。</p>
+<!-- OWNER: confirm date -->
+<p class="muted">最後更新：2026-11-24</p>
+<!-- OWNER: confirm. Do not publish this policy before the server log-stripping change has merged and is deployed. -->
+<!-- OWNER: confirm data controller name -->
+<p>資料控管者：【待填：姓名或名稱】。Via 是一款臺灣大眾運輸行程規劃 App。本政策說明 Via 會處理哪些資料，以及如何處理。</p>
 
 <h2>我們不做的事</h2>
+<!-- OWNER: confirm -->
 <ul>
 <li>沒有帳號、不需登入。</li>
 <li>不追蹤你，不做跨 App 或跨網站的追蹤。</li>
@@ -26,15 +29,26 @@
 
 <h2>位置資料</h2>
 <p>Via 在你允許時使用裝置的精確位置，用於顯示你在地圖上的位置、規劃從你所在位置出發的行程，以及在導航期間持續提供引導（包含螢幕鎖定時）。你可以隨時在「設定」中關閉位置權限。</p>
-<p>規劃行程時，起點與終點座標會傳送到 Via 伺服器，僅用於計算行程。</p>
+<p>以下情況會將座標傳送到 Via 伺服器，且僅用於計算結果：</p>
+<ul>
+<li>規劃行程時：起點與終點的座標與顯示名稱（起點可能是你目前的位置）。</li>
+<li>查看附近站牌時：你查詢的地圖位置座標。</li>
+<li>導航期間 Via 重新規劃路線時（最多每分鐘一次）：你目前的位置與目的地。</li>
+</ul>
 <!-- OWNER: confirm -->
-<p>Via 伺服器不保留請求中的座標：不會將座標寫入紀錄，也不會儲存你的行程歷史。</p>
+<p>Via 伺服器不會記錄這些座標，也不會儲存你的行程歷史。座標不會傳送給 TDX 或其他第三方；伺服器向 TDX 查詢即時資料時，只會傳送站牌與路線識別碼。路線計算使用我們自行架設的服務。</p>
 
-<h2>地點搜尋</h2>
-<p>地點搜尋使用 Apple 地圖（MapKit）。你輸入的搜尋文字會依 Apple 的隱私權政策由 Apple 處理，不會經過 Via 伺服器。</p>
+<h2>保存與刪除</h2>
+<!-- OWNER: confirm -->
+<p>座標只在記憶體中處理，回應送出後即捨棄。Via 不持有任何個人資料，因此沒有可供刪除或匯出的資料。</p>
+<!-- OWNER: confirm retention period -->
+<p>基礎設施紀錄可能保留 IP 位址與時間戳記最多【待填：N】天，其中不含座標。</p>
+
+<h2>地圖與地點搜尋</h2>
+<p>地圖顯示與地點搜尋使用 Apple 地圖（MapKit），由 Apple 依 Apple 的隱私權政策處理。你輸入的搜尋文字不會經過 Via 伺服器。</p>
 
 <h2>儲存在你裝置上的資料</h2>
-<p>你選擇的交通方式偏好與已選地點等設定只儲存在你的裝置上（UserDefaults），不會上傳。</p>
+<p>你選擇的交通方式偏好與已選地點等設定只儲存在你裝置的本機，不會上傳。</p>
 
 <h2>資料來源</h2>
 <ul>
@@ -45,24 +59,27 @@
 
 <h2>兒童</h2>
 <!-- OWNER: confirm -->
-<p>Via 不會刻意蒐集兒童的個人資料；本 App 不需要任何個人資料即可使用。</p>
+<p>Via 不會刻意蒐集兒童的個人資料；本 App 不需要任何個人資料即可使用，也沒有年齡限制內容。</p>
 
 <h2>政策變更</h2>
 <!-- OWNER: confirm -->
 <p>若本政策有重大變更，我們會更新本頁面及上方日期。</p>
 
 <h2>聯絡我們</h2>
-<!-- OWNER: confirm -->
-<p>如有疑問，請見<a href="../support/">支援頁面</a>。</p>
+<!-- OWNER: confirm contact email -->
+<p>隱私相關問題請來信：【待填：電子郵件】。一般問題與回報請見<a href="../support/">支援頁面</a>。</p>
 </section>
 
 <section id="en" lang="en">
 <h1>Via Privacy Policy</h1>
-<p class="muted">Last updated: 2026-11-23</p>
-<!-- OWNER: confirm -->
-<p>Via is a public transport journey planner for Taiwan. This policy explains what data Via handles and how.</p>
+<!-- OWNER: confirm date -->
+<p class="muted">Last updated: 2026-11-24</p>
+<!-- OWNER: confirm. Do not publish this policy before the server log-stripping change has merged and is deployed. -->
+<!-- OWNER: confirm data controller name -->
+<p>Data controller: [TODO: name]. Via is a public transport journey planner for Taiwan. This policy explains what data Via handles and how.</p>
 
 <h2>What we do not do</h2>
+<!-- OWNER: confirm -->
 <ul>
 <li>No accounts and no sign-in.</li>
 <li>No tracking, across apps or websites.</li>
@@ -72,15 +89,26 @@
 
 <h2>Location</h2>
 <p>With your permission, Via uses your device's precise location to show where you are on the map, to plan trips starting from your position, and to keep guiding you during navigation, including while your screen is locked. You can turn location off at any time in Settings.</p>
-<p>When you plan a trip, the origin and destination coordinates are sent to the Via server solely to compute the trip.</p>
+<p>Coordinates are sent to the Via server, solely to compute the result, when:</p>
+<ul>
+<li>you plan a trip: the origin and destination coordinates and display names (the origin may be your current location);</li>
+<li>you view nearby stops: the coordinates of the map area you look up;</li>
+<li>Via re-plans during navigation (at most once a minute): your current location and your destination.</li>
+</ul>
 <!-- OWNER: confirm -->
-<p>The Via server does not keep request coordinates: they are not written to logs and no trip history is stored.</p>
+<p>The Via server does not record these coordinates and keeps no trip history. Coordinates are not sent to TDX or any other third party; when the server fetches live data from TDX it sends only stop and route identifiers. Route calculation runs on services we host ourselves.</p>
 
-<h2>Place search</h2>
-<p>Place search uses Apple Maps (MapKit). The text you type is handled by Apple under Apple's privacy policy and does not pass through the Via server.</p>
+<h2>Retention and deletion</h2>
+<!-- OWNER: confirm -->
+<p>Coordinates are processed in memory and discarded once the response is sent. Via holds no personal data, so there is nothing to delete or export.</p>
+<!-- OWNER: confirm retention period -->
+<p>Infrastructure logs may keep your IP address and a timestamp, without coordinates, for up to [TODO: N] days.</p>
+
+<h2>Maps and place search</h2>
+<p>Apple Maps (MapKit), including map display and place search, is handled by Apple under Apple's privacy policy. The text you type into search does not pass through the Via server.</p>
 
 <h2>Data stored on your device</h2>
-<p>Settings such as your selected transport modes and selected places are stored only on your device (UserDefaults) and are never uploaded.</p>
+<p>Settings such as your selected transport modes and selected places are stored only locally on your device and are never uploaded.</p>
 
 <h2>Data sources</h2>
 <ul>
@@ -91,15 +119,15 @@
 
 <h2>Children</h2>
 <!-- OWNER: confirm -->
-<p>Via does not knowingly collect personal information from children; the app needs no personal information to work.</p>
+<p>Via does not knowingly collect personal information from children; the app needs no personal information to work and has no age-gated content.</p>
 
 <h2>Changes to this policy</h2>
 <!-- OWNER: confirm -->
 <p>If this policy changes materially, we will update this page and the date above.</p>
 
 <h2>Contact</h2>
-<!-- OWNER: confirm -->
-<p>For questions, see the <a href="../support/">support page</a>.</p>
+<!-- OWNER: confirm contact email -->
+<p>For privacy questions, write to [TODO: email]. For general questions and bug reports, see the <a href="../support/">support page</a>.</p>
 </section>
 </main>
 </body>
