@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER};
+use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER, redirect::Policy};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -153,10 +153,12 @@ impl TdxClient {
             client: http_client(
                 &settings,
                 Duration::from_millis(settings.request_timeout_ms),
+                Policy::none(),
             )?,
             download_client: http_client(
                 &settings,
                 Duration::from_secs(settings.download_timeout_seconds),
+                Policy::default(),
             )?,
             credentials,
             api_base_url,
@@ -189,17 +191,17 @@ impl TdxClient {
             ])
             .send()
             .await
-            .map_err(|error| TdxClientError::OAuthRequest(error.without_url()))?;
+            .map_err(|error| TdxClientError::OAuthRequest(redact_url(error)))?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited(response.headers()));
         }
         let response = response
             .error_for_status()
-            .map_err(|error| TdxClientError::OAuthRequest(error.without_url()))?;
+            .map_err(|error| TdxClientError::OAuthRequest(redact_url(error)))?;
         let token = response
             .json::<OAuthTokenResponse>()
             .await
-            .map_err(|error| TdxClientError::InvalidOAuthResponse(error.without_url()))?;
+            .map_err(|error| TdxClientError::InvalidOAuthResponse(redact_url(error)))?;
         if token.access_token.trim().is_empty() {
             return Err(TdxClientError::InvalidConfiguration);
         }
@@ -241,7 +243,7 @@ impl TdxClient {
                 .bearer_auth(&token)
                 .send()
                 .await
-                .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?;
+                .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
                     && retries < max_rate_limit_retries
@@ -254,7 +256,7 @@ impl TdxClient {
             }
             return response
                 .error_for_status()
-                .map_err(|error| TdxClientError::ApiRequest(error.without_url()));
+                .map_err(|error| TdxClientError::ApiRequest(redact_url(error)));
         }
     }
 
@@ -287,7 +289,7 @@ impl TdxClient {
         let body = response
             .bytes()
             .await
-            .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?;
+            .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))?;
         if body.len() > self.settings.max_response_bytes {
             return Err(TdxClientError::ResponseTooLarge);
         }
@@ -326,7 +328,7 @@ impl TdxClient {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?
+            .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))?
         {
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
                 .await
@@ -340,13 +342,26 @@ impl TdxClient {
     }
 }
 
-fn http_client(settings: &TdxSettings, timeout: Duration) -> Result<Client, TdxClientError> {
+fn redact_url(mut error: reqwest::Error) -> reqwest::Error {
+    if let Some(url) = error.url_mut() {
+        url.set_query(None);
+        url.set_fragment(None);
+    }
+    error
+}
+
+fn http_client(
+    settings: &TdxSettings,
+    timeout: Duration,
+    redirects: Policy,
+) -> Result<Client, TdxClientError> {
     Client::builder()
+        .redirect(redirects)
         .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
         .timeout(timeout)
         .user_agent("via-data/1.0")
         .build()
-        .map_err(|error| TdxClientError::ApiRequest(error.without_url()))
+        .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))
 }
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {

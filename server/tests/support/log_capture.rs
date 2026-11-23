@@ -1,6 +1,6 @@
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Once},
 };
 
 use tracing_subscriber::fmt::MakeWriter;
@@ -34,6 +34,11 @@ impl<'a> MakeWriter<'a> for CapturedLogs {
 }
 
 pub fn capture_trace_logs() -> (CapturedLogs, tracing::subscriber::DefaultGuard) {
+    static BRIDGE: Once = Once::new();
+    BRIDGE.call_once(|| {
+        let _ = tracing_log::LogTracer::init();
+        log::set_max_level(log::LevelFilter::Trace);
+    });
     let logs = CapturedLogs::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)

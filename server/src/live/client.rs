@@ -40,6 +40,7 @@ impl GatewayLiveData {
             base_url.set_path(&format!("{}/", base_url.path()));
         }
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
             .timeout(Duration::from_millis(
                 settings

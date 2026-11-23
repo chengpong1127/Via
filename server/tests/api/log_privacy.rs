@@ -7,6 +7,7 @@ use crate::support::{
 };
 use axum::{
     Json, Router,
+    response::IntoResponse,
     routing::{get, post},
 };
 use axum::{
@@ -28,8 +29,17 @@ use via_server::{
     street::FakeStreetRouter,
 };
 
-const SECRET_LATITUDES: [&str; 3] = ["25.03817", "25.04291", "25.03911"];
-const SECRET_LONGITUDES: [&str; 3] = ["121.56349", "121.51872", "121.53407"];
+const SECRET_LATITUDES: [&str; 6] = [
+    "25.03817", "25.04291", "25.03911", "25.038", "25.043", "25.039",
+];
+const SECRET_LONGITUDES: [&str; 6] = [
+    "121.56349",
+    "121.51872",
+    "121.53407",
+    "121.563",
+    "121.519",
+    "121.534",
+];
 
 fn stop(id: &str, name: &str, latitude: f64, longitude: f64) -> TransitStop {
     TransitStop::new(
@@ -179,12 +189,19 @@ fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
-#[tokio::test]
-async fn upstream_http_errors_do_not_carry_request_query_values() {
+async fn failing_upstream_error_text(token_status: StatusCode) -> (String, String) {
+    let (logs, _guard) = capture_trace_logs();
     let app = Router::new()
         .route(
             "/",
-            post(|| async { Json(json!({"access_token": "fixture-token", "expires_in": 300})) }),
+            post(move || async move {
+                if token_status.is_success() {
+                    Json(json!({"access_token": "fixture-token", "expires_in": 300}))
+                        .into_response()
+                } else {
+                    token_status.into_response()
+                }
+            }),
         )
         .route(
             "/{*path}",
@@ -200,13 +217,34 @@ async fn upstream_http_errors_do_not_carry_request_query_values() {
         .await
         .unwrap_err();
 
-    let text = error_chain(&error);
-    assert!(text.contains("TDX API request failed"));
+    (error_chain(&error), logs.text())
+}
+
+#[tokio::test]
+async fn upstream_api_errors_do_not_carry_request_query_values() {
+    let (error, logs) = failing_upstream_error_text(StatusCode::OK).await;
+
+    assert!(error.contains("TDX API request failed"));
     for secret in ["25.03911", "121.53407"] {
         assert!(
-            !text.contains(secret),
-            "{secret} leaked into error:\n{text}"
+            !error.contains(secret),
+            "{secret} leaked into error:\n{error}"
         );
+        assert!(!logs.contains(secret), "{secret} leaked into logs:\n{logs}");
+    }
+}
+
+#[tokio::test]
+async fn upstream_oauth_errors_do_not_carry_request_query_values() {
+    let (error, logs) = failing_upstream_error_text(StatusCode::INTERNAL_SERVER_ERROR).await;
+
+    assert!(error.contains("TDX OAuth request failed"));
+    for secret in ["25.03911", "121.53407"] {
+        assert!(
+            !error.contains(secret),
+            "{secret} leaked into error:\n{error}"
+        );
+        assert!(!logs.contains(secret), "{secret} leaked into logs:\n{logs}");
     }
 }
 
