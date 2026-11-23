@@ -34,8 +34,13 @@ mount_data_volume() {
       echo "data volume $device did not appear" >&2
       exit 1
     fi
-    if ! blkid "$device" >/dev/null 2>&1; then
+    local fstype rc=0
+    fstype="$(blkid -o value -s TYPE "$device")" || rc=$?
+    if [ "$rc" -eq 2 ]; then
       mkfs.ext4 -L via-data "$device"
+    elif [ "$rc" -ne 0 ] || [ -z "$fstype" ]; then
+      echo "cannot determine filesystem of $device (blkid rc=$rc); refusing to format" >&2
+      exit 1
     fi
     grep -q 'LABEL=via-data' /etc/fstab || echo "LABEL=via-data $DATA_DIR ext4 defaults,nofail 0 2" >>/etc/fstab
     mkdir -p "$DATA_DIR"
