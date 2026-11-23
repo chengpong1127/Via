@@ -2,7 +2,7 @@ groups:
   - name: via
     rules:
       - alert: ViaReadinessDown
-        expr: probe_success{job="via-ready", name="server"} == 0
+        expr: probe_success{name="server"} == 0
         for: 3m
         labels:
           severity: critical
@@ -10,7 +10,7 @@ groups:
           summary: Via server /health/ready is failing
           runbook: server/docs/operations.md#viareadinessdown
       - alert: TdxGatewayNotReady
-        expr: probe_success{job="via-ready", name="tdx-gateway"} == 0
+        expr: probe_success{name="tdx-gateway"} == 0
         for: 5m
         labels:
           severity: warning
@@ -29,12 +29,13 @@ groups:
         expr: |
           histogram_quantile(0.95,
             sum by (le) (rate(via_planner_multimodal_search_duration_seconds_bucket[10m]))) > 8
+          and sum(rate(via_planner_multimodal_search_duration_seconds_count[10m])) > 0.05
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: p95 multimodal search time above 8s
-          runbook: server/docs/operations.md#vialatencyhigh
+          runbook: server/docs/operations.md#viaplanlatencyhigh
       - alert: ViaPlanFailuresHigh
         expr: |
           sum(increase(via_planning_failures_total[15m]))
@@ -63,8 +64,8 @@ groups:
           runbook: server/docs/operations.md#nodememorylow
       - alert: NodeDiskLow
         expr: |
-          node_filesystem_avail_bytes{mountpoint=~"/|/var/lib/via"}
-            / node_filesystem_size_bytes{mountpoint=~"/|/var/lib/via"} < 0.15
+          via_disk_avail_bytes{mountpoint=~"/|/var/lib/via"}
+            / via_disk_size_bytes{mountpoint=~"/|/var/lib/via"} < 0.15
         for: 15m
         labels:
           severity: warning
@@ -86,3 +87,19 @@ groups:
         annotations:
           summary: No successful artifact fetch for 3 days
           runbook: server/docs/operations.md#artifactfetchfailed
+      - alert: NodeMetricsMissing
+        expr: absent(node_memory_MemAvailable_bytes) or absent(via_disk_avail_bytes)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Node memory or disk metrics are missing, so the node alerts cannot fire
+          runbook: server/docs/operations.md#nodemetricsmissing
+      - alert: ArtifactFetchMetricMissing
+        expr: absent(via_artifact_fetch_last_run_timestamp_seconds)
+        for: 1d
+        labels:
+          severity: warning
+        annotations:
+          summary: via-artifact-fetch has never written its metric (timer not installed or textfile unreadable)
+          runbook: server/docs/operations.md#artifactfetchmetricmissing

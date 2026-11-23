@@ -24,7 +24,9 @@ Rotate the token the same way. Check the pod: `kubectl -n via logs deploy/alloy 
     mimirtool rules load --address=https://prometheus-prod-XX-REGION.grafana.net \
       --id=<user> --key=<rules-token> deploy/k8s/overlays/aws/monitoring/alerts/via-alerts.rules.yaml
 
-Then in Grafana, Alerting, Contact points: add an email (or Slack) contact point and route alerts to it with the default notification policy. Reloading the file replaces the `via` group.
+Check the file first: `promtool check rules deploy/k8s/overlays/aws/monitoring/alerts/via-alerts.rules.yaml` (brew install prometheus). Then in Grafana, Alerting, Contact points: add an email (or Slack) contact point and route alerts to it with the default notification policy. Reloading the file replaces the `via` group.
+
+After the first deploy, check in Explore that `probe_success` has a `name` label with values `server` and `tdx-gateway`; if it does not, the ViaReadinessDown and TdxGatewayNotReady rules never fire, so fix the relabel in `alloy-config.alloy` (`discovery.relabel "ready"`) first. Also check that `via_disk_avail_bytes` and `via_artifact_fetch_last_success` exist (the install runs both units once).
 
 ### 3. External uptime check
 
@@ -32,16 +34,18 @@ Alloy cannot see an outage of the node itself, so add an outside check on `https
 
 ## What is collected
 
-Series stay under about 1000 active (budget 10000). Everything is allow-listed in `alloy-config.alloy`:
+Series stay well under the 10000 budget (an estimate of about 1000, not measured: check Grafana Cloud's usage page after the first day). Everything is allow-listed in `alloy-config.alloy`:
 
 | Source | Kept | Notes |
 | --- | --- | --- |
 | server pods (2), scraped per pod, 30s | `via_*`, `up` | `job="server"`, `instance=<pod>`. Labels are only `dataset`/`reason`, so no per-request or per-location label exists. |
 | tdx-gateway pod, 30s | `via_*`, `up` | `job="tdx-gateway"` |
-| readiness probes, 30s | `probe_success`, `probe_duration_seconds` | `job="via-ready"`, `name="server"` or `"tdx-gateway"`, through the Services |
-| node (embedded node exporter), 60s | `node_cpu_seconds_total`, `node_load1/5/15`, `node_memory_{MemTotal,MemAvailable,SwapTotal,SwapFree}_bytes`, `node_filesystem_{avail,size}_bytes` (real filesystems only), `via_artifact_fetch_*` | `job="node"`, `instance="via-node"` |
+| readiness probes, 30s | `probe_success`, `probe_duration_seconds` | `job="via-ready"`, `name="server"` or `"tdx-gateway"` (set by an explicit relabel from the probe target URL), through the Services |
+| node (embedded node exporter), 60s | `node_cpu_seconds_total`, `node_load1/5/15`, `node_memory_{MemTotal,MemAvailable,SwapTotal,SwapFree}_bytes`, `via_disk_{avail,size}_bytes` for `/` and `/var/lib/via` (textfile written every minute by `via-disk-metric.timer`), `via_artifact_fetch_*` | `job="node"`, `instance="via-node"` |
 
 Nothing from Traefik, Valhalla or cert-manager is scraped. The `/metrics` endpoint is never routed by the ingress and is reachable only by Alloy (NetworkPolicy `allow-alloy-to-metrics`). The metrics are location-free by design.
+
+Alloy privileges: the pod runs as non-root (65534) with a read-only root filesystem, no capabilities and no privilege escalation. It mounts `/proc` and `/sys` read-only and `/var/lib/via/textfile` read-only; the host root and k3s state are not mounted (disk usage comes from the textfile instead). Residual risk: it holds the Grafana token, has internet egress, can list pods in `via` (Role `alloy-discovery`), and `/proc` exposes process command lines and environment of other host processes to a non-root reader only where permissions allow (same-uid or world-readable entries). Treat a compromised Alloy as leaking that metadata and its own token; the token is write-only for metrics.
 
 Container logs are NOT shipped. Grafana Cloud free keeps logs for 14 days and the free plan does not let you shorten it (only Support can customize retention), which would break the 7-day privacy bound. Logs are read on the node (below).
 
@@ -61,7 +65,7 @@ Explore (Grafana Cloud) queries:
 - TDX 429 pauses: `sum(increase(via_live_rate_limit_blocks_total[1h]))`; bus 429s: `sum(increase(via_bus_timing_rate_limited_requests_total[1h]))`
 - TDX upstream calls by dataset: `sum by (dataset) (rate(via_live_upstream_requests_total[5m]))`; gateway latency: `histogram_quantile(0.95, sum by (dataset, le) (rate(via_tdx_gateway_request_seconds_bucket[10m])))`
 - Memory available: `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes`
-- Disk free: `node_filesystem_avail_bytes / node_filesystem_size_bytes`
+- Disk free: `via_disk_avail_bytes / via_disk_size_bytes`
 - CPU: `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))` (planning is CPU-bound; sustained near 1 means capacity)
 - Artifact: `via_artifact_fetch_last_success`, `time() - via_artifact_fetch_last_success_timestamp_seconds`
 
@@ -79,7 +83,7 @@ The gateway pod is not ready. Plans still work but without live data. `kubectl -
 Prometheus has no successful `up` for the server or the gateway for 10 minutes: Alloy is down, the credentials are rejected, or the pods are gone. `kubectl -n via logs deploy/alloy`; confirm the `grafana-cloud` Secret and token expiry. If readiness alerts still fire, they come from Alloy too, so also rely on the external uptime check.
 
 ### ViaPlanLatencyHigh
-p95 search time over 8s for 10 minutes. The request timeout is 10s, so users are about to see failures. Check CPU (`kubectl top pods -n via`, node CPU query): the server is CPU-bound with `max_concurrent_requests=3`. Look for a load spike (plans per minute), a TDX slowdown (gateway latency) or a Valhalla problem. The per-IP limits (30 plans per minute, 10 in flight) are in `overlays/aws/middlewares.yaml`.
+p95 search time over 8s for 10 minutes, only while there is traffic (more than 0.05 searches per second). This is an early warning, not a complete latency signal: the histogram is recorded only when the search succeeds, and covers the search phase only. Timeouts and overload therefore do not appear in it; a quiet p95 together with a high failure ratio (ViaPlanFailuresHigh) means requests are timing out. The request timeout is 10s, so users are about to see failures. Check CPU (`kubectl top pods -n via`, node CPU query): the server is CPU-bound with `max_concurrent_requests=3`. Look for a load spike (plans per minute), a TDX slowdown (gateway latency) or a Valhalla problem. The per-IP limits (30 plans per minute, 10 in flight) are in `overlays/aws/middlewares.yaml`.
 
 ### ViaPlanFailuresHigh
 More than 20% of plan requests failed over 15 minutes (at least 10 requests). `kubectl -n via logs deploy/server --tail=200 | grep -i error` (logs contain method, path, status and error code, never coordinates). Typical causes: Valhalla down, deadline exceeded under load, bad data build.
@@ -91,10 +95,16 @@ TDX returned 429 and the live cache paused all live calls for `Retry-After` (or 
 Under 10% of the 8 GiB available for 10 minutes. The server limit is 2Gi per pod. `kubectl top pods -A`; look for a restarting or leaking pod (`kubectl -n via get pods` restarts, OOMKilled in `describe`). Restart the offender; if it recurs, lower load or move to a larger instance.
 
 ### NodeDiskLow
-Under 15% free on `/` or `/var/lib/via` for 15 minutes. On the node: `df -h`, `du -xh /var/lib/via --max-depth=2 | sort -h | tail`. Old static builds (last 3 are kept) and tile builds (`/var/lib/via/valhalla-builds`) are the largest safe deletions; `journalctl --disk-usage`; `crictl images` and `k3s crictl rmi --prune` for images.
+Under 15% free on `/` or `/var/lib/via` for 15 minutes (`via_disk_*` metrics). On the node: `df -h`, `du -xh /var/lib/via --max-depth=2 | sort -h | tail`. Old static builds (last 3 are kept) and tile builds (`/var/lib/via/valhalla-builds`) are the largest safe deletions; `journalctl --disk-usage`; `crictl images` and `k3s crictl rmi --prune` for images.
 
 ### ArtifactFetchFailed
 The last `via-artifact-fetch.service` run failed (also fires as ArtifactFetchStale after 3 days without a success). `journalctl -u via-artifact-fetch.service -n 100`; look for `.rejected` files in `/var/lib/via/static/builds`; the previous build stays active. Fix the artifact, then publish a new build id or `fetch.sh --static` (deploy-aws.md section 4). Re-run the unit to refresh the metric: `systemctl start via-artifact-fetch.service`.
+
+### NodeMetricsMissing
+`node_memory_MemAvailable_bytes` or `via_disk_avail_bytes` has been absent for 15 minutes, so the node alerts are blind. Check Alloy (`kubectl -n via logs deploy/alloy`), then on the node `systemctl status via-disk-metric.timer` and `ls -l /var/lib/via/textfile`.
+
+### ArtifactFetchMetricMissing
+No `via_artifact_fetch_last_run_timestamp_seconds` for a day: `systemctl list-timers via-artifact-fetch.timer`, `systemctl cat via-artifact-fetch.service` must show the `metrics.conf` drop-in, and `/var/lib/via/textfile/via_artifact_fetch.prom` must exist. `systemctl start via-artifact-fetch.service` writes it.
 
 ## TDX 429 incident steps
 

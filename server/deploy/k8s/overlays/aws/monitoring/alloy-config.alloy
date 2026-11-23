@@ -92,8 +92,23 @@ prometheus.exporter.blackbox "ready" {
 	}
 }
 
+discovery.relabel "ready" {
+	targets = prometheus.exporter.blackbox.ready.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "via-ready"
+	}
+
+	rule {
+		source_labels = ["__param_target"]
+		regex         = "http://([^:/]+):.*"
+		target_label  = "name"
+	}
+}
+
 prometheus.scrape "ready" {
-	targets         = prometheus.exporter.blackbox.ready.targets
+	targets         = discovery.relabel.ready.output
 	forward_to      = [prometheus.relabel.ready.receiver]
 	scrape_interval = "30s"
 	scrape_timeout  = "10s"
@@ -112,14 +127,8 @@ prometheus.relabel "ready" {
 prometheus.exporter.unix "node" {
 	procfs_path = "/host/proc"
 	sysfs_path  = "/host/sys"
-	rootfs_path = "/host/root"
 
-	set_collectors = ["cpu", "meminfo", "filesystem", "loadavg", "textfile"]
-
-	filesystem {
-		fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|tmpfs)$"
-		mount_points_exclude = "^/(dev|proc|sys|run|var/lib/kubelet|var/lib/via/k3s|var/lib/containerd)($|/)"
-	}
+	set_collectors = ["cpu", "meminfo", "loadavg", "textfile"]
 
 	textfile {
 		directory = "/host/textfile"
@@ -151,7 +160,7 @@ prometheus.relabel "node" {
 
 	rule {
 		source_labels = ["__name__"]
-		regex         = "node_cpu_seconds_total|node_load(1|5|15)|node_memory_(MemTotal|MemAvailable|SwapTotal|SwapFree)_bytes|node_filesystem_(avail|size)_bytes|via_artifact_fetch_.*|up"
+		regex         = "node_cpu_seconds_total|node_load(1|5|15)|node_memory_(MemTotal|MemAvailable|SwapTotal|SwapFree)_bytes|via_disk_(avail|size)_bytes|via_artifact_fetch_.*|up"
 		action        = "keep"
 	}
 }

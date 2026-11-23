@@ -41,6 +41,12 @@ spec:
         app: alloy
     spec:
       serviceAccountName: alloy
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: alloy
           image: grafana/alloy:v1.10.2
@@ -76,6 +82,11 @@ spec:
               path: /-/ready
               port: http
             periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: 50m
@@ -94,10 +105,8 @@ spec:
             - name: sys
               mountPath: /host/sys
               readOnly: true
-            - name: root
-              mountPath: /host/root
-              readOnly: true
-              mountPropagation: HostToContainer
+            - name: tmp
+              mountPath: /tmp
             - name: textfile
               mountPath: /host/textfile
               readOnly: true
@@ -113,9 +122,8 @@ spec:
         - name: sys
           hostPath:
             path: /sys
-        - name: root
-          hostPath:
-            path: /
+        - name: tmp
+          emptyDir: {}
         - name: textfile
           hostPath:
             path: /var/lib/via/textfile
