@@ -41,18 +41,23 @@ nonisolated struct HTTPJourneyPlanner: JourneyPlanner {
 }
 
 nonisolated enum ViaServer {
+    static let unconfiguredURL = URL(string: "https://unconfigured.invalid")!
+
     static var baseURL: URL {
         let configured = Bundle.main.object(forInfoDictionaryKey: "VIA_API_BASE_URL") as? String
-        if let configured, let url = URL(string: configured), url.host() != nil {
-#if !DEBUG
-            precondition(url.scheme == "https", "VIA_API_BASE_URL must use HTTPS in Release builds")
-#endif
-            return url
-        }
 #if DEBUG
-        return URL(string: "http://127.0.0.1:3000")!
+        return validatedURL(configured, allowsInsecure: true) ?? URL(string: "http://127.0.0.1:3000")!
 #else
-        preconditionFailure("VIA_API_BASE_URL must be configured for Release builds")
+        return validatedURL(configured, allowsInsecure: false) ?? unconfiguredURL
 #endif
+    }
+
+    static func validatedURL(_ configured: String?, allowsInsecure: Bool) -> URL? {
+        guard let configured,
+              let url = URL(string: configured.trimmingCharacters(in: .whitespaces)),
+              url.host() != nil,
+              let scheme = url.scheme?.lowercased()
+        else { return nil }
+        return scheme == "https" || (allowsInsecure && scheme == "http") ? url : nil
     }
 }
