@@ -9,5 +9,7 @@ spec:
       spec:
         externalTrafficPolicy: Local
     logs:
+      general:
+        level: ERROR
       access:
         enabled: false
