@@ -39,6 +39,11 @@ struct AboutInfoTests {
         #expect(AboutInfo(infoDictionary: [:]).privacyPolicyURL == nil)
     }
 
+    @Test func trimsSurroundingNewlinesFromLinks() {
+        let info = AboutInfo(infoDictionary: ["VIA_SUPPORT_URL": "https://example.com/support\n"])
+        #expect(info.supportURL == URL(string: "https://example.com/support"))
+    }
+
     @Test func attributionDisplayTextJoinsTextAndLicence() {
         let attribution = Attribution(text: "© OpenStreetMap contributors", url: nil, licence: "ODbL")
         #expect(attribution.displayText == "© OpenStreetMap contributors · ODbL")

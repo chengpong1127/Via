@@ -17,16 +17,10 @@ struct AboutInfo {
     static var current: AboutInfo { AboutInfo(infoDictionary: Bundle.main.infoDictionary) }
 
     private static func webURL(_ value: Any?) -> URL? {
-        guard let string = (value as? String)?.trimmingCharacters(in: .whitespaces),
+        guard let string = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               let url = URL(string: string),
               ["http", "https"].contains(url.scheme?.lowercased())
         else { return nil }
         return url
-    }
-}
-
-extension Attribution {
-    var displayText: String {
-        licence.isEmpty ? text : "\(text) · \(licence)"
     }
 }

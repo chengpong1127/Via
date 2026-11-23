@@ -22,8 +22,10 @@ struct AboutView: View {
                     )
                     SourceRow(
                         name: "MOTC TDX",
-                        detail: "Data from MOTC TDX platform. Open Government Data License, version 1.0.",
-                        url: URL(string: "https://tdx.transportdata.tw")
+                        detail: "Data from MOTC TDX platform.",
+                        url: URL(string: "https://tdx.transportdata.tw"),
+                        licence: "Open Government Data License, version 1.0",
+                        licenceURL: URL(string: "https://data.gov.tw/license")
                     )
                     SourceRow(name: "GTFS", detail: "Transit schedules and routes from TDX.", url: nil)
                     SourceRow(name: "YouBike", detail: "Bike availability from TDX.", url: nil)
@@ -55,6 +57,8 @@ private struct SourceRow: View {
     let name: LocalizedStringKey
     let detail: LocalizedStringKey
     let url: URL?
+    var licence: LocalizedStringKey?
+    var licenceURL: URL?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -66,6 +70,10 @@ private struct SourceRow: View {
             Text(detail)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if let licence, let licenceURL {
+                Link(licence, destination: licenceURL)
+                    .font(.footnote)
+            }
         }
     }
 }
@@ -77,7 +85,8 @@ struct AboutButton: View {
         Button("About", systemImage: "info.circle") { isPresented = true }
             .labelStyle(.iconOnly)
             .font(.title3)
-            .padding(10)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(.circle)
             .glassEffect(.regular.interactive(), in: .circle)
             .buttonStyle(.plain)
             .sheet(isPresented: $isPresented) { AboutView() }
@@ -92,7 +101,10 @@ struct AttributionFooter: View {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(attributions, id: \.self) { attribution in
                     if let url = attribution.url {
-                        Link(attribution.displayText, destination: url)
+                        Link(destination: url) {
+                            Text(attribution.displayText).underline()
+                        }
+                        .tint(.accentColor)
                     } else {
                         Text(attribution.displayText)
                     }
@@ -102,5 +114,11 @@ struct AttributionFooter: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+extension Attribution {
+    var displayText: String {
+        licence.isEmpty ? text : "\(text) · \(licence)"
     }
 }

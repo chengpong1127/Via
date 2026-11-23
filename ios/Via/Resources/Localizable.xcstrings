@@ -1675,16 +1675,6 @@
         }
       }
     },
-    "Data from MOTC TDX platform. Open Government Data License, version 1.0." : {
-      "localizations" : {
-        "zh-Hant" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "資料介接交通部 TDX 平臺，依政府資料開放授權條款第1版提供。"
-          }
-        }
-      }
-    },
     "GTFS" : {
       "localizations" : {
         "zh-Hant" : {
@@ -1751,6 +1741,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "支援"
+          }
+        }
+      }
+    },
+    "Data from MOTC TDX platform." : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "資料介接交通部 TDX 平臺"
+          }
+        }
+      }
+    },
+    "Open Government Data License, version 1.0" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "政府資料開放授權條款第1版"
           }
         }
       }
