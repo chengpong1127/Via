@@ -5,6 +5,7 @@ packages:
   - curl
   - unzip
   - zstd
+  - jq
 write_files:
   - path: /etc/via-bootstrap.env
     permissions: "0644"

@@ -9,6 +9,10 @@ if [ -f /etc/via-bootstrap.env ]; then
   # shellcheck source=/dev/null
   . /etc/via-bootstrap.env
 fi
+if [ -z "${AWS_DEFAULT_REGION:-}" ] && [ -n "${VIA_REGION:-}" ]; then
+  export AWS_DEFAULT_REGION="$VIA_REGION"
+fi
+export PATH="$PATH:/snap/bin:/usr/local/bin"
 
 usage() {
   echo "usage: $0 [--static [id]] [--tiles [id]]   (no flags: both, latest)" >&2
@@ -17,8 +21,10 @@ usage() {
 
 VIA_ROOT="${VIA_ROOT:-/var/lib/via}"
 KEEP="${VIA_KEEP_BUILDS:-3}"
-ROLLOUT_TIMEOUT="${VIA_ROLLOUT_TIMEOUT:-300s}"
+MAX_ATTEMPTS="${VIA_MAX_ATTEMPTS:-2}"
+ROLLOUT_TIMEOUT="${VIA_ROLLOUT_TIMEOUT:-900s}"
 KUBECTL="${KUBECTL:-kubectl}"
+CTR="${CTR:-k3s ctr -n k8s.io}"
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
 do_static=0
@@ -47,16 +53,32 @@ fi
 
 require_bucket
 command -v zstd >/dev/null 2>&1 || die "zstd is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+mkdir -p "$VIA_ROOT"
 
-if command -v flock >/dev/null 2>&1; then
-  lock="${VIA_LOCK_FILE:-/run/via-fetch.lock}"
-  exec 9>"$lock"
-  flock -n 9 || die "another fetch is running"
+if [ -z "${VIA_FETCH_CHILD:-}" ]; then
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"${VIA_LOCK_FILE:-/run/via-fetch.lock}"
+    flock -n 9 || die "another fetch is running"
+  else
+    lockdir="${VIA_LOCK_FILE:-$VIA_ROOT/.fetch.lock}.d"
+    mkdir "$lockdir" 2>/dev/null || die "another fetch is running ($lockdir)"
+    trap 'rmdir "$lockdir"' EXIT
+  fi
+  for stale in "$VIA_ROOT"/.fetch.*; do
+    [ -d "$stale" ] && [ "$stale" != "${lockdir:-}" ] && rm -rf "$stale"
+  done
+  if [ "$do_static" -eq 1 ] && [ "$do_tiles" -eq 1 ]; then
+    rc=0
+    VIA_FETCH_CHILD=1 "$0" --static ${static_id:+"$static_id"} || rc=1
+    VIA_FETCH_CHILD=1 "$0" --tiles ${tiles_id:+"$tiles_id"} || rc=1
+    exit "$rc"
+  fi
+  export VIA_FETCH_CHILD=1
 fi
 
-mkdir -p "$VIA_ROOT"
 work="$(mktemp -d "$VIA_ROOT/.fetch.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work"; [ -z "${lockdir:-}" ] || rmdir "$lockdir" 2>/dev/null || true' EXIT
 
 if mv --version >/dev/null 2>&1; then
   replace_link() { mv -fT "$1" "$2"; }
@@ -64,28 +86,50 @@ else
   replace_link() { mv -fh "$1" "$2"; }
 fi
 
+set_link() {
+  rm -f "$VIA_ROOT/static/current.new"
+  ln -sfn "$2" "$VIA_ROOT/static/current.new"
+  replace_link "$VIA_ROOT/static/current.new" "$VIA_ROOT/static/$1"
+}
+
+wait_for_cluster() {
+  local deadline=$((SECONDS + 120))
+  until "$KUBECTL" get --raw /readyz >/dev/null 2>&1; do
+    [ "$SECONDS" -lt "$deadline" ] || die "Kubernetes API not ready"
+    sleep 3
+  done
+}
+
 resolve_id() {
-  local prefix="$1" requested="$2" id
+  local prefix="$1" requested="$2" id rc=0
   if [ -n "$requested" ]; then
     id="$requested"
   else
-    id="$(s3_get_text "$prefix/latest")" || die "cannot read $prefix/latest"
+    id="$(s3_get_text "$prefix/latest")" || rc=$?
+    [ "$rc" -eq 0 ] || die "cannot read $prefix/latest (rc=$rc)"
     id="$(tr -d '[:space:]' <<<"$id")"
   fi
   valid_id "$id" || die "invalid id: $id"
   echo "$id"
 }
 
+attempts() {
+  if [ -f "$1.rejected" ]; then cat "$1.rejected"; else echo 0; fi
+}
+
+record_failure() {
+  echo $(($(attempts "$1") + 1)) >"$1.rejected"
+}
+
 download_verified() {
-  local prefix="$1" id="$2" payload_name="$3" dest="$4" manifest raw zst
+  local prefix="$1" id="$2" payload_name="$3" manifest zst
   manifest="$(s3_get_text "$prefix/$id/manifest")" || die "no manifest for $prefix/$id"
-  raw="$(manifest_value "$manifest" raw)"
+  RAW_SHA="$(manifest_value "$manifest" raw)"
   zst="$(manifest_value "$manifest" zst)"
-  [ -n "$raw" ] && [ -n "$zst" ] || die "malformed manifest for $prefix/$id"
+  [ -n "$RAW_SHA" ] && [ -n "$zst" ] || die "malformed manifest for $prefix/$id"
   s3_get "$prefix/$id/$payload_name" "$work/$payload_name"
   [ "$(sha256 "$work/$payload_name")" = "$zst" ] || die "sha256 mismatch for $prefix/$id/$payload_name"
-  mkdir -p "$dest"
-  echo "$raw" >"$work/raw.sha"
+  zstd -q -t "$work/$payload_name" || die "$payload_name is not a valid zstd file"
 }
 
 restart_and_wait() {
@@ -110,98 +154,127 @@ prune() {
   done
 }
 
-run_validate() {
-  local path="$1"
-  if [ -n "${VIA_VALIDATE_CMD:-}" ]; then
-    $VIA_VALIDATE_CMD "$path"
-  elif command -v via-data >/dev/null 2>&1; then
-    via-data validate --static "$path/.via-static.json"
+server_image() {
+  if [ -n "${VIA_SERVER_IMAGE:-}" ]; then
+    echo "$VIA_SERVER_IMAGE"
   else
-    log "via-data not installed: skipping offline validation; the readiness gate will roll back a bad artifact"
-    [ -s "$path/.via-static.json" ]
+    "$KUBECTL" -n via get deploy/server -o 'jsonpath={.spec.template.spec.containers[0].image}' 2>/dev/null || true
   fi
 }
 
+validate_static() {
+  local dir="$1" image
+  if [ -n "${VIA_VALIDATE_CMD:-}" ]; then
+    $VIA_VALIDATE_CMD "$dir"
+    return
+  fi
+  if command -v via-data >/dev/null 2>&1; then
+    via-data validate --static "$dir/.via-static.json"
+    return
+  fi
+  image="$(server_image)"
+  if [ -n "$image" ]; then
+    # shellcheck disable=SC2086
+    $CTR images ls -q 2>/dev/null | grep -qxF "$image" || $CTR images pull "$image" >/dev/null
+    # shellcheck disable=SC2086
+    $CTR run --rm --mount "type=bind,src=$dir,dst=/data,options=rbind:ro" "$image" "via-validate-$$" \
+      via-data validate --static /data/.via-static.json
+    return
+  fi
+  if [ "${VIA_ALLOW_UNVALIDATED:-0}" = 1 ]; then
+    log "WARNING: no via-data and no server image known; activating unvalidated (VIA_ALLOW_UNVALIDATED=1)"
+    return 0
+  fi
+  log "no way to run via-data validate: install via-data, deploy the server first, or set VIA_SERVER_IMAGE (or VIA_ALLOW_UNVALIDATED=1)"
+  return 1
+}
+
 fetch_static() {
-  local base="$VIA_ROOT/static" id builds prev
+  local base="$VIA_ROOT/static" id builds prev stage
   id="$(resolve_id static "$static_id")"
   builds="$base/builds"
   mkdir -p "$builds"
   prev=""
   if [ -L "$base/current" ]; then prev="$(readlink "$base/current")"; fi
 
+  if [ "$(attempts "$builds/$id")" -ge "$MAX_ATTEMPTS" ]; then
+    log "static $id failed $(attempts "$builds/$id") times; remove $builds/$id.rejected to retry"
+    return 1
+  fi
   if [ "$prev" = "builds/$id" ]; then
     log "static $id already active"
     return 0
   fi
-  if [ -e "$builds/$id.rejected" ]; then
-    log "static $id was rejected earlier; remove $builds/$id.rejected to retry"
-    return 0
-  fi
 
   if [ ! -f "$builds/$id/.via-verified" ]; then
-    download_verified static "$id" via-static.json.zst "$work/stage"
-    zstd -q -d -o "$work/stage/.via-static.json" "$work/via-static.json.zst"
-    [ "$(sha256 "$work/stage/.via-static.json")" = "$(cat "$work/raw.sha")" ] || die "sha256 mismatch after decompression of static $id"
-    touch "$work/stage/.via-verified"
+    download_verified static "$id" via-static.json.zst
+    stage="$work/stage"
+    mkdir -p "$stage"
+    zstd -q -d -o "$stage/.via-static.json" "$work/via-static.json.zst"
+    [ "$(sha256 "$stage/.via-static.json")" = "$RAW_SHA" ] || die "sha256 mismatch after decompression of static $id"
+    jq --stream -n 'reduce inputs as $i (0; . + 1) | select(. > 0)' "$stage/.via-static.json" >/dev/null ||
+      die "static $id is not valid JSON"
+    touch "$stage/.via-verified"
     rm -rf "${builds:?}/$id"
-    mv "$work/stage" "$builds/$id"
+    mv "$stage" "$builds/$id"
   fi
 
-  if ! run_validate "$builds/$id"; then
+  if ! validate_static "$builds/$id"; then
     log "validation failed for static $id; keeping ${prev:-nothing}"
-    touch "$builds/$id.rejected"
+    record_failure "$builds/$id"
     return 1
   fi
 
-  ln -s "builds/$id" "$base/current.new"
-  replace_link "$base/current.new" "$base/current"
+  set_link current "builds/$id"
   log "activated static $id"
   if ! restart_and_wait server; then
     log "server not ready with static $id; restoring ${prev:-nothing}"
-    touch "$builds/$id.rejected"
+    record_failure "$builds/$id"
     if [ -n "$prev" ]; then
-      ln -s "$prev" "$base/current.new"
-      replace_link "$base/current.new" "$base/current"
+      set_link current "$prev"
       restart_and_wait server || log "server still not ready after restore"
+    else
+      rm -f "$base/current"
     fi
     return 1
   fi
+  rm -f "$builds/$id.rejected"
   prune "$builds" "$id" "$(basename "${prev:-none}")"
 }
 
 fetch_tiles() {
-  local active="$VIA_ROOT/valhalla" archive="$VIA_ROOT/valhalla-builds" id prev stage
+  local active="$VIA_ROOT/valhalla" archive="$VIA_ROOT/valhalla-builds" id prev stage prev_dir=""
   id="$(resolve_id valhalla "$tiles_id")"
   mkdir -p "$archive"
   prev=""
   if [ -f "$active/.tiles-id" ]; then prev="$(cat "$active/.tiles-id")"; fi
 
+  if [ "$(attempts "$archive/$id")" -ge "$MAX_ATTEMPTS" ]; then
+    log "tiles $id failed $(attempts "$archive/$id") times; remove $archive/$id.rejected to retry"
+    return 1
+  fi
   if [ "$prev" = "$id" ]; then
     log "tiles $id already active"
-    return 0
-  fi
-  if [ -e "$archive/$id.rejected" ]; then
-    log "tiles $id was rejected earlier; remove $archive/$id.rejected to retry"
     return 0
   fi
 
   stage="$archive/$id"
   if [ ! -f "$stage/.via-verified" ]; then
-    download_verified valhalla "$id" tiles.tar.zst "$work/stage"
+    download_verified valhalla "$id" tiles.tar.zst
+    mkdir -p "$work/stage"
     zstd -q -d -c "$work/tiles.tar.zst" | tar -xf - -C "$work/stage"
     [ -f "$work/stage/valhalla.json" ] || die "tiles $id has no valhalla.json"
+    [ "$(tree_hash "$work/stage")" = "$RAW_SHA" ] || die "tiles $id content hash mismatch after extraction"
     echo "$id" >"$work/stage/.tiles-id"
     touch "$work/stage/.via-verified"
     rm -rf "${archive:?}/$id"
     mv "$work/stage" "$stage"
   fi
 
-  local prev_dir=""
   mkdir -p "$active"
   if [ -n "$(ls -A "$active" 2>/dev/null)" ]; then
     prev_dir="$archive/${prev:-initial-$(date -u +%Y%m%dT%H%M%SZ)}"
-    [ -e "$prev_dir" ] && rm -rf "${prev_dir:?}"
+    rm -rf "${prev_dir:?}"
     mv "$active" "$prev_dir"
   else
     rmdir "$active"
@@ -210,16 +283,18 @@ fetch_tiles() {
   log "activated tiles $id"
   if ! restart_and_wait valhalla; then
     log "valhalla not ready with tiles $id; restoring ${prev_dir:-nothing}"
+    record_failure "$archive/$id"
     mv "$active" "$archive/$id"
-    touch "$archive/$id.rejected"
     if [ -n "$prev_dir" ]; then
       mv "$prev_dir" "$active"
       restart_and_wait valhalla || log "valhalla still not ready after restore"
     fi
     return 1
   fi
+  rm -f "$archive/$id.rejected"
   prune "$archive" "$id" "$(basename "${prev_dir:-none}")"
 }
 
+wait_for_cluster
 if [ "$do_static" -eq 1 ]; then fetch_static; fi
 if [ "$do_tiles" -eq 1 ]; then fetch_tiles; fi

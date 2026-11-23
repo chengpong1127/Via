@@ -66,15 +66,17 @@ Publish from a machine with AWS credentials (owner or CI), with `VIA_ARTIFACT_BU
     server/deploy/aws/artifacts/publish.sh server/data/build/<build-id> \
       --tiles server/var/valhalla --tiles-id <tiles-id>
 
-The static file is zstd-compressed with its sha256 and uploaded to `static/<build-id>/`; the `static/latest` pointer is written last. Tiles (without `*.osm.pbf`) go to `valhalla/<tiles-id>/` with `valhalla/latest`. Re-publishing the same id with identical content is a no-op; different content under an existing id is refused.
+The static file is zstd-compressed with its sha256 and uploaded to `static/<build-id>/`; tiles (without `*.osm.pbf`) go to `valhalla/<tiles-id>/`, where the id defaults to a content hash. Manifests are created with a conditional put, so two publishers cannot silently overwrite an id; re-publishing identical content is a no-op, different content under an existing id is refused. Pointers are written last, tiles first and `static/latest` at the very end.
 
-On the node (bootstrap already installed zstd and enabled a daily timer, `via-artifact-fetch.timer`, 05:00 Asia/Taipei), the first load is manual, before the first deploy so the server's startup probe finds data:
+On the node (bootstrap installed zstd and jq and enabled a daily timer, `via-artifact-fetch.timer`, 05:00 Asia/Taipei), load data manually before relying on the timer:
 
     sudo /opt/via/server/deploy/aws/artifacts/fetch.sh
 
-It downloads the pointer target, verifies sha256, unpacks to `/var/lib/via/static/builds/<id>`, validates, atomically switches the relative `current` symlink and restarts and waits for `deploy/server`; tiles are unpacked into `/var/lib/via/valhalla` (the previous tiles move to `/var/lib/via/valhalla-builds`) and `deploy/valhalla` is restarted. If the deployments do not exist yet (brand-new node), the restart is skipped, so the first load can run before the first deploy. The last 3 builds are kept.
+For each of static and tiles (processed independently; the exit code is non-zero if either failed) it downloads the pointer target, verifies sha256 and the zstd stream, unpacks to `/var/lib/via/static/builds/<id>`, checks the JSON, runs `via-data validate` on the staged build, atomically switches the relative `current` symlink, then restarts and waits (up to 15 minutes) for `deploy/server`. Tiles are unpacked into `/var/lib/via/valhalla` (previous tiles move to `/var/lib/via/valhalla-builds`; the swap is two renames, a window of milliseconds in which a pod restart would briefly fail to mount) and `deploy/valhalla` is restarted. The last 3 builds are kept.
 
-Validation uses `via-data validate` when the binary is on the host's PATH. The server image does not ship `via-data`, so by default offline validation is reduced to a non-empty check and the readiness gate does the real work: if the server is not ready after the restart, the previous `current` is restored and the build is marked `<id>.rejected` (remove that file to retry). Set `VIA_VALIDATE_CMD` to use another validator.
+Validation runs `via-data` from the server image (`k3s ctr run --rm` with the staged build mounted read-only), using the image of the deployed `deploy/server`. Before the first deploy there is no deployment, so give the image explicitly, for example `VIA_SERVER_IMAGE=ghcr.io/chengpong1127/via-server:<sha> sudo -E fetch.sh`, or run the first deploy first (pods wait for data). Validation that cannot run is an error; `VIA_ALLOW_UNVALIDATED=1` overrides it and should be used only knowingly. If the deployments do not exist yet the restart is skipped.
+
+If the server is not ready after the restart, the previous `current` is restored (or removed, on a first load) and the build is recorded in `builds/<id>.rejected` with an attempt count. The run exits non-zero while the latest pointer is rejected; after `VIA_MAX_ATTEMPTS` (default 2) it stops retrying until you remove the `.rejected` file or publish a new id.
 
 Refresh: publish a new build id, then wait for the timer, or run `fetch.sh --static` / `fetch.sh --tiles` on the node.
 

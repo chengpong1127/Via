@@ -57,9 +57,11 @@ verify_sha256() {
 mount_data_volume
 mkdir -p "$DATA_DIR/static" "$DATA_DIR/valhalla" "$DATA_DIR/k3s"
 
-if ! command -v zstd >/dev/null 2>&1; then
-  apt-get install -y zstd
-fi
+for pkg in zstd jq; do
+  if ! command -v "$pkg" >/dev/null 2>&1; then
+    apt-get install -y "$pkg"
+  fi
+done
 
 if ! command -v aws >/dev/null 2>&1; then
   snap install aws-cli --classic

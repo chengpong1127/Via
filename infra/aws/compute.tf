@@ -25,7 +25,6 @@ resource "aws_instance" "node" {
     region          = var.region
     repo_url        = var.repo_url
     repo_ref        = var.repo_ref
-    artifact_bucket = aws_s3_bucket.artifacts.bucket
     ssm_prefix      = var.ssm_parameter_prefix
     artifact_bucket = aws_s3_bucket.artifacts.bucket
     data_volume     = replace(aws_ebs_volume.data.id, "-", "")
