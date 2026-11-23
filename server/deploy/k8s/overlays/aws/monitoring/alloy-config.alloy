@@ -81,14 +81,12 @@ prometheus.exporter.blackbox "ready" {
 		name    = "server"
 		address = "http://server:3000/health/ready"
 		module  = "http_2xx"
-		labels  = {job = "via-ready"}
 	}
 
 	target {
 		name    = "tdx-gateway"
 		address = "http://tdx-gateway:3100/health/ready"
 		module  = "http_2xx"
-		labels  = {job = "via-ready"}
 	}
 }
 
