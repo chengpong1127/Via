@@ -30,16 +30,39 @@ write_if_changed() {
 
 configure_log_retention() {
   if write_if_changed /etc/systemd/journald.conf.d/via.conf '[Journal]
-MaxRetentionSec=7day'; then
+MaxRetentionSec=7day
+MaxFileSec=1day'; then
     systemctl restart systemd-journald
   fi
-  write_if_changed /etc/tmpfiles.d/via-logs.conf 'e /var/log/pods - - - 7d
-e /var/log/containers - - - 7d' || true
-  if write_if_changed /etc/rancher/k3s/config.yaml 'kubelet-arg:
-  - container-log-max-size=10Mi
-  - container-log-max-files=3' && command -v k3s >/dev/null 2>&1; then
+
+  rm -f /etc/tmpfiles.d/via-logs.conf
+
+  local kubelet_dir="$DATA_DIR/k3s/agent/etc/kubelet.conf.d"
+  if write_if_changed "$kubelet_dir/10-via-logs.conf" 'apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+containerLogMaxSize: 5Mi
+containerLogMaxFiles: 2' && command -v k3s >/dev/null 2>&1; then
     systemctl restart k3s
   fi
+
+  write_if_changed /etc/systemd/system/via-log-cleanup.service '[Unit]
+Description=Delete rotated pod logs older than 7 days
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/find /var/log/pods -type f -name "*.log.*" -mtime +7 -delete
+ExecStart=/usr/bin/find /var/log/containers -xtype l -delete' || true
+  write_if_changed /etc/systemd/system/via-log-cleanup.timer '[Unit]
+Description=Daily rotated pod log cleanup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target' || true
+  systemctl daemon-reload
+  systemctl enable --now via-log-cleanup.timer
 }
 
 mount_data_volume() {
