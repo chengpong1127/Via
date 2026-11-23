@@ -11,6 +11,7 @@ use std::{
 use async_trait::async_trait;
 use via_server::{
     api::{DepartureSetting, PlanningMode, PlanningRequest, SelectedPlace},
+    app::runtime::{ViaRuntime, ViaRuntimeDependencies},
     config::{Environment, ViaConfig, load_dotenv, tdx_credentials},
     data::load_static_artifact,
     domain::journey::{LegDetails, PlanningOutcome},
@@ -19,7 +20,6 @@ use via_server::{
         LiveDataSource, MetroBoard, MetroPair, TraDelay,
     },
     providers::{TdxBikeAvailabilitySource, TracingOperationalEventObserver, ValhallaProvider},
-    runtime::{ViaRuntime, ViaRuntimeDependencies},
     tdx::TdxClient,
 };
 
@@ -72,6 +72,7 @@ fn summarise(outcome: &PlanningOutcome) -> serde_json::Value {
                     "duration": option.duration_seconds,
                     "walking": option.walking_seconds,
                     "transfers": option.transfer_count,
+                    "live": format!("{:?}", option.live_status_summary.state),
                     "legs": option.legs.iter().map(|leg| match &leg.details {
                         LegDetails::Walking => format!("walk {}s", leg.duration_seconds),
                         LegDetails::Transit { service_label, transit_mode, .. } => format!(
@@ -97,18 +98,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .create(true)
         .append(true)
         .open(&args[3])?;
-    let mut settings = ViaConfig::load(None)?;
-    settings.apply_environment()?;
-    settings.tdx.realtime.cache_ttl_seconds = 300;
     let environment = Environment::from_env_or_development()?;
+    let settings = ViaConfig::load_for_with(None, environment, |settings| {
+        settings.tdx.realtime.cache_ttl_seconds = 300;
+    })?;
     let valhalla = Arc::new(ValhallaProvider::with_observer(
         settings.valhalla.provider_config(false)?,
         Arc::new(TracingOperationalEventObserver),
     )?);
-    let client = Arc::new(TdxClient::new(
-        tdx_credentials(&settings.tdx)?,
-        settings.tdx.clone(),
-    )?);
+    let client = Arc::new(TdxClient::new(tdx_credentials()?, settings.tdx.clone())?);
     let counter = Arc::new(CountingLiveData {
         inner: Arc::new(DirectLiveData::new(client)),
         requests: AtomicUsize::new(0),
@@ -123,19 +121,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(str::to_owned)
         .collect();
     let runtime = ViaRuntime::from_dependencies(ViaRuntimeDependencies {
-        environment,
         transit_network: artifact.transit.clone(),
         provider_bindings: artifact.provider_bindings.clone(),
         bike_share_network: bike_share.clone(),
         street: valhalla.clone(),
-        street_health: valhalla.clone(),
         live: live.clone(),
         realtime: settings.tdx.realtime.clone(),
-        bike_availability: Arc::new(TdxBikeAvailabilitySource::with_live_data(
+        bike_availability: Arc::new(TdxBikeAvailabilitySource::new(
             live.clone(),
             settings.tdx.bikeshare.clone(),
         )),
-        limits: settings.journey_limits(),
+        limits: settings.journey_limits(environment),
     });
     let variants: Vec<_> = names.iter().map(|name| (name.as_str(), &runtime)).collect();
     for (index, (name, from_lat, from_lon, to_lat, to_lon)) in scenarios.into_iter().enumerate() {
