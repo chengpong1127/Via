@@ -1,0 +1,16 @@
+#cloud-config
+package_update: true
+packages:
+  - git
+  - curl
+  - unzip
+write_files:
+  - path: /etc/via-bootstrap.env
+    permissions: "0644"
+    content: |
+      VIA_REGION=${region}
+      VIA_REPO_URL=${repo_url}
+      VIA_REPO_REF=${repo_ref}
+runcmd:
+  - [bash, -c, ". /etc/via-bootstrap.env && if [ ! -d /opt/via/.git ]; then git clone \"$VIA_REPO_URL\" /opt/via; fi && git -C /opt/via fetch --tags origin && git -C /opt/via checkout \"$VIA_REPO_REF\""]
+  - [bash, -c, "/opt/via/server/deploy/aws/bootstrap/install-k3s.sh >> /var/log/via-bootstrap.log 2>&1"]

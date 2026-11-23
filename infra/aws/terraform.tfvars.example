@@ -1,0 +1,3 @@
+artifact_bucket_name = "via-artifacts-CHANGE-ME"
+# route53_zone_id    = "Z0123456789"
+# api_hostname       = "api.example.com"
