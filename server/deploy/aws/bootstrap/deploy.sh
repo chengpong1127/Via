@@ -17,7 +17,7 @@ if [ -f /etc/via-bootstrap.env ]; then
   # shellcheck source=/dev/null
   . /etc/via-bootstrap.env
 fi
-region="${VIA_REGION:-ap-east-2}"
+region="${VIA_REGION:-ap-southeast-2}"
 ssm_prefix="${VIA_SSM_PREFIX:-/via/prod}"
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 

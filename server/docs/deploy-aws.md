@@ -1,6 +1,6 @@
 # Deploying Via on AWS k3s (draft)
 
-One m7g.large (arm64) in ap-east-2 runs k3s with Traefik, cert-manager, the Via server (x2), Valhalla and the TDX gateway. Infrastructure is in `infra/aws` (OpenTofu); node bootstrap is in `server/deploy/aws/bootstrap`; manifests are in `server/deploy/k8s/overlays/aws` (see its README).
+One m7g.large (arm64) in ap-southeast-2 (Sydney) runs k3s with Traefik, cert-manager, the Via server (x2), Valhalla and the TDX gateway. Infrastructure is in `infra/aws` (OpenTofu); node bootstrap is in `server/deploy/aws/bootstrap`; manifests are in `server/deploy/k8s/overlays/aws` (see its README).
 
 Design points worth knowing:
 
@@ -10,8 +10,9 @@ Design points worth knowing:
 
 ## 1. Owner prerequisites
 
-- An AWS account with billing alerts and credits applied.
-- Opt in to the ap-east-2 (Taipei) region in the account settings.
+- An AWS free-plan account. Its region is locked to the one AWS assigns at sign-up (Sydney, ap-southeast-2, for Taiwan contacts), so no region opt-in is needed and nothing else can be chosen.
+- The free plan ends after 6 months or when the credits run out, whichever comes first, and the account is then closed unless upgraded to a paid plan. Check the credit balance and the expiry date in the Billing console (Credits and Free Tier pages) before relying on it, set a budget alert, and plan the upgrade or migration in time to back up the data volume snapshots and the S3 bucket first.
+- Check that the free plan allows `m7g.large` and the other resources here (EC2 instance types are restricted on free-plan accounts); if `tofu apply` is refused, pick an allowed type through `instance_type`.
 - An admin IAM role or user for running OpenTofu locally. The node itself never needs it.
 - The AWS CLI and the Session Manager plugin installed locally.
 - A TDX application (client id and secret).
@@ -22,8 +23,8 @@ Design points worth knowing:
 
 Create the state bucket once, by hand (versioned, encrypted, private):
 
-    aws s3api create-bucket --bucket YOUR-TFSTATE-BUCKET --region ap-east-2 \
-      --create-bucket-configuration LocationConstraint=ap-east-2
+    aws s3api create-bucket --bucket YOUR-TFSTATE-BUCKET --region ap-southeast-2 \
+      --create-bucket-configuration LocationConstraint=ap-southeast-2
     aws s3api put-bucket-versioning --bucket YOUR-TFSTATE-BUCKET --versioning-configuration Status=Enabled
     aws s3api put-public-access-block --bucket YOUR-TFSTATE-BUCKET \
       --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
@@ -43,7 +44,7 @@ Set `repo_ref` in `terraform.tfvars` to a commit sha or tag that contains `serve
 
 Wait for the bootstrap to finish before anything else:
 
-    aws ssm start-session --region ap-east-2 --target <instance_id>
+    aws ssm start-session --region ap-southeast-2 --target <instance_id>
     sudo cloud-init status --wait
     sudo tail /var/log/via-bootstrap.log     # ends with BOOTSTRAP-OK
 
@@ -53,8 +54,8 @@ Wait for the bootstrap to finish before anything else:
 
 Values never go through OpenTofu. Create them once:
 
-    aws ssm put-parameter --region ap-east-2 --type SecureString --name /via/prod/TDX_CLIENT_ID --value '...'
-    aws ssm put-parameter --region ap-east-2 --type SecureString --name /via/prod/TDX_CLIENT_SECRET --value '...'
+    aws ssm put-parameter --region ap-southeast-2 --type SecureString --name /via/prod/TDX_CLIENT_ID --value '...'
+    aws ssm put-parameter --region ap-southeast-2 --type SecureString --name /via/prod/TDX_CLIENT_SECRET --value '...'
 
 ## 4. Data: publish and load
 
@@ -81,7 +82,7 @@ Data rollback: `sudo fetch.sh --static <previous-id>` (kept builds are re-activa
 
 ## 5. First deploy
 
-    aws ssm start-session --region ap-east-2 --target <instance_id>
+    aws ssm start-session --region ap-southeast-2 --target <instance_id>
     sudo -i
     cd /opt/via && git fetch --tags origin && git checkout --detach <sha-or-tag>
     VIA_API_HOST=api.yourdomain.example VIA_ACME_EMAIL=you@example.com \
