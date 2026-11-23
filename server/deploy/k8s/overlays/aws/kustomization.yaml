@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - cluster-issuer.yaml
+  - middlewares.yaml
+  - ingress.yaml
+  - network-policies.yaml
+images:
+  - name: via-server
+    newName: ghcr.io/chengpong1127/via-server
+    newTag: main
+patches:
+  - path: server.yaml
+  - path: valhalla.yaml
+  - path: tdx-gateway.yaml
+  - target:
+      kind: Ingress
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.example.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: api.example.com
