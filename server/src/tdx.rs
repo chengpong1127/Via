@@ -189,17 +189,17 @@ impl TdxClient {
             ])
             .send()
             .await
-            .map_err(TdxClientError::OAuthRequest)?;
+            .map_err(|error| TdxClientError::OAuthRequest(error.without_url()))?;
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited(response.headers()));
         }
         let response = response
             .error_for_status()
-            .map_err(TdxClientError::OAuthRequest)?;
+            .map_err(|error| TdxClientError::OAuthRequest(error.without_url()))?;
         let token = response
             .json::<OAuthTokenResponse>()
             .await
-            .map_err(TdxClientError::InvalidOAuthResponse)?;
+            .map_err(|error| TdxClientError::InvalidOAuthResponse(error.without_url()))?;
         if token.access_token.trim().is_empty() {
             return Err(TdxClientError::InvalidConfiguration);
         }
@@ -241,7 +241,7 @@ impl TdxClient {
                 .bearer_auth(&token)
                 .send()
                 .await
-                .map_err(TdxClientError::ApiRequest)?;
+                .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
                     && retries < max_rate_limit_retries
@@ -254,7 +254,7 @@ impl TdxClient {
             }
             return response
                 .error_for_status()
-                .map_err(TdxClientError::ApiRequest);
+                .map_err(|error| TdxClientError::ApiRequest(error.without_url()));
         }
     }
 
@@ -284,7 +284,10 @@ impl TdxClient {
         {
             return Err(TdxClientError::ResponseTooLarge);
         }
-        let body = response.bytes().await.map_err(TdxClientError::ApiRequest)?;
+        let body = response
+            .bytes()
+            .await
+            .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?;
         if body.len() > self.settings.max_response_bytes {
             return Err(TdxClientError::ResponseTooLarge);
         }
@@ -320,7 +323,11 @@ impl TdxClient {
             .await
             .map_err(TdxClientError::DownloadWrite)?;
         let mut bytes_written = 0u64;
-        while let Some(chunk) = response.chunk().await.map_err(TdxClientError::ApiRequest)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| TdxClientError::ApiRequest(error.without_url()))?
+        {
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
                 .await
                 .map_err(TdxClientError::DownloadWrite)?;
@@ -339,7 +346,7 @@ fn http_client(settings: &TdxSettings, timeout: Duration) -> Result<Client, TdxC
         .timeout(timeout)
         .user_agent("via-data/1.0")
         .build()
-        .map_err(TdxClientError::ApiRequest)
+        .map_err(|error| TdxClientError::ApiRequest(error.without_url()))
 }
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {

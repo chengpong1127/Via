@@ -3,6 +3,9 @@ use via_server::street::{
     Seconds, StreetPath, StreetRouter, StreetRoutingError, StreetTravelMode,
 };
 
+#[allow(dead_code)]
+#[path = "log_capture.rs"]
+pub mod log_capture;
 #[path = "street.rs"]
 pub mod street;
 #[path = "tdx.rs"]
