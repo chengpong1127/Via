@@ -283,7 +283,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"${CONFIGURATION}\" != \"Release\" ]; then\n  exit 0\nfi\ncase \"${VIA_API_BASE_URL:-}\" in\n  https://?*) ;;\n  *)\n    echo \"error: VIA_API_BASE_URL must be an https:// URL for Release builds (set it in ios/Config/Local.Release.xcconfig or pass VIA_API_BASE_URL=...)\" >&2\n    exit 1\n    ;;\nesac\n";
+			shellScript = "if [ \"${CONFIGURATION}\" != \"Release\" ]; then\n  exit 0\nfi\ncase \"${VIA_API_BASE_URL:-}\" in\n  *[[:space:]]*|https:///*) ;;\n  https://?*) exit 0 ;;\nesac\necho \"error: VIA_API_BASE_URL must be an https:// URL with a host and no whitespace for Release builds (set it in ios/Config/Local.Release.xcconfig or pass VIA_API_BASE_URL=...)\" >&2\nexit 1\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

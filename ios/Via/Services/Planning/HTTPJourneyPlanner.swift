@@ -54,7 +54,7 @@ nonisolated enum ViaServer {
 
     static func validatedURL(_ configured: String?, allowsInsecure: Bool) -> URL? {
         guard let configured,
-              let url = URL(string: configured.trimmingCharacters(in: .whitespaces)),
+              let url = URL(string: configured.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.host() != nil,
               let scheme = url.scheme?.lowercased()
         else { return nil }

@@ -20,7 +20,8 @@ struct ViaServerTests {
         #expect(ViaServer.validatedURL("", allowsInsecure: true) == nil)
     }
 
-    @Test func unconfiguredFallbackNeverCrashes() {
+    @Test func unconfiguredFallbackIsHTTPSWithHost() {
+        #expect(ViaServer.unconfiguredURL.scheme == "https")
         #expect(ViaServer.unconfiguredURL.host() != nil)
     }
 }
