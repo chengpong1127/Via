@@ -19,6 +19,29 @@ if [ -f /etc/via-bootstrap.env ]; then
   . /etc/via-bootstrap.env
 fi
 
+write_if_changed() {
+  local path="$1" content="$2"
+  mkdir -p "$(dirname "$path")"
+  if [ -f "$path" ] && [ "$(cat "$path")" = "$content" ]; then
+    return 1
+  fi
+  printf '%s\n' "$content" >"$path"
+}
+
+configure_log_retention() {
+  if write_if_changed /etc/systemd/journald.conf.d/via.conf '[Journal]
+MaxRetentionSec=7day'; then
+    systemctl restart systemd-journald
+  fi
+  write_if_changed /etc/tmpfiles.d/via-logs.conf 'e /var/log/pods - - - 7d
+e /var/log/containers - - - 7d' || true
+  if write_if_changed /etc/rancher/k3s/config.yaml 'kubelet-arg:
+  - container-log-max-size=10Mi
+  - container-log-max-files=3' && command -v k3s >/dev/null 2>&1; then
+    systemctl restart k3s
+  fi
+}
+
 mount_data_volume() {
   if mountpoint -q "$DATA_DIR"; then
     return
@@ -55,6 +78,7 @@ verify_sha256() {
 }
 
 mount_data_volume
+configure_log_retention
 mkdir -p "$DATA_DIR/static" "$DATA_DIR/valhalla" "$DATA_DIR/k3s"
 
 if ! command -v aws >/dev/null 2>&1; then

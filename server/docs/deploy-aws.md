@@ -96,3 +96,13 @@ If the data volume itself is lost or corrupt: find the latest snapshot (`aws ec2
 ## 9. Destroying the stack
 
 The data volume and the artifact bucket carry `prevent_destroy`, so `tofu destroy` fails on them by design. To tear down on purpose, take a final snapshot or sync the bucket first, remove the `lifecycle { prevent_destroy = true }` block from `aws_ebs_volume.data` (compute.tf) and `aws_s3_bucket.artifacts` (storage.tf), run `tofu apply`, and then `tofu destroy`. The bucket must also be emptied, including noncurrent versions, before it can be deleted.
+
+## 10. Log retention
+
+Infrastructure logs must not outlive 7 days (the privacy policy keeps only IP and timestamp for 7 days; Traefik access logs are off, see the overlay README). `install-k3s.sh` enforces this idempotently:
+
+- journald: `/etc/systemd/journald.conf.d/via.conf` with `MaxRetentionSec=7day`.
+- kubelet rotation: `/etc/rancher/k3s/config.yaml` sets `container-log-max-size=10Mi` and `container-log-max-files=3`, so each container keeps at most about 30 MiB of rotated logs. At the expected volume (low request logging, access logs off) that is well under 7 days of history, so size rotation is the normal limiter.
+- age cap: `/etc/tmpfiles.d/via-logs.conf` makes the daily `systemd-tmpfiles-clean` timer remove anything under `/var/log/pods` and `/var/log/containers` older than 7 days, which bounds quiet containers that never reach the size limit.
+
+Re-running the script on an existing node rewrites these files only when they differ, restarting journald or k3s only then.
