@@ -96,3 +96,27 @@ spec:
       ports:
         - port: 8089
           protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alloy-to-metrics
+  namespace: via
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [server, tdx-gateway]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: alloy
+      ports:
+        - port: 3000
+          protocol: TCP
+        - port: 3100
+          protocol: TCP

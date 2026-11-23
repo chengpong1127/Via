@@ -149,4 +149,4 @@ offline routing measurement with:
 cargo test --manifest-path server/Cargo.toml --locked --release --test performance -- --ignored --nocapture
 ```
 
-Production deployment on AWS k3s: [deploy-aws.md](docs/deploy-aws.md).
+Production deployment on AWS k3s: [deploy-aws.md](docs/deploy-aws.md). Monitoring, alerts and incident steps: [operations.md](docs/operations.md).
