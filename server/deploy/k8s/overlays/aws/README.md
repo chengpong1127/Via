@@ -13,6 +13,8 @@ Production overlay for a single-node k3s host (bundled Traefik). It reuses `../.
 
 ## Volumes (hostPath on the node)
 
+Create the directories before applying (`mkdir -p /var/lib/via/static /var/lib/via/valhalla`); the hostPath type is `Directory`, so pods stay pending otherwise.
+
 | Path on node | Mounted at | Contents |
 | --- | --- | --- |
 | `/var/lib/via/static` | `/data/static` (server, read-only) | build directories plus a `current` symlink |
@@ -23,10 +25,15 @@ Production overlay for a single-node k3s host (bundled Traefik). It reuses `../.
 ## Settings to change
 
 - Host and email: replace `api.example.com` in the `patches` entry of `kustomization.yaml` (one place, both Ingresses and their TLS blocks), and `ops@example.com` in `cluster-issuer.yaml`.
-- Image tag: `newTag` under `images` in `kustomization.yaml`, or `kustomize edit set image via-server=ghcr.io/chengpong1127/via-server:<git-sha>`. Default is `main`; deploy a commit sha for rollbacks. Change `newName` if the repository owner differs.
+- Image tag: always deploy an immutable commit sha (or `@sha256:` digest from the workflow summary): `cd server/deploy/k8s/overlays/aws && kustomize edit set image via-server=ghcr.io/chengpong1127/via-server:<git-sha>`. `newTag` ships as the placeholder `set-to-git-sha` and must be replaced. Never deploy `:main`: a mutable tag is not re-pulled on rollout restart. Rollback is applying an earlier sha. The GHCR package must be public (set it once in the package settings after the first push), otherwise add an `imagePullSecrets` entry. Change `newName` if the owner differs (lowercase).
+- The host patch in `kustomization.yaml` addresses `/spec/rules/0` and `/spec/tls/0` by index; keep those positions if you edit `ingress.yaml`.
 - Rate limits: `middlewares.yaml`. `plan-rate-limit` (30 requests per minute per client IP, burst 10) applies only to `/v1/journey-plans`; `in-flight-limit` (10 concurrent per IP) applies to all routes.
 
 ## Exposure
+
+There is no HTTP to HTTPS redirect: plain HTTP is only used for the ACME challenge, and clients must use https. `traefik-config.yaml` sets the k3s Traefik Service to `externalTrafficPolicy: Local` so the real client IP reaches the rate limiter (otherwise ServiceLB SNAT would put all clients in one bucket). Verify with a request and the Traefik access logs after the first deploy. k3s may re-apply the HelmChartConfig by restarting Traefik.
+
+The `allow-traefik-to-acme-solver` policy lets Traefik reach cert-manager's HTTP-01 solver pods (port 8089) despite the default deny.
 
 Only `/v1/*`, `/openapi.json` and `/health/ready` are routed; `/metrics` is never exposed. NetworkPolicies deny all ingress in `via` except Traefik (kube-system) to server:3000, server to tdx-gateway:3100 and server to valhalla:8002.
 

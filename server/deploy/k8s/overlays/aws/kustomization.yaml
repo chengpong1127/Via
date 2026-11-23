@@ -6,10 +6,11 @@ resources:
   - middlewares.yaml
   - ingress.yaml
   - network-policies.yaml
+  - traefik-config.yaml
 images:
   - name: via-server
     newName: ghcr.io/chengpong1127/via-server
-    newTag: main
+    newTag: set-to-git-sha
 patches:
   - path: server.yaml
   - path: valhalla.yaml
