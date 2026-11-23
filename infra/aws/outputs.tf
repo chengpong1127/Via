@@ -20,3 +20,8 @@ output "ssm_parameters_to_create" {
     "${var.ssm_parameter_prefix}/TDX_CLIENT_SECRET",
   ]
 }
+
+output "data_volume_id" {
+  description = "Persistent data volume (/var/lib/via and k3s state); survives node replacement."
+  value       = aws_ebs_volume.data.id
+}

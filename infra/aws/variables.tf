@@ -52,9 +52,19 @@ variable "repo_url" {
 }
 
 variable "repo_ref" {
-  description = "Branch or tag the node checks out."
+  description = "Commit sha or tag the node checks out as root. Required; pin it, never a moving branch. Changing it does not re-run cloud-init on an existing node."
   type        = string
-  default     = "main"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._/-]+$", var.repo_ref))
+    error_message = "repo_ref must be a plain commit sha, tag or branch name."
+  }
+}
+
+variable "data_volume_gb" {
+  description = "Size of the separate encrypted gp3 data volume holding /var/lib/via and the k3s state."
+  type        = number
+  default     = 40
 }
 
 variable "snapshot_retention" {

@@ -1,3 +1,4 @@
 artifact_bucket_name = "via-artifacts-CHANGE-ME"
+repo_ref             = "COMMIT-SHA-OR-TAG"
 # route53_zone_id    = "Z0123456789"
 # api_hostname       = "api.example.com"

@@ -65,7 +65,7 @@ resource "aws_vpc_security_group_ingress_rule" "https" {
 
 resource "aws_vpc_security_group_egress_rule" "all" {
   security_group_id = aws_security_group.node.id
-  description       = "Outbound for packages, images, TDX, SSM"
+  description       = "Outbound: TDX API, GHCR, Let's Encrypt, S3, SSM, package mirrors"
   ip_protocol       = "-1"
   cidr_ipv4         = "0.0.0.0/0"
 }

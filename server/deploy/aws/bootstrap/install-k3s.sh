@@ -1,40 +1,90 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-K3S_VERSION="${K3S_VERSION:-v1.31.4+k3s1}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.16.2}"
-KUSTOMIZE_VERSION="${KUSTOMIZE_VERSION:-v5.5.0}"
-KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
-export KUBECONFIG
+K3S_VERSION="v1.36.6+k3s1"
+CERT_MANAGER_VERSION="v1.21.3"
+CERT_MANAGER_SHA256="c04a51295adda2b1a775146751f973e787190778c7f35180861d9678876e5c74"
+KUSTOMIZE_VERSION="v5.8.3"
+KUSTOMIZE_SHA256="9867b76482cfc6d25b546abc1d2b5a32bd137505aba640649b4b378f64f6d68f"
+DATA_DIR=/var/lib/via
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root" >&2
   exit 1
 fi
 
-mkdir -p /var/lib/via/static /var/lib/via/valhalla
+if [ -f /etc/via-bootstrap.env ]; then
+  # shellcheck source=/dev/null
+  . /etc/via-bootstrap.env
+fi
+
+mount_data_volume() {
+  if mountpoint -q "$DATA_DIR"; then
+    return
+  fi
+  local device=""
+  if [ -n "${VIA_DATA_VOLUME_ID:-}" ]; then
+    device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${VIA_DATA_VOLUME_ID}"
+    for _ in $(seq 1 60); do
+      [ -e "$device" ] && break
+      sleep 5
+    done
+    if [ ! -e "$device" ]; then
+      echo "data volume $device did not appear" >&2
+      exit 1
+    fi
+    if ! blkid "$device" >/dev/null 2>&1; then
+      mkfs.ext4 -L via-data "$device"
+    fi
+    grep -q 'LABEL=via-data' /etc/fstab || echo "LABEL=via-data $DATA_DIR ext4 defaults,nofail 0 2" >>/etc/fstab
+    mkdir -p "$DATA_DIR"
+    mount "$DATA_DIR"
+  else
+    mkdir -p "$DATA_DIR"
+  fi
+}
+
+verify_sha256() {
+  echo "$2  $1" | sha256sum -c -
+}
+
+mount_data_volume
+mkdir -p "$DATA_DIR/static" "$DATA_DIR/valhalla" "$DATA_DIR/k3s"
 
 if ! command -v aws >/dev/null 2>&1; then
   snap install aws-cli --classic
 fi
 
 if ! command -v k3s >/dev/null 2>&1; then
-  curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - --write-kubeconfig-mode 644
+  curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" sh -s - --data-dir "$DATA_DIR/k3s"
 fi
 
+deadline=$((SECONDS + 300))
 until kubectl get nodes 2>/dev/null | grep -q " Ready"; do
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    echo "node not Ready after 300s" >&2
+    exit 1
+  fi
   sleep 5
 done
 
 if ! command -v kustomize >/dev/null 2>&1; then
   tmp="$(mktemp -d)"
-  curl -sfL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_arm64.tar.gz" \
-    | tar -xz -C "$tmp"
+  curl -sfL -o "$tmp/kustomize.tgz" \
+    "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_arm64.tar.gz"
+  verify_sha256 "$tmp/kustomize.tgz" "$KUSTOMIZE_SHA256"
+  tar -xz -C "$tmp" -f "$tmp/kustomize.tgz"
   install -m 0755 "$tmp/kustomize" /usr/local/bin/kustomize
   rm -rf "$tmp"
 fi
 
-kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
+tmp="$(mktemp -d)"
+curl -sfL -o "$tmp/cert-manager.yaml" \
+  "https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml"
+verify_sha256 "$tmp/cert-manager.yaml" "$CERT_MANAGER_SHA256"
+kubectl apply -f "$tmp/cert-manager.yaml"
+rm -rf "$tmp"
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
 
 echo "k3s ${K3S_VERSION} and cert-manager ${CERT_MANAGER_VERSION} ready"

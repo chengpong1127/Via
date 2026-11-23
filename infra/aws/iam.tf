@@ -32,7 +32,7 @@ data "aws_iam_policy_document" "node" {
 
   statement {
     sid     = "ReadSecrets"
-    actions = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
     resources = [
       "arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_parameter_prefix}/*",
     ]
