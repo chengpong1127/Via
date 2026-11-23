@@ -1604,6 +1604,156 @@
           }
         }
       }
+    },
+    "About" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "關於"
+          }
+        }
+      }
+    },
+    "About Via" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "關於 Via"
+          }
+        }
+      }
+    },
+    "Version" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本"
+          }
+        }
+      }
+    },
+    "Data Sources" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "資料來源"
+          }
+        }
+      }
+    },
+    "OpenStreetMap" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OpenStreetMap"
+          }
+        }
+      }
+    },
+    "© OpenStreetMap contributors, ODbL" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "© OpenStreetMap 貢獻者，ODbL 授權"
+          }
+        }
+      }
+    },
+    "MOTC TDX" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "交通部 TDX 平臺"
+          }
+        }
+      }
+    },
+    "Data from MOTC TDX platform. Open Government Data License, version 1.0." : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "資料介接交通部 TDX 平臺，依政府資料開放授權條款第1版提供。"
+          }
+        }
+      }
+    },
+    "GTFS" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "GTFS"
+          }
+        }
+      }
+    },
+    "Transit schedules and routes from TDX." : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "大眾運輸時刻與路線資料來自 TDX。"
+          }
+        }
+      }
+    },
+    "Bike availability from TDX." : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "車輛與車位資訊來自 TDX。"
+          }
+        }
+      }
+    },
+    "Apple Maps" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple 地圖"
+          }
+        }
+      }
+    },
+    "Map and place search by Apple Maps." : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "地圖與地點搜尋由 Apple 地圖提供。"
+          }
+        }
+      }
+    },
+    "Privacy Policy" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隱私權政策"
+          }
+        }
+      }
+    },
+    "Support" : {
+      "localizations" : {
+        "zh-Hant" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "支援"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

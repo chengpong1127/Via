@@ -23,6 +23,8 @@ struct JourneyDetailPanel: View {
                     if let last = option.legs.last {
                         StopRow(name: last.to.name, time: last.arrivalTime, color: .red, wait: 0, isDestination: true)
                     }
+                    AttributionFooter(attributions: option.attributions)
+                        .padding(.top, 12)
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
