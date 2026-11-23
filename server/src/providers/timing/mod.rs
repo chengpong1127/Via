@@ -1,6 +1,7 @@
 mod source;
 
 mod bus;
+pub use bus::HEADWAY_ESTIMATES;
 mod bus_realtime;
 mod context;
 mod live_error;

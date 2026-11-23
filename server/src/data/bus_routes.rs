@@ -100,6 +100,7 @@ mod tests {
                         .to_owned(),
                     realtime_scope: "NewTaipei".to_owned(),
                     tdx_route_uid: None,
+                    headway_seconds_by_period: Vec::new(),
                 },
             );
         }

@@ -796,30 +796,44 @@ fn equivalent_legs_for(
             continue;
         }
         let mut legs = Vec::new();
-        for position in transit.pattern_positions_at(&leg.board_stop_id) {
-            let Some((pattern, _)) = pattern_with_mode(transit, &position.pattern_id, &[key.mode])
-            else {
-                continue;
-            };
-            let Some(offset) = pattern.stops[position.stop_index + 1..]
-                .iter()
-                .position(|stop_id| *stop_id == leg.alight_stop_id)
-            else {
-                continue;
-            };
-            let alight_index = position.stop_index + 1 + offset;
-            let mut cost_source = CostSourceTracker::default();
-            for segment in &pattern.static_profile.segments[position.stop_index..alight_index] {
-                cost_source.push_segment(segment.source);
+        let dense = transit.dense();
+        let board_stops = dense
+            .stop_index(&leg.board_stop_id)
+            .map(|stop| {
+                dense
+                    .stops_in_place(stop)
+                    .into_iter()
+                    .map(|stop| dense.stop_id(stop).clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![leg.board_stop_id.clone()]);
+        for board_stop_id in &board_stops {
+            for position in transit.pattern_positions_at(board_stop_id) {
+                let Some((pattern, _)) =
+                    pattern_with_mode(transit, &position.pattern_id, &[key.mode])
+                else {
+                    continue;
+                };
+                let Some(offset) = pattern.stops[position.stop_index + 1..]
+                    .iter()
+                    .position(|stop_id| dense.same_place(stop_id, &leg.alight_stop_id))
+                else {
+                    continue;
+                };
+                let alight_index = position.stop_index + 1 + offset;
+                let mut cost_source = CostSourceTracker::default();
+                for segment in &pattern.static_profile.segments[position.stop_index..alight_index] {
+                    cost_source.push_segment(segment.source);
+                }
+                legs.push(StaticTransitLeg {
+                    pattern_id: pattern.id.clone(),
+                    board_stop_id: board_stop_id.clone(),
+                    board_index: position.stop_index,
+                    alight_stop_id: pattern.stops[alight_index].clone(),
+                    alight_index,
+                    cost_source: cost_source.finish(),
+                });
             }
-            legs.push(StaticTransitLeg {
-                pattern_id: pattern.id.clone(),
-                board_stop_id: leg.board_stop_id.clone(),
-                board_index: position.stop_index,
-                alight_stop_id: leg.alight_stop_id.clone(),
-                alight_index,
-                cost_source: cost_source.finish(),
-            });
         }
         if !legs.iter().any(|known| known == leg) {
             legs.push(leg.clone());

@@ -15,8 +15,10 @@ use crate::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
         realtime::{ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
+        transit::service::ServicePeriod,
         transit::timing::{
-            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
+            TimingReliability,
         },
     },
     live::UnavailableReason,
@@ -42,6 +44,11 @@ pub struct BusDepartureSource {
     context: TdxTimingContext,
 }
 
+const ESTIMATE_HORIZON_SECONDS: i64 = 2 * 60 * 60;
+
+pub static HEADWAY_ESTIMATES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 impl BusDepartureSource {
     pub fn new(context: TdxTimingContext) -> Self {
         Self { context }
@@ -51,9 +58,9 @@ impl BusDepartureSource {
         &self,
         query: &DepartureQuery,
         departure_at: OffsetDateTime,
-        observed_at: OffsetDateTime,
-        evidence: NormalizedRealtimeValue,
+        evidence: Option<NormalizedRealtimeValue>,
     ) -> Option<EffectiveTrip> {
+        let estimated = evidence.is_none();
         let pattern = self.context.transit.pattern(&query.pattern_id)?;
         let board_index = query.resolve_board_index(&self.context.transit).ok()?;
         let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(pattern.stops.len());
@@ -86,7 +93,8 @@ impl BusDepartureSource {
         }
         Some(EffectiveTrip {
             id: EffectiveTripId::new(format!(
-                "runtime:{}:{}:{}",
+                "{}:{}:{}:{}",
+                if estimated { "estimate" } else { "runtime" },
                 query.pattern_id.as_str(),
                 query.board_stop_id.as_str(),
                 departure_at.unix_timestamp_nanos()
@@ -94,10 +102,18 @@ impl BusDepartureSource {
             pattern_id: query.pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
-            timing_basis: crate::domain::transit::timing::TimingBasis::RealtimePrediction,
-            timing_reliability: TimingReliability::Reliable,
-            observed_at: Some(observed_at),
-            evidence: vec![evidence],
+            timing_basis: if estimated {
+                TimingBasis::FrequencyEstimate
+            } else {
+                TimingBasis::RealtimePrediction
+            },
+            timing_reliability: if estimated {
+                TimingReliability::Fallback
+            } else {
+                TimingReliability::Reliable
+            },
+            observed_at: evidence.as_ref().map(|value| value.value.transmitted_at),
+            evidence: evidence.into_iter().collect(),
         })
     }
 
@@ -128,9 +144,12 @@ impl BusDepartureSource {
                 {
                     return None;
                 }
-                self.effective_trip(query, departure_at, arrival.transmitted_at, status.clone())
+                self.effective_trip(query, departure_at, Some(status.clone()))
             })
             .collect::<Vec<_>>();
+        if HEADWAY_ESTIMATES.load(std::sync::atomic::Ordering::Relaxed) {
+            departures.extend(self.estimated_departures(query, values));
+        }
         departures.sort_by(|left, right| {
             left.stop_times
                 .iter()
@@ -147,6 +166,61 @@ impl BusDepartureSource {
         });
         departures.truncate(query.limit);
         departures
+    }
+
+    fn estimated_departures(
+        &self,
+        query: &DepartureQuery,
+        values: &[NormalizedRealtimeValue],
+    ) -> Vec<EffectiveTrip> {
+        let Some(headways) = self
+            .context
+            .bindings
+            .bus_patterns
+            .get(&query.pattern_id)
+            .map(|binding| &binding.headway_seconds_by_period)
+            .filter(|headways| !headways.is_empty())
+        else {
+            return Vec::new();
+        };
+        let Some(anchor) = values
+            .iter()
+            .filter(|status| {
+                status.freshness == FreshnessState::Fresh
+                    && status.value.transit_pattern_id == query.pattern_id
+                    && status.value.boarding_point_id == query.board_stop_id
+                    && matches!(
+                        status.value.state,
+                        ArrivalState::Predicted | ArrivalState::AtBoardingPoint
+                    )
+            })
+            .filter_map(|status| status.value.predicted_arrival_at)
+            .max()
+        else {
+            return Vec::new();
+        };
+        let horizon = anchor + TimeDuration::seconds(ESTIMATE_HORIZON_SECONDS);
+        let mut estimates = Vec::new();
+        let mut departure_at = anchor;
+        while estimates.len() < query.limit {
+            let Some(Some(headway)) = headways
+                .get(ServicePeriod::at(departure_at).index())
+                .copied()
+            else {
+                break;
+            };
+            departure_at += TimeDuration::seconds(i64::from(headway.max(60)));
+            if departure_at > horizon || query.before.is_some_and(|before| departure_at > before) {
+                break;
+            }
+            if departure_at < query.after {
+                continue;
+            }
+            if let Some(trip) = self.effective_trip(query, departure_at, None) {
+                estimates.push(trip);
+            }
+        }
+        estimates
     }
 
     async fn realtime_departures(

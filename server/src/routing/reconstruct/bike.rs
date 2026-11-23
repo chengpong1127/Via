@@ -33,10 +33,14 @@ impl ReconstructionState<'_, '_> {
             return Ok(false);
         }
         let source_stop = self.anchor_boarding_point(movement.from_anchor);
-        if source_stop
-            .as_ref()
-            .is_some_and(|source_stop| self.current_stop.as_ref() != Some(source_stop))
-        {
+        if source_stop.as_ref().is_some_and(|source_stop| {
+            !self.current_stop.as_ref().is_some_and(|current| {
+                self.reconstructor
+                    .transit
+                    .dense()
+                    .same_place(current, source_stop)
+            })
+        }) {
             return Ok(false);
         }
         let from = self.anchor_place(movement.from_anchor)?;

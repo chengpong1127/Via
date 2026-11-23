@@ -10,6 +10,7 @@ use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod bikeshare_catalog;
+pub mod bus_headways;
 pub mod bus_routes;
 pub mod fetch;
 pub mod gtfs;

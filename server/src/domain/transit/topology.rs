@@ -7,6 +7,16 @@ use crate::domain::{
 
 pub type StopIndex = u32;
 pub type PatternIndex = u32;
+pub type PlaceIndex = u32;
+
+const PLACE_RADIUS_METRES: f64 = 100.0;
+
+pub static PLACE_EQUIVALENCE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+fn place_equivalence() -> bool {
+    PLACE_EQUIVALENCE.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DensePosition {
@@ -38,6 +48,8 @@ pub struct DenseTopology {
     patterns: Vec<DensePattern>,
     positions_by_stop: Vec<Vec<DensePosition>>,
     transfers_by_stop: Vec<Vec<DenseTransfer>>,
+    place_by_stop: Vec<PlaceIndex>,
+    stops_by_place: Vec<Vec<StopIndex>>,
 }
 
 impl DenseTopology {
@@ -150,6 +162,12 @@ impl DenseTopology {
             });
         }
 
+        let place_by_stop = places(network, &stop_ids);
+        let mut stops_by_place = vec![Vec::new(); stop_ids.len()];
+        for (stop, place) in place_by_stop.iter().enumerate() {
+            stops_by_place[*place as usize].push(stop as StopIndex);
+        }
+
         Self {
             stop_ids,
             stop_by_id,
@@ -158,6 +176,8 @@ impl DenseTopology {
             patterns,
             positions_by_stop,
             transfers_by_stop,
+            place_by_stop,
+            stops_by_place,
         }
     }
 
@@ -192,6 +212,68 @@ impl DenseTopology {
     pub fn transfers_from(&self, stop: StopIndex) -> &[DenseTransfer] {
         &self.transfers_by_stop[stop as usize]
     }
+
+    pub fn place(&self, stop: StopIndex) -> PlaceIndex {
+        self.place_by_stop[stop as usize]
+    }
+
+    pub fn stops_in_place(&self, stop: StopIndex) -> Vec<StopIndex> {
+        if place_equivalence() {
+            self.stops_by_place[self.place(stop) as usize].clone()
+        } else {
+            vec![stop]
+        }
+    }
+
+    pub fn same_place(&self, left: &BoardingPointId, right: &BoardingPointId) -> bool {
+        left == right
+            || place_equivalence()
+                && matches!(
+                    (self.stop_index(left), self.stop_index(right)),
+                    (Some(left), Some(right)) if self.place(left) == self.place(right)
+                )
+    }
+}
+
+fn places(network: &TransitNetwork, stop_ids: &[BoardingPointId]) -> Vec<PlaceIndex> {
+    let stop_by_id = network
+        .stops
+        .iter()
+        .map(|stop| (&stop.id, stop))
+        .collect::<HashMap<_, _>>();
+    let mut stops_by_name = HashMap::<&str, Vec<usize>>::new();
+    for (index, id) in stop_ids.iter().enumerate() {
+        if let Some(stop) = stop_by_id.get(id) {
+            stops_by_name
+                .entry(stop.name.as_str())
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut root = (0..stop_ids.len()).collect::<Vec<_>>();
+    fn find(root: &mut [usize], mut index: usize) -> usize {
+        while root[index] != index {
+            root[index] = root[root[index]];
+            index = root[index];
+        }
+        index
+    }
+    for members in stops_by_name.values() {
+        for (position, &left) in members.iter().enumerate() {
+            for &right in &members[position + 1..] {
+                let distance = stop_by_id[&stop_ids[left]]
+                    .coordinate
+                    .distance_metres(stop_by_id[&stop_ids[right]].coordinate);
+                if distance <= PLACE_RADIUS_METRES {
+                    let (left_root, right_root) = (find(&mut root, left), find(&mut root, right));
+                    root[left_root.max(right_root)] = left_root.min(right_root);
+                }
+            }
+        }
+    }
+    (0..stop_ids.len())
+        .map(|index| find(&mut root, index) as PlaceIndex)
+        .collect()
 }
 
 #[cfg(test)]
