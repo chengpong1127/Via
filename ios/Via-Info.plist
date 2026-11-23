@@ -7,6 +7,10 @@
 		<string>audio</string>
 		<string>location</string>
 	</array>
+	<key>VIA_PRIVACY_POLICY_URL</key>
+	<string>$(VIA_PRIVACY_POLICY_URL)</string>
+	<key>VIA_SUPPORT_URL</key>
+	<string>$(VIA_SUPPORT_URL)</string>
 	<key>VIA_API_BASE_URL</key>
 	<string>$(VIA_API_BASE_URL)</string>
 </dict>

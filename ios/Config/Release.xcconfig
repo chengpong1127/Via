@@ -1,3 +1,5 @@
+VIA_PRIVACY_POLICY_URL = https:/$()/chengpong1127.github.io/Via/privacy/
+VIA_SUPPORT_URL = https:/$()/chengpong1127.github.io/Via/support/
 VIA_API_BASE_URL =
 
 #include? "Local.Release.xcconfig"
