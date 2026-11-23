@@ -38,3 +38,11 @@ The `allow-traefik-to-acme-solver` policy lets Traefik reach cert-manager's HTTP
 Only `/v1/*`, `/openapi.json` and `/health/ready` are routed; `/metrics` is never exposed. NetworkPolicies deny all ingress in `via` except Traefik (kube-system) to server:3000, server to tdx-gateway:3100 and server to valhalla:8002.
 
 The `memory` limit is 2Gi on the server (request 1Gi); tdx-gateway stays at one replica with `Recreate` so only one process talks to TDX.
+
+## Privacy and log retention
+
+The privacy policy allows infrastructure logs to keep only the client IP address and a timestamp, for 7 days, with no coordinates. `/v1/nearby-stops` carries latitude and longitude in the URL query string, so:
+
+- Traefik access logs are explicitly disabled in `traefik-config.yaml` (`logs.access.enabled: false`). They would record the request path and query. Do not enable them without dropping the path, query and header fields. Re-enabling them with only the client host and timestamp would need `RequestPath`, `RequestAddr`, `RequestLine` and similar fields dropped and `fields.headers.defaultmode: drop`, and must be reviewed against the policy first.
+- The Via server logs the method and path only, never the query string or the request body.
+- Remaining logs (Traefik error log, pod logs) must not outlive 7 days. On the node, set `MaxRetentionSec=7day` in `/etc/systemd/journald.conf` for the journal (k3s and systemd units), and rely on kubelet log rotation for `/var/log/pods` (size-capped; pods are replaced on every rollout). Verify after the first deploy that nothing older than 7 days remains under `/var/log` and the journal.
