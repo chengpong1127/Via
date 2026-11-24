@@ -77,7 +77,6 @@ run
 check "old fetch snapshots pruned" "$(find "$PIPELINE_DIR/fetch" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "2"
 check "old builds pruned" "$(find "$PIPELINE_DIR/build" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" "1"
 
-ln -s "$tmp" "$tmp/linkdest" 2>/dev/null || true
 rm -rf "$OUT_DIR/incoming"; ln -s "$tmp" "$OUT_DIR/incoming"
 export FAKE_GTFS_SHA=zzz
 if run; then echo "FAIL symlinked incoming dir is refused"; fails=$((fails + 1)); else echo "ok   symlinked incoming dir is refused"; fi

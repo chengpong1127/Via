@@ -65,18 +65,19 @@ if [ "$do_static" -eq 0 ] && [ "$do_tiles" -eq 0 ]; then
 fi
 
 if [ "$incoming" -eq 0 ]; then require_bucket; fi
-command -v zstd >/dev/null 2>&1 || die "zstd is required"
-command -v jq >/dev/null 2>&1 || die "jq is required"
 mkdir -p "$VIA_ROOT"
 
 # Consume READY before anything can fail (lock, cluster, tools): the path unit
 # fires on READY, so leaving it behind would restart this service in a loop.
-# The build stays in incoming/<id>; the job rebuilds next night because the
+# (zstd/jq are checked after this for the same reason.) The build stays in incoming/<id>; the job rebuilds next night because the
 # built-checksum marker is only written after a successful activation.
 taken=""
 if [ "$incoming" -eq 1 ]; then
   inc_dir="$VIA_ROOT/static/incoming"
-  if [ -f "$inc_dir/READY" ] && [ ! -L "$inc_dir/READY" ] && [ ! -L "$inc_dir" ]; then
+  if [ -d "$inc_dir/READY" ] && [ ! -L "$inc_dir/READY" ]; then
+    rm -rf "$inc_dir/READY"
+    die "incoming/READY is a directory"
+  elif [ -f "$inc_dir/READY" ] && [ ! -L "$inc_dir/READY" ] && [ ! -L "$inc_dir" ]; then
     mv -f "$inc_dir/READY" "$inc_dir/READY.taken"
     taken="$(tr -d '[:space:]' <"$inc_dir/READY.taken")"
   elif [ -L "$inc_dir" ] || [ -L "$inc_dir/READY" ]; then
@@ -87,6 +88,8 @@ if [ "$incoming" -eq 1 ]; then
     exit 0
   fi
 fi
+command -v zstd >/dev/null 2>&1 || die "zstd is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
 
 if [ -z "${VIA_FETCH_CHILD:-}" ]; then
   if command -v flock >/dev/null 2>&1; then
@@ -233,11 +236,17 @@ validate_static() {
 # Build handed over by the nightly CronJob: $base/incoming/<id> plus READY
 # holding the id. READY is always consumed so a failure is not retried in a loop.
 fetch_incoming() {
-  local base="$VIA_ROOT/static" id="$taken" taken_file="$VIA_ROOT/static/incoming/READY.taken" rc=0
+  local base="$VIA_ROOT/static" id="$taken" taken_file="$VIA_ROOT/static/incoming/READY.taken" rc=0 gsha=""
   rm -f "$taken_file"
   valid_id "$id" || die "invalid incoming id: $id"
   [ ! -L "$base/incoming/$id" ] || die "incoming $id is a symlink"
-  [ -s "$base/incoming/$id/.via-static.json" ] || die "incoming $id has no artifact"
+  [ -f "$base/incoming/$id/.via-static.json" ] && [ ! -L "$base/incoming/$id/.via-static.json" ] &&
+    [ -s "$base/incoming/$id/.via-static.json" ] || die "incoming $id has no regular artifact"
+  # Read the checksum from the incoming copy now, even if builds/$id already exists.
+  if [ -f "$base/incoming/$id/.gtfs-sha" ] && [ ! -L "$base/incoming/$id/.gtfs-sha" ]; then
+    gsha="$(tr -d '[:space:]' <"$base/incoming/$id/.gtfs-sha")"
+    [[ "$gsha" =~ ^[A-Za-z0-9-]{1,128}$ ]] || gsha=""
+  fi
   if [ ! -d "$base/builds/$id" ]; then
     jq --stream -n 'reduce inputs as $i (0; . + 1) | select(. > 0)' "$base/incoming/$id/.via-static.json" >/dev/null ||
       die "incoming $id is not valid JSON"
@@ -246,9 +255,9 @@ fetch_incoming() {
     mv "$base/incoming/$id" "$base/builds/$id"
   fi
   activate_static "$id" || rc=$?
-  if [ "$rc" -eq 0 ] && [ -f "$base/builds/$id/.gtfs-sha" ]; then
+  if [ "$rc" -eq 0 ] && [ -n "$gsha" ]; then
     mkdir -p "$VIA_ROOT/pipeline"
-    cp "$base/builds/$id/.gtfs-sha" "$VIA_ROOT/pipeline/.built-gtfs-sha"
+    echo "$gsha" >"$VIA_ROOT/pipeline/.built-gtfs-sha"
   fi
   rm -rf "${base:?}/incoming/$id"
   return "$rc"

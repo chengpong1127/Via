@@ -268,5 +268,32 @@ expect_fail "symlinked incoming dir is refused" env -u VIA_ARTIFACT_BUCKET "$art
 check "symlinked incoming not activated" "$(current)" "builds/m5"
 rm -f "$VIA_ROOT/static/incoming/m6"
 
+# --- final round ---
+unit_timeout="$(sed -n 's/^TimeoutStartSec=//p' "$art/via-static-activate.service")"
+check "activate unit timeout exceeds max lock + cluster wait" "$([ "$unit_timeout" -gt 7320 ] && echo yes || echo no)" "yes"
+
+rm -rf "$VIA_ROOT"
+mkincoming s1 one
+echo 'not a sha!' >"$VIA_ROOT/static/incoming/s1/.gtfs-sha"
+inc
+check "bad checksum format still activates" "$(current)" "builds/s1"
+check "bad checksum format is not recorded" "$(marker)" "none"
+mkincoming s2 two
+rm "$VIA_ROOT/static/incoming/s2/.gtfs-sha"
+echo sha-real >"$tmp/real-sha"
+ln -s "$tmp/real-sha" "$VIA_ROOT/static/incoming/s2/.gtfs-sha"
+inc
+check "symlinked checksum is not recorded" "$(marker)" "none"
+# builds/<id> already present: the incoming copy still supplies the checksum
+mkincoming s3 three
+mkdir -p "$VIA_ROOT/static/builds/s3"
+cp "$VIA_ROOT/static/incoming/s3/.via-static.json" "$VIA_ROOT/static/builds/s3/"
+touch "$VIA_ROOT/static/builds/s3/.via-verified"
+inc
+check "existing build still records the checksum" "$(marker)" "sha-s3"
+mkdir -p "$VIA_ROOT/static/incoming/READY"
+if inc; then echo "FAIL READY directory is an error"; fails=$((fails + 1)); else echo "ok   READY directory is an error"; fi
+check "READY directory does not re-trigger" "$(test -e "$VIA_ROOT/static/incoming/READY" && echo present || echo gone)" "gone"
+
 echo "failures: $fails"
 exit "$fails"
