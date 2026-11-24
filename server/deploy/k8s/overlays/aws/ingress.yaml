@@ -1,0 +1,66 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: server-plans
+  namespace: via
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: via-plan-rate-limit@kubernetescrd,via-in-flight-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - api.example.com
+      secretName: via-api-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /v1/journey-plans
+            pathType: Exact
+            backend:
+              service:
+                name: server
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: server-public
+  namespace: via
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.middlewares: via-in-flight-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - api.example.com
+      secretName: via-api-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: server
+                port:
+                  name: http
+          - path: /openapi.json
+            pathType: Exact
+            backend:
+              service:
+                name: server
+                port:
+                  name: http
+          - path: /health/ready
+            pathType: Exact
+            backend:
+              service:
+                name: server
+                port:
+                  name: http
