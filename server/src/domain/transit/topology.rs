@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
@@ -223,14 +223,37 @@ impl DenseTopology {
     }
 }
 
+fn bus_only_stops(network: &TransitNetwork) -> HashSet<&BoardingPointId> {
+    let mode_by_route = network
+        .routes
+        .iter()
+        .map(|route| (&route.id, route.mode))
+        .collect::<HashMap<_, _>>();
+    let mut bus = HashSet::new();
+    let mut other = HashSet::new();
+    for pattern in &network.patterns {
+        let target = match mode_by_route.get(&pattern.route_id) {
+            Some(TransitMode::Bus) => &mut bus,
+            _ => &mut other,
+        };
+        target.extend(pattern.stops.iter());
+    }
+    bus.retain(|stop| !other.contains(stop));
+    bus
+}
+
 fn places(network: &TransitNetwork, stop_ids: &[BoardingPointId]) -> Vec<PlaceIndex> {
     let stop_by_id = network
         .stops
         .iter()
         .map(|stop| (&stop.id, stop))
         .collect::<HashMap<_, _>>();
+    let bus_only_stops = bus_only_stops(network);
     let mut stops_by_name = HashMap::<&str, Vec<usize>>::new();
     for (index, id) in stop_ids.iter().enumerate() {
+        if !bus_only_stops.contains(id) {
+            continue;
+        }
         if let Some(stop) = stop_by_id.get(id) {
             stops_by_name
                 .entry(stop.name.as_str())
@@ -238,30 +261,29 @@ fn places(network: &TransitNetwork, stop_ids: &[BoardingPointId]) -> Vec<PlaceIn
                 .push(index);
         }
     }
-    let mut root = (0..stop_ids.len()).collect::<Vec<_>>();
-    fn find(root: &mut [usize], mut index: usize) -> usize {
-        while root[index] != index {
-            root[index] = root[root[index]];
-            index = root[index];
-        }
-        index
-    }
+    let mut place = (0..stop_ids.len() as PlaceIndex).collect::<Vec<_>>();
     for members in stops_by_name.values() {
-        for (position, &left) in members.iter().enumerate() {
-            for &right in &members[position + 1..] {
-                let distance = stop_by_id[&stop_ids[left]]
-                    .coordinate
-                    .distance_metres(stop_by_id[&stop_ids[right]].coordinate);
-                if distance <= PLACE_RADIUS_METRES {
-                    let (left_root, right_root) = (find(&mut root, left), find(&mut root, right));
-                    root[left_root.max(right_root)] = left_root.min(right_root);
+        let mut clusters = Vec::<Vec<usize>>::new();
+        for &stop in members {
+            let coordinate = stop_by_id[&stop_ids[stop]].coordinate;
+            let cluster = clusters.iter_mut().find(|cluster| {
+                cluster.iter().all(|&member| {
+                    stop_by_id[&stop_ids[member]]
+                        .coordinate
+                        .distance_metres(coordinate)
+                        <= PLACE_RADIUS_METRES
+                })
+            });
+            match cluster {
+                Some(cluster) => {
+                    cluster.push(stop);
+                    place[stop] = place[cluster[0]];
                 }
+                None => clusters.push(vec![stop]),
             }
         }
     }
-    (0..stop_ids.len())
-        .map(|index| find(&mut root, index) as PlaceIndex)
-        .collect()
+    place
 }
 
 #[cfg(test)]
@@ -269,10 +291,10 @@ mod tests {
     use std::sync::Arc;
 
     use crate::domain::{
-        ids::BoardingPointId,
+        ids::{BoardingPointId, TransitPatternId},
         location::GeoCoordinate,
         transit::{
-            network::{TransferEdge, TransitNetwork, TransitStop},
+            network::{TransferEdge, TransitMode, TransitNetwork, TransitPattern, TransitStop},
             runtime::TransitRuntime,
         },
     };
@@ -349,11 +371,14 @@ mod tests {
 
     #[test]
     fn places_group_same_name_stops_within_one_hundred_metres() {
-        let mut network = TransitNetwork::from_artifact_json(include_str!(
-            "../../../fixtures/routing/network.json"
-        ))
-        .unwrap();
-        let anchor = network.stops[0].clone();
+        let anchor = TransitStop::new(
+            BoardingPointId::new("PLACE_ANCHOR"),
+            "stop name",
+            GeoCoordinate {
+                latitude: 25.0,
+                longitude: 121.5,
+            },
+        );
         let shifted = |id: &str, name: &str, latitude_offset: f64| {
             TransitStop::new(
                 BoardingPointId::new(id),
@@ -364,11 +389,20 @@ mod tests {
                 },
             )
         };
-        network.stops.extend([
+        let stops = vec![
+            anchor.clone(),
             shifted("PLACE_NEAR", &anchor.name, 0.0005),
             shifted("PLACE_FAR", &anchor.name, 0.003),
             shifted("PLACE_OTHER_NAME", "another name", 0.0005),
-        ]);
+        ];
+        let bus = TransitPattern::fixture(
+            TransitPatternId::new("bus"),
+            TransitMode::Bus,
+            "bus",
+            "bus",
+            stops.iter().map(|stop| stop.id.clone()).collect(),
+        );
+        let network = TransitNetwork::fixture(time::Time::MIDNIGHT, stops, vec![bus], Vec::new());
         let transit = TransitRuntime::new(Arc::new(network));
         let dense = transit.dense();
         let index = |id: &str| dense.stop_index(&BoardingPointId::new(id)).unwrap();
@@ -393,5 +427,100 @@ mod tests {
         assert!(dense.same_place(&anchor.id, &BoardingPointId::new("PLACE_NEAR")));
         assert!(!dense.same_place(&anchor.id, &BoardingPointId::new("PLACE_FAR")));
         assert!(dense.same_place(&anchor.id, &anchor.id));
+    }
+
+    #[test]
+    fn places_group_only_stops_served_by_bus() {
+        let stop = |id: &str, latitude_offset: f64| {
+            TransitStop::new(
+                BoardingPointId::new(id),
+                "same name",
+                GeoCoordinate {
+                    latitude: 25.0 + latitude_offset,
+                    longitude: 121.5,
+                },
+            )
+        };
+        let pattern = |id: &str, mode: TransitMode, stops: &[&str]| {
+            TransitPattern::fixture(
+                TransitPatternId::new(id),
+                mode,
+                id,
+                id,
+                stops
+                    .iter()
+                    .map(|stop| BoardingPointId::new(*stop))
+                    .collect(),
+            )
+        };
+        let network = TransitNetwork::fixture(
+            time::Time::MIDNIGHT,
+            vec![
+                stop("bus-1", 0.0),
+                stop("bus-2", 0.0004),
+                stop("metro-1", 0.0002),
+                stop("metro-2", 0.0006),
+                stop("shared", 0.0003),
+            ],
+            vec![
+                pattern("bus", TransitMode::Bus, &["bus-1", "bus-2", "shared"]),
+                pattern(
+                    "metro",
+                    TransitMode::Metro,
+                    &["metro-1", "metro-2", "shared"],
+                ),
+            ],
+            Vec::new(),
+        );
+        let transit = TransitRuntime::new(Arc::new(network));
+        let dense = transit.dense();
+        let same = |left: &str, right: &str| {
+            dense.same_place(&BoardingPointId::new(left), &BoardingPointId::new(right))
+        };
+
+        assert!(same("bus-1", "bus-2"));
+        assert!(!same("metro-1", "metro-2"));
+        assert!(!same("bus-1", "metro-1"));
+        assert!(!same("bus-1", "shared"));
+    }
+
+    #[test]
+    fn places_never_chain_beyond_one_hundred_metres() {
+        let stop = |id: &str, latitude_offset: f64| {
+            TransitStop::new(
+                BoardingPointId::new(id),
+                "same name",
+                GeoCoordinate {
+                    latitude: 25.0 + latitude_offset,
+                    longitude: 121.5,
+                },
+            )
+        };
+        let ids = ["chain-a", "chain-b", "chain-c"];
+        let bus = TransitPattern::fixture(
+            TransitPatternId::new("bus"),
+            TransitMode::Bus,
+            "bus",
+            "bus",
+            ids.iter().map(|id| BoardingPointId::new(*id)).collect(),
+        );
+        let network = TransitNetwork::fixture(
+            time::Time::MIDNIGHT,
+            vec![
+                stop("chain-a", 0.0),
+                stop("chain-b", 0.0008),
+                stop("chain-c", 0.0016),
+            ],
+            vec![bus],
+            Vec::new(),
+        );
+        let transit = TransitRuntime::new(Arc::new(network));
+        let dense = transit.dense();
+        let same = |left: &str, right: &str| {
+            dense.same_place(&BoardingPointId::new(left), &BoardingPointId::new(right))
+        };
+
+        assert!(same("chain-a", "chain-b"));
+        assert!(!same("chain-a", "chain-c"));
     }
 }

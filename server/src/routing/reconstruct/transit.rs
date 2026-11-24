@@ -382,10 +382,20 @@ mod tests {
             "destination",
             vec![BoardingPointId::new("o2"), BoardingPointId::new("d2")],
         );
+        let exact_stops = TransitPattern::fixture(
+            TransitPatternId::new("bus-a"),
+            TransitMode::Bus,
+            "bus-a",
+            "destination",
+            vec![
+                BoardingPointId::new("origin"),
+                BoardingPointId::new("destination"),
+            ],
+        );
         let transit = Arc::new(TransitRuntime::new(Arc::new(TransitNetwork::fixture(
             Time::MIDNIGHT,
             stops,
-            vec![pattern],
+            vec![pattern, exact_stops],
             Vec::new(),
         ))));
         let mut street = FakeStreetRouter::builder();
