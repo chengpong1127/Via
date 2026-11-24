@@ -526,8 +526,8 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            bindings.bus_patterns[&TransitPatternId::new("tdx-pattern")]
-                .headway_seconds_by_period[ServicePeriod::WeekdayDay.index()],
+            bindings.bus_patterns[&TransitPatternId::new("tdx-pattern")].headway_seconds_by_period
+                [ServicePeriod::WeekdayDay.index()],
             Some(600)
         );
     }

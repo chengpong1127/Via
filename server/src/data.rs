@@ -119,10 +119,9 @@ fn attach_bus_headways(
     schedules: &[bus_headways::BusSchedule],
     fetched_at: &str,
 ) -> usize {
-    let Ok(fetched_at) = time::OffsetDateTime::parse(
-        fetched_at,
-        &time::format_description::well_known::Rfc3339,
-    ) else {
+    let Ok(fetched_at) =
+        time::OffsetDateTime::parse(fetched_at, &time::format_description::well_known::Rfc3339)
+    else {
         return 0;
     };
     let (weekday, weekend) = bus_headways::estimate_service_days(fetched_at);

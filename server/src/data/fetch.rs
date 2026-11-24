@@ -500,11 +500,9 @@ pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
         if is_bus_schedule_source(source_name) {
             let body = fs::read(&source_path)
                 .map_err(|error| DataError::Io(source_path.clone(), error))?;
-            bus_schedules.extend(
-                serde_json::from_slice::<Vec<BusSchedule>>(&body).map_err(|error| {
-                    DataError::InvalidFetchSnapshot(format!("{source_name}: {error}"))
-                })?,
-            );
+            bus_schedules.extend(serde_json::from_slice::<Vec<BusSchedule>>(&body).map_err(
+                |error| DataError::InvalidFetchSnapshot(format!("{source_name}: {error}")),
+            )?);
         }
     }
 

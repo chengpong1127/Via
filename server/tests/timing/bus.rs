@@ -925,15 +925,23 @@ async fn headway_estimates_follow_the_last_fresh_prediction_and_are_labelled() {
         departures[0].timing_basis,
         TimingBasis::RealtimePrediction
     ));
-    assert_eq!(departures[0].timing_reliability, TimingReliability::Reliable);
-    let departure = |trip: &via_server::domain::transit::timing::EffectiveTrip| {
-        trip.stop_times[0].departure_at
-    };
+    assert_eq!(
+        departures[0].timing_reliability,
+        TimingReliability::Reliable
+    );
+    let departure =
+        |trip: &via_server::domain::transit::timing::EffectiveTrip| trip.stop_times[0].departure_at;
     for pair in departures.windows(2) {
-        assert_eq!(departure(&pair[1]) - departure(&pair[0]), Duration::seconds(600));
+        assert_eq!(
+            departure(&pair[1]) - departure(&pair[0]),
+            Duration::seconds(600)
+        );
     }
     for estimate in &departures[1..] {
-        assert!(matches!(estimate.timing_basis, TimingBasis::FrequencyEstimate));
+        assert!(matches!(
+            estimate.timing_basis,
+            TimingBasis::FrequencyEstimate
+        ));
         assert_eq!(estimate.timing_reliability, TimingReliability::Fallback);
         assert_eq!(estimate.scheduled_trip_id, None);
         assert!(estimate.evidence.is_empty());
