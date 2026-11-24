@@ -237,14 +237,25 @@ check "cluster-not-ready consumes READY (no path-unit loop)" "$(ready_state)" "g
 check "cluster-not-ready leaves marker alone" "$(marker)" "sha-m1"
 
 mkincoming m4 four
-mkdir -p "$VIA_LOCK_FILE.d"
+# hold the lock the way the script takes it: flock when present, else the mkdir fallback
+hold_lock() { if command -v flock >/dev/null 2>&1; then
+    exec 7>"$VIA_LOCK_FILE"; flock -n 7; else mkdir -p "$VIA_LOCK_FILE.d"; fi; }
+release_lock() { if command -v flock >/dev/null 2>&1; then exec 7>&-; else rmdir "$VIA_LOCK_FILE.d"; fi; }
+hold_lock
 if env -u VIA_ARTIFACT_BUCKET VIA_LOCK_WAIT=1 "$art/fetch.sh" --incoming >/dev/null 2>&1; then
   echo "FAIL lock timeout fails"; fails=$((fails + 1)); else echo "ok   lock timeout fails"; fi
 check "lock timeout consumes READY" "$(ready_state)" "gone"
 mkincoming m5 five
-( sleep 2; rmdir "$VIA_LOCK_FILE.d" ) &
+release_lock
+if command -v flock >/dev/null 2>&1; then
+  ( exec 7>"$VIA_LOCK_FILE"; flock 7; sleep 2 ) &
+  sleep 0.5
+else
+  mkdir -p "$VIA_LOCK_FILE.d"; ( sleep 2; rmdir "$VIA_LOCK_FILE.d" ) &
+fi
+bg=$!
 env -u VIA_ARTIFACT_BUCKET VIA_LOCK_WAIT=15 "$art/fetch.sh" --incoming >/dev/null 2>&1
-wait
+wait "$bg"
 check "incoming waits for a busy lock then activates" "$(current)" "builds/m5"
 
 expect_fail "--incoming with --tiles is an error" env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming --tiles
