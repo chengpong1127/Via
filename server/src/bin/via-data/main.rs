@@ -15,7 +15,7 @@ use via_server::{
     config::{Environment, ViaConfig, load_dotenv, tdx_credentials},
     data::{
         build_from_fetch_snapshot, fetch,
-        fetch::{FetchSources, fetch_snapshot},
+        fetch::{FetchPolicy, FetchSources, fetch_snapshot},
         gtfs::measure_mode_coverage,
         load_static_artifact,
     },
@@ -52,6 +52,8 @@ enum Command {
 struct FetchArgs {
     #[arg(long)]
     gtfs_file: Option<PathBuf>,
+    #[arg(long)]
+    gtfs_only: bool,
 }
 
 #[derive(Args, Debug)]
@@ -140,7 +142,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
     let client = TdxClient::new(tdx_credentials()?, settings.tdx.clone())?;
     let api_base_url = url::Url::parse(&settings.tdx.api_base_url)?;
-    let sources = FetchSources::production(api_base_url.as_str());
+    let sources = FetchSources::production(
+        api_base_url.as_str(),
+        FetchPolicy::from_settings(&settings.tdx.fetch, args.gtfs_only),
+    );
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
     let latest_snapshot = update_latest_fetch_link(&snapshot.path)?;
     println!("fetch snapshot: {}", snapshot.path.display());

@@ -5,7 +5,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use reqwest::{Client, Response, StatusCode, header::RETRY_AFTER};
+use reqwest::{
+    Client, Response, StatusCode,
+    header::{RANGE, RETRY_AFTER},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -116,6 +119,7 @@ pub enum TdxClientError {
 #[derive(Clone)]
 pub struct TdxClient {
     client: Client,
+    fetch_client: Client,
     download_client: Client,
     credentials: TdxCredentials,
     api_base_url: Url,
@@ -151,11 +155,15 @@ impl TdxClient {
         }
         Ok(Self {
             client: http_client(
-                &settings,
+                Duration::from_millis(settings.connect_timeout_ms),
                 Duration::from_millis(settings.request_timeout_ms),
             )?,
+            fetch_client: http_client(
+                Duration::from_millis(settings.fetch.connect_timeout_ms),
+                Duration::from_millis(settings.fetch.request_timeout_ms),
+            )?,
             download_client: http_client(
-                &settings,
+                Duration::from_millis(settings.fetch.connect_timeout_ms),
                 Duration::from_secs(settings.download_timeout_seconds),
             )?,
             credentials,
@@ -170,7 +178,7 @@ impl TdxClient {
         &self.settings
     }
 
-    async fn access_token(&self) -> Result<String, TdxClientError> {
+    async fn access_token_with(&self, client: &Client) -> Result<String, TdxClientError> {
         let mut cached = self.token.lock().await;
         if cached
             .as_ref()
@@ -179,8 +187,7 @@ impl TdxClient {
             return Ok(cached.as_ref().expect("checked cached token").value.clone());
         }
 
-        let response = self
-            .client
+        let response = client
             .post(self.token_url.clone())
             .form(&[
                 ("grant_type", "client_credentials"),
@@ -232,16 +239,16 @@ impl TdxClient {
         client: &Client,
         url: Url,
         max_rate_limit_retries: usize,
+        range_from: Option<u64>,
     ) -> Result<Response, TdxClientError> {
-        let token = self.access_token().await?;
+        let token = self.access_token_with(client).await?;
         let mut retries = 0;
         loop {
-            let response = client
-                .get(url.clone())
-                .bearer_auth(&token)
-                .send()
-                .await
-                .map_err(TdxClientError::ApiRequest)?;
+            let mut request = client.get(url.clone()).bearer_auth(&token);
+            if let Some(offset) = range_from {
+                request = request.header(RANGE, format!("bytes={offset}-"));
+            }
+            let response = request.send().await.map_err(TdxClientError::ApiRequest)?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
                     && retries < max_rate_limit_retries
@@ -275,8 +282,18 @@ impl TdxClient {
         url: Url,
         max_rate_limit_retries: usize,
     ) -> Result<bytes::Bytes, TdxClientError> {
+        self.read_limited(&self.client, url, max_rate_limit_retries)
+            .await
+    }
+
+    async fn read_limited(
+        &self,
+        client: &Client,
+        url: Url,
+        max_rate_limit_retries: usize,
+    ) -> Result<bytes::Bytes, TdxClientError> {
         let response = self
-            .authenticated_get_with(&self.client, url, max_rate_limit_retries)
+            .authenticated_get_with(client, url, max_rate_limit_retries, None)
             .await?;
         if response
             .content_length()
@@ -300,26 +317,57 @@ impl TdxClient {
         serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
     }
 
-    pub async fn download_url_to_path(
+    pub async fn fetch_bytes(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<bytes::Bytes, TdxClientError> {
+        self.read_limited(&self.fetch_client, self.api_url(path, query)?, 0)
+            .await
+    }
+
+    pub async fn download_to_path(
         &self,
         url: &str,
         destination: &Path,
+        resume: bool,
     ) -> Result<u64, TdxClientError> {
         let url = Url::parse(url).map_err(|_| TdxClientError::InvalidConfiguration)?;
-        let mut response = self
-            .authenticated_get_with(
-                &self.download_client,
-                url,
-                self.settings.max_rate_limit_retries,
-            )
-            .await?;
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let existing = if resume {
+            tokio::fs::metadata(destination)
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let range_from = (existing > 0).then_some(existing);
+        let mut response = match self
+            .authenticated_get_with(&self.download_client, url.clone(), 0, range_from)
+            .await
+        {
+            Err(TdxClientError::ApiRequest(error))
+                if range_from.is_some()
+                    && error.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) =>
+            {
+                self.authenticated_get_with(&self.download_client, url, 0, None)
+                    .await?
+            }
+            other => other?,
+        };
+        let resuming = range_from.is_some() && response.status() == StatusCode::PARTIAL_CONTENT;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true);
+        if resuming {
+            options.append(true);
+        } else {
+            options.truncate(true);
+        }
+        let mut file = options
             .open(destination)
             .await
             .map_err(TdxClientError::DownloadWrite)?;
-        let mut bytes_written = 0u64;
+        let mut bytes_written = if resuming { existing } else { 0 };
         while let Some(chunk) = response.chunk().await.map_err(TdxClientError::ApiRequest)? {
             tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
                 .await
@@ -333,9 +381,23 @@ impl TdxClient {
     }
 }
 
-fn http_client(settings: &TdxSettings, timeout: Duration) -> Result<Client, TdxClientError> {
+impl TdxClientError {
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::OAuthRequest(error) | Self::ApiRequest(error) => {
+                error.status().is_none_or(|status| {
+                    status.is_server_error() || status == StatusCode::REQUEST_TIMEOUT
+                })
+            }
+            Self::RateLimited | Self::RateLimitedWithRetryAfter(_) => true,
+            _ => false,
+        }
+    }
+}
+
+fn http_client(connect_timeout: Duration, timeout: Duration) -> Result<Client, TdxClientError> {
     Client::builder()
-        .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
+        .connect_timeout(connect_timeout)
         .timeout(timeout)
         .user_agent("via-data/1.0")
         .build()
@@ -375,10 +437,21 @@ pub struct TdxSettings {
     pub token_refresh_margin_seconds: u64,
     pub bike_catalog_page_size: usize,
     pub rate_limit_backoff_seconds: u64,
+    pub fetch: TdxFetchSettings,
     pub batch: TdxBatchSettings,
     pub realtime: RealtimeSettings,
     pub bikeshare: BikeAvailabilitySettings,
     pub gateway: TdxGatewaySettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TdxFetchSettings {
+    pub requests_per_minute: u32,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub max_attempts: u32,
+    pub retry_backoff_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -486,6 +559,77 @@ mod tests {
             .unwrap()
     }
 
+    async fn ranged_response(
+        State(body): State<Arc<Vec<u8>>>,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if request.uri().path() == "/token" {
+            return token_response();
+        }
+        let offset = request
+            .headers()
+            .get("range")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("bytes="))
+            .and_then(|value| value.strip_suffix('-'))
+            .and_then(|value| value.parse::<usize>().ok());
+        match offset {
+            Some(offset) => Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .body(Body::from(body[offset..].to_vec()))
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(body.as_ref().clone()))
+                .unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resumed_download_appends_the_missing_tail() {
+        let body = (0..=255u8).cycle().take(4096).collect::<Vec<u8>>();
+        let app = Router::new()
+            .fallback(any(ranged_response))
+            .with_state(Arc::new(body.clone()));
+        let (client, base_url) = spawn_client(app).await;
+        let path = std::env::temp_dir().join(format!(
+            "via-tdx-resume-{}.bin",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, &body[..1000]).unwrap();
+
+        let bytes_written = client
+            .download_to_path(&format!("{base_url}/feed"), &path, true)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_written, body.len() as u64);
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_without_resume_restarts_from_the_beginning() {
+        let body = (0..=255u8).cycle().take(4096).collect::<Vec<u8>>();
+        let app = Router::new()
+            .fallback(any(ranged_response))
+            .with_state(Arc::new(body.clone()));
+        let (client, base_url) = spawn_client(app).await;
+        let path = std::env::temp_dir().join(format!(
+            "via-tdx-restart-{}.bin",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, b"stale partial").unwrap();
+
+        client
+            .download_to_path(&format!("{base_url}/feed"), &path, false)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        std::fs::remove_file(path).unwrap();
+    }
+
     async fn rate_limited_once(
         State((body, requests)): State<(Arc<Vec<u8>>, Arc<AtomicUsize>)>,
         request: Request<Body>,
@@ -577,7 +721,7 @@ mod tests {
         ));
 
         let bytes_written = client
-            .download_url_to_path(&format!("{base_url}/feed"), &path)
+            .download_to_path(&format!("{base_url}/feed"), &path, false)
             .await
             .unwrap();
         assert_eq!(bytes_written, expected_size as u64);
