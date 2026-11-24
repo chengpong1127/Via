@@ -53,6 +53,26 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
 }
 
 #[test]
+fn fetch_defaults_pace_below_the_gateway_headroom_and_tolerate_slow_dns() {
+    let fetch = ViaConfig::from_toml(TOML).unwrap().tdx.fetch;
+    assert_eq!(fetch.requests_per_minute, 4);
+    assert_eq!(fetch.connect_timeout_ms, 5000);
+    assert_eq!(fetch.request_timeout_ms, 30000);
+    assert_eq!(fetch.max_attempts, 4);
+    assert_eq!(fetch.retry_backoff_seconds, 5);
+    for (from, to) in [
+        ("requests_per_minute = 4", "requests_per_minute = 0"),
+        ("max_attempts = 4", "max_attempts = 0"),
+        ("connect_timeout_ms = 5000", "connect_timeout_ms = 0"),
+    ] {
+        assert!(
+            ViaConfig::from_toml(&TOML.replace(from, to)).is_err(),
+            "{to}"
+        );
+    }
+}
+
+#[test]
 fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
     for body in [
         "this is not TOML".to_owned(),
