@@ -14,6 +14,9 @@ use time::format_description::well_known::Rfc3339;
 use zip::ZipArchive;
 
 use crate::data::DataError;
+use crate::data::bus_headways::{
+    BUS_SCHEDULE_CITIES, BUS_SCHEDULE_FIELDS, BusSchedule, is_bus_schedule_source,
+};
 use crate::data::bus_routes::{BUS_ROUTE_CITIES, BUS_ROUTE_FIELDS, BusRoute};
 use crate::data::via_static::ViaStaticSource;
 use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
@@ -55,6 +58,8 @@ pub enum FetchError {
     InvalidBikeResponse { city: String, detail: String },
     #[error("TDX Bus Route response for {city} was invalid: {detail}")]
     InvalidBusRoutes { city: String, detail: String },
+    #[error("TDX Bus Schedule response for {city} was invalid: {detail}")]
+    InvalidBusSchedules { city: String, detail: String },
     #[error("downloaded GTFS data is not a valid ZIP archive")]
     InvalidGtfsArchive,
     #[error("fetch snapshot timestamp {0} is invalid")]
@@ -221,6 +226,29 @@ async fn populate_snapshot(
             source_metadata("tdx-bus-route-city", url, &path)?,
         );
     }
+    for (city, slug) in BUS_SCHEDULE_CITIES {
+        let url = bus_schedule_url(&sources.bike_api_base_url, city)?;
+        pacer.wait().await;
+        let body = client
+            .get_bytes(
+                &url,
+                &[("$select", BUS_SCHEDULE_FIELDS), ("$format", "JSON")],
+            )
+            .await?;
+        serde_json::from_slice::<Vec<BusSchedule>>(&body).map_err(|error| {
+            FetchError::InvalidBusSchedules {
+                city: (*city).to_owned(),
+                detail: error.to_string(),
+            }
+        })?;
+        let source_name = format!("bus-schedule-{slug}");
+        let path = temporary.join(format!("{source_name}.json"));
+        fs::write(&path, &body).map_err(|error| FetchError::Io(path.clone(), error))?;
+        manifest.sources.insert(
+            source_name,
+            source_metadata("tdx-bus-schedule-city", url, &path)?,
+        );
+    }
     let manifest_path = temporary.join(MANIFEST_FILE_NAME);
     let manifest_body = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| FetchError::InvalidManifest(error.to_string()))?;
@@ -323,6 +351,7 @@ pub fn source_file_name(source_name: &str) -> Option<String> {
     bike_city_source(source_name)
         .map(|(_, slug)| format!("{}.json", bike_station_source_name(slug)))
         .or_else(|| is_bus_route_source(source_name).then(|| format!("{source_name}.json")))
+        .or_else(|| is_bus_schedule_source(source_name).then(|| format!("{source_name}.json")))
 }
 
 pub fn is_bus_route_source(source_name: &str) -> bool {
@@ -346,6 +375,7 @@ pub(crate) struct SnapshotInputs {
     pub(crate) gtfs_path: PathBuf,
     pub(crate) bike_station_catalogs: Vec<(String, String)>,
     pub(crate) bus_routes: Vec<BusRoute>,
+    pub(crate) bus_schedules: Vec<BusSchedule>,
 }
 
 pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
@@ -365,6 +395,9 @@ pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
             && !BUS_ROUTE_CITIES
                 .iter()
                 .any(|(_, slug)| filename == format!("bus-routes-{slug}.json"))
+            && !BUS_SCHEDULE_CITIES
+                .iter()
+                .any(|(_, slug)| filename == format!("bus-schedule-{slug}.json"))
         {
             return Err(DataError::InvalidFetchSnapshot(format!(
                 "untracked source file {filename}"
@@ -426,6 +459,7 @@ pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
     }
     let mut bike_station_catalogs = Vec::new();
     let mut bus_routes = Vec::new();
+    let mut bus_schedules = Vec::new();
     for (source_name, source) in &manifest.sources {
         if source.source_id.trim().is_empty() || !source.has_valid_sha256() {
             return Err(DataError::InvalidFetchSnapshot(format!(
@@ -463,6 +497,15 @@ pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
                 })?,
             );
         }
+        if is_bus_schedule_source(source_name) {
+            let body = fs::read(&source_path)
+                .map_err(|error| DataError::Io(source_path.clone(), error))?;
+            bus_schedules.extend(
+                serde_json::from_slice::<Vec<BusSchedule>>(&body).map_err(|error| {
+                    DataError::InvalidFetchSnapshot(format!("{source_name}: {error}"))
+                })?,
+            );
+        }
     }
 
     Ok(SnapshotInputs {
@@ -470,6 +513,7 @@ pub(crate) fn read_snapshot(input: &Path) -> Result<SnapshotInputs, DataError> {
         manifest,
         bike_station_catalogs,
         bus_routes,
+        bus_schedules,
     })
 }
 
@@ -488,6 +532,16 @@ fn bus_route_url(base_url: &str, city: &str) -> Result<String, FetchError> {
         .and_then(|base| base.join(&format!("v2/Bus/Route/City/{city}")))
         .map(|url| url.to_string())
         .map_err(|error| FetchError::InvalidBusRoutes {
+            city: city.to_owned(),
+            detail: error.to_string(),
+        })
+}
+
+fn bus_schedule_url(base_url: &str, city: &str) -> Result<String, FetchError> {
+    url::Url::parse(base_url)
+        .and_then(|base| base.join(&format!("v2/Bus/Schedule/City/{city}")))
+        .map(|url| url.to_string())
+        .map_err(|error| FetchError::InvalidBusSchedules {
             city: city.to_owned(),
             detail: error.to_string(),
         })
@@ -683,6 +737,18 @@ mod tests {
                 .body(Body::from(body))
                 .unwrap();
         }
+        if path.starts_with("/basic/v2/Bus/Schedule/City/") {
+            let body = if path.starts_with("/basic/v2/Bus/Schedule/City/Taipei?") {
+                r#"[{"SubRouteUID":"TPE1","Direction":0}]"#
+            } else {
+                "[]"
+            };
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+        }
         if path.starts_with("/basic/v2/Bike/Station/City/") {
             let body = match (path.contains("NewTaipei"), skip) {
                 (false, _) if !path.starts_with("/basic/v2/Bike/Station/City/Taipei?") => "[]",
@@ -829,12 +895,27 @@ mod tests {
                 .iter()
                 .map(|(_, slug)| format!("bus-routes-{slug}.json")),
         );
+        expected_filenames.extend(
+            BUS_SCHEDULE_CITIES
+                .iter()
+                .map(|(_, slug)| format!("bus-schedule-{slug}.json")),
+        );
         expected_filenames.extend(["gtfs.zip".to_owned(), "manifest.json".to_owned()]);
         expected_filenames.sort();
         assert_eq!(filenames, expected_filenames);
         assert_eq!(
             fs::read(snapshot.path.join("bus-routes-new-taipei.json")).unwrap(),
             br#"[{"RouteUID":"NWT16517","SubRoutes":[{"SubRouteUID":"NWT157552"}]}]"#
+        );
+        assert_eq!(
+            fs::read(snapshot.path.join("bus-schedule-taipei.json")).unwrap(),
+            br#"[{"SubRouteUID":"TPE1","Direction":0}]"#
+        );
+        assert_eq!(
+            snapshot.manifest.sources["bus-schedule-taipei"]
+                .source_url
+                .as_deref(),
+            Some(format!("{}v2/Bus/Schedule/City/Taipei", sources.bike_api_base_url).as_str())
         );
         assert_eq!(
             snapshot.manifest.sources["bus-routes-taipei"]
@@ -881,6 +962,11 @@ mod tests {
                 BUS_ROUTE_CITIES
                     .iter()
                     .map(|(_, slug)| format!("bus-routes-{slug}")),
+            )
+            .chain(
+                BUS_SCHEDULE_CITIES
+                    .iter()
+                    .map(|(_, slug)| format!("bus-schedule-{slug}")),
             )
             .collect::<Vec<_>>();
         expected_sources.push("gtfs".to_owned());
