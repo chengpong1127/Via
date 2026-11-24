@@ -78,12 +78,23 @@ pub async fn enrich_network_with_static_transfers(
         policy,
     )
     .await?;
-    network.transfer_edges = retain_outgoing_transfers(
-        best_by_pair,
-        &mut stats,
-        policy,
-        network.same_stop_transfer_seconds,
-    );
+    network.transfer_edges = if PLACE_FANOUT.load(std::sync::atomic::Ordering::SeqCst) {
+        let places = crate::domain::transit::topology::place_ids(network);
+        retain_outgoing_transfers_by_place(
+            best_by_pair,
+            &mut stats,
+            policy,
+            network.same_stop_transfer_seconds,
+            &places,
+        )
+    } else {
+        retain_outgoing_transfers(
+            best_by_pair,
+            &mut stats,
+            policy,
+            network.same_stop_transfer_seconds,
+        )
+    };
     stats.retained_edges = network.transfer_edges.len();
     record_mode_statistics(network, &mut stats);
     stats.elapsed_milliseconds = started.elapsed().as_millis();
@@ -223,6 +234,64 @@ fn retain_outgoing_transfers(
         });
         stats.removed_by_fanout += targets.len().saturating_sub(policy.max_outgoing);
         for (to, metrics) in targets.into_iter().take(policy.max_outgoing) {
+            transfer_edges.push(TransferEdge::new(
+                from.clone(),
+                to,
+                if metrics.duration_seconds == 0 {
+                    co_located_transfer_seconds
+                } else {
+                    metrics.duration_seconds
+                },
+                metrics.distance_metres,
+            ));
+        }
+    }
+    transfer_edges.sort_by(|a, b| {
+        a.from
+            .as_str()
+            .cmp(b.from.as_str())
+            .then_with(|| a.to.as_str().cmp(b.to.as_str()))
+    });
+    transfer_edges
+}
+
+pub static PLACE_FANOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn retain_outgoing_transfers_by_place(
+    best_by_pair: HashMap<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>,
+    stats: &mut TransferStatistics,
+    policy: TransferSettings,
+    co_located_transfer_seconds: u32,
+    places: &HashMap<BoardingPointId, u32>,
+) -> Vec<TransferEdge> {
+    let mut by_source =
+        HashMap::<BoardingPointId, Vec<(BoardingPointId, WalkingTransferMetrics)>>::new();
+    for ((from, to), metrics) in best_by_pair {
+        by_source.entry(from).or_default().push((to, metrics));
+    }
+    let mut transfer_edges = Vec::new();
+    for (from, mut targets) in by_source {
+        targets.sort_by(|a, b| {
+            a.1.duration_seconds
+                .cmp(&b.1.duration_seconds)
+                .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+        });
+        let mut seen = HashSet::new();
+        let (mut first, mut rest) = (Vec::new(), Vec::new());
+        for target in targets {
+            if seen.insert(places.get(&target.0).copied()) {
+                first.push(target);
+            } else {
+                rest.push(target);
+            }
+        }
+        let total = first.len() + rest.len();
+        stats.removed_by_fanout += total.saturating_sub(policy.max_outgoing);
+        for (to, metrics) in first
+            .into_iter()
+            .chain(rest)
+            .take(policy.max_outgoing)
+        {
             transfer_edges.push(TransferEdge::new(
                 from.clone(),
                 to,

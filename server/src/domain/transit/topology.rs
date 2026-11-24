@@ -235,6 +235,12 @@ impl DenseTopology {
     }
 }
 
+pub fn place_ids(network: &TransitNetwork) -> HashMap<BoardingPointId, u32> {
+    let ids = network.stops.iter().map(|stop| stop.id.clone()).collect::<Vec<_>>();
+    let places = places(network, &ids);
+    ids.into_iter().zip(places).collect()
+}
+
 fn places(network: &TransitNetwork, stop_ids: &[BoardingPointId]) -> Vec<PlaceIndex> {
     let stop_by_id = network
         .stops

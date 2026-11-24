@@ -196,6 +196,60 @@ fn scenarios() -> Vec<(String, GeoCoordinate, GeoCoordinate)> {
     out
 }
 
+// EXP-009 prototype: crow-fly (x1.3 detour, 1.4 m/s) transfer edges to nearby places that the
+// 12-edge fan-out cap left out. Upper bound: real walkability is not checked.
+fn place_fanout_edges(
+    transit: &TransitRuntime,
+    max_places: usize,
+) -> Vec<via_server::domain::transit::network::TransferEdge> {
+    let dense = transit.dense();
+    let mut added = Vec::new();
+    for stop in &transit.network().stops {
+        if transit.pattern_positions_at(&stop.id).is_empty() {
+            continue;
+        }
+        let idx = dense.stop_index(&stop.id).unwrap();
+        let mut reached: HashSet<u32> = HashSet::new();
+        reached.insert(dense.place(idx));
+        for edge in transit.transfers_from(&stop.id) {
+            reached.insert(dense.place(dense.stop_index(&edge.to).unwrap()));
+        }
+        if reached.len() > max_places {
+            continue;
+        }
+        let mut best: std::collections::HashMap<u32, (f64, &BoardingPointId)> =
+            std::collections::HashMap::new();
+        for near in transit.stops_within_radius(stop.coordinate, 400) {
+            if transit.pattern_positions_at(&near.id).is_empty() {
+                continue;
+            }
+            let place = dense.place(dense.stop_index(&near.id).unwrap());
+            if reached.contains(&place) {
+                continue;
+            }
+            let metres = haversine(stop.coordinate, near.coordinate) * DETOUR_FACTOR;
+            if metres > 600.0 {
+                continue;
+            }
+            let entry = best.entry(place).or_insert((metres, &near.id));
+            if metres < entry.0 {
+                *entry = (metres, &near.id);
+            }
+        }
+        let mut ranked: Vec<_> = best.into_values().collect();
+        ranked.sort_by(|l, r| l.0.partial_cmp(&r.0).unwrap().then(l.1.as_str().cmp(r.1.as_str())));
+        for (metres, target) in ranked.into_iter().take(max_places - reached.len() + 1) {
+            added.push(via_server::domain::transit::network::TransferEdge::new(
+                stop.id.clone(),
+                target.clone(),
+                (metres / 1.4).ceil() as u32,
+                metres as u32,
+            ));
+        }
+    }
+    added
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let static_path = PathBuf::from(
@@ -210,7 +264,24 @@ fn main() {
     );
     let loaded = Instant::now();
     let via_static = load_static_artifact(&static_path).expect("artifact");
-    let runtime = TransitRuntime::new(Arc::new(via_static.transit));
+    let mut transit = via_static.transit;
+    if let Ok(extra) = std::env::var("VIA_FANOUT_PLACES") {
+        let extra: usize = extra.parse().unwrap();
+        let network = Arc::new(transit);
+        let probe = TransitRuntime::new(Arc::clone(&network));
+        let added = place_fanout_edges(&probe, extra);
+        drop(probe);
+        transit = Arc::try_unwrap(network).ok().expect("unique network");
+        eprintln!("added {} place fan-out edges", added.len());
+        transit.transfer_edges.extend(added);
+        transit = transit.canonicalize();
+    }
+    if let Ok(path) = std::env::var("VIA_TRANSFER_EDGES") {
+        transit.transfer_edges = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        transit = transit.canonicalize();
+        eprintln!("replaced transfer edges: {}", transit.transfer_edges.len());
+    }
+    let runtime = TransitRuntime::new(Arc::new(transit));
     eprintln!("loaded artifact in {:?}", loaded.elapsed());
     let limits = ViaConfig::default().planner_limits();
     let modes = vec![
