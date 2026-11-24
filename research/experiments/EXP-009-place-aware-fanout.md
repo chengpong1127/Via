@@ -38,9 +38,32 @@ until 12 places. Not validated against the street network, so it is an upper bou
 - Retained corridor set differs in 96/97 scenarios (mean 23.1 -> 23.2 corridors, 12.4 in common).
 - States expanded 170k -> 180k. Latency not measurable (load average 40-250, swap in use).
 
-## Real-edge replay (running)
+## Real-edge replay (Valhalla matrix, Taipei core bbox lat 25.00-25.08, lon 121.46-121.60)
 
-`transfer_replay` re-runs the matrix stage on the artifact with the retention rule
-"first the nearest stop of each place, then fill by duration" (`VIA_PLACE_FANOUT=1`). It reuses
-the same Valhalla matrix queries as production, so the change costs no extra Valhalla load.
-The edges are written to a file that `corridor_bench` loads via `VIA_TRANSFER_EDGES`.
+`transfer_replay` re-runs the production matrix stage (`enrich_network_with_static_transfers`) on the
+artifact with a different retention rule, writes the edges, and `corridor_bench` loads them via
+`VIA_TRANSFER_EDGES`. It takes 3-5 min for the bbox, so the full network is feasible. Stats of the bbox
+run (same Valhalla queries as production, no extra load):
+
+- 1,159,508 candidate pairs, 1,135,397 reachable, 36,823 removed by the 480 s / 800 m limits,
+  **971,704 (84 %) removed by the 12-edge fan-out cap**, 126,870 retained.
+
+Retention rules tried (cap = outgoing edges per stop, "place" = same name within 100 m):
+
+| rule | retained (bbox) | scenarios with best static cost better / worse by >30 s (of 97) |
+| --- | --- | --- |
+| A: nearest stop of each place first, then fill by duration, cap 12 | 126,870 | 16 / 17 |
+| B: whole places nearest first, cap 24 | 265,759 | 19 / 9 (median -84 s / +116 s) |
+| C: whole places nearest first, cap 12 | 185,419 | 15 / 7 (median -84 s / +76 s) |
+
+Rule A is worse: Phase 1 boards only the patterns at the stop it reaches, so keeping one stop per
+place hides the other lines of that place. Rules B and C keep every stop of a place.
+`static_seconds` is a poor judge, because the search retains diverse corridors, not the cheapest; the
+live A/B is the real test. Edge count: B adds 13 % edges to the artifact over the whole network (bbox only).
+
+Latency (quiet machine, load 4-6, 100 scenarios, 5 iterations): base 99.6 ms p50 / 217 ms p95;
+`VIA_PLACE=0` (main) 114.8 / 258; interleaved reruns varied by +-15 % as load changed. B and C could
+not be compared cleanly (load rose to 8 during their runs; the first attempt panicked, cause not found).
+
+Status: **not retained yet**. Next: live A/B (base place+est vs place+est with rule B) after 08:00
+on the evening scenarios plus daytime ones, then a full-network replay.
