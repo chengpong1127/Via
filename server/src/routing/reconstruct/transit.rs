@@ -34,8 +34,12 @@ impl ReconstructionState<'_, '_> {
             .stop_times
             .get(alight_index)
             .ok_or(PlanningError::Internal)?;
-        if Some(board.stop_id.clone()) != self.current_stop
-            || self.assembly.arrival_time > board.departure_at
+        if !self.current_stop.as_ref().is_some_and(|current| {
+            self.reconstructor
+                .transit
+                .dense()
+                .same_place(current, &board.stop_id)
+        }) || self.assembly.arrival_time > board.departure_at
             || self.pending_transfer.is_none()
                 && self
                     .previous_transit

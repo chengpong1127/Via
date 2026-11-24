@@ -15,7 +15,7 @@ Routing modules follow the pipeline:
 | Module | Step |
 | --- | --- |
 | `access` | `access::discover` finds walkable boarding points near the origin and destination |
-| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the `DenseTopology` on `TransitRuntime` (stops and patterns numbered in sorted-id order, with pattern positions and transfers by stop), returned as `Corridor` values whose transit edges list every equivalent leg (same mode, boarding and alighting stop) |
+| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the `DenseTopology` on `TransitRuntime` (stops and patterns numbered in sorted-id order, with pattern positions and transfers by stop), returned as `Corridor` values whose transit edges list every equivalent leg (same mode, boarding place and alighting place, where a place groups stops with the same name within 100 m, so lines that use different stop IDs at one physical stop share an edge; a leg boards at its own stop and Phase 2 and reconstruction accept any stop of the place, without timing the walk of up to 100 m between them) |
 | `planner` | `MultimodalPlanner` runs corridor search, loads request-local snapshots and runs corridor evaluation |
 | `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator` and BikeShare movement |
 | `journey` | `RealizedJourney`, the timed result of evaluation |
