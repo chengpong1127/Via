@@ -160,6 +160,8 @@ impl TdxClient {
                 Duration::from_millis(settings.request_timeout_ms),
                 Policy::none(),
             )?,
+            // No redirects on purpose: a redirect target would be requested with the same query
+            // string and could carry it to another host, so a 3xx surfaces as an error instead.
             fetch_client: http_client(
                 Duration::from_millis(settings.fetch.connect_timeout_ms),
                 Duration::from_millis(settings.fetch.request_timeout_ms),

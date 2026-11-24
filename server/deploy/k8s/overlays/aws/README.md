@@ -31,7 +31,7 @@ Create the directories before applying (`mkdir -p /var/lib/via/static /var/lib/v
 
 ## Exposure
 
-There is no HTTP to HTTPS redirect: plain HTTP is only used for the ACME challenge, and clients must use https. `traefik-config.yaml` sets the k3s Traefik Service to `externalTrafficPolicy: Local` so the real client IP reaches the rate limiter (otherwise ServiceLB SNAT would put all clients in one bucket). Verify with a request and the Traefik access logs after the first deploy. k3s may re-apply the HelmChartConfig by restarting Traefik.
+There is no HTTP to HTTPS redirect: plain HTTP is only used for the ACME challenge, and clients must use https. `traefik-config.yaml` sets the k3s Traefik Service to `externalTrafficPolicy: Local` so the real client IP reaches the rate limiter (otherwise ServiceLB SNAT would put all clients in one bucket). Traefik access logs are disabled (they would record client IPs and request URLs), so verify after the first deploy by sending a request and checking that `/v1/*` rate limiting counts you per client IP: 11 rapid `POST /v1/journey-plans` calls from one address should start returning 429, and the same burst from a second address should not. k3s may re-apply the HelmChartConfig by restarting Traefik.
 
 The `allow-traefik-to-acme-solver` policy lets Traefik reach cert-manager's HTTP-01 solver pods (port 8089) despite the default deny.
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::support::{
     build_test_router_with_network,
@@ -274,4 +274,100 @@ async fn rejected_nearby_stops_logs_and_bodies_contain_no_request_coordinates() 
     }
 
     assert_no_coordinates(&logs);
+}
+
+/// Serves a response that fails before the head (`None`: a send error, which carries the request
+/// URL) or mid-body after the given delay (a body error).
+fn truncated_body_app(delay: Option<Duration>) -> Router {
+    Router::new()
+        .route(
+            "/",
+            post(|| async { Json(json!({"access_token": "fixture-token", "expires_in": 300})) }),
+        )
+        .route(
+            "/{*path}",
+            get(move || async move {
+                use futures_util::StreamExt;
+                let lost = || std::io::Error::other("upstream connection lost");
+                let chunks = match delay {
+                    None => futures_util::stream::iter([Err(lost())]).boxed(),
+                    Some(delay) => futures_util::stream::once(async {
+                        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"partial"))
+                    })
+                    .chain(futures_util::stream::once(async move {
+                        tokio::time::sleep(delay).await;
+                        Err(lost())
+                    }))
+                    .boxed(),
+                };
+                Body::from_stream(chunks).into_response()
+            }),
+        )
+}
+
+fn assert_error_hides_coordinates(error: &str, logs: &CapturedLogs) {
+    assert!(error.contains("TDX API request failed"), "{error}");
+    for secret in ["25.03911", "121.53407"] {
+        assert!(
+            !error.contains(secret),
+            "{secret} leaked into error:\n{error}"
+        );
+        let logs = logs.text();
+        assert!(!logs.contains(secret), "{secret} leaked into logs:\n{logs}");
+    }
+}
+
+async fn fetch_client_failure_hides_coordinates(delay: Option<Duration>) {
+    let (logs, _guard) = capture_trace_logs();
+    let client = spawn_tdx_fixture(truncated_body_app(delay)).await;
+
+    let error = client
+        .fetch_bytes(
+            "nearby",
+            &[("latitude", "25.03911"), ("longitude", "121.53407")],
+        )
+        .await
+        .unwrap_err();
+
+    assert_error_hides_coordinates(&error_chain(&error), &logs);
+}
+
+async fn resumable_download_failure_hides_coordinates(delay: Option<Duration>) {
+    let (logs, _guard) = capture_trace_logs();
+    let client = spawn_tdx_fixture(truncated_body_app(delay)).await;
+    let path = std::env::temp_dir().join(format!("via-log-privacy-{}.bin", std::process::id()));
+
+    let result = client
+        .download_to_path(
+            &format!(
+                "{}feed?latitude=25.03911&longitude=121.53407",
+                client.settings().api_base_url
+            ),
+            &path,
+            true,
+        )
+        .await;
+    let _ = std::fs::remove_file(&path);
+
+    assert_error_hides_coordinates(&error_chain(&result.unwrap_err()), &logs);
+}
+
+#[tokio::test]
+async fn fetch_client_send_errors_do_not_carry_request_query_values() {
+    fetch_client_failure_hides_coordinates(None).await;
+}
+
+#[tokio::test]
+async fn fetch_client_body_errors_do_not_carry_request_query_values() {
+    fetch_client_failure_hides_coordinates(Some(Duration::from_millis(50))).await;
+}
+
+#[tokio::test]
+async fn resumable_download_send_errors_do_not_carry_request_query_values() {
+    resumable_download_failure_hides_coordinates(None).await;
+}
+
+#[tokio::test]
+async fn resumable_download_chunk_errors_do_not_carry_request_query_values() {
+    resumable_download_failure_hides_coordinates(Some(Duration::from_millis(50))).await;
 }

@@ -19,7 +19,7 @@ Setting precedence is explicit CLI override, then supported environment override
 | `VIA_STATIC` | `server.static_path`; selects an existing artifact |
 | `VIA_ENV` | Deployment selector: `development` or `production` |
 | `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET` | Secrets; never put these in TOML |
-| `RUST_LOG` | Existing tracing filter |
+| `RUST_LOG` | Existing tracing filter. Never enable `axum::rejection=trace` (or a global `trace`): rejection events can include request query values such as coordinates, which the server must not log |
 
 The existing dotenv loading order is retained: process environment wins over discovered `.env`, then `server/.env`, then repository `.env`. Old nonsecret entries in `.env` override TOML; remove them when moving ownership to the file. Compose retains its network-specific Valhalla URL override. `VALHALLA_TILE_URL` configures the external Valhalla image rather than Via.
 
