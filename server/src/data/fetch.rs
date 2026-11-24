@@ -147,6 +147,7 @@ pub async fn fetch_snapshot_at(
         return Err(FetchError::InvalidTimestamp(timestamp.to_owned()));
     }
     fs::create_dir_all(root).map_err(|error| FetchError::Io(root.into(), error))?;
+    remove_stale_temporary_snapshots(root);
     let destination = root.join(timestamp);
     if destination.exists() {
         return Err(FetchError::SnapshotExists(destination));
@@ -244,7 +245,7 @@ async fn populate_snapshot(
                     let source = write_station_source(temporary, &source_name, &body, &url)?;
                     Some((source, count))
                 }
-                Err(error @ FetchError::Tdx(_)) => {
+                Err(error @ FetchError::Tdx(_)) if is_transient_failure(&error) => {
                     eprintln!("{source_name} fetch failed: {error}");
                     None
                 }
@@ -274,7 +275,7 @@ async fn populate_snapshot(
                     fs::write(&path, &body).map_err(|error| FetchError::Io(path.clone(), error))?;
                     Some(source_metadata("tdx-bus-route-city", url, &path)?)
                 }
-                Err(error @ FetchError::Tdx(_)) => {
+                Err(error @ FetchError::Tdx(_)) if is_transient_failure(&error) => {
                     eprintln!("{source_name} fetch failed: {error}");
                     None
                 }
@@ -359,6 +360,23 @@ impl PreviousSnapshot {
     }
 }
 
+fn is_transient_failure(error: &FetchError) -> bool {
+    matches!(error, FetchError::Tdx(source) if source.is_transient())
+}
+
+fn remove_stale_temporary_snapshots(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.ends_with(".tmp") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn reuse_previous(
     previous: Option<&PreviousSnapshot>,
     source_name: &str,
@@ -379,9 +397,15 @@ fn reuse_previous(
     }
     let to = temporary.join(&filename);
     fs::copy(&from, &to).map_err(|error| FetchError::Io(from, error))?;
+    let original_fetch_time = previous
+        .manifest
+        .reused_sources
+        .get(source_name)
+        .unwrap_or(&previous.manifest.fetched_at)
+        .clone();
     manifest
         .reused_sources
-        .insert(source_name.to_owned(), previous.manifest.fetched_at.clone());
+        .insert(source_name.to_owned(), original_fetch_time);
     Ok(source.clone())
 }
 
@@ -1334,6 +1358,74 @@ mod tests {
                 .contains_key("bike-stations-new-taipei")
         );
         read_snapshot(&snapshot.path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_permanent_client_error_fails_instead_of_reusing_the_previous_copy() {
+        let (client, sources, state) = mock_client(false, false).await;
+        let root = temporary_root("permanent");
+        fetch_with_local_gtfs(&root, "20260928T041570Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041570Z");
+        let before = state.request_count("/basic/v2/Bike/Station/City/Taipei?");
+        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 403, None);
+
+        let error = fetch_with_local_gtfs(&root, "20260928T041571Z", &client, &sources)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, FetchError::Tdx(_)), "{error}");
+        assert_eq!(
+            state.request_count("/basic/v2/Bike/Station/City/Taipei?") - before,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reused_sources_keep_the_original_fetch_time_across_snapshots() {
+        let (client, sources, state) = mock_client(false, false).await;
+        let root = temporary_root("carry-forward");
+        let first = fetch_with_local_gtfs(&root, "20260928T041580Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041580Z");
+        state
+            .fail_new_taipei
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = fetch_with_local_gtfs(&root, "20260928T041581Z", &client, &sources)
+            .await
+            .unwrap();
+        fs::remove_file(root.join("fetch/latest")).unwrap();
+        promote_latest(&root, "20260928T041581Z");
+
+        let third = fetch_with_local_gtfs(&root, "20260928T041582Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert_ne!(first.manifest.fetched_at, second.manifest.fetched_at);
+        assert_eq!(
+            third.manifest.reused_sources["bike-stations-new-taipei"],
+            first.manifest.fetched_at
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_temporary_snapshots_are_removed_at_the_start_of_a_fetch() {
+        let (client, sources, _state) = mock_client(false, false).await;
+        let root = temporary_root("stale-tmp");
+        let stale = root.join("fetch/.20260101T000000Z.deadbeef.tmp");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("gtfs.zip.part"), b"partial").unwrap();
+
+        fetch_with_local_gtfs(&root, "20260928T041590Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert!(!stale.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

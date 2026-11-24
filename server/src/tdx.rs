@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
@@ -239,14 +239,16 @@ impl TdxClient {
         client: &Client,
         url: Url,
         max_rate_limit_retries: usize,
-        range_from: Option<u64>,
+        range_from: Option<(u64, &str)>,
     ) -> Result<Response, TdxClientError> {
         let token = self.access_token_with(client).await?;
         let mut retries = 0;
         loop {
             let mut request = client.get(url.clone()).bearer_auth(&token);
-            if let Some(offset) = range_from {
-                request = request.header(RANGE, format!("bytes={offset}-"));
+            if let Some((offset, validator)) = range_from {
+                request = request
+                    .header(RANGE, format!("bytes={offset}-"))
+                    .header(reqwest::header::IF_RANGE, validator);
             }
             let response = request.send().await.map_err(TdxClientError::ApiRequest)?;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
@@ -333,35 +335,64 @@ impl TdxClient {
         resume: bool,
     ) -> Result<u64, TdxClientError> {
         let url = Url::parse(url).map_err(|_| TdxClientError::InvalidConfiguration)?;
-        let existing = if resume {
-            tokio::fs::metadata(destination)
+        let mut validator_path = destination.as_os_str().to_owned();
+        validator_path.push(".validator");
+        let validator_path = PathBuf::from(validator_path);
+        let stored_validator = if resume {
+            tokio::fs::read_to_string(&validator_path)
+                .await
+                .ok()
+                .filter(|value| !value.is_empty())
+        } else {
+            None
+        };
+        let existing = match stored_validator {
+            Some(_) => tokio::fs::metadata(destination)
                 .await
                 .map(|metadata| metadata.len())
-                .unwrap_or(0)
-        } else {
-            0
+                .unwrap_or(0),
+            None => 0,
         };
-        let range_from = (existing > 0).then_some(existing);
+        let attempt = existing
+            .gt(&0)
+            .then(|| stored_validator.as_deref().map(|value| (existing, value)))
+            .flatten();
         let mut response = match self
-            .authenticated_get_with(&self.download_client, url.clone(), 0, range_from)
+            .authenticated_get_with(&self.download_client, url.clone(), 0, attempt)
             .await
         {
             Err(TdxClientError::ApiRequest(error))
-                if range_from.is_some()
+                if attempt.is_some()
                     && error.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) =>
             {
-                self.authenticated_get_with(&self.download_client, url, 0, None)
+                self.authenticated_get_with(&self.download_client, url.clone(), 0, None)
                     .await?
             }
             other => other?,
         };
-        let resuming = range_from.is_some() && response.status() == StatusCode::PARTIAL_CONTENT;
+        let mut resuming = attempt.is_some()
+            && response.status() == StatusCode::PARTIAL_CONTENT
+            && content_range_start(response.headers()) == Some(existing);
+        if attempt.is_some() && !resuming && response.status() == StatusCode::PARTIAL_CONTENT {
+            response = self
+                .authenticated_get_with(&self.download_client, url, 0, None)
+                .await?;
+            resuming = false;
+        }
         let mut options = tokio::fs::OpenOptions::new();
         options.write(true).create(true);
         if resuming {
             options.append(true);
         } else {
             options.truncate(true);
+            match response_validator(response.headers()) {
+                Some(value) => tokio::fs::write(&validator_path, value)
+                    .await
+                    .map_err(TdxClientError::DownloadWrite)?,
+                None => {
+                    let _ = tokio::fs::remove_file(&validator_path).await;
+                }
+            }
         }
         let mut file = options
             .open(destination)
@@ -377,8 +408,27 @@ impl TdxClient {
         tokio::io::AsyncWriteExt::flush(&mut file)
             .await
             .map_err(TdxClientError::DownloadWrite)?;
+        let _ = tokio::fs::remove_file(&validator_path).await;
         Ok(bytes_written)
     }
+}
+
+fn content_range_start(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::CONTENT_RANGE)?
+        .to_str()
+        .ok()?
+        .strip_prefix("bytes ")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn response_validator(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    [reqwest::header::ETAG, reqwest::header::LAST_MODIFIED]
+        .iter()
+        .find_map(|name| headers.get(name)?.to_str().ok().map(str::to_owned))
 }
 
 impl TdxClientError {
@@ -559,44 +609,107 @@ mod tests {
             .unwrap()
     }
 
-    async fn ranged_response(
-        State(body): State<Arc<Vec<u8>>>,
+    async fn versioned_response(
+        State(versions): State<Arc<(Vec<u8>, &'static str)>>,
         request: Request<Body>,
     ) -> Response<Body> {
         if request.uri().path() == "/token" {
             return token_response();
         }
-        let offset = request
-            .headers()
+        let (body, etag) = (&versions.0, versions.1);
+        let headers = request.headers();
+        let offset = headers
             .get("range")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("bytes="))
             .and_then(|value| value.strip_suffix('-'))
             .and_then(|value| value.parse::<usize>().ok());
+        let validator_matches = headers
+            .get("if-range")
+            .is_none_or(|value| value.to_str().ok() == Some(etag));
         match offset {
-            Some(offset) => Response::builder()
+            Some(offset) if validator_matches => Response::builder()
                 .status(StatusCode::PARTIAL_CONTENT)
+                .header("etag", etag)
+                .header(
+                    "content-range",
+                    format!("bytes {offset}-{}/{}", body.len() - 1, body.len()),
+                )
                 .body(Body::from(body[offset..].to_vec()))
                 .unwrap(),
-            None => Response::builder()
+            _ => Response::builder()
                 .status(StatusCode::OK)
-                .body(Body::from(body.as_ref().clone()))
+                .header("etag", etag)
+                .body(Body::from(body.clone()))
                 .unwrap(),
         }
+    }
+
+    fn partial_download(name: &str, content: &[u8], validator: Option<&str>) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "via-tdx-{name}-{}.bin",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, content).unwrap();
+        if let Some(validator) = validator {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(".validator");
+            std::fs::write(sidecar, validator).unwrap();
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn resume_never_splices_a_regenerated_file() {
+        let new = vec![2u8; 4096];
+        let app = Router::new()
+            .fallback(any(versioned_response))
+            .with_state(Arc::new((new.clone(), "\"v2\"")));
+        let (client, base_url) = spawn_client(app).await;
+        let path = partial_download("splice", &[1u8; 1000], Some("\"v1\""));
+
+        client
+            .download_to_path(&format!("{base_url}/feed"), &path, true)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), new);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_without_a_stored_validator_restarts() {
+        let new = vec![2u8; 4096];
+        let app = Router::new()
+            .fallback(any(versioned_response))
+            .with_state(Arc::new((new.clone(), "\"v2\"")));
+        let (client, base_url) = spawn_client(app).await;
+        let path = partial_download("novalidator", &[1u8; 1000], None);
+
+        client
+            .download_to_path(&format!("{base_url}/feed"), &path, true)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), new);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
     async fn resumed_download_appends_the_missing_tail() {
         let body = (0..=255u8).cycle().take(4096).collect::<Vec<u8>>();
         let app = Router::new()
-            .fallback(any(ranged_response))
-            .with_state(Arc::new(body.clone()));
+            .fallback(any(versioned_response))
+            .with_state(Arc::new((body.clone(), "\"v1\"")));
         let (client, base_url) = spawn_client(app).await;
         let path = std::env::temp_dir().join(format!(
             "via-tdx-resume-{}.bin",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::write(&path, &body[..1000]).unwrap();
+        let mut validator = path.clone().into_os_string();
+        validator.push(".validator");
+        std::fs::write(&validator, "\"v1\"").unwrap();
 
         let bytes_written = client
             .download_to_path(&format!("{base_url}/feed"), &path, true)
@@ -612,8 +725,8 @@ mod tests {
     async fn download_without_resume_restarts_from_the_beginning() {
         let body = (0..=255u8).cycle().take(4096).collect::<Vec<u8>>();
         let app = Router::new()
-            .fallback(any(ranged_response))
-            .with_state(Arc::new(body.clone()));
+            .fallback(any(versioned_response))
+            .with_state(Arc::new((body.clone(), "\"v1\"")));
         let (client, base_url) = spawn_client(app).await;
         let path = std::env::temp_dir().join(format!(
             "via-tdx-restart-{}.bin",

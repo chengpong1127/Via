@@ -157,6 +157,19 @@ async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
             source.source_id, source.byte_size, source.sha256
         );
     }
+    if !snapshot.manifest.reused_sources.is_empty() {
+        let reused = snapshot
+            .manifest
+            .reused_sources
+            .iter()
+            .map(|(name, fetched_at)| format!("{name} (from {fetched_at})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "reused {} source(s) from earlier snapshots: {reused}",
+            snapshot.manifest.reused_sources.len()
+        );
+    }
     for (city, count) in snapshot.bike_station_counts {
         println!("  {city} Bike stations: {count}");
     }
