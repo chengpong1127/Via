@@ -371,3 +371,48 @@ async fn resumable_download_send_errors_do_not_carry_request_query_values() {
 async fn resumable_download_chunk_errors_do_not_carry_request_query_values() {
     resumable_download_failure_hides_coordinates(Some(Duration::from_millis(50))).await;
 }
+
+#[tokio::test]
+async fn unrouted_request_paths_are_not_logged() {
+    for uri in [
+        "/25.04777,121.51712",
+        "/v1/nearby-stops/25.04777/121.51712",
+        "/v1/nearby-stops/25%2E04777/121%2E51712",
+        "/v1/nearby-stops/25.048/121.517",
+    ] {
+        let (logs, _guard) = capture_trace_logs();
+
+        let status = send(Request::builder().uri(uri).body(Body::empty()).unwrap()).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        let text = logs.text();
+        for digits in [
+            "25.04777",
+            "121.51712",
+            "25%2E04777",
+            "121%2E51712",
+            "25.048",
+            "121.517",
+        ] {
+            assert!(
+                !text.contains(digits),
+                "{digits} from {uri} leaked:\n{text}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn routed_request_logs_the_route_template() {
+    let (logs, _guard) = capture_trace_logs();
+
+    send(
+        Request::builder()
+            .uri("/v1/nearby-stops?latitude=25.03911&longitude=121.53407&radius_metres=2000")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert!(logs.text().contains("/v1/nearby-stops"), "{}", logs.text());
+}
