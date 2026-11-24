@@ -20,6 +20,8 @@ pub struct BusPatternBinding {
     pub realtime_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tdx_route_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headway_seconds_by_period: Vec<Option<u32>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
