@@ -103,6 +103,15 @@ verify_sha256() {
 mount_data_volume
 configure_log_retention
 mkdir -p "$DATA_DIR/static" "$DATA_DIR/valhalla" "$DATA_DIR/k3s"
+# The nightly CronJob (uid 10001 in the server image) keeps its fetch snapshots in
+# pipeline/ and hands finished builds to the host through static/incoming/.
+install -d -o 10001 -g 10001 -m 0755 "$DATA_DIR/pipeline" "$DATA_DIR/static/incoming"
+
+for pkg in zstd jq; do
+  if ! command -v "$pkg" >/dev/null 2>&1; then
+    apt-get install -y "$pkg"
+  fi
+done
 
 if ! command -v aws >/dev/null 2>&1; then
   snap install aws-cli --classic
@@ -138,5 +147,16 @@ verify_sha256 "$tmp/cert-manager.yaml" "$CERT_MANAGER_SHA256"
 kubectl apply -f "$tmp/cert-manager.yaml"
 rm -rf "$tmp"
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300s
+
+if command -v systemctl >/dev/null 2>&1 && [ -d /opt/via/server/deploy/aws/artifacts ]; then
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.service /etc/systemd/system/
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.timer /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now via-artifact-fetch.timer
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-static-activate.service /etc/systemd/system/
+  install -m 0644 /opt/via/server/deploy/aws/artifacts/via-static-activate.path /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now via-static-activate.path
+fi
 
 echo "k3s ${K3S_VERSION} and cert-manager ${CERT_MANAGER_VERSION} ready"

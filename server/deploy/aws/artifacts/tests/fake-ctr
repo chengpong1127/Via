@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+echo "ctr $*" >>"$KUBECTL_LOG"
+if [ "$1" = images ] && [ "$2" = ls ]; then echo "ghcr.io/example/via-server:test"; exit 0; fi
+if [ "$1" = run ]; then
+  src="$(sed -n 's/.*src=\([^,]*\),.*/\1/p' <<<"$*")"
+  grep -q '"ok"' "$src/.via-static.json"
+  exit
+fi
+exit 0

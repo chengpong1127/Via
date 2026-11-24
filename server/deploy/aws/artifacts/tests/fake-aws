@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+to_path() { echo "$FAKE_S3/$1/$2"; }
+not_found() { echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2; exit 254; }
+forbidden() { echo "An error occurred (403) when calling the HeadObject operation: Forbidden (key mentions 404)" >&2; exit 254; }
+
+if [ "$1" = s3api ]; then
+  op="$2"
+  shift 2
+  bucket="" key="" body="" cond=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bucket) bucket="$2"; shift 2 ;;
+      --key) key="$2"; shift 2 ;;
+      --body) body="$2"; shift 2 ;;
+      --if-none-match) cond=1; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  p="$(to_path "$bucket" "$key")"
+  case "$op" in
+    head-object)
+      [ -z "${FAKE_S3_FORBIDDEN:-}" ] || forbidden
+      [ -f "$p" ] || not_found
+      ;;
+    put-object)
+      if [ "$cond" -eq 1 ] && [ -f "$p" ]; then
+        echo "An error occurred (PreconditionFailed) when calling the PutObject operation: At least one of the pre-conditions you specified did not hold" >&2
+        exit 254
+      fi
+      mkdir -p "$(dirname "$p")"
+      cp "$body" "$p"
+      ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
+
+[ "$1" = s3 ] && [ "$2" = cp ] || { echo "unsupported: $*" >&2; exit 2; }
+src="$3"
+dst="$4"
+split() { local r="${1#s3://}"; echo "${r%%/*} ${r#*/}"; }
+if [[ "$src" == s3://* ]]; then
+  read -r b k <<<"$(split "$src")"
+  p="$(to_path "$b" "$k")"
+  [ -z "${FAKE_S3_FORBIDDEN:-}" ] || forbidden
+  [ -f "$p" ] || not_found
+  if [ "$dst" = - ]; then cat "$p"; else cp "$p" "$dst"; fi
+else
+  read -r b k <<<"$(split "$dst")"
+  p="$(to_path "$b" "$k")"
+  mkdir -p "$(dirname "$p")"
+  cp "$src" "$p"
+fi
