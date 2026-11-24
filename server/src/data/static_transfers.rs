@@ -148,7 +148,21 @@ async fn query_walking_transfers(
     let mut best_by_pair =
         HashMap::<(BoardingPointId, BoardingPointId), WalkingTransferMetrics>::new();
 
-    for source_group in indices.chunks(policy.source_group_size) {
+    let sources: Vec<usize> = match std::env::var("VIA_REPLAY_BBOX") {
+        Ok(spec) => {
+            let v: Vec<f64> = spec.split(',').map(|x| x.parse().unwrap()).collect();
+            indices
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let c = network.stops[i].coordinate;
+                    c.latitude >= v[0] && c.latitude <= v[1] && c.longitude >= v[2] && c.longitude <= v[3]
+                })
+                .collect()
+        }
+        Err(_) => indices.to_vec(),
+    };
+    for source_group in sources.chunks(policy.source_group_size) {
         let mut requests = Vec::new();
         for &source in source_group {
             let targets = candidate_targets(network, spatial, indices, source, policy);
@@ -172,7 +186,18 @@ async fn query_walking_transfers(
                     max_distance: Some(Metres(policy.max_distance_metres)),
                 },
             };
-            let matrix = street.matrix(query).await?;
+            let mut attempt = 0;
+            let matrix = loop {
+                match street.matrix(query.clone()).await {
+                    Ok(matrix) => break matrix,
+                    Err(error) if attempt < 6 => {
+                        attempt += 1;
+                        eprintln!("matrix retry {attempt}: {error:?}");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
             Ok::<_, StreetRoutingError>((source, targets, matrix))
         }))
         .buffer_unordered(policy.max_concurrency)
@@ -276,22 +301,47 @@ fn retain_outgoing_transfers_by_place(
                 .cmp(&b.1.duration_seconds)
                 .then_with(|| a.0.as_str().cmp(b.0.as_str()))
         });
-        let mut seen = HashSet::new();
-        let (mut first, mut rest) = (Vec::new(), Vec::new());
+        let cap = std::env::var("VIA_FANOUT_CAP")
+            .ok()
+            .map_or(policy.max_outgoing, |v| v.parse().unwrap());
+        let whole = std::env::var("VIA_FANOUT_WHOLE").is_ok_and(|v| v == "1");
+        let mut groups: Vec<Vec<(BoardingPointId, WalkingTransferMetrics)>> = Vec::new();
+        let mut group_of = HashMap::new();
         for target in targets {
-            if seen.insert(places.get(&target.0).copied()) {
-                first.push(target);
-            } else {
-                rest.push(target);
+            let place = places.get(&target.0).copied();
+            let slot = *group_of.entry(place).or_insert_with(|| {
+                groups.push(Vec::new());
+                groups.len() - 1
+            });
+            groups[slot].push(target);
+        }
+        let total: usize = groups.iter().map(Vec::len).sum();
+        let (mut first, mut rest) = (Vec::new(), Vec::new());
+        if whole {
+            for group in groups {
+                if first.is_empty() || first.len() + group.len() <= cap {
+                    first.extend(group);
+                } else {
+                    rest.extend(group);
+                }
+            }
+        } else {
+            for group in groups {
+                let mut group = group.into_iter();
+                first.extend(group.next());
+                rest.extend(group);
             }
         }
-        let total = first.len() + rest.len();
-        stats.removed_by_fanout += total.saturating_sub(policy.max_outgoing);
-        for (to, metrics) in first
-            .into_iter()
-            .chain(rest)
-            .take(policy.max_outgoing)
-        {
+        rest.sort_by(|a, b| {
+            a.1.duration_seconds
+                .cmp(&b.1.duration_seconds)
+                .then_with(|| a.0.as_str().cmp(b.0.as_str()))
+        });
+        let limit = if whole { first.len().min(cap.max(1)) } else { cap };
+        let _ = total;
+        stats.removed_by_fanout += total.saturating_sub(limit);
+        let kept = if whole { first.len() } else { cap };
+        for (to, metrics) in first.into_iter().chain(rest).take(kept) {
             transfer_edges.push(TransferEdge::new(
                 from.clone(),
                 to,

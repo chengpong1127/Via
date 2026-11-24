@@ -21,6 +21,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let street = Arc::new(ValhallaProvider::new(settings.valhalla.provider_config(true)?)?);
     assert!(street.healthy().await, "valhalla unhealthy");
     let before = artifact.transit.transfer_edges.len();
+    let old_edges = artifact.transit.transfer_edges.clone();
+    let bbox: Option<Vec<f64>> = std::env::var("VIA_REPLAY_BBOX")
+        .ok()
+        .map(|spec| spec.split(',').map(|x| x.parse().unwrap()).collect());
+    let stop_in_bbox: std::collections::HashSet<_> = artifact
+        .transit
+        .stops
+        .iter()
+        .filter(|stop| {
+            bbox.as_ref().is_none_or(|v| {
+                stop.coordinate.latitude >= v[0]
+                    && stop.coordinate.latitude <= v[1]
+                    && stop.coordinate.longitude >= v[2]
+                    && stop.coordinate.longitude <= v[3]
+            })
+        })
+        .map(|stop| stop.id.clone())
+        .collect();
     let stats = static_transfers::enrich_network_with_static_transfers(
         &mut artifact.transit,
         street.as_ref(),
@@ -29,6 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!("edges before={before} after={}", artifact.transit.transfer_edges.len());
     println!("{stats:?}");
+    let mut merged = artifact.transit.transfer_edges.clone();
+    merged.extend(old_edges.into_iter().filter(|edge| !stop_in_bbox.contains(&edge.from)));
+    println!("merged edges {}", merged.len());
+    artifact.transit.transfer_edges = merged;
     std::fs::write(&args[2], serde_json::to_vec(&artifact.transit.transfer_edges)?)?;
     Ok(())
 }
