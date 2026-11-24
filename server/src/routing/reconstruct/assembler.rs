@@ -105,7 +105,11 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
                 trip,
                 board_index,
                 alight_index,
-            } => self.append_transit(trip, *board_index, *alight_index),
+                ..
+            } => {
+                self.append_transit(trip, *board_index, *alight_index, movement.to_anchor)
+                    .await
+            }
             JourneyMovementKind::BikeShare {
                 movement: bike_movement,
             } => self.append_bike(movement, bike_movement).await,

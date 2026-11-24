@@ -79,6 +79,7 @@ impl RealizedJourney {
                 trip,
                 board_index,
                 alight_index,
+                ..
             } => match trip.stop_times.get(*board_index) {
                 Some(board) => format!(
                     "transit:{}:{board_index}:{alight_index}:{}",
@@ -108,6 +109,7 @@ impl RealizedJourney {
                 trip,
                 board_index,
                 alight_index,
+                ..
             } => {
                 let Some(board) = trip.stop_times.get(*board_index) else {
                     return format!("invalid-transit:{board_index}");

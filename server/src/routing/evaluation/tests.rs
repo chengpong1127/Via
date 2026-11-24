@@ -7,6 +7,7 @@ use crate::{domain::ids::BoardingPointId, street::FakeStreetRouter};
 mod bikeshare;
 mod evaluation;
 mod pareto_reference;
+mod place_hops;
 mod pruning;
 mod transit;
 mod walking;
@@ -123,6 +124,8 @@ fn realized_ride(from_anchor: usize, trip: EffectiveTrip) -> JourneyMovement {
             trip: Arc::new(trip),
             board_index: 0,
             alight_index: 1,
+            board_hop_seconds: 0,
+            alight_hop_seconds: 0,
         },
     }
 }

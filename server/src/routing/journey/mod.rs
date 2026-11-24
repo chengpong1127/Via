@@ -88,8 +88,12 @@ impl RealizedJourney {
                 } => {
                     current_time += Duration::seconds(i64::from(*duration_seconds));
                 }
-                JourneyMovementKind::Transit { .. } => {
-                    if current_time > movement.departure_at {
+                JourneyMovementKind::Transit {
+                    board_hop_seconds, ..
+                } => {
+                    if current_time + Duration::seconds(i64::from(*board_hop_seconds))
+                        > movement.departure_at
+                    {
                         return Err(JourneyTimingError::MissedTransit { movement_index });
                     }
                     current_time = movement.arrival_at;
