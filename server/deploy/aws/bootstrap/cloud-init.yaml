@@ -1,0 +1,35 @@
+#cloud-config
+package_update: true
+packages:
+  - git
+  - curl
+  - unzip
+write_files:
+  - path: /etc/via-bootstrap.env
+    permissions: "0644"
+    content: |
+      VIA_REGION=${region}
+      VIA_SSM_PREFIX=${ssm_prefix}
+      VIA_DATA_VOLUME_ID=${data_volume}
+  - path: /usr/local/sbin/via-bootstrap
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      repo_url='${repo_url}'
+      repo_ref='${repo_ref}'
+      retry() {
+        for _ in $(seq 1 30); do
+          "$@" && return 0
+          sleep 10
+        done
+        echo "giving up: $*" >&2
+        return 1
+      }
+      retry curl -fsS -o /dev/null https://github.com
+      [ -d /opt/via/.git ] || retry git clone "$repo_url" /opt/via
+      retry git -C /opt/via fetch --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      git -C /opt/via checkout --detach "origin/$repo_ref" 2>/dev/null || git -C /opt/via checkout --detach "$repo_ref"
+      /opt/via/server/deploy/aws/bootstrap/install-k3s.sh
+runcmd:
+  - [bash, -c, "/usr/local/sbin/via-bootstrap >> /var/log/via-bootstrap.log 2>&1 && echo BOOTSTRAP-OK >> /var/log/via-bootstrap.log || { echo BOOTSTRAP-FAILED >> /var/log/via-bootstrap.log; exit 1; }"]
