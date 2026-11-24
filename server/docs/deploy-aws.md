@@ -97,7 +97,7 @@ TDX quota: the job spends at most 4 requests per minute and the gateway shares t
 
 The job requires the image to contain `via-data fetch --gtfs-only` and the paced fetch (#27). Until the image has it the job fails and the previous data stays active.
 
-Resources (measured on a full Taiwan build, see the PR): MEASURED_SUMMARY
+Resources (measured on a full Taiwan build, see the PR): **not yet measured to completion**. Two local `via-data build` runs on the full Taiwan snapshot (about 540 MB static artifact) were aborted by `StreetRouting(Timeout)` after about 45 to 50 minutes on a loaded laptop with OrbStack Valhalla; they had reached a resident set of 1.5 GiB (peak footprint 2.0 GiB) and were still in the Valhalla matrix phase, so the true peak is at least 2 GiB. The job's `requests` 2Gi and `limits` 3Gi are provisional. Do not size a node (in particular 4 GiB) from them. The build is Valhalla-bound, so wall time depends on Valhalla throughput on the node, not on the job. To change the cadence, patch `spec.schedule` of the CronJob in the overlay; to change memory, patch the container resources.
 
 Operate: `kubectl -n via get cronjob,job -l app=nightly-static`, logs `kubectl -n via logs job/<name>`, activation log `journalctl -u via-static-activate`. Run it now: `kubectl -n via create job --from=cronjob/nightly-static manual-$(date +%s)`. Fallback if the node cannot afford the build: build in GitHub Actions and publish with `publish.sh` (section 4).
 
