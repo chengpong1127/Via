@@ -29,7 +29,7 @@ use super::fixtures::{
     option_for_patterns, request, route_body_inner, route_body_with_bike, route_body_with_sources,
     transit_street,
 };
-use crate::support::routing::{path, stop_coordinate};
+use crate::support::routing::{coordinate, path, stop_coordinate};
 
 #[derive(Clone)]
 struct FixtureAvailabilitySource {
@@ -388,16 +388,11 @@ async fn viable_transit_corridor_competes_with_direct_bike_share() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
-    let pickup = via_server::street::Coordinate::try_new(
-        origin.latitude() + 0.0001,
-        origin.longitude() + 0.0001,
-    )
-    .unwrap();
-    let dropoff = via_server::street::Coordinate::try_new(
+    let pickup = coordinate(origin.latitude() + 0.0001, origin.longitude() + 0.0001);
+    let dropoff = coordinate(
         destination.latitude() - 0.0001,
         destination.longitude() - 0.0001,
-    )
-    .unwrap();
+    );
     let pickup_id = BikeStationId::new("direct-pickup");
     let dropoff_id = BikeStationId::new("direct-dropoff");
     let bike_network = Arc::new(
@@ -493,10 +488,10 @@ async fn viable_transit_corridor_competes_with_direct_bike_share() {
 }
 
 async fn trivial_corridor_bike_options(modes: &[&str]) {
-    let origin = via_server::street::Coordinate::try_new(25.0, 121.5).unwrap();
-    let destination = via_server::street::Coordinate::try_new(25.01, 121.51).unwrap();
-    let pickup = via_server::street::Coordinate::try_new(25.0001, 121.5001).unwrap();
-    let dropoff = via_server::street::Coordinate::try_new(25.0099, 121.5099).unwrap();
+    let origin = coordinate(25.0, 121.5);
+    let destination = coordinate(25.01, 121.51);
+    let pickup = coordinate(25.0001, 121.5001);
+    let dropoff = coordinate(25.0099, 121.5099);
     let pickup_id = BikeStationId::new("direct-pickup");
     let dropoff_id = BikeStationId::new("direct-dropoff");
     let bike_network = Arc::new(
@@ -742,7 +737,6 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
                 calls: availability_calls.clone(),
             }),
             limits,
-            false,
         );
         let request = serde_json::from_value::<via_server::api::PlanningRequest>(request(
             origin,
@@ -903,7 +897,6 @@ async fn ranking_corridor_fixture(iterations: usize) {
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(UnavailableBikeAvailabilitySource),
         limits,
-        false,
     );
     let mut stable_key = None;
     let mut latency_us = Vec::new();

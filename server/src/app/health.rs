@@ -1,38 +1,32 @@
-use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::Arc;
 use utoipa::ToSchema;
 
-use crate::domain::transit::runtime::TransitRuntime;
-
-#[async_trait]
-pub trait DependencyHealth: Send + Sync {
-    async fn healthy(&self) -> bool;
-
-    fn name(&self) -> &'static str;
-}
+use crate::{domain::transit::runtime::TransitRuntime, street::DependencyHealth};
 
 #[derive(Clone)]
 pub struct Health {
     street: Arc<dyn DependencyHealth>,
-    transit: Arc<TransitRuntime>,
+    static_network: bool,
+    transit_artifact: bool,
 }
 
 impl Health {
-    pub(crate) fn new(street: Arc<dyn DependencyHealth>, transit: Arc<TransitRuntime>) -> Self {
-        Self { street, transit }
+    pub(crate) fn new(street: Arc<dyn DependencyHealth>, transit: &TransitRuntime) -> Self {
+        Self {
+            street,
+            static_network: transit.has_revisions(),
+            transit_artifact: transit.validate().is_ok(),
+        }
     }
 
     pub async fn readiness(&self) -> ReadinessReport {
         let street_routing = self.street.healthy().await;
-        let revisions = self.transit.revisions();
-        let static_network = !revisions.0.trim().is_empty() && !revisions.1.trim().is_empty();
-        let transit_artifact = self.transit.validate().is_ok();
         ReadinessReport {
-            ready: street_routing && static_network && transit_artifact,
+            ready: street_routing && self.static_network && self.transit_artifact,
             street_routing,
-            static_network,
-            transit_artifact,
+            static_network: self.static_network,
+            transit_artifact: self.transit_artifact,
         }
     }
 

@@ -50,9 +50,11 @@ impl PlanningRequest {
     pub fn validate(&self) -> Result<(), RequestValidationError> {
         self.origin.validate("/origin")?;
         self.destination.validate("/destination")?;
-        let mut modes = self.selected_modes.clone();
-        modes.sort();
-        if modes.windows(2).any(|modes| modes[0] == modes[1]) {
+        if self
+            .canonical_selected_modes()
+            .windows(2)
+            .any(|modes| modes[0] == modes[1])
+        {
             return Err(RequestValidationError::new(
                 "invalid_selected_modes",
                 "/selected_modes",
@@ -145,6 +147,19 @@ pub enum PlanningMode {
     Tra,
     Thsr,
     BikeShare,
+}
+
+impl std::str::FromStr for PlanningMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(value.trim()),
+        )
+        .map_err(|_| {
+            format!("unsupported mode {value:?}; use bus, metro, tra, thsr, or bike_share")
+        })
+    }
 }
 
 impl PlanningMode {

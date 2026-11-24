@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Stand-in for via-data in tests: never touches the network.
+echo "$*" >>"$VIA_DATA_LOG"
+n="$(cat "$PIPELINE_DIR/.fake-counter" 2>/dev/null || echo 0)"
+n=$((n + 1))
+echo "$n" >"$PIPELINE_DIR/.fake-counter"
+ts="2026112${n}T030000Z"
+case "$1" in
+  fetch)
+    [ -z "${FAKE_FETCH_FAIL:-}" ] || exit 1
+    mkdir -p "$PIPELINE_DIR/fetch/$ts"
+    printf '{"sources":{"gtfs":{"sha256":"%s"}}}\n' "$FAKE_GTFS_SHA" >"$PIPELINE_DIR/fetch/$ts/manifest.json"
+    ln -sfn "$ts" "$PIPELINE_DIR/fetch/latest"
+    ;;
+  build)
+    [ -z "${FAKE_BUILD_FAIL:-}" ] || exit 1
+    mkdir -p "$PIPELINE_DIR/build/$ts"
+    printf '{"ok":"%s"}' "$FAKE_GTFS_SHA" >"$PIPELINE_DIR/build/$ts/.via-static.json"
+    ln -sfn "$ts/.via-static.json" "$PIPELINE_DIR/build/.via-static-latest.json"
+    ;;
+  *) exit 2 ;;
+esac

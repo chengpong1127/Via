@@ -1,11 +1,8 @@
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration as TimeDuration, OffsetDateTime};
 
-use super::realtime_check::RealtimeCheck;
+use super::realtime_check::{RealtimeCheck, parse_timestamp};
 use crate::{
-    domain::{
-        realtime::{FreshnessState, LiveStatusTimes},
-        transit::timing::DepartureError,
-    },
+    domain::{realtime::FreshnessState, transit::timing::DepartureError},
     live::MetroBoard,
 };
 
@@ -30,13 +27,7 @@ pub(super) fn parse_metro_boards(
         realtime_check.reject_future(source_update, received_at)?;
         realtime_check.reject_future(platform_update, received_at)?;
         let observed_at = source_update.min(platform_update);
-        let freshness = realtime_check.freshness.evaluate(
-            LiveStatusTimes {
-                published_at: Some(observed_at),
-                received_at,
-            },
-            received_at,
-        );
+        let freshness = realtime_check.freshness_of(observed_at, received_at);
         if freshness != FreshnessState::Fresh
             || board.service_status != 0
             || board.estimate_minutes.is_none_or(|minutes| minutes < 0)
@@ -59,8 +50,4 @@ pub(super) fn parse_metro_boards(
         });
     }
     Ok(observations)
-}
-
-fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
-    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
 }

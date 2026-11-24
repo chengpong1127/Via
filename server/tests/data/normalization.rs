@@ -1,12 +1,12 @@
 use time::macros::datetime;
 use via_server::domain::{
-    ids::{BoardingPointId, TransitPatternId},
+    ids::{
+        BoardingPointId, TransitPatternId, boarding_point_id, transit_service_id,
+        transit_service_id_for_direction,
+    },
     realtime::ArrivalState,
 };
-use via_server::{
-    providers::timing::normalize_n1,
-    tdx::{boarding_point_id, transit_service_id, transit_service_id_for_direction},
-};
+use via_server::providers::timing::normalize_n1;
 
 #[test]
 fn static_and_realtime_tdx_records_share_typed_ids() {

@@ -250,6 +250,17 @@ pub trait StreetRouter: Send + Sync {
     async fn route(&self, query: RouteQuery) -> Result<StreetPath, StreetRoutingError>;
 }
 
+#[async_trait]
+pub trait DependencyHealth: Send + Sync {
+    async fn healthy(&self) -> bool;
+
+    fn name(&self) -> &'static str;
+}
+
+pub trait MonitoredStreetRouter: StreetRouter + DependencyHealth {}
+
+impl<T: StreetRouter + DependencyHealth> MonitoredStreetRouter for T {}
+
 #[cfg(test)]
 mod coordinate_tests {
     use super::*;

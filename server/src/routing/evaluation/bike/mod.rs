@@ -15,9 +15,10 @@ use time::OffsetDateTime;
 
 use crate::{
     domain::bikeshare::{
-        BikeAvailabilitySnapshot, BikeShareNetwork, BikeStationAccess, BikeWalkingAccess,
+        BikeAvailabilitySnapshot, BikeAvailabilityView, BikeShareNetwork, BikeStationAccess,
+        BikeWalkingAccess,
     },
-    domain::ids::BikeStationId,
+    domain::ids::{BikeStationId, BoardingPointId},
     domain::location::GeoCoordinate,
     street::{
         Coordinate, MatrixCell, MatrixLimits, MatrixOrientation, MatrixQuery, MatrixResult,
@@ -58,6 +59,85 @@ pub(crate) trait BikeMovementSource: Send + Sync {
         from: &CorridorAnchor,
         to: &CorridorAnchor,
     ) -> Result<Vec<BikeShareMovement>, StreetRoutingError>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StationRole {
+    Pickup,
+    Dropoff,
+}
+
+impl StationRole {
+    fn walking(self, access: &BikeStationAccess) -> Option<BikeWalkingAccess> {
+        match self {
+            Self::Pickup => access.walk_to_station,
+            Self::Dropoff => access.walk_from_station,
+        }
+    }
+
+    fn max_per_anchor(self, settings: &BikeMovementPolicy) -> usize {
+        match self {
+            Self::Pickup => settings.max_pickup_stations_per_anchor,
+            Self::Dropoff => settings.max_dropoff_stations_per_anchor,
+        }
+    }
+
+    fn usable_accesses<'a>(
+        self,
+        view: &BikeAvailabilityView<'a>,
+        boarding_point_id: &BoardingPointId,
+    ) -> Vec<&'a BikeStationAccess> {
+        match self {
+            Self::Pickup => view.usable_pickups(boarding_point_id),
+            Self::Dropoff => view.usable_dropoffs(boarding_point_id),
+        }
+    }
+
+    fn is_available(self, view: &BikeAvailabilityView<'_>, station_id: &BikeStationId) -> bool {
+        match self {
+            Self::Pickup => view.can_pick_up_at(station_id),
+            Self::Dropoff => view.can_return_at(station_id),
+        }
+    }
+
+    fn walking_orientation(self) -> MatrixOrientation {
+        match self {
+            Self::Pickup => MatrixOrientation::OneToMany,
+            Self::Dropoff => MatrixOrientation::ManyToOne,
+        }
+    }
+
+    fn chunk_size(self, limits: MatrixLimits) -> usize {
+        match self {
+            Self::Pickup => limits.max_targets,
+            Self::Dropoff => limits.max_sources,
+        }
+    }
+
+    fn walking_endpoints(
+        self,
+        endpoint: Coordinate,
+        stations: Vec<Coordinate>,
+    ) -> (Vec<Coordinate>, Vec<Coordinate>) {
+        match self {
+            Self::Pickup => (vec![endpoint], stations),
+            Self::Dropoff => (stations, vec![endpoint]),
+        }
+    }
+
+    fn walking_shape(self, stations: usize) -> (usize, usize) {
+        match self {
+            Self::Pickup => (1, stations),
+            Self::Dropoff => (stations, 1),
+        }
+    }
+
+    fn walking_cell(self, matrix: &MatrixResult, station: usize) -> &MatrixCell {
+        match self {
+            Self::Pickup => &matrix.cells[0][station],
+            Self::Dropoff => &matrix.cells[station][0],
+        }
+    }
 }
 
 #[derive(Clone)]

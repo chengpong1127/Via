@@ -209,12 +209,12 @@ impl DepartureResolver {
         let mut results = vec![None; queries.len()];
         let mut queries_by_mode = HashMap::<TransitMode, Vec<(usize, DepartureQuery)>>::new();
         for (index, query) in queries.into_iter().enumerate() {
-            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
+            if self.transit.pattern(&query.pattern_id).is_none() {
                 results[index] = Some(Err(DepartureError::InvalidQuery));
                 continue;
-            };
+            }
             queries_by_mode
-                .entry(self.transit.required_route(&pattern.route_id).mode)
+                .entry(self.transit.pattern_mode(&query.pattern_id))
                 .or_default()
                 .push((index, query));
         }
@@ -255,12 +255,12 @@ impl TimingSnapshotLoader for DepartureResolver {
         let mut snapshot = TimingSnapshot::default();
         let mut queries_by_mode = BTreeMap::<TransitMode, Vec<DepartureQuery>>::new();
         for query in queries {
-            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
+            if self.transit.pattern(&query.pattern_id).is_none() {
                 snapshot.record_failure(DepartureError::InvalidQuery);
                 continue;
-            };
+            }
             queries_by_mode
-                .entry(self.transit.required_route(&pattern.route_id).mode)
+                .entry(self.transit.pattern_mode(&query.pattern_id))
                 .or_default()
                 .push(query);
         }

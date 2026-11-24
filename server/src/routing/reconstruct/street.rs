@@ -1,13 +1,12 @@
 use time::{Duration, OffsetDateTime};
 
 use crate::{
-    domain::planning::PlanningInput,
     domain::{
         ids::BoardingPointId,
-        journey::{Geometry, Leg, LegDetails, LegMode, Place, PlanningError},
+        journey::{Leg, LegDetails, LegMode, Place, PlanningError},
     },
     routing::{
-        journey::{JourneyAnchorKind, JourneyMovement, RealizedJourney},
+        journey::{JourneyAnchorKind, JourneyMovement},
         model::JourneyPlanningContext,
     },
     street::{
@@ -19,7 +18,7 @@ use crate::{
 use super::{
     JourneyReconstructor,
     assembler::{JourneyAssembly, ReconstructionState},
-    evidence, geometry,
+    endpoint_place, evidence, geometry,
     transit::register_pending_transfer,
 };
 
@@ -28,18 +27,8 @@ impl ReconstructionState<'_, '_> {
         &mut self,
         movement: &JourneyMovement,
     ) -> Result<bool, PlanningError> {
-        let from = anchor_place(
-            self.reconstructor,
-            self.context.request,
-            self.journey,
-            movement.from_anchor,
-        )?;
-        let to = anchor_place(
-            self.reconstructor,
-            self.context.request,
-            self.journey,
-            movement.to_anchor,
-        )?;
+        let from = self.anchor_place(movement.from_anchor)?;
+        let to = self.anchor_place(movement.to_anchor)?;
         let Some(path) = hydrate_path(
             self.reconstructor,
             self.context,
@@ -61,35 +50,28 @@ impl ReconstructionState<'_, '_> {
         ) {
             register_pending_transfer(&self.assembly, &mut self.pending_transfer);
         }
-        self.current_stop = anchor_boarding_point(self.journey, movement.to_anchor);
+        self.current_stop = self.anchor_boarding_point(movement.to_anchor);
         Ok(true)
     }
-}
 
-pub(super) fn anchor_boarding_point(
-    journey: &RealizedJourney,
-    anchor: usize,
-) -> Option<BoardingPointId> {
-    match &journey.anchors()[anchor].kind {
-        JourneyAnchorKind::BoardingPoint { id } => Some(id.clone()),
-        JourneyAnchorKind::Origin | JourneyAnchorKind::Destination => None,
+    pub(super) fn anchor_boarding_point(&self, anchor: usize) -> Option<BoardingPointId> {
+        self.journey.anchors()[anchor]
+            .kind
+            .boarding_point()
+            .cloned()
     }
-}
 
-pub(super) fn anchor_place(
-    reconstructor: &JourneyReconstructor,
-    request: &PlanningInput,
-    journey: &RealizedJourney,
-    anchor: usize,
-) -> Result<Place, PlanningError> {
-    let anchor = journey
-        .anchors()
-        .get(anchor)
-        .ok_or(PlanningError::Internal)?;
-    match &anchor.kind {
-        JourneyAnchorKind::Origin => Ok(reconstructor.origin_place(request)),
-        JourneyAnchorKind::BoardingPoint { id } => reconstructor.stop_place(id),
-        JourneyAnchorKind::Destination => Ok(reconstructor.destination_place(request)),
+    pub(super) fn anchor_place(&self, anchor: usize) -> Result<Place, PlanningError> {
+        let anchor = self
+            .journey
+            .anchors()
+            .get(anchor)
+            .ok_or(PlanningError::Internal)?;
+        match &anchor.kind {
+            JourneyAnchorKind::Origin => Ok(endpoint_place(&self.context.request.origin)),
+            JourneyAnchorKind::BoardingPoint { id } => self.reconstructor.stop_place(id),
+            JourneyAnchorKind::Destination => Ok(endpoint_place(&self.context.request.destination)),
+        }
     }
 }
 
@@ -165,7 +147,7 @@ pub(super) fn append_routed_walking(
         assembly.walking_tail = Some((index, joined));
         return;
     }
-    let leg_id = format!("candidate_leg_{}", assembly.legs.len());
+    let leg_id = assembly.next_leg_id();
     assembly
         .legs
         .push(walking_leg(leg_id, from, to, departure, arrival, &path));
@@ -218,10 +200,7 @@ fn walking_leg(
         departure_time,
         arrival_time,
         duration_seconds: path.duration.0,
-        geometry: Geometry {
-            encoding: "polyline6",
-            points: geometry::encode_polyline6(&path.geometry),
-        },
+        geometry: geometry::polyline_geometry(&path.geometry),
         guidance: geometry::guidance(&path.maneuvers),
         details: LegDetails::Walking,
         attribution: path.attribution.clone(),
@@ -238,7 +217,10 @@ mod tests {
             transit::network::{TransitNetwork, TransitStop},
             transit::runtime::TransitRuntime,
         },
-        routing::{JourneyAnchor, JourneyMovementKind, PlanningDeadline, WalkingMovementKind},
+        routing::{
+            JourneyAnchor, JourneyMovementKind, PlanningDeadline, RealizedJourney,
+            WalkingMovementKind,
+        },
         street::{Coordinate, FakeStreetRouter, Metres, Seconds},
     };
     use std::sync::Arc;

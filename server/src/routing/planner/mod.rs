@@ -3,7 +3,7 @@ mod tests;
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
-use time::{Duration, OffsetDateTime};
+use time::OffsetDateTime;
 use tracing::Instrument;
 
 use crate::{
@@ -90,7 +90,6 @@ impl MultimodalPlanner {
         limits: &JourneyPlanningLimits,
     ) -> Result<(PlanningQuery, FailureSummary), PlanningError> {
         let request = context.request;
-        let modes = request.transit_modes.clone();
         let origin = to_street_coordinate(request.origin.coordinate)?;
         let destination = to_street_coordinate(request.destination.coordinate)?;
         let mut failures = FailureSummary::default();
@@ -99,7 +98,6 @@ impl MultimodalPlanner {
             self.street_router.as_ref(),
             context,
             limits,
-            &modes,
             &mut failures,
         )
         .instrument(tracing::info_span!(target: "via_profile", "Candidate Discovery"))
@@ -113,9 +111,13 @@ impl MultimodalPlanner {
             context.search_start,
             limits.planner,
         )
-        .with_allowed_transit_modes(modes)
+        .with_allowed_transit_modes(request.transit_modes.iter().copied())
         .with_bike_share(request.allow_bike_share);
         Ok((query, failures))
+    }
+
+    pub(crate) fn route_cache(&self) -> Arc<RouteCache> {
+        Arc::new(RouteCache::new(self.street_router.clone()))
     }
 
     pub async fn plan_with_stats(
@@ -123,8 +125,7 @@ impl MultimodalPlanner {
         query: PlanningQuery,
     ) -> Result<(Vec<RealizedJourney>, MultimodalPlannerStats), RoutingError> {
         let limit = query.limits.max_candidates.max(1);
-        let route_cache = Arc::new(RouteCache::new(self.street_router.clone()));
-        let mut planned = self.plan(query, route_cache).await?;
+        let mut planned = self.plan(query, self.route_cache()).await?;
         planned.journeys.truncate(limit);
         planned.stats.evaluation.final_candidates = planned.journeys.len();
         Ok((planned.journeys, planned.stats))
@@ -135,18 +136,9 @@ impl MultimodalPlanner {
         query: PlanningQuery,
         route_cache: Arc<RouteCache>,
     ) -> Result<PlannedJourneys, RoutingError> {
-        if query.deadline.is_elapsed() {
-            return Err(RoutingError::DeadlineExceeded);
-        }
+        query.deadline.check()?;
         query.validate_access_egress()?;
-        let (transit_corridors, search) = if query.allowed_transit_modes.is_empty()
-            || query.origin_access.is_empty()
-            || query.destination_egress.is_empty()
-        {
-            (Vec::new(), CorridorSearchStats::default())
-        } else {
-            self.search_static_corridors(&query)?
-        };
+        let (transit_corridors, search) = self.search_static_corridors(&query)?;
         let mut corridors = vec![Corridor::direct_walking(query.origin, query.destination)];
         corridors.extend(transit_corridors);
         let (snapshots, mut failures) = query
@@ -206,9 +198,7 @@ impl MultimodalPlanner {
         tracing::Span::current()
             .record("states_expanded", stats.states_expanded)
             .record("corridor_count", stats.corridors_retained);
-        if query.deadline.is_elapsed() {
-            return Err(RoutingError::DeadlineExceeded);
-        }
+        query.deadline.check()?;
         tracing::debug!(
             target: "via_server::routing",
             states_expanded = stats.states_expanded,
@@ -221,27 +211,27 @@ impl MultimodalPlanner {
     }
 
     fn timing_positions(&self, corridors: &[Corridor]) -> (Vec<PatternPosition>, usize) {
-        let mut positions = HashSet::new();
+        let mut legs = corridors
+            .iter()
+            .flat_map(Corridor::transit_legs)
+            .collect::<Vec<_>>();
+        legs.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
+        legs.dedup_by(|leg, previous| {
+            leg.pattern_id == previous.pattern_id && leg.board_index == previous.board_index
+        });
+        let mut positions = Vec::with_capacity(legs.len());
         let mut pattern_ids = HashSet::new();
         let mut bus_stop_ids = HashSet::new();
-        for leg in corridors.iter().flat_map(Corridor::transit_legs) {
-            positions.insert(PatternPosition {
+        for leg in legs {
+            positions.push(PatternPosition {
                 pattern_id: leg.pattern_id.clone(),
                 stop_index: leg.board_index,
             });
             pattern_ids.insert(&leg.pattern_id);
-            let pattern = self.transit.required_pattern(&leg.pattern_id);
-            if self.transit.required_route(&pattern.route_id).mode == TransitMode::Bus {
+            if self.transit.pattern_mode(&leg.pattern_id) == TransitMode::Bus {
                 bus_stop_ids.insert(&leg.board_stop_id);
             }
         }
-        let mut positions = positions.into_iter().collect::<Vec<_>>();
-        positions.sort_by(|left, right| {
-            left.pattern_id
-                .as_str()
-                .cmp(right.pattern_id.as_str())
-                .then(left.stop_index.cmp(&right.stop_index))
-        });
         ::metrics::counter!("via_planner_transit_reachable_boardings_total")
             .increment(positions.len() as u64);
         ::metrics::counter!("via_planner_transit_reachable_patterns_total")
@@ -251,20 +241,17 @@ impl MultimodalPlanner {
         (positions, bus_stop_ids.len())
     }
 
-    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = corridors.iter().filter(|corridor| corridor.transit_legs().next().is_some()).count()))]
-    async fn load_snapshots(
+    fn timing_queries(
         &self,
         query: &PlanningQuery,
-        corridors: &[Corridor],
-    ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
-        let window_end = query.departure_time
-            + Duration::seconds(i64::from(query.limits.max_journey_duration_seconds));
+        positions: Vec<PatternPosition>,
+    ) -> Result<Vec<DepartureQuery>, RoutingError> {
+        let window_end = query.latest_arrival();
         let departures_per_position = usize::try_from(query.limits.max_journey_duration_seconds)
             .unwrap_or(usize::MAX)
             .saturating_add(1)
             .max(query.limits.max_departures_per_query);
-        let (timing_positions, bus_stop_count) = self.timing_positions(corridors);
-        let timing_queries = timing_positions
+        positions
             .into_iter()
             .map(|position| {
                 let stop_id = self
@@ -284,7 +271,17 @@ impl MultimodalPlanner {
                 )
                 .until(window_end))
             })
-            .collect::<Result<Vec<_>, RoutingError>>()?;
+            .collect()
+    }
+
+    #[tracing::instrument(target = "via_profile", name = "Snapshot Loading", skip_all, fields(corridor_count = corridors.iter().filter(|corridor| corridor.transit_legs().next().is_some()).count()))]
+    async fn load_snapshots(
+        &self,
+        query: &PlanningQuery,
+        corridors: &[Corridor],
+    ) -> Result<(RequestSnapshots, FailureSummary), RoutingError> {
+        let (timing_positions, bus_stop_count) = self.timing_positions(corridors);
+        let timing_queries = self.timing_queries(query, timing_positions)?;
         let bike_station_ids = if query.allow_bike_share {
             self.bike_planner
                 .required_station_ids(corridors.iter().flat_map(Corridor::anchors))
@@ -333,9 +330,7 @@ impl MultimodalPlanner {
                 None
             }
         };
-        if query.deadline.is_elapsed() {
-            return Err(RoutingError::DeadlineExceeded);
-        }
+        query.deadline.check()?;
         tracing::debug!(
             target: "via_server::routing",
             positions_requested,

@@ -104,35 +104,73 @@ impl ViaConfig {
     }
 
     pub fn load(explicit: Option<&Path>) -> Result<Self, ConfigError> {
+        let config = Self::read(explicit)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn load_for(
+        explicit: Option<&Path>,
+        environment: Environment,
+    ) -> Result<Self, ConfigError> {
+        Self::load_for_with(explicit, environment, |_| {})
+    }
+
+    pub fn load_for_with(
+        explicit: Option<&Path>,
+        environment: Environment,
+        overrides: impl FnOnce(&mut Self),
+    ) -> Result<Self, ConfigError> {
+        let mut config = Self::read(explicit)?;
+        config.override_from_environment()?;
+        overrides(&mut config);
+        config.validate_environment(environment)?;
+        Ok(config)
+    }
+
+    fn read(explicit: Option<&Path>) -> Result<Self, ConfigError> {
         let path = Self::resolve_path(explicit, std::env::var_os("VIA_CONFIG").map(PathBuf::from));
         let body = std::fs::read_to_string(&path).map_err(|source| ConfigError::Read {
             path: path.clone(),
             source,
         })?;
-        Self::from_toml(&body).map_err(|source| ConfigError::File {
+        Self::parse_toml(&body).map_err(|source| ConfigError::File {
             path,
             source: Box::new(source),
         })
     }
 
     pub fn from_toml(body: &str) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(body)
-            .map_err(|error| ConfigError::Invalid(error.message().to_owned()))?;
+        let config = Self::parse_toml(body)?;
         config.validate()?;
         Ok(config)
     }
 
-    pub fn apply_environment(&mut self) -> Result<(), ConfigError> {
+    fn parse_toml(body: &str) -> Result<Self, ConfigError> {
+        toml::from_str(body).map_err(|error| ConfigError::Invalid(error.message().to_owned()))
+    }
+
+    fn override_from_environment(&mut self) -> Result<(), ConfigError> {
         let port = std::env::var("PORT").ok();
         let tdx = std::env::var("VIA_TDX_BASE_URL").ok();
         let valhalla = std::env::var("VIA_VALHALLA_URL").ok();
         if let Ok(gateway) = std::env::var("VIA_TDX_GATEWAY_URL") {
             self.tdx.gateway.url = (!gateway.trim().is_empty()).then_some(gateway);
         }
-        self.apply_environment_values(port.as_deref(), tdx.as_deref(), valhalla.as_deref())
+        self.override_values(port.as_deref(), tdx.as_deref(), valhalla.as_deref())
     }
 
     pub fn apply_environment_values(
+        &mut self,
+        port: Option<&str>,
+        tdx: Option<&str>,
+        valhalla: Option<&str>,
+    ) -> Result<(), ConfigError> {
+        self.override_values(port, tdx, valhalla)?;
+        self.validate()
+    }
+
+    fn override_values(
         &mut self,
         port: Option<&str>,
         tdx: Option<&str>,
@@ -147,7 +185,7 @@ impl ViaConfig {
         if let Some(value) = valhalla {
             self.valhalla.base_url = value.to_owned();
         }
-        self.validate()
+        Ok(())
     }
 
     pub fn validate_environment(&self, environment: Environment) -> Result<(), ConfigError> {
@@ -338,6 +376,26 @@ impl ViaConfig {
                 self.tdx.rate_limit_backoff_seconds,
             ),
             (
+                "tdx.fetch.requests_per_minute",
+                u64::from(self.tdx.fetch.requests_per_minute),
+            ),
+            (
+                "tdx.fetch.connect_timeout_ms",
+                self.tdx.fetch.connect_timeout_ms,
+            ),
+            (
+                "tdx.fetch.request_timeout_ms",
+                self.tdx.fetch.request_timeout_ms,
+            ),
+            (
+                "tdx.fetch.max_attempts",
+                u64::from(self.tdx.fetch.max_attempts),
+            ),
+            (
+                "tdx.fetch.retry_backoff_seconds",
+                self.tdx.fetch.retry_backoff_seconds,
+            ),
+            (
                 "tdx.gateway.max_ids_per_request",
                 self.tdx.gateway.max_ids_per_request as u64,
             ),
@@ -460,15 +518,11 @@ impl ViaConfig {
                 "tdx.realtime.cache_ttl_seconds must be less than fresh_seconds".into(),
             ));
         }
-        for (key, value) in [(
-            "routing.ranking.max_sequence_only_option_delay_seconds",
-            self.routing.ranking.max_sequence_only_option_delay_seconds,
-        )] {
-            if value <= 0 || value > i64::from(u32::MAX) {
-                return Err(ConfigError::Invalid(format!(
-                    "{key} must be positive and fit supported duration range"
-                )));
-            }
+        let sequence_only_delay = self.routing.ranking.max_sequence_only_option_delay_seconds;
+        if sequence_only_delay <= 0 || sequence_only_delay > i64::from(u32::MAX) {
+            return Err(ConfigError::Invalid(
+                "routing.ranking.max_sequence_only_option_delay_seconds must be positive and fit supported duration range".into(),
+            ));
         }
         let bike = self.preprocessing.bike_access;
         if bike.max_geometric_candidates_per_boarding_point > self.valhalla.max_sources
@@ -545,13 +599,15 @@ impl ViaConfig {
         }
     }
 
-    pub fn journey_limits(&self) -> JourneyPlanningLimits {
+    pub fn journey_limits(&self, environment: Environment) -> JourneyPlanningLimits {
         JourneyPlanningLimits {
             bike_policy: self.bikeshare.clone(),
             bike_availability: self.bike_availability(),
             ranking: self.routing.ranking.clone(),
             planner: self.planner_limits(),
-            request_timeout: Duration::from_millis(self.server.request_timeout_ms),
+            request_timeout: environment
+                .is_production()
+                .then(|| Duration::from_millis(self.server.request_timeout_ms)),
             max_concurrent_requests: self.server.max_concurrent_requests,
             max_concurrent_reconstruction_candidates: self
                 .routing
@@ -574,6 +630,14 @@ impl ViaConfig {
             metro_transfer_penalty_seconds: self.routing.ranking.metro_transfer_buffer_seconds,
             bus_transfer_penalty_seconds: self.routing.ranking.bus_transfer_buffer_seconds,
         }
+    }
+}
+
+impl ServerSettings {
+    pub fn http_timeout(&self, environment: Environment) -> Option<Duration> {
+        environment
+            .is_production()
+            .then(|| Duration::from_millis(self.http_timeout_ms))
     }
 }
 
@@ -615,7 +679,7 @@ impl Default for PlannerLimits {
 
 impl Default for JourneyPlanningLimits {
     fn default() -> Self {
-        crate::config::ViaConfig::default().journey_limits()
+        crate::config::ViaConfig::default().journey_limits(Environment::Development)
     }
 }
 

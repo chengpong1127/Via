@@ -1,0 +1,73 @@
+# Nightly static-data refresh: paced GTFS fetch, build, hand-over to the node
+# host (via-static-activate.path -> fetch.sh --incoming validates, activates,
+# restarts and rolls back). Skips the build when the GTFS checksum is unchanged.
+# No AWS credentials here; the pod only writes the two hostPath directories.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-static
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Asia/Taipei
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 7200
+      template:
+        metadata:
+          labels:
+            app: nightly-static
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          containers:
+            - name: nightly-static
+              image: via-server
+              command: ["/usr/local/bin/nightly-build.sh"]
+              env:
+                - name: VIA_ENV
+                  value: production
+                - name: VIA_VALHALLA_URL
+                  value: http://valhalla:8002/
+                - name: TDX_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: tdx-credentials
+                      key: TDX_CLIENT_ID
+                - name: TDX_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: tdx-credentials
+                      key: TDX_CLIENT_SECRET
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 2Gi # provisional, see docs/deploy-aws.md
+                limits:
+                  memory: 3Gi # provisional, see docs/deploy-aws.md
+              volumeMounts:
+                - name: pipeline
+                  mountPath: /build/server/data
+                - name: incoming
+                  mountPath: /out/incoming
+          volumes:
+            - name: pipeline
+              hostPath:
+                path: /var/lib/via/pipeline
+                type: Directory
+            - name: incoming
+              hostPath:
+                path: /var/lib/via/static/incoming
+                type: Directory

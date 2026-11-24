@@ -116,6 +116,12 @@ pub struct BikeAvailabilityRecord {
     pub update_time: Option<String>,
 }
 
+impl BikeAvailabilityRecord {
+    pub fn station_key(&self) -> Option<&str> {
+        self.station_uid.as_deref().map(str::trim)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MetroPair {
     pub line_id: String,

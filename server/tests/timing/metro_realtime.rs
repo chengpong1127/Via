@@ -202,9 +202,11 @@ async fn resolver(
     status: StatusCode,
 ) -> (DepartureResolver, FixtureStats) {
     let (tdx, stats) = fixture_client(payload, status).await;
-    let metro = Arc::new(
-        MetroDepartureSource::new(network.clone(), tdx).with_bindings(Arc::new(
-            TdxProviderBindings {
+    let metro = Arc::new(MetroDepartureSource::new(
+        crate::support::tdx::timing_context(
+            network.clone(),
+            tdx,
+            Arc::new(TdxProviderBindings {
                 metro_patterns: [(
                     TransitPatternId::new("metro:BL::direction=0"),
                     MetroPatternBinding {
@@ -214,9 +216,9 @@ async fn resolver(
                 )]
                 .into(),
                 ..Default::default()
-            },
-        )),
-    );
+            }),
+        ),
+    ));
     (
         DepartureResolver::new(network, vec![metro as Arc<dyn TransitDepartureSource>]),
         stats,
@@ -403,7 +405,11 @@ async fn metro_batches_unique_pairs_and_obeys_changed_toml() {
         let network = Arc::new(TransitRuntime::new(Arc::new(network)));
         let (tdx, stats) =
             fixture_client_with_settings(Value::Array(records), StatusCode::OK, config.tdx).await;
-        let metro = MetroDepartureSource::new(network, tdx).with_bindings(Arc::new(bindings));
+        let metro = MetroDepartureSource::new(crate::support::tdx::timing_context(
+            network,
+            tdx,
+            Arc::new(bindings),
+        ));
         let results = metro.realtime_departures_batch(queries).await.unwrap();
         assert_eq!(stats.calls.load(Ordering::Relaxed), expected);
         assert_eq!(results.len(), count);

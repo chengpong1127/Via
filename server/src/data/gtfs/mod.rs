@@ -17,7 +17,7 @@ use crate::{
     data::DataError,
     domain::{
         ids::{TransitPatternId, TransitTripId},
-        transit::network::{SegmentTimeSource, TransitMode, TransitNetwork},
+        transit::network::{SegmentTimeSource, TransitNetwork},
     },
     providers::tdx_bindings::TdxProviderBindings,
 };
@@ -133,9 +133,7 @@ pub fn measure_mode_coverage(
         .collect::<HashSet<_>>();
     let mut coverage = BTreeMap::<String, GtfsModeCoverage>::new();
     for route in &network.routes {
-        let mode_coverage = coverage
-            .entry(mode_name(route.mode).to_owned())
-            .or_default();
+        let mode_coverage = coverage.entry(route.mode.as_str().to_owned()).or_default();
         mode_coverage.supported_routes += 1;
         if !routes_with_patterns.contains(&route.id) {
             mode_coverage.routes_without_patterns += 1;
@@ -178,7 +176,7 @@ pub fn measure_mode_coverage(
         let Some(mode) = routes.get(&pattern.route_id).copied() else {
             continue;
         };
-        let mode_coverage = coverage.entry(mode_name(mode).to_owned()).or_default();
+        let mode_coverage = coverage.entry(mode.as_str().to_owned()).or_default();
         mode_coverage.patterns += 1;
         let has_gtfs_service = gtfs_service_patterns.contains(&pattern.id);
         if has_gtfs_service {
@@ -228,15 +226,6 @@ pub fn measure_mode_coverage(
 pub(super) fn push_example(examples: &mut Vec<String>, value: impl Into<String>) {
     if examples.len() < MAX_DIAGNOSTIC_EXAMPLES {
         examples.push(value.into());
-    }
-}
-
-fn mode_name(mode: TransitMode) -> &'static str {
-    match mode {
-        TransitMode::Bus => "bus",
-        TransitMode::Metro => "metro",
-        TransitMode::Rail => "rail",
-        TransitMode::HighSpeedRail => "high_speed_rail",
     }
 }
 
