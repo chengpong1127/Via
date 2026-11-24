@@ -22,6 +22,12 @@ build_dir="$PIPELINE_DIR/build"
 built_marker="$PIPELINE_DIR/.built-gtfs-sha"
 mkdir -p "$fetch_dir" "$build_dir"
 
+# One job at a time (a manual `kubectl create job` ignores concurrencyPolicy).
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$PIPELINE_DIR/.lock"
+  flock -n 9 || die "another nightly job is running"
+fi
+
 gtfs_sha() {
   jq -r '.sources.gtfs.sha256 // empty' "$fetch_dir/$1/manifest.json"
 }
@@ -36,6 +42,9 @@ prune() {
     [ "$count" -le "$keep" ] || rm -rf "${dir:?}/$name"
   done
 }
+
+# Prune on every exit, including failures, so a failing build cannot fill the disk.
+trap 'prune "$fetch_dir" "$KEEP_SNAPSHOTS"; prune "$build_dir" "$KEEP_BUILDS"' EXIT
 
 prev=""
 if [ -L "$fetch_dir/latest" ]; then prev="$(basename "$(readlink "$fetch_dir/latest")")"; fi
@@ -68,17 +77,15 @@ artifact="$(readlink -f "$build_dir/.via-static-latest.json")"
 id="$(basename "$(dirname "$artifact")")"
 
 incoming="$OUT_DIR/incoming"
+[ ! -L "$incoming" ] || die "$incoming is a symlink"
 mkdir -p "$incoming"
 rm -f "$incoming/READY"
 find "$incoming" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 stage="$incoming/.stage-$id"
 mkdir -p "$stage"
 cp "$artifact" "$stage/.via-static.json"
+echo "$sha" >"$stage/.gtfs-sha"
 mv "$stage" "$incoming/$id"
 echo "$id" >"$incoming/.READY.tmp"
 mv "$incoming/.READY.tmp" "$incoming/READY"
-echo "$sha" >"$built_marker"
-log "handed over static build $id"
-
-prune "$fetch_dir" "$KEEP_SNAPSHOTS"
-prune "$build_dir" "$KEEP_BUILDS"
+log "handed over static build $id (the host records $sha as built after activation)"

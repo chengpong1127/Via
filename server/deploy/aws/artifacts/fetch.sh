@@ -30,17 +30,20 @@ export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 do_static=0
 do_tiles=0
 incoming=0
+explicit=0
 static_id=""
 tiles_id=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --static)
       do_static=1
+      explicit=1
       shift
       if [ $# -gt 0 ] && [[ "$1" != --* ]]; then static_id="$1"; shift; fi
       ;;
     --tiles)
       do_tiles=1
+      explicit=1
       shift
       if [ $# -gt 0 ] && [[ "$1" != --* ]]; then tiles_id="$1"; shift; fi
       ;;
@@ -52,6 +55,10 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
+if [ "$incoming" -eq 1 ] && [ "$explicit" -eq 1 ]; then
+  echo "--incoming cannot be combined with --static or --tiles" >&2
+  exit 2
+fi
 if [ "$do_static" -eq 0 ] && [ "$do_tiles" -eq 0 ]; then
   do_static=1
   do_tiles=1
@@ -62,13 +69,41 @@ command -v zstd >/dev/null 2>&1 || die "zstd is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 mkdir -p "$VIA_ROOT"
 
+# Consume READY before anything can fail (lock, cluster, tools): the path unit
+# fires on READY, so leaving it behind would restart this service in a loop.
+# The build stays in incoming/<id>; the job rebuilds next night because the
+# built-checksum marker is only written after a successful activation.
+taken=""
+if [ "$incoming" -eq 1 ]; then
+  inc_dir="$VIA_ROOT/static/incoming"
+  if [ -f "$inc_dir/READY" ] && [ ! -L "$inc_dir/READY" ] && [ ! -L "$inc_dir" ]; then
+    mv -f "$inc_dir/READY" "$inc_dir/READY.taken"
+    taken="$(tr -d '[:space:]' <"$inc_dir/READY.taken")"
+  elif [ -L "$inc_dir" ] || [ -L "$inc_dir/READY" ]; then
+    rm -f "$inc_dir/READY"
+    die "incoming is a symlink"
+  else
+    log "no incoming build"
+    exit 0
+  fi
+fi
+
 if [ -z "${VIA_FETCH_CHILD:-}" ]; then
   if command -v flock >/dev/null 2>&1; then
     exec 9>"${VIA_LOCK_FILE:-/run/via-fetch.lock}"
-    flock -n 9 || die "another fetch is running"
+    if [ "$incoming" -eq 1 ]; then
+      flock -w "${VIA_LOCK_WAIT:-7200}" 9 || die "fetch lock still busy after ${VIA_LOCK_WAIT:-7200}s"
+    else
+      flock -n 9 || die "another fetch is running"
+    fi
   else
     lockdir="${VIA_LOCK_FILE:-$VIA_ROOT/.fetch.lock}.d"
-    mkdir "$lockdir" 2>/dev/null || die "another fetch is running ($lockdir)"
+    waited=0
+    until mkdir "$lockdir" 2>/dev/null; do
+      [ "$incoming" -eq 1 ] && [ "$waited" -lt "${VIA_LOCK_WAIT:-7200}" ] || die "another fetch is running ($lockdir)"
+      sleep 1
+      waited=$((waited + 1))
+    done
     trap 'rmdir "$lockdir"' EXIT
   fi
   for stale in "$VIA_ROOT"/.fetch.*; do
@@ -99,7 +134,7 @@ set_link() {
 }
 
 wait_for_cluster() {
-  local deadline=$((SECONDS + 120))
+  local deadline=$((SECONDS + ${VIA_CLUSTER_WAIT:-120}))
   until "$KUBECTL" get --raw /readyz >/dev/null 2>&1; do
     [ "$SECONDS" -lt "$deadline" ] || die "Kubernetes API not ready"
     sleep 3
@@ -198,11 +233,10 @@ validate_static() {
 # Build handed over by the nightly CronJob: $base/incoming/<id> plus READY
 # holding the id. READY is always consumed so a failure is not retried in a loop.
 fetch_incoming() {
-  local base="$VIA_ROOT/static" ready="$VIA_ROOT/static/incoming/READY" id rc=0
-  [ -f "$ready" ] || { log "no incoming build"; return 0; }
-  id="$(tr -d '[:space:]' <"$ready")"
-  rm -f "$ready"
+  local base="$VIA_ROOT/static" id="$taken" taken_file="$VIA_ROOT/static/incoming/READY.taken" rc=0
+  rm -f "$taken_file"
   valid_id "$id" || die "invalid incoming id: $id"
+  [ ! -L "$base/incoming/$id" ] || die "incoming $id is a symlink"
   [ -s "$base/incoming/$id/.via-static.json" ] || die "incoming $id has no artifact"
   if [ ! -d "$base/builds/$id" ]; then
     jq --stream -n 'reduce inputs as $i (0; . + 1) | select(. > 0)' "$base/incoming/$id/.via-static.json" >/dev/null ||
@@ -212,6 +246,10 @@ fetch_incoming() {
     mv "$base/incoming/$id" "$base/builds/$id"
   fi
   activate_static "$id" || rc=$?
+  if [ "$rc" -eq 0 ] && [ -f "$base/builds/$id/.gtfs-sha" ]; then
+    mkdir -p "$VIA_ROOT/pipeline"
+    cp "$base/builds/$id/.gtfs-sha" "$VIA_ROOT/pipeline/.built-gtfs-sha"
+  fi
   rm -rf "${base:?}/incoming/$id"
   return "$rc"
 }

@@ -210,5 +210,52 @@ mkincoming n4 four
 inc
 check "later incoming build activates" "$(current)" "builds/n4"
 
+# --- fix round: READY must never loop, lock wait, marker, flags, symlinks ---
+rm -rf "$VIA_ROOT"
+mkincoming() {
+  mkdir -p "$VIA_ROOT/static/incoming/$1"
+  printf '{"ok":"%s"}' "$2" >"$VIA_ROOT/static/incoming/$1/.via-static.json"
+  echo "sha-$1" >"$VIA_ROOT/static/incoming/$1/.gtfs-sha"
+  echo "$1" >"$VIA_ROOT/static/incoming/READY"
+}
+ready_state() { test -e "$VIA_ROOT/static/incoming/READY" && echo present || echo gone; }
+marker() { cat "$VIA_ROOT/pipeline/.built-gtfs-sha" 2>/dev/null || echo none; }
+mkincoming m1 one
+inc
+check "marker written only after activation" "$(marker)" "sha-m1"
+mkincoming m2 two
+touch "$VIA_ROOT/static/incoming/m2/.invalid"
+inc || true
+check "failed validation leaves marker alone" "$(marker)" "sha-m1"
+
+mkincoming m3 three
+printf '#!/usr/bin/env bash\nexit 1\n' >"$tmp/notready"
+chmod +x "$tmp/notready"
+if env -u VIA_ARTIFACT_BUCKET VIA_CLUSTER_WAIT=1 KUBECTL="$tmp/notready" "$art/fetch.sh" --incoming >/dev/null 2>&1; then
+  echo "FAIL cluster-not-ready fails"; fails=$((fails + 1)); else echo "ok   cluster-not-ready fails"; fi
+check "cluster-not-ready consumes READY (no path-unit loop)" "$(ready_state)" "gone"
+check "cluster-not-ready leaves marker alone" "$(marker)" "sha-m1"
+
+mkincoming m4 four
+mkdir -p "$VIA_LOCK_FILE.d"
+if env -u VIA_ARTIFACT_BUCKET VIA_LOCK_WAIT=1 "$art/fetch.sh" --incoming >/dev/null 2>&1; then
+  echo "FAIL lock timeout fails"; fails=$((fails + 1)); else echo "ok   lock timeout fails"; fi
+check "lock timeout consumes READY" "$(ready_state)" "gone"
+mkincoming m5 five
+( sleep 2; rmdir "$VIA_LOCK_FILE.d" ) &
+env -u VIA_ARTIFACT_BUCKET VIA_LOCK_WAIT=15 "$art/fetch.sh" --incoming >/dev/null 2>&1
+wait
+check "incoming waits for a busy lock then activates" "$(current)" "builds/m5"
+
+expect_fail "--incoming with --tiles is an error" env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming --tiles
+expect_fail "--incoming with --static is an error" env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming --static
+
+mkincoming m6 six
+mv "$VIA_ROOT/static/incoming/m6" "$tmp/real-m6"
+ln -s "$tmp/real-m6" "$VIA_ROOT/static/incoming/m6"
+expect_fail "symlinked incoming dir is refused" env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming
+check "symlinked incoming not activated" "$(current)" "builds/m5"
+rm -f "$VIA_ROOT/static/incoming/m6"
+
 echo "failures: $fails"
 exit "$fails"
