@@ -15,7 +15,7 @@ Routing modules follow the pipeline:
 | Module | Step |
 | --- | --- |
 | `access` | `access::discover` finds walkable boarding points near the origin and destination |
-| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the pattern-position and transfer indexes on `TransitRuntime`, returned as `Corridor` values whose transit edges list every equivalent leg (same mode, boarding and alighting stop) |
+| `corridors` | Corridor search (Phase 1): static round-based transit corridors over the `DenseTopology` on `TransitRuntime` (stops and patterns numbered in sorted-id order, with pattern positions and transfers by stop), returned as `Corridor` values whose transit edges list every equivalent leg (same mode, boarding and alighting stop) |
 | `planner` | `MultimodalPlanner` runs corridor search, loads request-local snapshots and runs corridor evaluation |
 | `evaluation` | Corridor evaluation (Phase 2): `CorridorEvaluator` and BikeShare movement |
 | `journey` | `RealizedJourney`, the timed result of evaluation |
@@ -69,8 +69,12 @@ live cache; the single gateway owns both. The `live` module knows TDX records
 only: providers keep the GTFS-to-TDX bindings, schedule fallback and freshness
 policy, and the gateway never loads the static artifact.
 
-`via-data build` consumes local GTFS and optional TDX station snapshots; it does
-not download them. `via-data fetch` can create source snapshots. Sparse Bus stop
+`via-data build` consumes local GTFS and optional TDX station and Bus Route
+snapshots; it does not download them. `via-data fetch` can create source
+snapshots, spacing TDX calls by 61 seconds. Bus Route snapshots bind each Bus
+sub-route to its parent RouteUID, because some cities (all of New Taipei) report
+arrival estimates by RouteUID only; realtime matching uses the bound parent and
+falls back to dropping the sub-route's last digit when none is bound. Sparse Bus stop
 times never become fabricated scheduled trips; derived segment costs support
 static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.

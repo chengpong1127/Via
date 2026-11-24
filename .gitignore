@@ -23,6 +23,7 @@ perf.data.*
 /server/benchmark-output/
 /ios/Config/Local.xcconfig
 /server/deploy/k8s/overlays/orbstack/volumes.yaml
+/ios/Config/Local.Release.xcconfig
 
 # OpenTofu
 .terraform/

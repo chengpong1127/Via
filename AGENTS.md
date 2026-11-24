@@ -37,8 +37,9 @@ and identity; reconstruction consumes it directly. Do not add a RouteGraph to
 the canonical path. Static transfer shortcut lookups are directional; Bus realtime
 is fetched by unique stop and scope and filtered locally.
 
-GTFS is the only static transit source. Do not fabricate scheduled Bus trips from
-sparse stop times. Derived segment costs are not timetable data. BikeShare station
+GTFS is the only static transit source. TDX Bus Route snapshots only supply the
+parent RouteUID of each Bus sub-route for realtime matching. Do not fabricate
+scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.

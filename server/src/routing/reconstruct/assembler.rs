@@ -48,22 +48,16 @@ impl JourneyAssembly {
             walking_tail: None,
         }
     }
+
+    pub(super) fn next_leg_id(&self) -> String {
+        format!("candidate_leg_{}", self.legs.len())
+    }
 }
 
 pub(super) struct PendingTransfer {
     pub(super) from_arrival: OffsetDateTime,
     pub(super) duration_seconds: u32,
     pub(super) from_mode: Option<TransitMode>,
-}
-
-pub(super) async fn assemble(
-    reconstructor: &JourneyReconstructor,
-    journey: &RealizedJourney,
-    context: &JourneyPlanningContext<'_>,
-) -> Result<Option<JourneyAssembly>, PlanningError> {
-    ReconstructionState::new(reconstructor, journey, context)
-        .assemble()
-        .await
 }
 
 pub(super) struct ReconstructionState<'a, 'request> {
@@ -77,7 +71,7 @@ pub(super) struct ReconstructionState<'a, 'request> {
 }
 
 impl<'a, 'request> ReconstructionState<'a, 'request> {
-    fn new(
+    pub(super) fn new(
         reconstructor: &'a JourneyReconstructor,
         journey: &'a RealizedJourney,
         context: &'a JourneyPlanningContext<'request>,
@@ -93,7 +87,7 @@ impl<'a, 'request> ReconstructionState<'a, 'request> {
         }
     }
 
-    async fn assemble(mut self) -> Result<Option<JourneyAssembly>, PlanningError> {
+    pub(super) async fn assemble(mut self) -> Result<Option<JourneyAssembly>, PlanningError> {
         let movements = self.journey.movements();
         for movement in movements {
             self.context.ensure_before_deadline()?;

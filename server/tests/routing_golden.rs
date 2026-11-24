@@ -173,7 +173,7 @@ async fn routing_golden_transcript() {
     let runtime = Arc::new(TransitRuntime::new(Arc::new(artifact.transit)));
     let bike_network = Arc::new(artifact.bike_share);
     let config = via_server::config::ViaConfig::load(Some(&root.join("config/via.toml"))).unwrap();
-    let default_limits = config.journey_limits();
+    let default_limits = config.journey_limits(via_server::config::Environment::Development);
     let mut wide_limits = default_limits.clone();
     wide_limits.ranking.result_limit = wide_limits.planner.max_candidates;
     let services = [("default", default_limits), ("wide", wide_limits)].map(|(label, limits)| {
@@ -186,7 +186,6 @@ async fn routing_golden_transcript() {
                 bike_network.clone(),
                 Arc::new(AvailableBikes),
                 limits,
-                false,
             ),
         )
     });

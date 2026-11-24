@@ -40,14 +40,7 @@ impl TransitDepartureSource for ThsrDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if self.transit.required_route(&pattern.route_id).mode != TransitMode::HighSpeedRail
-            || !pattern.stops.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
+        query.validate_for(&self.transit, TransitMode::HighSpeedRail)?;
         self.schedule.next_departures(query).await
     }
 }

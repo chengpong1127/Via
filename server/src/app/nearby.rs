@@ -190,7 +190,6 @@ impl NearbyService {
             Ok(snapshot) => Some(snapshot),
             Err(error) => {
                 tracing::warn!(
-                    target: "via_server::nearby",
                     error = %error,
                     "bike-share availability unavailable for nearby stations"
                 );

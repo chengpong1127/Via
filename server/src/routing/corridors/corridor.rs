@@ -167,13 +167,7 @@ impl Corridor {
                 continue;
             };
             legs.clone_from(equivalent_legs);
-            legs.sort_by(|left, right| {
-                left.pattern_id
-                    .as_str()
-                    .cmp(right.pattern_id.as_str())
-                    .then(left.board_index.cmp(&right.board_index))
-                    .then(left.alight_index.cmp(&right.alight_index))
-            });
+            legs.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
         }
         self
     }

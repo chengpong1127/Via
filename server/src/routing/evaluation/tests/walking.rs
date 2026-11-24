@@ -238,9 +238,8 @@ fn pure_walking_transition_preserves_metrics_and_enforces_time_bounds() {
     query.limits.max_journey_duration_seconds = 60;
     let state = EvaluationState::initial(&query);
     for (seconds, succeeds) in [(60, true), (61, false)] {
-        let next = walking_successor(
+        let next = state.after_walk(
             &query,
-            &state,
             JourneyMovementKind::Walking {
                 kind: WalkingMovementKind::Access,
                 duration_seconds: seconds,
@@ -290,7 +289,7 @@ async fn walking_operation_returns_local_failures_and_reuses_cached_results() {
             matrix_cache: &street,
             bike_movements: None,
         };
-        let run = Run::new(&evaluator);
+        let run = CorridorEvaluationRun::new(&evaluator);
         for _ in 0..2 {
             let successor = run
                 .walking_successor(

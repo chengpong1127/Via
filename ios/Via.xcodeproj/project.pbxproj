@@ -46,6 +46,7 @@
 		A10000000000000000000202 /* ViaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ViaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000203 /* ViaLiveActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ViaLiveActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000204 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		A10000000000000000000205 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -122,6 +123,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000204 /* Debug.xcconfig */,
+				A10000000000000000000205 /* Release.xcconfig */,
 			);
 			path = Config;
 			sourceTree = "<group>";
@@ -133,6 +135,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A10000000000000000000902 /* Build configuration list for PBXNativeTarget "Via" */;
 			buildPhases = (
+				A1000000000000000000060B /* Check Release Configuration */,
 				A10000000000000000000603 /* Sources */,
 				A10000000000000000000601 /* Frameworks */,
 				A10000000000000000000604 /* Resources */,
@@ -262,6 +265,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A1000000000000000000060B /* Check Release Configuration */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Check Release Configuration";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" != \"Release\" ]; then\n  exit 0\nfi\ncase \"${VIA_API_BASE_URL:-}\" in\n  *[[:space:]]*|https:///*) ;;\n  https://?*) exit 0 ;;\nesac\necho \"error: VIA_API_BASE_URL must be an https:// URL with a host and no whitespace for Release builds (set it in ios/Config/Local.Release.xcconfig or pass VIA_API_BASE_URL=...)\" >&2\nexit 1\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		A10000000000000000000603 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -364,7 +389,8 @@
 				INFOPLIST_FILE = "Via-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are, to plan trips from there, and to keep guiding you during navigation, including while your screen is locked.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -383,6 +409,7 @@
 		};
 		A10000000000000000000B04 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000205 /* Release.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -392,7 +419,8 @@
 				INFOPLIST_FILE = "Via-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Via;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.navigation";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are and to plan trips from there.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Via uses your location to show where you are, to plan trips from there, and to keep guiding you during navigation, including while your screen is locked.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -406,7 +434,6 @@
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 1;
-				VIA_API_BASE_URL = "";
 			};
 			name = Release;
 		};
@@ -468,6 +495,7 @@
 		};
 		A10000000000000000000B08 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A10000000000000000000205 /* Release.xcconfig */;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

@@ -1,31 +1,25 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::{
     domain::{
-        realtime::{
-            ArrivalEstimate, ArrivalState, FreshnessPolicy, FreshnessState, LiveStatusTimes,
-            NormalizedRealtimeValue,
-        },
+        realtime::{ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
-        transit::runtime::TransitRuntime,
         transit::timing::{
-            DepartureError, DepartureQuery, EffectiveTrip, ScheduleTiming, TimingBasis,
-            TimingReliability,
+            DepartureError, DepartureQuery, EffectiveTrip, TimingBasis, TimingReliability,
         },
     },
-    live::{CachedLiveData, DirectLiveData, LiveDataSource, TraDelay},
-    tdx::{RealtimeSettings, TdxClient},
+    live::TraDelay,
 };
 
-use super::realtime_check::RealtimeCheck;
-use super::{live_error::departure_error, source::TransitDepartureSource};
-use crate::providers::tdx_bindings::TdxProviderBindings;
+use super::{
+    context::TdxTimingContext,
+    live_error::departure_error,
+    realtime_check::{RealtimeCheck, parse_timestamp},
+    source::TransitDepartureSource,
+};
 
 #[derive(Clone, Copy)]
 struct TraDelayObservation {
@@ -34,66 +28,23 @@ struct TraDelayObservation {
 }
 
 pub struct TraDepartureSource {
-    transit: Arc<TransitRuntime>,
-    schedule: ScheduleTiming,
-    live: Arc<dyn LiveDataSource>,
-    realtime_check: RealtimeCheck,
-    bindings: Arc<TdxProviderBindings>,
+    context: TdxTimingContext,
 }
 
 impl TraDepartureSource {
-    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
-        let settings = tdx.settings.clone();
-        Self::with_live_data(
-            transit,
-            Arc::new(CachedLiveData::new(
-                Arc::new(DirectLiveData::new(tdx)),
-                &settings,
-            )),
-            &settings.realtime,
-        )
-    }
-
-    pub fn with_live_data(
-        transit: Arc<TransitRuntime>,
-        live: Arc<dyn LiveDataSource>,
-        realtime: &RealtimeSettings,
-    ) -> Self {
-        Self {
-            schedule: ScheduleTiming::new(transit.clone()),
-            transit,
-            live,
-            realtime_check: RealtimeCheck::new(realtime),
-            bindings: Arc::new(TdxProviderBindings::default()),
-        }
-    }
-
-    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
-        self.bindings = bindings;
-        self
-    }
-
-    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.realtime_check.freshness = freshness_policy;
-        self
+    pub fn new(context: TdxTimingContext) -> Self {
+        Self { context }
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Rail
-            || !pattern.stops.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
-        Ok(())
+        query.validate_for(&self.context.transit, TransitMode::Rail)
     }
 
     fn train_numbers(&self, pattern_id: &crate::domain::ids::TransitPatternId) -> Vec<String> {
-        self.transit
+        self.context
+            .transit
             .scheduled_trips_of(pattern_id)
-            .filter_map(|trip| self.bindings.tra_trips.get(&trip.id))
+            .filter_map(|trip| self.context.bindings.tra_trips.get(&trip.id))
             .map(|binding| binding.train_number.clone())
             .collect()
     }
@@ -130,7 +81,7 @@ impl TraDepartureSource {
         }
 
         let train_numbers = requested_train_numbers.iter().cloned().collect::<Vec<_>>();
-        let batch = self.live.tra_delays(&train_numbers).await;
+        let batch = self.context.live.tra_delays(&train_numbers).await;
         let observation_by_train = match batch.unavailable.first() {
             Some(unavailable) if batch.records.is_empty() => {
                 Err(departure_error(unavailable.reason))
@@ -138,7 +89,7 @@ impl TraDepartureSource {
             _ => parse_tra_delays(
                 batch.records,
                 &requested_train_numbers,
-                &self.realtime_check,
+                &self.context.realtime_check,
             ),
         };
 
@@ -191,26 +142,27 @@ impl TraDepartureSource {
         let static_query = DepartureQuery {
             after: adjusted_after,
             limit: self
+                .context
                 .transit
                 .scheduled_trips_of(&query.pattern_id)
                 .count()
                 .max(query.limit),
             ..query.clone()
         };
-        let scheduled = self.schedule.next_departures(static_query).await?;
+        let scheduled = self.context.schedule.next_departures(static_query).await?;
         let mut departures = scheduled
             .into_iter()
             .filter_map(|trip| {
                 let trip_id = trip.scheduled_trip_id.as_ref()?;
-                let train_number = &self.bindings.tra_trips.get(trip_id)?.train_number;
+                let train_number = &self.context.bindings.tra_trips.get(trip_id)?.train_number;
                 let observation = *observation_by_train.get(train_number)?;
-                (self.transit.service_day(query.after)
-                    == self.transit.service_day(observation.observed_at))
+                (self.context.transit.service_day(query.after)
+                    == self.context.transit.service_day(observation.observed_at))
                 .then(|| self.delay_adjusted_trip(trip, query, observation))
                 .flatten()
             })
             .collect::<Vec<_>>();
-        let board_index = query.resolve_board_index(&self.transit)?;
+        let board_index = query.resolve_board_index(&self.context.transit)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at
@@ -231,7 +183,7 @@ impl TraDepartureSource {
             stop_time.arrival_at = stop_time.arrival_at.checked_add(observation.delay)?;
             stop_time.departure_at = stop_time.departure_at.checked_add(observation.delay)?;
         }
-        let board_index = query.resolve_board_index(&self.transit).ok()?;
+        let board_index = query.resolve_board_index(&self.context.transit).ok()?;
         let board_departure = trip.stop_times[board_index].departure_at;
         if board_departure < query.after
             || query.before.is_some_and(|before| board_departure > before)
@@ -277,7 +229,7 @@ impl TransitDepartureSource for TraDepartureSource {
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
         self.validate_query(&query)?;
-        self.schedule.next_departures(query).await
+        self.context.schedule.next_departures(query).await
     }
 
     async fn realtime_departures_batch(
@@ -311,13 +263,7 @@ fn parse_tra_delays(
         let observed_at = parse_timestamp(&delay.update_time)?;
         realtime_check.reject_future(observed_at, received_at)?;
         let evidence_at = observed_at.min(board_evidence_at);
-        let freshness = realtime_check.freshness.evaluate(
-            LiveStatusTimes {
-                published_at: Some(evidence_at),
-                received_at,
-            },
-            received_at,
-        );
+        let freshness = realtime_check.freshness_of(evidence_at, received_at);
         if freshness != FreshnessState::Fresh {
             continue;
         }
@@ -337,8 +283,4 @@ fn parse_tra_delays(
         }
     }
     Ok(observation_by_train)
-}
-
-fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
-    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
 }

@@ -4,6 +4,18 @@ use crate::domain::ids::BoardingPointId;
 
 use super::*;
 
+impl RealizedJourney {
+    pub(crate) fn transit_pattern_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
+        self.movements
+            .iter()
+            .filter_map(|movement| match &movement.kind {
+                JourneyMovementKind::Transit { trip, .. } => Some(trip.pattern_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 #[test]
 fn continuous_bike_rental_spans_corridor_anchors_as_one_realized_movement() {
     let departure_at = datetime!(2026-09-21 10:00 UTC);

@@ -80,11 +80,11 @@ fn query(modes: &[TransitMode], max_transfers: usize, max_corridors: usize) -> P
             max_candidates: 16,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            max_static_corridors: max_corridors,
             ..crate::routing::PlannerLimits::default()
         },
     )
     .with_allowed_transit_modes(modes.iter().copied())
-    .with_max_static_corridors(max_corridors)
 }
 
 fn candidate_corridor(network: &TransitRuntime, query: &PlanningQuery) -> Vec<Corridor> {
@@ -326,14 +326,14 @@ fn prune_states_reference(mut states: Vec<EvaluationState>, limit: usize) -> Vec
     let mut frontier = Vec::<EvaluationState>::new();
     for state in states {
         let metrics = state.metrics();
-        if frontier.iter().any(|known| {
-            pareto::same_capability(known, &state) && pareto::no_worse(&known.metrics(), &metrics)
-        }) {
+        if frontier
+            .iter()
+            .any(|known| known.same_capability(&state) && known.metrics().no_worse_than(&metrics))
+        {
             continue;
         }
         frontier.retain(|known| {
-            !(pareto::same_capability(&state, known)
-                && pareto::no_worse(&metrics, &known.metrics()))
+            !(state.same_capability(known) && metrics.no_worse_than(&known.metrics()))
         });
         frontier.push(state);
     }
