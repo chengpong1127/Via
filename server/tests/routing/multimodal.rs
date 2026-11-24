@@ -18,7 +18,7 @@ use via_server::{
         },
         ids::BikeStationId,
         transit::runtime::TransitRuntime,
-        transit::timing::{EffectiveTrip, TimingSnapshot},
+        transit::timing::{EffectiveTrip, TimingBasis, TimingSnapshot},
     },
     providers::UnavailableBikeAvailabilitySource,
     street::{FakeStreetRouter, StreetTravelMode},
@@ -967,4 +967,52 @@ async fn ranking_reconstruction_benchmark() {
         ranking_corridor_fixture(1).await;
     }
     ranking_corridor_fixture(1000).await;
+}
+
+#[tokio::test]
+async fn transit_legs_are_labelled_estimated_only_on_frequency_estimate_timing() {
+    for (basis, estimated) in [
+        (TimingBasis::Schedule, false),
+        (TimingBasis::RealtimePrediction, false),
+        (TimingBasis::FrequencyEstimate, true),
+    ] {
+        let transit = network();
+        let origin = near_stop(&transit, "F-M1");
+        let destination = near_stop(&transit, "F-M2-RED");
+        let runtime = TransitRuntime::new(Arc::new(transit.clone()));
+        let mut snapshot = TimingSnapshot::default();
+        for scheduled in transit
+            .trips
+            .iter()
+            .filter(|trip| trip.pattern_id.as_str() == "fixture-mrt-red")
+        {
+            let mut trip =
+                EffectiveTrip::from_scheduled(&runtime, date!(2026 - 08 - 31), &scheduled.id)
+                    .unwrap();
+            trip.timing_basis = basis;
+            snapshot.insert(trip.pattern_id.clone(), 0, vec![trip]);
+        }
+        let timing = Arc::new(CountingTiming {
+            calls: AtomicUsize::new(0),
+            snapshot,
+        });
+        let body = route_body_with_sources(
+            Arc::new(transit_street(
+                &transit,
+                origin,
+                "F-M1",
+                destination,
+                "F-M2-RED",
+            )),
+            timing,
+            request(origin, destination, &["metro"]),
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+            Arc::new(UnavailableBikeAvailabilitySource),
+        )
+        .await;
+        let option = option_for_patterns(&body, &["fixture-mrt-red"]);
+        let details = &option["legs"][1]["details"];
+        assert_eq!(details["type"], "transit");
+        assert_eq!(details["estimated"], estimated, "{basis:?}");
+    }
 }

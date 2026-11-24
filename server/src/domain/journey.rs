@@ -127,6 +127,7 @@ pub enum LegDetails {
         via_alighting_point_id: String,
         service_label: String,
         headsign: String,
+        estimated: bool,
         intermediate_stops: Vec<StopVisit>,
     },
     BikeShare {
