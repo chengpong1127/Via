@@ -91,6 +91,7 @@ fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
     let manifest = FetchManifest {
         manifest_version: 1,
         fetched_at: "2026-09-28T00:00:00Z".to_owned(),
+        reused_sources: BTreeMap::new(),
         sources: BTreeMap::from([
             ("gtfs".to_owned(), source(&gtfs_path, "local-gtfs-file")),
             (

@@ -1,0 +1,11 @@
+[Unit]
+Description=Fetch and activate the latest Valhalla tiles (static data is built nightly in-cluster)
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+EnvironmentFile=/etc/via-bootstrap.env
+TimeoutStartSec=3h
+ExecStart=/opt/via/server/deploy/aws/artifacts/fetch.sh --tiles

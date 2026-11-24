@@ -1,0 +1,11 @@
+[Unit]
+Description=Validate, activate and roll back the nightly static build
+After=network-online.target k3s.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+EnvironmentFile=/etc/via-bootstrap.env
+# Must exceed VIA_LOCK_WAIT (7200 s) + the 120 s cluster wait + validation and rollout.
+TimeoutStartSec=12600
+ExecStart=/opt/via/server/deploy/aws/artifacts/fetch.sh --incoming

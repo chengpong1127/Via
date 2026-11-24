@@ -28,7 +28,7 @@ cargo run --manifest-path server/Cargo.toml --bin via-data -- build
 cargo run --manifest-path server/Cargo.toml --bin via-data -- validate
 ```
 
-`fetch` also retrieves TDX station catalogs and needs credentials; `build` reads
+`fetch` also retrieves TDX station catalogs and needs credentials. It paces TDX calls (default 4 per minute), retries transient failures and reuses the previous snapshot's copy of a catalog that keeps failing; `fetch --gtfs-only` refreshes only GTFS and reuses the previous catalogs (see `docs/configuration.md`). `build` reads
 local inputs and requires Valhalla. See [development, operations and testing](https://app.notion.com/p/408aefae2f7481cfb632eb59c2a32b95)
 for route debugging, tracing, metrics and benchmark prerequisites.
 
@@ -148,3 +148,5 @@ offline routing measurement with:
 ```sh
 cargo test --manifest-path server/Cargo.toml --locked --release --test performance -- --ignored --nocapture
 ```
+
+Production deployment on AWS k3s: [deploy-aws.md](docs/deploy-aws.md).
