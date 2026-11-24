@@ -1,7 +1,7 @@
 # EXP-008: Common-lines transit edges vs headway-estimated departures
 
 Branch: `research/exp-008-common-lines` (off `origin/main` e1eefeb)
-Status: in progress (offline done below; live A/B pending, daytime)
+Status: live A/B done 2026-11-24 19:42-21:20; PRs pending
 Date: 2026-11-23
 
 ## Problem
@@ -90,3 +90,35 @@ Metrics: arrival > 30 s earlier or later vs base, walking-only count, transfers,
 time, TDX requests per variant, planning latency. ETA accuracy against TDX live: for
 each realtime bus leg, compare the departure Via used with a later N1 estimate for the same stop
 (follow-up probe).
+
+## Live A/B result (2026-11-24 19:42-21:20 Asia/Taipei, 20 scenarios, 1 TDX plan per 3-7 min)
+
+Command: `VIA_CONFIG=<via.toml: connect 5 s, request 30 s, fresh 600 s, degraded 900 s>
+VIA_VALHALLA_URL=http://127.0.0.1:8002/ live_compare data/build/research-20261124/.via-static.json
+research/live-scenarios.json out.jsonl base,place,est,place+est` (raw rows:
+`research/results/exp008-live-20261124.jsonl`, analysis: `research/results/analyze_live.py`).
+The four variants share one realtime cache (TTL 300 s) and rotate order per scenario.
+One scenario (random_009) failed with `TemporarilyUnavailable` in all variants; 19 valid.
+
+| variant | earlier by >30 s | later by >30 s | same | walk-only (base 5) | mean arrival change (19) |
+| --- | --- | --- | --- | --- | --- |
+| place | 2 (-600 s, -208 s) | 0 | 17 | 5 | -40 s |
+| est | 3 (-1440 s, -1376 s, -2160 s) | 0 | 16 | 4 | -249 s |
+| place+est | 4 (-1440, -1376, -2160, -208) | 0 | 15 | 4 | -259 s |
+
+- No scenario got worse in any variant.
+- `est` removes a 3 h walk (xinzhuang_to_muzha: 11,204 s walk-only -> 6,908 s walk + Bus 933 + walk,
+  still long) and replaces long walks with a bus leg (ntu_to_nangang, random_006).
+- `place` gives two small wins (ntu_to_nangang -10 min, songshan_airport_to_wanhua -3.5 min).
+- TDX requests when a variant ran first on a scenario (each plan needs one request per scope):
+  base 3,3,5,3,3; place 3,3,3,3,3; est 3,3,4,3,2; place+est 3,3,3,(cached),(cached). The
+  66 % more realtime stops per plan did not raise the request count, as predicted.
+- Latency is not comparable: the shared cache gives the first variant all TDX time and the
+  machine load average was 40-250. Median per plan 6-12 s, almost all TDX/Valhalla wait.
+- 5 of 20 scenarios still return walk-only (2-3 h walks, e.g. random_005 8,102 s). In 3 of them
+  the best static corridor is a bus-only ride with no realtime prediction at 20:30-21:00, which
+  `est` cannot help: it starts after the last fresh prediction. Likely end-of-service buses.
+
+Decision: retain **est** (owner approved B18) and **place** as PR candidates. Caveats: 19 scenarios
+in one evening, one time of day; est's accuracy against later TDX observations is not measured
+(B23 step 1).
