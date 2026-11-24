@@ -74,3 +74,5 @@ Edit `routing` to tune search budgets, `routing.access` to tune access, and `tdx
 - The provider rental reuse rule (15 minutes), preserved consistently in evaluation and reconstruction as a domain constraint.
 - Fixed diagnostic sample counts, hashing/read buffer sizes and CLI inspection display defaults, which do not affect routing or provider resource policy.
 - Domain-only compatibility defaults for `RankingPolicy`, `FreshnessPolicy`, BikeShare availability views and offline/fake Matrix routers. Production injects TOML policies; tests assert canonical ranking defaults still agree. No domain module depends on application configuration.
+
+Artifacts built with Bus headway estimates serialize `headway_seconds_by_period` on Bus bindings. Older servers reject that field (`deny_unknown_fields`), so deploy the server first, then publish or select the new artifact. Artifacts without estimates load on both. `via-data fetch` now also requests Bus/Schedule for eight cities (eight more TDX requests at the 61 s pacing, about 8 minutes added).

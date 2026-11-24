@@ -47,7 +47,8 @@ headway apart (by service period) for at most two hours. They use
 `FrequencyEstimate` timing with `Fallback` reliability, are never scheduled trips,
 and the leg carries `estimated: true` in the API and a visible label in iOS. A real
 prediction or scheduled trip always wins; never add estimates without a fresh
-prediction anchor. BikeShare station
+prediction anchor. GTFS inexact frequencies (`FrequencyEstimate`) carry
+`estimated: true` too. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.

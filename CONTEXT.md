@@ -76,7 +76,7 @@ sub-route to its parent RouteUID, because some cities (all of New Taipei) report
 arrival estimates by RouteUID only; realtime matching uses the bound parent and
 falls back to dropping the sub-route's last digit when none is bound. Bus Schedule
 snapshots (eight cities) give each Bus pattern without GTFS trips headways per
-service period, derived on a representative weekday and Saturday after the fetch
+service period, derived on the next Wednesday and the next Saturday on or after the fetch
 date and stored on the Bus binding. At request time the Bus source adds
 headway-spaced departures after the last fresh TDX prediction at a stop (two hour
 horizon); these use `FrequencyEstimate` timing with `Fallback` reliability and
