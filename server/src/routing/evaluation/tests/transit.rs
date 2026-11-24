@@ -630,20 +630,46 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     let leg = retained[0].transit_legs().next().unwrap();
     let state = EvaluationState::initial(&query);
     let ride = Arc::new(trip("ride", "bus", &["origin", "destination"], &[1, 5]));
-    let next = transit_successor(&network, &query, &state, &ride, leg, 1, state.ready_at).unwrap();
+    let snapshot = TimingSnapshot::default();
+    let street = fake_street();
+    let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
+    let no_hops = LegHops::default();
+    let next =
+        transit_successor(&evaluator, &state, &ride, leg, 1, state.ready_at, no_hops).unwrap();
     assert_eq!(next.ready_at, query.departure_time + Duration::minutes(5));
     assert!(next.last_was_transit);
     assert_eq!(
         next.transit_ready_at(120),
         next.ready_at + Duration::seconds(120)
     );
-    assert!(transit_successor(&network, &query, &next, &ride, leg, 1, next.ready_at).is_none());
+    assert!(transit_successor(&evaluator, &next, &ride, leg, 1, next.ready_at, no_hops).is_none());
     let invalid = Arc::new(trip("invalid", "bus", &["origin", "destination"], &[5, 1]));
     assert!(
-        transit_successor(&network, &query, &state, &invalid, leg, 1, state.ready_at).is_none()
+        transit_successor(
+            &evaluator,
+            &state,
+            &invalid,
+            leg,
+            1,
+            state.ready_at,
+            no_hops
+        )
+        .is_none()
     );
     let mut limited = query.clone();
     limited.limits.max_journey_duration_seconds = 299;
-    assert!(transit_successor(&network, &limited, &state, &ride, leg, 1, state.ready_at).is_none());
+    let limited_evaluator = test_evaluator(&network, &snapshot, &limited, &street, None);
+    assert!(
+        transit_successor(
+            &limited_evaluator,
+            &state,
+            &ride,
+            leg,
+            1,
+            state.ready_at,
+            no_hops
+        )
+        .is_none()
+    );
     assert!(state.movements.is_empty());
 }
