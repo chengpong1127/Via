@@ -167,7 +167,7 @@ Day-to-day operation, alerts and incident steps: [operations.md](operations.md).
 
 ## 11. MVP profile (owner-only testing, minimum cost)
 
-For the first weeks, with about US$100 of credits and no public users, run the same stack on one smaller node. Profile files: `infra/aws/mvp.tfvars.example` (instance and volume sizes) and `server/deploy/k8s/overlays/aws-mvp` (one server replica, memory limits for 8 GiB; `check.sh` there renders it and asserts the sizing). `deploy.sh` applies the overlay when `VIA_PROFILE=mvp` is set. The default profile (m7g.large, 40+40 GB, 2 replicas) stays the production design.
+For the first weeks, with about US$100 of credits and no public users, run the same stack on one smaller node. Profile files: `infra/aws/mvp.tfvars.example` (instance and volume sizes) and `server/deploy/k8s/overlays/aws-mvp` (one server replica, memory limits for 8 GiB; `check.sh` there renders it and asserts the sizing, run by `.github/workflows/deploy-checks.yml` together with `bootstrap/test-profile.sh`). `deploy.sh` applies the overlay when `VIA_PROFILE=mvp` is set. The default profile (m7g.large, 40+40 GB, 2 replicas) stays the production design.
 
 ### Free-plan instance types (verify first)
 
@@ -175,10 +175,10 @@ AWS documents that free-plan accounts can only launch a short list of EC2 types 
 
 ### Which instance fits
 
-Limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisional, the in-node build memory from #36 was not yet published when this was written), plus k3s, Traefik, cert-manager and the gateway (about 1 Gi together). The steady state is about 3.5 Gi, the nightly build peak about 5.5 Gi. t4g.medium (4 GiB) therefore cannot run the nightly build next to the other pods. Choose:
+Memory limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisional; the in-node build memory from #36 was not yet published), gateway 128 Mi, plus about 1 Gi for k3s, Traefik and cert-manager. Server, Valhalla, gateway and k3s limits sum to about 4.5 Gi (actual use is usually lower). During the nightly build the sum is about 6.5 Gi of 8 GiB, leaving only about 1 Gi of headroom; this is why the build limit must be confirmed by the #36 measurement. On t4g.medium (4 GiB) the build cannot run next to the other pods. Choose:
 
 - **t4g.large (8 GiB), recommended.** Everything fits including the nightly build.
-- t4g.medium (4 GiB), only with the nightly build moved off the node (GitHub Actions build, then `publish.sh`; the owner decides, see "Open decision"). Saves about US$30 per month.
+- t4g.medium (4 GiB), only with the nightly build moved off the node (GitHub Actions build, then `publish.sh`; the owner decides, see "Open decision"). Saves about US$30 per month. On this node suspend the CronJob, which is otherwise OOM-killed nightly: `kubectl -n via patch cronjob nightly-static -p '{"spec":{"suspend":true}}'` (re-run after each `deploy.sh`, which re-applies it unsuspended).
 
 ### Cost per month (ap-southeast-2, on-demand, approximate; confirm in the AWS Pricing Calculator)
 
@@ -194,6 +194,8 @@ Limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisi
 | **US$100 lasts** | **about 1.5 months** | **about 2.6 months** | **about 1.2 months** |
 
 Compute is the lever. Stopping the instance when not testing (`aws ec2 stop-instances`) removes compute, leaving about US$9 per month for EBS, the idle Elastic IP and snapshots; k3s and the data survive a stop. Starting again needs no redeploy.
+
+Caveats: the table is approximate (about 5 percent either way, not verified against the calculator; compute may be US$2-3 lower per month). t4g instances are burstable: with 2 vCPU the baseline is 30 percent each, and the nightly build or a burst of planning requests can exhaust CPU credits, after which the node is throttled (unlimited mode, the default for t4g, instead bills the surplus at about US$0.05 per vCPU-hour). Watch `CPUCreditBalance` during the first weeks.
 
 ### Nothing else to pay for
 

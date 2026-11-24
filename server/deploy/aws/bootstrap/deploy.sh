@@ -30,6 +30,11 @@ if [ -n "${VIA_ACME_EMAIL:-}" ] && ! [[ "$VIA_ACME_EMAIL" =~ ^[A-Za-z0-9._+-]+@[
   exit 2
 fi
 
+case "${VIA_PROFILE:-}" in
+  ""|prod|mvp) ;;
+  *) echo "VIA_PROFILE must be empty, prod or mvp, got: ${VIA_PROFILE}" >&2; exit 2 ;;
+esac
+
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../k8s" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
