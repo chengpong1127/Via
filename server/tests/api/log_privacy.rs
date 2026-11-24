@@ -386,6 +386,7 @@ async fn unrouted_request_paths_are_not_logged() {
 
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         let text = logs.text();
+        assert!(text.contains("unmatched"), "{uri}: {text}");
         for digits in [
             "25.04777",
             "121.51712",
@@ -415,4 +416,41 @@ async fn routed_request_logs_the_route_template() {
     .await;
 
     assert!(logs.text().contains("/v1/nearby-stops"), "{}", logs.text());
+}
+
+#[tokio::test]
+async fn method_not_allowed_logs_the_route_template() {
+    let (logs, _guard) = capture_trace_logs();
+
+    let status = send(
+        Request::builder()
+            .method("DELETE")
+            .uri("/v1/nearby-stops?latitude=25.03911&longitude=121.53407")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    let text = logs.text();
+    assert!(text.contains("/v1/nearby-stops"), "{text}");
+    assert!(!text.contains("unmatched"), "{text}");
+}
+
+#[tokio::test]
+async fn trailing_slash_path_is_logged_as_unmatched() {
+    let (logs, _guard) = capture_trace_logs();
+
+    let status = send(
+        Request::builder()
+            .uri("/v1/nearby-stops/")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let text = logs.text();
+    assert!(text.contains("unmatched"), "{text}");
+    assert!(!text.contains("/v1/nearby-stops"), "{text}");
 }
