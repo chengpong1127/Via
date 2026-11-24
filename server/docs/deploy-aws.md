@@ -68,7 +68,7 @@ Publish from a machine with AWS credentials (owner or CI), with `VIA_ARTIFACT_BU
 
 The static file is zstd-compressed with its sha256 and uploaded to `static/<build-id>/`; tiles (without `*.osm.pbf`) go to `valhalla/<tiles-id>/`, where the id defaults to a content hash. Manifests are created with a conditional put, so two publishers cannot silently overwrite an id; re-publishing identical content is a no-op, different content under an existing id is refused. Pointers are written last, tiles first and `static/latest` at the very end.
 
-On the node (bootstrap installed zstd and jq and enabled a daily timer, `via-artifact-fetch.timer`, 05:00 Asia/Taipei), load data manually before relying on the timer:
+On the node (bootstrap installed zstd and jq and enabled a daily tiles timer, `via-artifact-fetch.timer`, 05:00 Asia/Taipei), load tiles (and, for a first manual static load, `fetch.sh --static`):
 
     sudo /opt/via/server/deploy/aws/artifacts/fetch.sh
 
@@ -78,9 +78,30 @@ Validation runs `via-data` from the server image (`k3s ctr run --rm` with the st
 
 If the server is not ready after the restart, the previous `current` is restored (or removed, on a first load) and the build is recorded in `builds/<id>.rejected` with an attempt count. The run exits non-zero while the latest pointer is rejected; after `VIA_MAX_ATTEMPTS` (default 2) it stops retrying until you remove the `.rejected` file or publish a new id.
 
-Refresh: publish a new build id, then wait for the timer, or run `fetch.sh --static` / `fetch.sh --tiles` on the node.
+Refresh: static data is rebuilt nightly (below). For manually published builds run `fetch.sh --static` on the node; tiles are refreshed by the 05:00 timer or `fetch.sh --tiles`.
 
 Data rollback: `sudo fetch.sh --static <previous-id>` (kept builds are re-activated without re-downloading) and `sudo fetch.sh --tiles <previous-tiles-id>`; to point `latest` back for the timer, re-run `publish.sh` on the older build directory (identical content only rewrites the pointer).
+
+### Nightly refresh (no manual step)
+
+A Kubernetes CronJob, `nightly-static` (aws overlay), runs at 03:00 Asia/Taipei:
+
+1. `via-data fetch --gtfs-only` (one paced TDX call, see `tdx.fetch.requests_per_minute`, default 4 per minute; the very first run has no snapshot and does a full paced fetch, a few minutes). Snapshots live in `/var/lib/via/pipeline` (mounted at `/build/server/data`).
+2. If the new GTFS sha256 equals the one of the last successful build, the new snapshot is dropped and the job ends. Nothing is built, activated or restarted.
+3. Otherwise `via-data build` (against the in-cluster `valhalla` service), then the artifact is copied to `/var/lib/via/static/incoming/<id>/` and `incoming/READY` is written.
+4. On the host, `via-static-activate.path` sees `READY` and runs `fetch.sh --incoming`: the same validate (`via-data validate` from the server image), atomic `current` symlink switch, restart, readiness wait and automatic rollback as section 4. `READY` is consumed on success and on failure, so a rejected build is not retried in a loop; the next night builds again only if the GTFS changed or the build had not succeeded.
+
+No AWS credentials are involved. The pod needs the `tdx-credentials` Secret (the same one the gateway uses) and write access to two host directories, which `install-k3s.sh` creates owned by uid 10001. On a node bootstrapped before this change run once: `sudo install -d -o 10001 -g 10001 /var/lib/via/pipeline /var/lib/via/static/incoming`, install the two `via-static-activate.*` units from `server/deploy/aws/artifacts/` and `systemctl enable --now via-static-activate.path`.
+
+TDX quota: the job spends at most 4 requests per minute and the gateway shares the 5 per minute key, so the 03:00 slot (no traffic) is deliberate. Do not run live TDX experiments against the production key around that time.
+
+The job requires the image to contain `via-data fetch --gtfs-only` and the paced fetch (#27). Until the image has it the job fails and the previous data stays active.
+
+Resources (measured on a full Taiwan build, see the PR): MEASURED_SUMMARY
+
+Operate: `kubectl -n via get cronjob,job -l app=nightly-static`, logs `kubectl -n via logs job/<name>`, activation log `journalctl -u via-static-activate`. Run it now: `kubectl -n via create job --from=cronjob/nightly-static manual-$(date +%s)`. Fallback if the node cannot afford the build: build in GitHub Actions and publish with `publish.sh` (section 4).
+
+The 05:00 `via-artifact-fetch.timer` now refreshes **tiles only** (`fetch.sh --tiles`); static data comes from the nightly job. Do not publish static builds to S3 expecting the timer to activate them; use `fetch.sh --static` manually for that.
 
 ## 5. First deploy
 

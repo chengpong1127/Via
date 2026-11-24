@@ -182,5 +182,33 @@ expect_fail "failing tiles do not block static (combined exit is non-zero)" "$ar
 check "static still activated when tiles fail" "$(current)" "builds/g1"
 rm -f "$KUBECTL_FAIL_FLAG"
 
+rm -rf "$VIA_ROOT"
+mkincoming() {
+  mkdir -p "$VIA_ROOT/static/incoming/$1"
+  printf '{"ok":"%s"}' "$2" >"$VIA_ROOT/static/incoming/$1/.via-static.json"
+  echo "$1" >"$VIA_ROOT/static/incoming/READY"
+}
+inc() { env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming >/dev/null 2>&1; }
+expect_ok "incoming with no READY is a no-op" env -u VIA_ARTIFACT_BUCKET "$art/fetch.sh" --incoming
+mkincoming n1 one
+inc
+check "incoming build activates without S3" "$(current)" "builds/n1"
+check "incoming consumed (READY removed)" "$(test -e "$VIA_ROOT/static/incoming/READY" && echo present || echo gone)" "gone"
+check "incoming dir moved into builds" "$(test -d "$VIA_ROOT/static/incoming/n1" && echo present || echo gone)" "gone"
+mkincoming n2 two
+touch "$VIA_ROOT/static/incoming/n2/.invalid"
+if inc; then echo "FAIL incoming failed validation refuses"; fails=$((fails + 1)); else echo "ok   incoming failed validation refuses"; fi
+check "incoming failed validation keeps previous current" "$(current)" "builds/n1"
+check "incoming failed validation clears READY (no retry loop)" "$(test -e "$VIA_ROOT/static/incoming/READY" && echo present || echo gone)" "gone"
+mkincoming n3 three
+echo server >"$KUBECTL_FAIL_FLAG"
+if inc; then echo "FAIL incoming readiness failure fails"; fails=$((fails + 1)); else echo "ok   incoming readiness failure fails"; fi
+check "incoming readiness failure restores previous current" "$(current)" "builds/n1"
+check "incoming readiness failure clears READY" "$(test -e "$VIA_ROOT/static/incoming/READY" && echo present || echo gone)" "gone"
+rm -f "$KUBECTL_FAIL_FLAG"
+mkincoming n4 four
+inc
+check "later incoming build activates" "$(current)" "builds/n4"
+
 echo "failures: $fails"
 exit "$fails"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Activate a static build handed over by the nightly CronJob
+
+[Path]
+PathExists=/var/lib/via/static/incoming/READY
+Unit=via-static-activate.service
+
+[Install]
+WantedBy=multi-user.target

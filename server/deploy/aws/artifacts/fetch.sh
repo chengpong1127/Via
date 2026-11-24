@@ -15,7 +15,7 @@ fi
 export PATH="$PATH:/snap/bin:/usr/local/bin"
 
 usage() {
-  echo "usage: $0 [--static [id]] [--tiles [id]]   (no flags: both, latest)" >&2
+  echo "usage: $0 [--static [id]] [--tiles [id]] | --incoming   (no flags: both, latest)" >&2
   exit 2
 }
 
@@ -29,6 +29,7 @@ export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 
 do_static=0
 do_tiles=0
+incoming=0
 static_id=""
 tiles_id=""
 while [ $# -gt 0 ]; do
@@ -43,6 +44,11 @@ while [ $# -gt 0 ]; do
       shift
       if [ $# -gt 0 ] && [[ "$1" != --* ]]; then tiles_id="$1"; shift; fi
       ;;
+    --incoming)
+      incoming=1
+      do_static=1
+      shift
+      ;;
     *) usage ;;
   esac
 done
@@ -51,7 +57,7 @@ if [ "$do_static" -eq 0 ] && [ "$do_tiles" -eq 0 ]; then
   do_tiles=1
 fi
 
-require_bucket
+if [ "$incoming" -eq 0 ]; then require_bucket; fi
 command -v zstd >/dev/null 2>&1 || die "zstd is required"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 mkdir -p "$VIA_ROOT"
@@ -189,9 +195,35 @@ validate_static() {
   return 1
 }
 
+# Build handed over by the nightly CronJob: $base/incoming/<id> plus READY
+# holding the id. READY is always consumed so a failure is not retried in a loop.
+fetch_incoming() {
+  local base="$VIA_ROOT/static" ready="$VIA_ROOT/static/incoming/READY" id rc=0
+  [ -f "$ready" ] || { log "no incoming build"; return 0; }
+  id="$(tr -d '[:space:]' <"$ready")"
+  rm -f "$ready"
+  valid_id "$id" || die "invalid incoming id: $id"
+  [ -s "$base/incoming/$id/.via-static.json" ] || die "incoming $id has no artifact"
+  if [ ! -d "$base/builds/$id" ]; then
+    jq --stream -n 'reduce inputs as $i (0; . + 1) | select(. > 0)' "$base/incoming/$id/.via-static.json" >/dev/null ||
+      die "incoming $id is not valid JSON"
+    touch "$base/incoming/$id/.via-verified"
+    mkdir -p "$base/builds"
+    mv "$base/incoming/$id" "$base/builds/$id"
+  fi
+  activate_static "$id" || rc=$?
+  rm -rf "${base:?}/incoming/$id"
+  return "$rc"
+}
+
 fetch_static() {
-  local base="$VIA_ROOT/static" id builds prev stage
+  local id
   id="$(resolve_id static "$static_id")"
+  activate_static "$id"
+}
+
+activate_static() {
+  local id="$1" base="$VIA_ROOT/static" builds prev stage
   builds="$base/builds"
   mkdir -p "$builds"
   prev=""
@@ -296,5 +328,6 @@ fetch_tiles() {
 }
 
 wait_for_cluster
-if [ "$do_static" -eq 1 ]; then fetch_static; fi
+if [ "$incoming" -eq 1 ]; then fetch_incoming
+elif [ "$do_static" -eq 1 ]; then fetch_static; fi
 if [ "$do_tiles" -eq 1 ]; then fetch_tiles; fi

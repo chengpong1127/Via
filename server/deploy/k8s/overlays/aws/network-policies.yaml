@@ -67,6 +67,9 @@ spec:
         - podSelector:
             matchLabels:
               app: server
+        - podSelector:
+            matchLabels:
+              app: nightly-static
       ports:
         - port: 8002
           protocol: TCP
