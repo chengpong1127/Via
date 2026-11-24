@@ -121,11 +121,6 @@ private struct ExploreSheet: View {
             switch model.route {
             case .search, .results:
                 SearchPanel(model: model, purpose: .explore)
-                    .safeAreaInset(edge: .bottom, alignment: .trailing) {
-                        AboutButton()
-                            .padding(.trailing, 16)
-                            .padding(.bottom, 8)
-                    }
             case let .pickEndpoint(role):
                 SearchPanel(model: model, purpose: .endpoint(role))
             case let .place(result):

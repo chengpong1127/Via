@@ -67,6 +67,9 @@ struct SearchPanel: View {
                     model.closeResults()
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else if purpose == .explore {
+                AboutButton()
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .animation(.smooth(duration: 0.2), value: focused)
