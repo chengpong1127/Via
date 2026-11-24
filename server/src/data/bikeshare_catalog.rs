@@ -2,12 +2,10 @@ use std::collections::HashSet;
 
 use serde::Deserialize;
 
-use crate::{
-    domain::{
-        bikeshare::{BikeShareNetwork, BikeStation},
-        location::GeoCoordinate,
-    },
-    tdx::bike_station_id,
+use crate::domain::{
+    bikeshare::{BikeShareNetwork, BikeStation},
+    ids::bike_station_id,
+    location::GeoCoordinate,
 };
 
 use super::DataError;
@@ -46,10 +44,7 @@ pub fn parse_tdx_station_catalog<'a>(
     let mut stations = Vec::new();
     let mut ids = HashSet::new();
     for (city, body) in catalogs {
-        if !crate::tdx::BIKE_CITIES
-            .iter()
-            .any(|(scope, _)| *scope == city)
-        {
+        if !crate::tdx::is_bike_city(city) {
             return Err(DataError::InvalidArtifactJson(format!(
                 "unsupported TDX Bike city {city}"
             )));

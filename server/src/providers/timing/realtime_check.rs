@@ -1,13 +1,16 @@
-use time::{Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
-    domain::{realtime::FreshnessPolicy, transit::timing::DepartureError},
+    domain::{
+        realtime::{FreshnessPolicy, FreshnessState, LiveStatusTimes},
+        transit::timing::DepartureError,
+    },
     tdx::RealtimeSettings,
 };
 
 #[derive(Clone, Debug)]
 pub(super) struct RealtimeCheck {
-    pub(super) freshness: FreshnessPolicy,
+    freshness: FreshnessPolicy,
     max_clock_skew: Duration,
 }
 
@@ -37,4 +40,22 @@ impl RealtimeCheck {
         }
         Ok(())
     }
+
+    pub(super) fn freshness_of(
+        &self,
+        published_at: OffsetDateTime,
+        received_at: OffsetDateTime,
+    ) -> FreshnessState {
+        self.freshness.evaluate(
+            LiveStatusTimes {
+                published_at: Some(published_at),
+                received_at,
+            },
+            received_at,
+        )
+    }
+}
+
+pub(super) fn parse_timestamp(value: &str) -> Result<OffsetDateTime, DepartureError> {
+    OffsetDateTime::parse(value, &Rfc3339).map_err(|_| DepartureError::InvalidResponse)
 }

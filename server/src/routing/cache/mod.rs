@@ -6,7 +6,7 @@ use std::{
     future::Future,
     hash::Hash,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -41,9 +41,7 @@ impl<K: Eq + Hash, V: Clone> RequestCache<K, V> {
         Fut: Future<Output = V>,
     {
         let cell = self
-            .entries
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .entry(key)
             .and_modify(|_| {
                 self.hits.fetch_add(1, Ordering::Relaxed);
@@ -53,8 +51,31 @@ impl<K: Eq + Hash, V: Clone> RequestCache<K, V> {
         cell.get_or_init(init).await.clone()
     }
 
+    fn cell_within(&self, key: K, capacity: usize) -> Option<Arc<OnceCell<V>>> {
+        let mut entries = self.lock();
+        match entries.get(&key) {
+            Some(cell) => Some(cell.clone()),
+            None if entries.len() < capacity => Some(entries.entry(key).or_default().clone()),
+            None => None,
+        }
+    }
+
+    fn forget(&self, key: &K, cell: &Arc<OnceCell<V>>) {
+        let mut entries = self.lock();
+        if entries
+            .get(key)
+            .is_some_and(|entry| Arc::ptr_eq(entry, cell))
+        {
+            entries.remove(key);
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<K, Arc<OnceCell<V>>>> {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(super) fn entries(&self) -> usize {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.lock().len()
     }
 
     pub(super) fn hits(&self) -> usize {
@@ -94,7 +115,7 @@ impl MatrixKey {
 
 pub(crate) struct MatrixCache {
     provider: Arc<dyn StreetRouter>,
-    cache: RequestCache<MatrixKey, Result<MatrixResult, StreetRoutingError>>,
+    matrices: RequestCache<MatrixKey, Result<MatrixResult, StreetRoutingError>>,
     route_cells: RequestCache<RouteKey, Result<MatrixCell, StreetRoutingError>>,
 }
 
@@ -102,17 +123,17 @@ impl MatrixCache {
     pub(crate) fn new(provider: Arc<dyn StreetRouter>) -> Self {
         Self {
             provider,
-            cache: RequestCache::default(),
+            matrices: RequestCache::default(),
             route_cells: RequestCache::default(),
         }
     }
 
     pub(crate) fn requests(&self) -> usize {
-        self.cache.entries() + self.route_cells.entries()
+        self.matrices.entries() + self.route_cells.entries()
     }
 
     pub(crate) fn hits(&self) -> usize {
-        self.cache.hits() + self.route_cells.hits()
+        self.matrices.hits() + self.route_cells.hits()
     }
 
     pub(crate) async fn route_cell(
@@ -143,7 +164,7 @@ impl StreetRouter for MatrixCache {
 
     async fn matrix(&self, query: MatrixQuery) -> Result<MatrixResult, StreetRoutingError> {
         let key = MatrixKey::new(&query)?;
-        self.cache
+        self.matrices
             .get_or_init(key, || self.provider.matrix(query))
             .await
     }
@@ -169,18 +190,16 @@ fn route_key(query: &RouteQuery) -> Result<RouteKey, StreetRoutingError> {
     ))
 }
 
-type RouteEntry = Arc<OnceCell<Result<StreetPath, StreetRoutingError>>>;
-
 pub(crate) struct RouteCache {
     provider: Arc<dyn StreetRouter>,
-    entries: Mutex<HashMap<RouteKey, RouteEntry>>,
+    paths: RequestCache<RouteKey, Result<StreetPath, StreetRoutingError>>,
 }
 
 impl RouteCache {
     pub(crate) fn new(provider: Arc<dyn StreetRouter>) -> Self {
         Self {
             provider,
-            entries: Mutex::new(HashMap::new()),
+            paths: RequestCache::default(),
         }
     }
 }
@@ -201,17 +220,7 @@ impl StreetRouter for RouteCache {
             return self.provider.route(query).await;
         }
         let key = route_key(&query)?;
-        let cell = {
-            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            match entries.get(&key) {
-                Some(cell) => Some(cell.clone()),
-                None if entries.len() < MAX_ROUTE_ENTRIES => {
-                    Some(entries.entry(key).or_default().clone())
-                }
-                None => None,
-            }
-        };
-        let Some(cell) = cell else {
+        let Some(cell) = self.paths.cell_within(key, MAX_ROUTE_ENTRIES) else {
             return self.provider.route(query).await;
         };
         let result = cell
@@ -222,13 +231,7 @@ impl StreetRouter for RouteCache {
             .as_ref()
             .is_err_and(|error| error.failure_class() != ProviderFailureClass::Unreachable)
         {
-            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            if entries
-                .get(&key)
-                .is_some_and(|entry| Arc::ptr_eq(entry, &cell))
-            {
-                entries.remove(&key);
-            }
+            self.paths.forget(&key, &cell);
         }
         result
     }

@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
     time::Instant,
 };
 
@@ -8,23 +7,19 @@ use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::bus_realtime::parse_bus_arrivals;
+use super::context::TdxTimingContext;
 use super::live_error::departure_error;
-use super::realtime_check::RealtimeCheck;
 use super::source::TransitDepartureSource;
-use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::{ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue},
+        realtime::{ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
-        transit::runtime::TransitRuntime,
         transit::timing::{
-            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
-            TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingReliability,
         },
     },
-    live::{CachedLiveData, DirectLiveData, LiveDataSource, UnavailableReason},
-    tdx::{RealtimeSettings, TdxClient},
+    live::UnavailableReason,
 };
 
 struct RealtimeRequestPlan {
@@ -44,48 +39,12 @@ struct RealtimeDepartureResults {
 }
 
 pub struct BusDepartureSource {
-    transit: Arc<TransitRuntime>,
-    live: Arc<dyn LiveDataSource>,
-    schedule: ScheduleTiming,
-    realtime_check: RealtimeCheck,
-    bindings: Arc<TdxProviderBindings>,
+    context: TdxTimingContext,
 }
 
 impl BusDepartureSource {
-    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
-        let settings = tdx.settings.clone();
-        Self::with_live_data(
-            transit,
-            Arc::new(CachedLiveData::new(
-                Arc::new(DirectLiveData::new(tdx)),
-                &settings,
-            )),
-            &settings.realtime,
-        )
-    }
-
-    pub fn with_live_data(
-        transit: Arc<TransitRuntime>,
-        live: Arc<dyn LiveDataSource>,
-        realtime: &RealtimeSettings,
-    ) -> Self {
-        Self {
-            schedule: ScheduleTiming::new(transit.clone()),
-            transit,
-            live,
-            realtime_check: RealtimeCheck::new(realtime),
-            bindings: Arc::new(TdxProviderBindings::default()),
-        }
-    }
-
-    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
-        self.bindings = bindings;
-        self
-    }
-
-    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.realtime_check.freshness = freshness_policy;
-        self
+    pub fn new(context: TdxTimingContext) -> Self {
+        Self { context }
     }
 
     fn effective_trip(
@@ -95,8 +54,8 @@ impl BusDepartureSource {
         observed_at: OffsetDateTime,
         evidence: NormalizedRealtimeValue,
     ) -> Option<EffectiveTrip> {
-        let pattern = self.transit.pattern(&query.pattern_id)?;
-        let board_index = query.resolve_board_index(&self.transit).ok()?;
+        let pattern = self.context.transit.pattern(&query.pattern_id)?;
+        let board_index = query.resolve_board_index(&self.context.transit).ok()?;
         let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(pattern.stops.len());
         let mut previous_departure = None;
         for (index, stop_id) in pattern.stops.iter().enumerate() {
@@ -283,11 +242,12 @@ impl BusDepartureSource {
         let mut unscoped_queries = 0;
         for query in active_queries {
             let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
-            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.context.transit.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
                 continue;
             };
             let scope = self
+                .context
                 .bindings
                 .bus_patterns
                 .get(&pattern.id)
@@ -327,16 +287,21 @@ impl BusDepartureSource {
             .collect::<Vec<_>>();
         stop_uids.sort();
         let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
+        let mut parent_route_by_service = HashMap::<String, String>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
-            if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
+            if let Some(binding) = self.context.bindings.bus_patterns.get(pattern_id) {
                 patterns_by_service
                     .entry(binding.tdx_service_id.clone())
                     .or_default()
                     .push(pattern_id.clone());
+                if let Some(route_uid) = &binding.tdx_route_uid {
+                    parent_route_by_service
+                        .insert(binding.tdx_service_id.clone(), route_uid.clone());
+                }
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
-        let batch = self.live.bus_arrivals(scope, &stop_uids).await;
+        let batch = self.context.live.bus_arrivals(scope, &stop_uids).await;
         ::metrics::counter!("via_bus_timing_realtime_http_requests_total")
             .increment(batch.upstream_requests as u64);
         results.http_requests += batch.upstream_requests;
@@ -358,20 +323,24 @@ impl BusDepartureSource {
                     .insert(pair.clone(), departure_error(*reason));
             }
         }
-        let values =
-            match parse_bus_arrivals(&batch.records, &patterns_by_service, &self.realtime_check) {
-                Ok(values) => values,
-                Err(error) => {
-                    ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
-                    for pair in scope_pairs {
-                        results
-                            .errors_by_pair
-                            .entry(pair)
-                            .or_insert_with(|| error.clone());
-                    }
-                    return;
+        let values = match parse_bus_arrivals(
+            &batch.records,
+            &patterns_by_service,
+            &parent_route_by_service,
+            &self.context.realtime_check,
+        ) {
+            Ok(values) => values,
+            Err(error) => {
+                ::metrics::counter!("via_bus_timing_upstream_failures_total").increment(1);
+                for pair in scope_pairs {
+                    results
+                        .errors_by_pair
+                        .entry(pair)
+                        .or_insert_with(|| error.clone());
                 }
-            };
+                return;
+            }
+        };
         results.rows_received += values.len();
         for value in values {
             let arrival = &value.value;
@@ -401,17 +370,14 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Bus
-            || !pattern.stops.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
-        let mut departures = self.schedule.next_departures(query.clone()).await?;
-        departures.extend(self.schedule.next_frequency_departures(query.clone())?);
-        let board_index = query.resolve_board_index(&self.transit)?;
+        query.validate_for(&self.context.transit, TransitMode::Bus)?;
+        let mut departures = self.context.schedule.next_departures(query.clone()).await?;
+        departures.extend(
+            self.context
+                .schedule
+                .next_frequency_departures(query.clone())?,
+        );
+        let board_index = query.resolve_board_index(&self.context.transit)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at

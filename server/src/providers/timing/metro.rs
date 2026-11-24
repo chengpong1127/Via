@@ -1,42 +1,30 @@
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
-use super::realtime_check::RealtimeCheck;
 use super::{
+    context::TdxTimingContext,
     live_error::departure_error,
     metro_realtime::{MetroObservation, parse_metro_boards},
     source::TransitDepartureSource,
 };
-use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::{
-            ArrivalEstimate, ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue,
-        },
+        realtime::{ArrivalEstimate, ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
-        transit::runtime::TransitRuntime,
         transit::timing::{
-            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
-            TimingBasis, TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
+            TimingReliability,
         },
     },
-    live::{CachedLiveData, DirectLiveData, LiveDataSource, MetroPair},
-    tdx::{RealtimeSettings, TdxClient},
+    live::MetroPair,
 };
 
 #[derive(Clone)]
 pub struct MetroDepartureSource {
-    transit: Arc<TransitRuntime>,
-    schedule: ScheduleTiming,
-    live: Arc<dyn LiveDataSource>,
-    realtime_check: RealtimeCheck,
-    bindings: Arc<TdxProviderBindings>,
+    context: TdxTimingContext,
 }
 
 #[derive(Clone)]
@@ -47,57 +35,21 @@ struct MetroRealtimeMatch {
 }
 
 impl MetroDepartureSource {
-    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
-        let settings = tdx.settings.clone();
-        Self::with_live_data(
-            transit,
-            Arc::new(CachedLiveData::new(
-                Arc::new(DirectLiveData::new(tdx)),
-                &settings,
-            )),
-            &settings.realtime,
-        )
-    }
-
-    pub fn with_live_data(
-        transit: Arc<TransitRuntime>,
-        live: Arc<dyn LiveDataSource>,
-        realtime: &RealtimeSettings,
-    ) -> Self {
-        Self {
-            schedule: ScheduleTiming::new(transit.clone()),
-            transit,
-            live,
-            realtime_check: RealtimeCheck::new(realtime),
-            bindings: Arc::new(TdxProviderBindings::default()),
-        }
-    }
-
-    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
-        self.bindings = bindings;
-        self
-    }
-
-    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.realtime_check.freshness = freshness_policy;
-        self
+    pub fn new(context: TdxTimingContext) -> Self {
+        Self { context }
     }
 
     fn validate_query(&self, query: &DepartureQuery) -> Result<(), DepartureError> {
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Metro
-            || !pattern.stops.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
-        Ok(())
+        query.validate_for(&self.context.transit, TransitMode::Metro)
     }
 
     fn realtime_match(&self, query: &DepartureQuery) -> Option<MetroRealtimeMatch> {
-        let pattern = self.transit.pattern(&query.pattern_id)?;
-        let binding = self.bindings.metro_patterns.get(&query.pattern_id)?;
+        let pattern = self.context.transit.pattern(&query.pattern_id)?;
+        let binding = self
+            .context
+            .bindings
+            .metro_patterns
+            .get(&query.pattern_id)?;
         if binding.direction > 1 {
             return None;
         }
@@ -117,7 +69,7 @@ impl MetroDepartureSource {
         board_stop_id: &BoardingPointId,
         board_index: usize,
     ) -> Option<EffectiveTrip> {
-        let pattern = self.transit.pattern(pattern_id)?;
+        let pattern = self.context.transit.pattern(pattern_id)?;
         if pattern.stops.get(board_index) != Some(board_stop_id) {
             return None;
         }
@@ -176,7 +128,7 @@ impl MetroDepartureSource {
         realtime_match: &MetroRealtimeMatch,
         observations: &[MetroObservation],
     ) -> Vec<EffectiveTrip> {
-        let Ok(board_index) = query.resolve_board_index(&self.transit) else {
+        let Ok(board_index) = query.resolve_board_index(&self.context.transit) else {
             return Vec::new();
         };
         let mut departures = observations
@@ -256,7 +208,7 @@ impl MetroDepartureSource {
         }
 
         let request_keys = query_indices_by_pair.keys().cloned().collect::<Vec<_>>();
-        let batch = self.live.metro_boards(&request_keys).await;
+        let batch = self.context.live.metro_boards(&request_keys).await;
         let mut errors_by_query = HashMap::new();
         for unavailable in &batch.unavailable {
             for index in query_indices_by_pair
@@ -267,7 +219,7 @@ impl MetroDepartureSource {
                 errors_by_query.insert(*index, departure_error(unavailable.reason));
             }
         }
-        let observations = match parse_metro_boards(batch.records, &self.realtime_check) {
+        let observations = match parse_metro_boards(batch.records, &self.context.realtime_check) {
             Ok(observations) => observations,
             Err(error) => {
                 for index in query_indices_by_pair.values().flatten() {
@@ -308,9 +260,13 @@ impl MetroDepartureSource {
             return Ok(Vec::new());
         }
         self.validate_query(&query)?;
-        let board_index = query.resolve_board_index(&self.transit)?;
-        let mut departures = self.schedule.next_departures(query.clone()).await?;
-        departures.extend(self.schedule.next_frequency_departures(query.clone())?);
+        let board_index = query.resolve_board_index(&self.context.transit)?;
+        let mut departures = self.context.schedule.next_departures(query.clone()).await?;
+        departures.extend(
+            self.context
+                .schedule
+                .next_frequency_departures(query.clone())?,
+        );
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at

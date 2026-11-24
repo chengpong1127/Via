@@ -1,3 +1,6 @@
+mod events;
+mod wire;
+
 use std::{
     future::Future,
     sync::Arc,
@@ -9,25 +12,28 @@ use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use reqwest::{Client, Response, StatusCode};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use time::{format_description::FormatItem, macros::format_description};
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::timeout,
 };
 use url::Url;
 
-use crate::{
-    health::DependencyHealth,
-    street::{
-        Attribution, Coordinate, Maneuver, ManeuverKind, MatrixCell, MatrixLimits, MatrixQuery,
-        MatrixResult, Metres, RouteQuery, RoutingConstraints, Seconds, StreetPath, StreetRouter,
-        StreetRoutingError, StreetTravelMode,
-    },
+use crate::street::{
+    DependencyHealth, MatrixLimits, MatrixQuery, MatrixResult, RouteQuery, StreetPath,
+    StreetRouter, StreetRoutingError,
 };
 
-const OSM_ATTRIBUTION_URL: &str = "https://www.openstreetmap.org/copyright";
-const ODBL_URL: &str = "https://opendatacommons.org/licenses/odbl/1-0/";
+use events::outcome_for;
+pub use events::{
+    NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,
+    RoutingOperation, TracingOperationalEventObserver,
+};
+use wire::{
+    MatrixRequest, MatrixResponse, RouteRequest, RouteResponse, StatusResponse,
+    ValhallaErrorResponse, WireLocation, costing, decode_polyline6, kilometres_to_metres,
+    normalize_maneuver, normalize_matrix_cell, osm_attribution, seconds, wire_time,
+};
 
 #[derive(Clone, Debug)]
 pub struct ValhallaConfig {
@@ -57,100 +63,6 @@ impl ValhallaConfig {
             });
         }
         Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OperationOutcome {
-    Success,
-    InvalidRequest,
-    Unreachable,
-    Timeout,
-    RateLimited,
-    Unavailable,
-    MalformedResponse,
-    ResponseTooLarge,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RoutingOperation {
-    Health,
-    Matrix,
-    Route,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct OperationalEvent {
-    pub operation: RoutingOperation,
-    pub provider: &'static str,
-    pub latency_milliseconds: u64,
-    pub outcome: OperationOutcome,
-    pub source_count: usize,
-    pub target_count: usize,
-}
-
-pub trait OperationalEventObserver: Send + Sync {
-    fn observe(&self, event: OperationalEvent);
-}
-
-pub struct NoopOperationalEventObserver;
-
-impl OperationalEventObserver for NoopOperationalEventObserver {
-    fn observe(&self, _event: OperationalEvent) {}
-}
-
-#[derive(Default)]
-pub struct TracingOperationalEventObserver;
-
-impl OperationalEventObserver for TracingOperationalEventObserver {
-    fn observe(&self, event: OperationalEvent) {
-        let operation = operation_name(event.operation);
-        let outcome = outcome_name(event.outcome);
-        match event.outcome {
-            OperationOutcome::Success => tracing::debug!(
-                target: "via_server::providers::valhalla",
-                provider = event.provider,
-                operation,
-                outcome,
-                latency_ms = event.latency_milliseconds,
-                sources = event.source_count,
-                targets = event.target_count,
-                "street routing provider operation completed"
-            ),
-            _ => tracing::warn!(
-                target: "via_server::providers::valhalla",
-                provider = event.provider,
-                operation,
-                outcome,
-                latency_ms = event.latency_milliseconds,
-                sources = event.source_count,
-                targets = event.target_count,
-                "street routing provider operation failed"
-            ),
-        }
-    }
-}
-
-fn operation_name(operation: RoutingOperation) -> &'static str {
-    match operation {
-        RoutingOperation::Health => "health",
-        RoutingOperation::Matrix => "matrix",
-        RoutingOperation::Route => "route",
-    }
-}
-
-fn outcome_name(outcome: OperationOutcome) -> &'static str {
-    match outcome {
-        OperationOutcome::Success => "success",
-        OperationOutcome::InvalidRequest => "invalid_request",
-        OperationOutcome::Unreachable => "unreachable",
-        OperationOutcome::Timeout => "timeout",
-        OperationOutcome::RateLimited => "rate_limited",
-        OperationOutcome::Unavailable => "unavailable",
-        OperationOutcome::MalformedResponse => "malformed_response",
-        OperationOutcome::ResponseTooLarge => "response_too_large",
     }
 }
 
@@ -251,6 +163,23 @@ impl ValhallaProvider {
         serde_json::from_slice(&bytes).map_err(|_| StreetRoutingError::MalformedResponse)
     }
 
+    async fn post_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        request: &impl Serialize,
+    ) -> Result<T, StreetRoutingError> {
+        let _permit = self.permit().await?;
+        let response = self
+            .client
+            .post(self.endpoint(path)?)
+            .json(request)
+            .send()
+            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
+            .await
+            .map_err(map_transport_error)?;
+        self.parse_response(response).await
+    }
+
     fn observe<T>(
         &self,
         operation: RoutingOperation,
@@ -339,17 +268,7 @@ impl ValhallaProvider {
             date_time: wire_time(query.constraints)?,
             expansion_max_distance: query.constraints.max_distance.map(|value| value.0),
         };
-        let _permit = self.permit().await?;
-        let response = self
-            .client
-            .post(self.endpoint("sources_to_targets")?)
-            .json(&request)
-            .send()
-            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
-            .await
-            .map_err(map_transport_error)?;
-        let wire = self.parse_response(response).await;
-        let wire: MatrixResponse = wire?;
+        let wire: MatrixResponse = self.post_json("sources_to_targets", &request).await?;
         if wire.sources_to_targets.len() != query.sources.len()
             || wire
                 .sources_to_targets
@@ -379,17 +298,7 @@ impl ValhallaProvider {
             shape_format: "polyline6",
             date_time: wire_time(query.constraints)?,
         };
-        let _permit = self.permit().await?;
-        let response = self
-            .client
-            .post(self.endpoint("route")?)
-            .json(&request)
-            .send()
-            .instrument(tracing::info_span!(target: "via_profile", "Valhalla HTTP"))
-            .await
-            .map_err(map_transport_error)?;
-        let wire = self.parse_response(response).await;
-        let wire: RouteResponse = wire?;
+        let wire: RouteResponse = self.post_json("route", &request).await?;
         let leg = wire
             .trip
             .legs
@@ -426,10 +335,9 @@ impl ValhallaProvider {
 #[async_trait]
 impl DependencyHealth for ValhallaProvider {
     async fn healthy(&self) -> bool {
-        let started = Instant::now();
-        let result = self.with_deadline(self.health_inner()).await;
-        self.observe(RoutingOperation::Health, started, 0, 0, &result);
-        result.is_ok_and(|healthy| healthy)
+        self.execute(RoutingOperation::Health, 0, 0, self.health_inner())
+            .await
+            .is_ok_and(|healthy| healthy)
     }
 
     fn name(&self) -> &'static str {
@@ -493,251 +401,4 @@ fn map_http_error(status: StatusCode, error_code: Option<u16>) -> StreetRoutingE
         status if status.is_server_error() => StreetRoutingError::TemporarilyUnavailable,
         _ => StreetRoutingError::MalformedResponse,
     }
-}
-
-fn outcome_for(error: &StreetRoutingError) -> OperationOutcome {
-    match error {
-        StreetRoutingError::InvalidRequest { .. } => OperationOutcome::InvalidRequest,
-        StreetRoutingError::Unreachable => OperationOutcome::Unreachable,
-        StreetRoutingError::Timeout => OperationOutcome::Timeout,
-        StreetRoutingError::RateLimited => OperationOutcome::RateLimited,
-        StreetRoutingError::TemporarilyUnavailable => OperationOutcome::Unavailable,
-        StreetRoutingError::MalformedResponse => OperationOutcome::MalformedResponse,
-        StreetRoutingError::ResponseTooLarge { .. } => OperationOutcome::ResponseTooLarge,
-    }
-}
-
-fn costing(travel_mode: StreetTravelMode) -> &'static str {
-    match travel_mode {
-        StreetTravelMode::Walking => "pedestrian",
-        StreetTravelMode::Bicycle => "bicycle",
-    }
-}
-
-const VALHALLA_DEPART_AT: u8 = 1;
-const VALHALLA_LOCAL_TIME_FORMAT: &[FormatItem<'static>] =
-    format_description!("[year]-[month]-[day]T[hour]:[minute]");
-
-fn wire_time(
-    constraints: RoutingConstraints,
-) -> Result<Option<DateTimeRequest>, StreetRoutingError> {
-    constraints
-        .time
-        .map(|routing_time| {
-            let value = routing_time
-                .local_date_time
-                .format(VALHALLA_LOCAL_TIME_FORMAT)
-                .map_err(|_| StreetRoutingError::InvalidRequest {
-                    reason: "street-routing time could not be formatted".into(),
-                })?;
-            Ok(DateTimeRequest {
-                kind: VALHALLA_DEPART_AT,
-                value,
-            })
-        })
-        .transpose()
-}
-
-fn osm_attribution() -> Vec<Attribution> {
-    vec![Attribution {
-        text: "© OpenStreetMap contributors".into(),
-        url: OSM_ATTRIBUTION_URL.into(),
-        licence: ODBL_URL.into(),
-    }]
-}
-
-fn seconds(value: f64) -> Result<Seconds, StreetRoutingError> {
-    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) {
-        return Err(StreetRoutingError::MalformedResponse);
-    }
-    Ok(Seconds(value.round() as u32))
-}
-
-fn kilometres_to_metres(value: f64) -> Result<Metres, StreetRoutingError> {
-    let metres = value * 1_000.0;
-    if !metres.is_finite() || metres < 0.0 || metres > f64::from(u32::MAX) {
-        return Err(StreetRoutingError::MalformedResponse);
-    }
-    Ok(Metres(metres.round() as u32))
-}
-
-fn normalize_matrix_cell(wire: MatrixWireCell) -> Result<MatrixCell, StreetRoutingError> {
-    match (wire.time, wire.distance) {
-        (Some(time), Some(distance)) => Ok(MatrixCell::Reachable {
-            duration: seconds(time)?,
-            distance: kilometres_to_metres(distance)?,
-        }),
-        (None, None) => Ok(MatrixCell::Unreachable),
-        _ => Err(StreetRoutingError::MalformedResponse),
-    }
-}
-
-fn normalize_maneuver(wire: RouteManeuver) -> Result<Maneuver, StreetRoutingError> {
-    let kind = match wire.kind {
-        1..=3 => ManeuverKind::Depart,
-        4..=6 => ManeuverKind::Arrive,
-        9..=11 | 18 | 20 | 23 => ManeuverKind::TurnRight,
-        12 | 13 => ManeuverKind::UTurn,
-        14..=16 | 19 | 21 | 24 => ManeuverKind::TurnLeft,
-        26 => ManeuverKind::EnterRoundabout,
-        27 => ManeuverKind::ExitRoundabout,
-        _ => ManeuverKind::Continue,
-    };
-    Ok(Maneuver {
-        kind,
-        begin_geometry_index: wire.begin_shape_index,
-        end_geometry_index: wire.end_shape_index,
-        street_names: wire.street_names.unwrap_or_default(),
-        roundabout_exit: wire.roundabout_exit_count,
-    })
-}
-
-fn decode_polyline6(encoded: &str) -> Result<Vec<Coordinate>, StreetRoutingError> {
-    let bytes = encoded.as_bytes();
-    let mut index = 0;
-    let mut latitude = 0_i64;
-    let mut longitude = 0_i64;
-    let mut coordinates = Vec::new();
-    while index < bytes.len() {
-        latitude = latitude
-            .checked_add(decode_component(bytes, &mut index)?)
-            .ok_or(StreetRoutingError::MalformedResponse)?;
-        longitude = longitude
-            .checked_add(decode_component(bytes, &mut index)?)
-            .ok_or(StreetRoutingError::MalformedResponse)?;
-        coordinates.push(
-            Coordinate::try_new(
-                latitude as f64 / 1_000_000.0,
-                longitude as f64 / 1_000_000.0,
-            )
-            .map_err(|_| StreetRoutingError::MalformedResponse)?,
-        );
-    }
-    Ok(coordinates)
-}
-
-fn decode_component(bytes: &[u8], index: &mut usize) -> Result<i64, StreetRoutingError> {
-    let mut result = 0_u64;
-    let mut shift = 0_u32;
-    loop {
-        let byte = *bytes
-            .get(*index)
-            .ok_or(StreetRoutingError::MalformedResponse)?;
-        *index += 1;
-        if !(63..=126).contains(&byte) || shift > 60 {
-            return Err(StreetRoutingError::MalformedResponse);
-        }
-        let value = u64::from(byte - 63);
-        result |= (value & 0x1f) << shift;
-        if value < 0x20 {
-            break;
-        }
-        shift += 5;
-    }
-    let signed = if result & 1 == 1 {
-        !(result >> 1) as i64
-    } else {
-        (result >> 1) as i64
-    };
-    Ok(signed)
-}
-
-#[derive(Deserialize)]
-struct StatusResponse {
-    has_tiles: Option<bool>,
-    available_actions: Option<Vec<String>>,
-}
-
-#[derive(Deserialize)]
-struct ValhallaErrorResponse {
-    error_code: u16,
-}
-
-#[derive(Clone, Copy, Serialize)]
-struct WireLocation {
-    lat: f64,
-    lon: f64,
-}
-
-impl From<Coordinate> for WireLocation {
-    fn from(coordinate: Coordinate) -> Self {
-        Self {
-            lat: coordinate.latitude(),
-            lon: coordinate.longitude(),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct MatrixRequest {
-    sources: Vec<WireLocation>,
-    targets: Vec<WireLocation>,
-    costing: &'static str,
-    units: &'static str,
-    verbose: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    date_time: Option<DateTimeRequest>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expansion_max_distance: Option<u32>,
-}
-
-#[derive(Serialize)]
-struct DateTimeRequest {
-    #[serde(rename = "type")]
-    kind: u8,
-    value: String,
-}
-
-#[derive(Deserialize)]
-struct MatrixResponse {
-    sources_to_targets: Vec<Vec<MatrixWireCell>>,
-}
-
-#[derive(Deserialize)]
-struct MatrixWireCell {
-    time: Option<f64>,
-    distance: Option<f64>,
-}
-
-#[derive(Serialize)]
-struct RouteRequest {
-    locations: Vec<WireLocation>,
-    costing: &'static str,
-    units: &'static str,
-    shape_format: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    date_time: Option<DateTimeRequest>,
-}
-
-#[derive(Deserialize)]
-struct RouteResponse {
-    trip: RouteTrip,
-}
-
-#[derive(Deserialize)]
-struct RouteTrip {
-    summary: RouteSummary,
-    legs: Vec<RouteLeg>,
-}
-
-#[derive(Deserialize)]
-struct RouteSummary {
-    time: f64,
-    length: f64,
-}
-
-#[derive(Deserialize)]
-struct RouteLeg {
-    shape: String,
-    maneuvers: Vec<RouteManeuver>,
-}
-
-#[derive(Deserialize)]
-struct RouteManeuver {
-    #[serde(rename = "type")]
-    kind: u16,
-    begin_shape_index: usize,
-    end_shape_index: Option<usize>,
-    street_names: Option<Vec<String>>,
-    roundabout_exit_count: Option<u32>,
 }

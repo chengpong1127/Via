@@ -1,3 +1,4 @@
+use super::state::needs_hydration;
 use super::*;
 
 #[derive(Clone)]
@@ -55,10 +56,6 @@ fn can_dominate(left: &SignedCandidate, right: &SignedCandidate) -> bool {
     !left.needs_hydration && left.candidate.metrics.dominates(&right.candidate.metrics)
 }
 
-fn needs_hydration(movement: &JourneyMovement) -> bool {
-    !matches!(movement.kind, JourneyMovementKind::Transit { .. })
-}
-
 pub(super) fn prune_states(states: Vec<EvaluationState>, limit: usize) -> Vec<EvaluationState> {
     let mut states = states
         .into_iter()
@@ -82,14 +79,14 @@ pub(super) fn prune_states(states: Vec<EvaluationState>, limit: usize) -> Vec<Ev
     let mut frontier = Vec::<ScoredState>::new();
     for scored in states {
         if frontier.iter().any(|known| {
-            same_capability(&known.state, &scored.state)
-                && no_worse(&known.metrics, &scored.metrics)
+            known.state.same_capability(&scored.state)
+                && known.metrics.no_worse_than(&scored.metrics)
         }) {
             continue;
         }
         frontier.retain(|known| {
-            !(same_capability(&scored.state, &known.state)
-                && no_worse(&scored.metrics, &known.metrics))
+            !(scored.state.same_capability(&known.state)
+                && scored.metrics.no_worse_than(&known.metrics))
         });
         frontier.push(scored);
     }
@@ -100,27 +97,4 @@ pub(super) fn prune_states(states: Vec<EvaluationState>, limit: usize) -> Vec<Ev
 struct ScoredState {
     state: EvaluationState,
     metrics: PathMetrics,
-}
-pub(super) fn no_worse(left: &PathMetrics, right: &PathMetrics) -> bool {
-    left.same_timing_quality(right)
-        && left.arrival_time <= right.arrival_time
-        && left.walking_seconds <= right.walking_seconds
-        && left.bicycle_seconds <= right.bicycle_seconds
-        && left.bike_share_uses <= right.bike_share_uses
-        && left.transfer_count <= right.transfer_count
-}
-pub(super) fn same_capability(left: &EvaluationState, right: &EvaluationState) -> bool {
-    (!(left.movements.iter().any(needs_hydration) || right.movements.iter().any(needs_hydration))
-        || left.movements == right.movements)
-        && left.last_was_transit == right.last_was_transit
-        && left.bike_reuse_available_at == right.bike_reuse_available_at
-        && match (&left.active_bike_rental, &right.active_bike_rental) {
-            (None, None) => true,
-            (Some(left_rental), Some(right_rental)) => {
-                left_rental == right_rental
-                    && left.rental_bike_movement() == right.rental_bike_movement()
-                    && left.rental_prefix() == right.rental_prefix()
-            }
-            _ => false,
-        }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::ids::BoardingPointId;
 
 impl RealizedJourney {
     pub(in crate::routing) fn signature(&self) -> String {
@@ -42,10 +43,10 @@ impl RealizedJourney {
                 duration_seconds,
                 ..
             } => {
-                let stop = match &self.anchors[movement.to_anchor].kind {
-                    JourneyAnchorKind::BoardingPoint { id } => id.as_str(),
-                    _ => "invalid",
-                };
+                let stop = self.anchors[movement.to_anchor]
+                    .kind
+                    .boarding_point()
+                    .map_or("invalid", BoardingPointId::as_str);
                 format!("access:{stop}:{duration_seconds}")
             }
             JourneyMovementKind::Walking {

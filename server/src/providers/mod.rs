@@ -6,8 +6,8 @@ pub mod valhalla;
 
 pub use bikeshare::{TdxBikeAvailabilitySource, UnavailableBikeAvailabilitySource};
 pub use timing::{
-    BusDepartureSource, DepartureResolver, MetroDepartureSource, ThsrDepartureSource,
-    TraDepartureSource, TransitDepartureSource,
+    BusDepartureSource, DepartureResolver, MetroDepartureSource, TdxTimingContext,
+    ThsrDepartureSource, TraDepartureSource, TransitDepartureSource,
 };
 pub use valhalla::{
     NoopOperationalEventObserver, OperationOutcome, OperationalEvent, OperationalEventObserver,
