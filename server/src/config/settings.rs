@@ -376,6 +376,26 @@ impl ViaConfig {
                 self.tdx.rate_limit_backoff_seconds,
             ),
             (
+                "tdx.fetch.requests_per_minute",
+                u64::from(self.tdx.fetch.requests_per_minute),
+            ),
+            (
+                "tdx.fetch.connect_timeout_ms",
+                self.tdx.fetch.connect_timeout_ms,
+            ),
+            (
+                "tdx.fetch.request_timeout_ms",
+                self.tdx.fetch.request_timeout_ms,
+            ),
+            (
+                "tdx.fetch.max_attempts",
+                u64::from(self.tdx.fetch.max_attempts),
+            ),
+            (
+                "tdx.fetch.retry_backoff_seconds",
+                self.tdx.fetch.retry_backoff_seconds,
+            ),
+            (
                 "tdx.gateway.max_ids_per_request",
                 self.tdx.gateway.max_ids_per_request as u64,
             ),

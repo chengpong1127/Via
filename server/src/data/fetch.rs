@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     fs::{self, File},
+    future::Future,
     io::{self, Read},
     path::{Path, PathBuf},
     time::Duration,
@@ -16,7 +17,7 @@ use zip::ZipArchive;
 use crate::data::DataError;
 use crate::data::bus_routes::{BUS_ROUTE_CITIES, BUS_ROUTE_FIELDS, BusRoute};
 use crate::data::via_static::ViaStaticSource;
-use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError};
+use crate::tdx::{BIKE_CITIES, TdxClient, TdxClientError, TdxFetchSettings};
 
 pub const TDX_GTFS_STATIC_URL: &str = "https://tdx.transportdata.tw/api/gtfs/V3/Map/GTFS/Static";
 const BIKE_STATION_ORDER: &str = "StationUID asc";
@@ -28,7 +29,6 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub fn bike_station_source_name(slug: &str) -> String {
     format!("bike-stations-{slug}")
 }
-const PRODUCTION_REQUEST_INTERVAL: Duration = Duration::from_secs(61);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +36,8 @@ pub struct FetchManifest {
     pub manifest_version: u32,
     pub fetched_at: String,
     pub sources: BTreeMap<String, ViaStaticSource>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reused_sources: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,8 @@ pub enum FetchError {
     InvalidTimestamp(String),
     #[error("fetch snapshot already exists at {0}")]
     SnapshotExists(PathBuf),
+    #[error("no previous snapshot copy of {0} is available to reuse")]
+    MissingPreviousSource(String),
     #[error("fetch manifest could not be serialized: {0}")]
     InvalidManifest(String),
 }
@@ -69,15 +73,35 @@ pub enum FetchError {
 pub struct FetchSources {
     pub gtfs_static_url: String,
     pub bike_api_base_url: String,
+    pub policy: FetchPolicy,
+}
+
+#[derive(Clone, Debug)]
+pub struct FetchPolicy {
     pub request_interval: Duration,
+    pub max_attempts: u32,
+    pub retry_backoff: Duration,
+    pub gtfs_only: bool,
+}
+
+impl FetchPolicy {
+    pub fn from_settings(settings: &TdxFetchSettings, gtfs_only: bool) -> Self {
+        Self {
+            request_interval: Duration::from_secs(60)
+                .div_f64(f64::from(settings.requests_per_minute.max(1))),
+            max_attempts: settings.max_attempts.max(1),
+            retry_backoff: Duration::from_secs(settings.retry_backoff_seconds),
+            gtfs_only,
+        }
+    }
 }
 
 impl FetchSources {
-    pub fn production(bike_api_base_url: impl Into<String>) -> Self {
+    pub fn production(bike_api_base_url: impl Into<String>, policy: FetchPolicy) -> Self {
         Self {
             gtfs_static_url: TDX_GTFS_STATIC_URL.to_owned(),
             bike_api_base_url: bike_api_base_url.into(),
-            request_interval: PRODUCTION_REQUEST_INTERVAL,
+            policy,
         }
     }
 }
@@ -123,6 +147,7 @@ pub async fn fetch_snapshot_at(
         return Err(FetchError::InvalidTimestamp(timestamp.to_owned()));
     }
     fs::create_dir_all(root).map_err(|error| FetchError::Io(root.into(), error))?;
+    remove_stale_temporary_snapshots(root);
     let destination = root.join(timestamp);
     if destination.exists() {
         return Err(FetchError::SnapshotExists(destination));
@@ -132,7 +157,16 @@ pub async fn fetch_snapshot_at(
         uuid::Uuid::new_v4().simple()
     ));
     fs::create_dir(&temporary).map_err(|error| FetchError::Io(temporary.clone(), error))?;
-    let result = populate_snapshot(&temporary, timestamp, gtfs_file, client, sources).await;
+    let previous = PreviousSnapshot::latest_in(root);
+    let result = populate_snapshot(
+        &temporary,
+        timestamp,
+        gtfs_file,
+        previous.as_ref(),
+        client,
+        sources,
+    )
+    .await;
     let snapshot = match result {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -154,10 +188,12 @@ async fn populate_snapshot(
     temporary: &Path,
     timestamp: &str,
     gtfs_file: Option<&Path>,
+    previous: Option<&PreviousSnapshot>,
     client: &TdxClient,
     sources: &FetchSources,
 ) -> Result<FetchSnapshot, FetchError> {
-    let mut pacer = RequestPacer::new(sources.request_interval);
+    let policy = &sources.policy;
+    let mut pacer = RequestPacer::new(policy.request_interval);
     let gtfs_path = temporary.join(GTFS_FILE_NAME);
     let gtfs_source = if let Some(source_path) = gtfs_file {
         fs::copy(source_path, &gtfs_path)
@@ -169,10 +205,14 @@ async fn populate_snapshot(
             byte_size: file_size(&gtfs_path)?,
         }
     } else {
-        pacer.wait().await;
-        let byte_size = client
-            .download_url_to_path(&sources.gtfs_static_url, &gtfs_path)
-            .await?;
+        let partial_path = temporary.join(format!("{GTFS_FILE_NAME}.part"));
+        let byte_size = with_retries(policy, &mut pacer, || {
+            client.download_to_path(&sources.gtfs_static_url, &partial_path, true)
+        })
+        .await?;
+        validate_gtfs_zip(&partial_path)?;
+        fs::rename(&partial_path, &gtfs_path)
+            .map_err(|error| FetchError::Io(partial_path.clone(), error))?;
         ViaStaticSource {
             source_id: "tdx-gtfs-static-v3".to_owned(),
             source_url: Some(sources.gtfs_static_url.clone()),
@@ -188,38 +228,65 @@ async fn populate_snapshot(
             .format(&Rfc3339)
             .unwrap_or_else(|_| timestamp.to_owned()),
         sources: BTreeMap::new(),
+        reused_sources: BTreeMap::new(),
     };
     manifest
         .sources
         .insert(GTFS_SOURCE_NAME.to_owned(), gtfs_source);
     let mut bike_station_counts = BTreeMap::new();
     for (city, slug) in BIKE_CITIES {
-        let url = station_url(&sources.bike_api_base_url, city)?;
-        let (body, count) = fetch_stations(client, &mut pacer, &url, city).await?;
         let source_name = bike_station_source_name(slug);
-        let source = write_station_source(temporary, &source_name, &body, &url)?;
+        let url = station_url(&sources.bike_api_base_url, city)?;
+        let fetched = if policy.gtfs_only {
+            None
+        } else {
+            match fetch_stations(client, policy, &mut pacer, &url, city).await {
+                Ok((body, count)) => {
+                    let source = write_station_source(temporary, &source_name, &body, &url)?;
+                    Some((source, count))
+                }
+                Err(error @ FetchError::Tdx(_)) if is_transient_failure(&error) => {
+                    eprintln!("{source_name} fetch failed: {error}");
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let (source, count) = match fetched {
+            Some(fetched) => fetched,
+            None => {
+                let source = reuse_previous(previous, &source_name, temporary, &mut manifest)?;
+                let count = station_count(&temporary.join(format!("{source_name}.json")), city)?;
+                (source, count)
+            }
+        };
         manifest.sources.insert(source_name, source);
         bike_station_counts.insert((*city).to_owned(), count);
     }
     for (city, slug) in BUS_ROUTE_CITIES {
-        let url = bus_route_url(&sources.bike_api_base_url, city)?;
-        pacer.wait().await;
-        let body = client
-            .get_bytes(&url, &[("$select", BUS_ROUTE_FIELDS), ("$format", "JSON")])
-            .await?;
-        serde_json::from_slice::<Vec<BusRoute>>(&body).map_err(|error| {
-            FetchError::InvalidBusRoutes {
-                city: (*city).to_owned(),
-                detail: error.to_string(),
-            }
-        })?;
         let source_name = format!("bus-routes-{slug}");
-        let path = temporary.join(format!("{source_name}.json"));
-        fs::write(&path, &body).map_err(|error| FetchError::Io(path.clone(), error))?;
-        manifest.sources.insert(
-            source_name,
-            source_metadata("tdx-bus-route-city", url, &path)?,
-        );
+        let url = bus_route_url(&sources.bike_api_base_url, city)?;
+        let fetched = if policy.gtfs_only {
+            None
+        } else {
+            match fetch_bus_routes(client, policy, &mut pacer, &url, city).await {
+                Ok(body) => {
+                    let path = temporary.join(format!("{source_name}.json"));
+                    fs::write(&path, &body).map_err(|error| FetchError::Io(path.clone(), error))?;
+                    Some(source_metadata("tdx-bus-route-city", url, &path)?)
+                }
+                Err(error @ FetchError::Tdx(_)) if is_transient_failure(&error) => {
+                    eprintln!("{source_name} fetch failed: {error}");
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let source = match fetched {
+            Some(source) => source,
+            None => reuse_previous(previous, &source_name, temporary, &mut manifest)?,
+        };
+        manifest.sources.insert(source_name, source);
     }
     let manifest_path = temporary.join(MANIFEST_FILE_NAME);
     let manifest_body = serde_json::to_vec_pretty(&manifest)
@@ -233,8 +300,128 @@ async fn populate_snapshot(
     })
 }
 
+async fn fetch_bus_routes(
+    client: &TdxClient,
+    policy: &FetchPolicy,
+    pacer: &mut RequestPacer,
+    url: &str,
+    city: &str,
+) -> Result<bytes::Bytes, FetchError> {
+    let body = with_retries(policy, pacer, || {
+        client.fetch_bytes(url, &[("$select", BUS_ROUTE_FIELDS), ("$format", "JSON")])
+    })
+    .await?;
+    serde_json::from_slice::<Vec<BusRoute>>(&body).map_err(|error| {
+        FetchError::InvalidBusRoutes {
+            city: city.to_owned(),
+            detail: error.to_string(),
+        }
+    })?;
+    Ok(body)
+}
+
+async fn with_retries<T, Fut>(
+    policy: &FetchPolicy,
+    pacer: &mut RequestPacer,
+    mut attempt: impl FnMut() -> Fut,
+) -> Result<T, TdxClientError>
+where
+    Fut: Future<Output = Result<T, TdxClientError>>,
+{
+    let mut attempts = 1u32;
+    loop {
+        pacer.wait().await;
+        match attempt().await {
+            Err(error) if error.is_transient() && attempts < policy.max_attempts => {
+                let delay = match &error {
+                    TdxClientError::RateLimitedWithRetryAfter(delay) => *delay,
+                    _ => policy.retry_backoff * 2u32.saturating_pow(attempts - 1),
+                };
+                eprintln!("TDX request failed ({error}); retry {attempts} in {delay:?}");
+                tokio::time::sleep(delay).await;
+                attempts += 1;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+struct PreviousSnapshot {
+    path: PathBuf,
+    manifest: FetchManifest,
+}
+
+impl PreviousSnapshot {
+    fn latest_in(root: &Path) -> Option<Self> {
+        let path = fs::canonicalize(root.join("latest")).ok()?;
+        let body = fs::read(path.join(MANIFEST_FILE_NAME)).ok()?;
+        let manifest = serde_json::from_slice::<FetchManifest>(&body).ok()?;
+        Some(Self { path, manifest })
+    }
+}
+
+fn is_transient_failure(error: &FetchError) -> bool {
+    matches!(error, FetchError::Tdx(source) if source.is_transient())
+}
+
+fn remove_stale_temporary_snapshots(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.ends_with(".tmp") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+fn reuse_previous(
+    previous: Option<&PreviousSnapshot>,
+    source_name: &str,
+    temporary: &Path,
+    manifest: &mut FetchManifest,
+) -> Result<ViaStaticSource, FetchError> {
+    let missing = || FetchError::MissingPreviousSource(source_name.to_owned());
+    let previous = previous.ok_or_else(missing)?;
+    let source = previous
+        .manifest
+        .sources
+        .get(source_name)
+        .ok_or_else(missing)?;
+    let filename = source_file_name(source_name).ok_or_else(missing)?;
+    let from = previous.path.join(&filename);
+    if hash_file(&from)? != source.sha256 {
+        return Err(missing());
+    }
+    let to = temporary.join(&filename);
+    fs::copy(&from, &to).map_err(|error| FetchError::Io(from, error))?;
+    let original_fetch_time = previous
+        .manifest
+        .reused_sources
+        .get(source_name)
+        .unwrap_or(&previous.manifest.fetched_at)
+        .clone();
+    manifest
+        .reused_sources
+        .insert(source_name.to_owned(), original_fetch_time);
+    Ok(source.clone())
+}
+
+fn station_count(path: &Path, city: &str) -> Result<usize, FetchError> {
+    let body = fs::read(path).map_err(|error| FetchError::Io(path.into(), error))?;
+    serde_json::from_slice::<Vec<&RawValue>>(&body)
+        .map(|stations| stations.len())
+        .map_err(|error| FetchError::InvalidBikeResponse {
+            city: city.to_owned(),
+            detail: error.to_string(),
+        })
+}
+
 async fn fetch_stations(
     client: &TdxClient,
+    policy: &FetchPolicy,
     pacer: &mut RequestPacer,
     url: &str,
     city: &str,
@@ -249,21 +436,14 @@ async fn fetch_stations(
     let mut station_ids = HashSet::new();
     loop {
         let skip_value = skip.to_string();
-        pacer.wait().await;
-        let body = client
-            .get_bytes(
-                url,
-                &[
-                    (
-                        "$top",
-                        &client.settings().bike_catalog_page_size.to_string(),
-                    ),
-                    ("$skip", skip_value.as_str()),
-                    ("$orderby", BIKE_STATION_ORDER),
-                    ("$format", "JSON"),
-                ],
-            )
-            .await?;
+        let page_size = client.settings().bike_catalog_page_size.to_string();
+        let query = [
+            ("$top", page_size.as_str()),
+            ("$skip", skip_value.as_str()),
+            ("$orderby", BIKE_STATION_ORDER),
+            ("$format", "JSON"),
+        ];
+        let body = with_retries(policy, pacer, || client.fetch_bytes(url, &query)).await?;
         let page = serde_json::from_slice::<Vec<Box<RawValue>>>(&body)
             .map_err(|error| invalid(error.to_string()))?;
         let digest: [u8; 32] = Sha256::digest(&body).into();
@@ -618,9 +798,44 @@ mod tests {
     #[derive(Clone)]
     struct MockState {
         requests: Arc<Mutex<Vec<String>>>,
+        request_times: Arc<Mutex<Vec<std::time::Instant>>>,
+        scripted_failures: Arc<Mutex<Vec<ScriptedFailure>>>,
         gtfs_body: Vec<u8>,
-        fail_new_taipei: bool,
+        fail_new_taipei: Arc<std::sync::atomic::AtomicBool>,
         duplicate_taipei_station: bool,
+    }
+
+    struct ScriptedFailure {
+        path_prefix: &'static str,
+        status: u16,
+        retry_after_seconds: Option<u64>,
+    }
+
+    impl MockState {
+        fn script_failure(
+            &self,
+            path_prefix: &'static str,
+            status: u16,
+            retry_after_seconds: Option<u64>,
+        ) {
+            self.scripted_failures
+                .lock()
+                .unwrap()
+                .push(ScriptedFailure {
+                    path_prefix,
+                    status,
+                    retry_after_seconds,
+                });
+        }
+
+        fn request_count(&self, path_prefix: &str) -> usize {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| path.starts_with(path_prefix))
+                .count()
+        }
     }
 
     fn mock_gtfs_zip() -> Vec<u8> {
@@ -649,6 +864,25 @@ mod tests {
             .and_then(|(_, value)| value.parse::<usize>().ok())
             .unwrap_or_default();
         state.requests.lock().unwrap().push(path.clone());
+        state
+            .request_times
+            .lock()
+            .unwrap()
+            .push(std::time::Instant::now());
+        if !path.starts_with("/token") {
+            let mut scripted = state.scripted_failures.lock().unwrap();
+            if let Some(index) = scripted
+                .iter()
+                .position(|failure| path.starts_with(failure.path_prefix))
+            {
+                let failure = scripted.remove(index);
+                let mut response = Response::builder().status(failure.status);
+                if let Some(seconds) = failure.retry_after_seconds {
+                    response = response.header("retry-after", seconds.to_string());
+                }
+                return response.body(Body::empty()).unwrap();
+            }
+        }
         if path.starts_with("/token") {
             return Response::builder()
                 .status(StatusCode::OK)
@@ -665,7 +899,12 @@ mod tests {
                 .body(Body::from(state.gtfs_body))
                 .unwrap();
         }
-        if path.contains("NewTaipei") && state.fail_new_taipei && skip >= 2 {
+        if path.contains("NewTaipei")
+            && state
+                .fail_new_taipei
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && skip >= 2
+        {
             return Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .body(Body::empty())
@@ -721,8 +960,10 @@ mod tests {
     ) -> (TdxClient, FetchSources, MockState) {
         let state = MockState {
             requests: Arc::new(Mutex::new(Vec::new())),
+            request_times: Arc::new(Mutex::new(Vec::new())),
+            scripted_failures: Arc::new(Mutex::new(Vec::new())),
             gtfs_body: mock_gtfs_zip(),
-            fail_new_taipei,
+            fail_new_taipei: Arc::new(std::sync::atomic::AtomicBool::new(fail_new_taipei)),
             duplicate_taipei_station,
         };
         let router = Router::new()
@@ -746,7 +987,12 @@ mod tests {
         let sources = FetchSources {
             gtfs_static_url: format!("{base_url}/gtfs"),
             bike_api_base_url: format!("{base_url}/basic/"),
-            request_interval: std::time::Duration::ZERO,
+            policy: FetchPolicy {
+                request_interval: Duration::ZERO,
+                max_attempts: 3,
+                retry_backoff: Duration::ZERO,
+                gtfs_only: false,
+            },
         };
         (client, sources, state)
     }
@@ -930,16 +1176,11 @@ mod tests {
             .await
             .is_err()
         );
-        let requests = state.requests.lock().unwrap();
         assert_eq!(
-            requests
-                .iter()
-                .filter(|path| path.starts_with("/basic/v2/Bike/Station/City/NewTaipei?"))
-                .count(),
-            3
+            state.request_count("/basic/v2/Bike/Station/City/NewTaipei?"),
+            5
         );
-        assert!(!requests.iter().any(|path| path == "/gtfs"));
-        drop(requests);
+        assert_eq!(state.request_count("/gtfs"), 0);
         let fetch_root = root.join("fetch");
         assert_eq!(fs::read_dir(&fetch_root).unwrap().count(), 0);
         fs::remove_dir_all(root).unwrap();
@@ -968,6 +1209,290 @@ mod tests {
                 if city == "Taipei" && detail.contains("duplicate StationUID TPE0001")
         ));
         assert_eq!(fs::read_dir(root.join("fetch")).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn fetch_with_local_gtfs(
+        root: &Path,
+        timestamp: &str,
+        client: &TdxClient,
+        sources: &FetchSources,
+    ) -> Result<FetchSnapshot, FetchError> {
+        let local_gtfs = root.join("source.zip");
+        fs::create_dir_all(root).unwrap();
+        fs::write(&local_gtfs, mock_gtfs_zip()).unwrap();
+        fetch_snapshot_at(
+            &root.join("fetch"),
+            timestamp,
+            Some(&local_gtfs),
+            client,
+            sources,
+        )
+        .await
+    }
+
+    fn promote_latest(root: &Path, timestamp: &str) {
+        std::os::unix::fs::symlink(timestamp, root.join("fetch/latest")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_is_retried_and_the_snapshot_completes() {
+        let (client, sources, state) = mock_client(false, false).await;
+        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 503, None);
+        let root = temporary_root("transient");
+
+        let snapshot = fetch_with_local_gtfs(&root, "20260928T041540Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.bike_station_counts["Taipei"], 2);
+        assert!(snapshot.manifest.reused_sources.is_empty());
+        assert_eq!(
+            state.request_count("/basic/v2/Bike/Station/City/Taipei?"),
+            4
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rate_limit_responses_wait_for_retry_after() {
+        let (client, sources, state) = mock_client(false, false).await;
+        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 429, Some(1));
+        let root = temporary_root("retry-after");
+        let started = std::time::Instant::now();
+
+        fetch_with_local_gtfs(&root, "20260928T041541Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn every_tdx_call_waits_for_the_request_budget() {
+        let (client, mut sources, state) = mock_client(false, false).await;
+        sources.policy.request_interval = Duration::from_millis(60);
+        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 503, None);
+        let root = temporary_root("pacing");
+
+        fetch_with_local_gtfs(&root, "20260928T041542Z", &client, &sources)
+            .await
+            .unwrap();
+
+        let requests = state.requests.lock().unwrap();
+        let times = state.request_times.lock().unwrap();
+        let api_times = requests
+            .iter()
+            .zip(times.iter())
+            .filter(|(path, _)| !path.starts_with("/token"))
+            .map(|(_, time)| *time)
+            .collect::<Vec<_>>();
+        assert!(api_times.len() > 10);
+        for pair in api_times.windows(2) {
+            assert!(pair[1] - pair[0] >= Duration::from_millis(55));
+        }
+        drop((requests, times));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_gtfs_download_is_retried() {
+        let (client, sources, state) = mock_client(false, false).await;
+        state.script_failure("/gtfs", 503, None);
+        let root = temporary_root("gtfs-retry");
+
+        let snapshot = fetch_snapshot_at(&root, "20260928T041543Z", None, &client, &sources)
+            .await
+            .unwrap();
+
+        assert_eq!(state.request_count("/gtfs"), 2);
+        assert_eq!(
+            fs::read(snapshot.path.join("gtfs.zip")).unwrap(),
+            mock_gtfs_zip()
+        );
+        let names = fs::read_dir(&snapshot.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(!names.iter().any(|name| name.ends_with(".part")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_optional_catalog_that_keeps_failing_reuses_the_previous_snapshot_copy() {
+        let (client, sources, state) = mock_client(false, false).await;
+        let root = temporary_root("fallback");
+        let previous = fetch_with_local_gtfs(&root, "20260928T041550Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041550Z");
+        state
+            .fail_new_taipei
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let snapshot = fetch_with_local_gtfs(&root, "20260928T041551Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read(snapshot.path.join("bike-stations-new-taipei.json")).unwrap(),
+            fs::read(previous.path.join("bike-stations-new-taipei.json")).unwrap()
+        );
+        assert_eq!(
+            snapshot.manifest.reused_sources.keys().collect::<Vec<_>>(),
+            ["bike-stations-new-taipei"]
+        );
+        assert_eq!(
+            snapshot.manifest.reused_sources["bike-stations-new-taipei"],
+            previous.manifest.fetched_at
+        );
+        assert_eq!(snapshot.bike_station_counts["NewTaipei"], 2);
+        let on_disk = serde_json::from_slice::<FetchManifest>(
+            &fs::read(snapshot.path.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            on_disk
+                .reused_sources
+                .contains_key("bike-stations-new-taipei")
+        );
+        read_snapshot(&snapshot.path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_permanent_client_error_fails_instead_of_reusing_the_previous_copy() {
+        let (client, sources, state) = mock_client(false, false).await;
+        let root = temporary_root("permanent");
+        fetch_with_local_gtfs(&root, "20260928T041570Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041570Z");
+        let before = state.request_count("/basic/v2/Bike/Station/City/Taipei?");
+        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 403, None);
+
+        let error = fetch_with_local_gtfs(&root, "20260928T041571Z", &client, &sources)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, FetchError::Tdx(_)), "{error}");
+        assert_eq!(
+            state.request_count("/basic/v2/Bike/Station/City/Taipei?") - before,
+            1
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn reused_sources_keep_the_original_fetch_time_across_snapshots() {
+        let (client, sources, state) = mock_client(false, false).await;
+        let root = temporary_root("carry-forward");
+        let first = fetch_with_local_gtfs(&root, "20260928T041580Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041580Z");
+        state
+            .fail_new_taipei
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let second = fetch_with_local_gtfs(&root, "20260928T041581Z", &client, &sources)
+            .await
+            .unwrap();
+        fs::remove_file(root.join("fetch/latest")).unwrap();
+        promote_latest(&root, "20260928T041581Z");
+
+        let third = fetch_with_local_gtfs(&root, "20260928T041582Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert_ne!(first.manifest.fetched_at, second.manifest.fetched_at);
+        assert_eq!(
+            third.manifest.reused_sources["bike-stations-new-taipei"],
+            first.manifest.fetched_at
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_temporary_snapshots_are_removed_at_the_start_of_a_fetch() {
+        let (client, sources, _state) = mock_client(false, false).await;
+        let root = temporary_root("stale-tmp");
+        let stale = root.join("fetch/.20260101T000000Z.deadbeef.tmp");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("gtfs.zip.part"), b"partial").unwrap();
+
+        fetch_with_local_gtfs(&root, "20260928T041590Z", &client, &sources)
+            .await
+            .unwrap();
+
+        assert!(!stale.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn gtfs_only_downloads_gtfs_and_reuses_every_previous_catalog() {
+        let (client, mut sources, state) = mock_client(false, false).await;
+        let root = temporary_root("gtfs-only");
+        let previous = fetch_with_local_gtfs(&root, "20260928T041560Z", &client, &sources)
+            .await
+            .unwrap();
+        promote_latest(&root, "20260928T041560Z");
+        let before = state.requests.lock().unwrap().len();
+        sources.policy.gtfs_only = true;
+
+        let snapshot = fetch_snapshot_at(
+            &root.join("fetch"),
+            "20260928T041561Z",
+            None,
+            &client,
+            &sources,
+        )
+        .await
+        .unwrap();
+
+        let later = state.requests.lock().unwrap()[before..].to_vec();
+        assert!(
+            later
+                .iter()
+                .all(|path| path.starts_with("/token") || path == "/gtfs"),
+            "{later:?}"
+        );
+        assert!(later.iter().any(|path| path == "/gtfs"));
+        let reused = snapshot
+            .manifest
+            .reused_sources
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected = previous
+            .manifest
+            .sources
+            .keys()
+            .filter(|name| name.as_str() != GTFS_SOURCE_NAME)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(reused, expected);
+        assert_eq!(snapshot.bike_station_counts["Taipei"], 2);
+        read_snapshot(&snapshot.path).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn gtfs_only_without_a_previous_snapshot_fails_without_publishing() {
+        let (client, mut sources, state) = mock_client(false, false).await;
+        sources.policy.gtfs_only = true;
+        let root = temporary_root("gtfs-only-empty");
+
+        let error = fetch_snapshot_at(&root, "20260928T041570Z", None, &client, &sources)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, FetchError::MissingPreviousSource(_)),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        assert_eq!(state.request_count("/basic/"), 0);
         fs::remove_dir_all(root).unwrap();
     }
 }
