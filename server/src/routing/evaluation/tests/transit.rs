@@ -634,7 +634,7 @@ fn pure_transit_transition_validates_arrivals_and_transfer_readiness() {
     assert_eq!(next.ready_at, query.departure_time + Duration::minutes(5));
     assert!(next.last_was_transit);
     assert_eq!(
-        transit_ready_at(&next, 120),
+        next.transit_ready_at(120),
         next.ready_at + Duration::seconds(120)
     );
     assert!(transit_successor(&network, &query, &next, &ride, leg, 1, next.ready_at).is_none());

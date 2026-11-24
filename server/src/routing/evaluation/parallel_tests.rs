@@ -224,7 +224,7 @@ async fn edge_collector_restores_input_order_before_pareto_pruning() {
         let provider = Arc::new(DelayedMatrix::new(1, None));
         let street = MatrixCache::new(provider.clone());
         let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
-        let run = Run::new(&evaluator);
+        let run = CorridorEvaluationRun::new(&evaluator);
         let states = (0..10)
             .map(|i| {
                 let mut state = EvaluationState::initial(&query);
@@ -271,7 +271,7 @@ async fn fatal_deadline_drops_outstanding_states() {
         })
         .collect::<Vec<_>>();
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
-    let run = Run::new(&evaluator);
+    let run = CorridorEvaluationRun::new(&evaluator);
     let outcome = run.expand_edge(&states, &corridor, 0).await;
     assert!(matches!(outcome, Err(RoutingError::DeadlineExceeded)));
     assert_eq!(run.counters.successors.load(Ordering::Relaxed), 0);
@@ -549,7 +549,7 @@ async fn forced_reverse_completion_preserves_successor_order() {
             gates: gates.clone(),
         };
         let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-        let run = Run::new(&evaluator);
+        let run = CorridorEvaluationRun::new(&evaluator);
         let states = (0..4)
             .map(|index| {
                 let mut state = EvaluationState::initial(&query);
@@ -612,7 +612,7 @@ async fn different_state_times_share_inflight_walking_and_keep_arrivals() {
     let provider = Arc::new(provider);
     let street = MatrixCache::new(provider.clone());
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
-    let run = Run::new(&evaluator);
+    let run = CorridorEvaluationRun::new(&evaluator);
     let states = [0, 1, 180, 3600].map(|seconds| {
         let mut state = EvaluationState::initial(&query);
         state.ready_at += Duration::seconds(seconds);

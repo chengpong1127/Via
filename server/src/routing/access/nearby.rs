@@ -4,7 +4,7 @@ use crate::{
     street::Coordinate,
 };
 
-use crate::routing::model::{EndpointStop, JourneyPlanningLimits};
+use crate::routing::model::EndpointStop;
 
 #[derive(Clone)]
 struct NearbyStopCandidate {
@@ -52,15 +52,15 @@ pub(super) fn nearby_stops(
     transit: &TransitRuntime,
     coordinate: Coordinate,
     allowed_transit_modes: &[TransitMode],
+    radius_metres: u32,
     limit: usize,
-    limits: &JourneyPlanningLimits,
 ) -> Vec<(crate::domain::ids::BoardingPointId, Coordinate)> {
     let request_coordinate = GeoCoordinate {
         latitude: coordinate.latitude(),
         longitude: coordinate.longitude(),
     };
     let candidates = transit
-        .stops_within_radius(request_coordinate, limits.max_walking_radius_metres)
+        .stops_within_radius(request_coordinate, radius_metres)
         .into_iter()
         .filter_map(|stop| {
             let modes = modes_at_stop(transit, &stop.id);
@@ -70,7 +70,7 @@ pub(super) fn nearby_stops(
             {
                 return None;
             }
-            Coordinate::try_new(stop.coordinate.latitude, stop.coordinate.longitude)
+            Coordinate::try_from(stop.coordinate)
                 .ok()
                 .map(|coordinate| NearbyStopCandidate {
                     stop_id: stop.id.clone(),
@@ -133,8 +133,7 @@ pub(crate) fn modes_at_stop(
     let mut modes = transit
         .pattern_positions_at(stop_id)
         .iter()
-        .map(|position| transit.required_pattern(&position.pattern_id))
-        .map(|pattern| transit.required_route(&pattern.route_id).mode)
+        .map(|position| transit.pattern_mode(&position.pattern_id))
         .collect::<Vec<_>>();
     modes.sort_unstable();
     modes.dedup();
@@ -143,7 +142,8 @@ pub(crate) fn modes_at_stop(
 
 #[cfg(test)]
 mod tests {
-    use super::{JourneyPlanningLimits, nearby_stops, stop_coverage_dominates};
+    use super::{nearby_stops, stop_coverage_dominates};
+    use crate::routing::model::JourneyPlanningLimits;
     use crate::{
         domain::location::GeoCoordinate,
         domain::{
@@ -286,15 +286,15 @@ mod tests {
         let limits = JourneyPlanningLimits::default();
         let nearby = nearby_stops(
             &transit,
-            Coordinate::try_new(origin.latitude, origin.longitude).unwrap(),
+            Coordinate::try_from(origin).unwrap(),
             &[
                 TransitMode::Bus,
                 TransitMode::Metro,
                 TransitMode::Rail,
                 TransitMode::HighSpeedRail,
             ],
+            limits.max_walking_radius_metres,
             24,
-            &limits,
         );
 
         assert_eq!(nearby.len(), 24);
@@ -351,9 +351,15 @@ mod tests {
         );
         let transit = TransitRuntime::new(std::sync::Arc::new(network));
         let limits = JourneyPlanningLimits::default();
-        let coordinate = Coordinate::try_new(origin.latitude, origin.longitude).unwrap();
+        let coordinate = Coordinate::try_from(origin).unwrap();
 
-        let metro_only = nearby_stops(&transit, coordinate, &[TransitMode::Metro], 8, &limits);
+        let metro_only = nearby_stops(
+            &transit,
+            coordinate,
+            &[TransitMode::Metro],
+            limits.max_walking_radius_metres,
+            8,
+        );
         assert_eq!(
             metro_only
                 .iter()
@@ -366,8 +372,8 @@ mod tests {
             &transit,
             coordinate,
             &[TransitMode::Bus, TransitMode::Metro],
+            limits.max_walking_radius_metres,
             8,
-            &limits,
         );
         assert_eq!(
             bus_and_metro

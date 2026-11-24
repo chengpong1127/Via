@@ -121,11 +121,11 @@ fn query(
             max_candidates: 16,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            max_static_corridors: k,
             ..crate::routing::PlannerLimits::default()
         },
     )
     .with_allowed_transit_modes(modes.iter().copied())
-    .with_max_static_corridors(k)
 }
 
 fn run(network: &TransitNetwork, query: &PlanningQuery) -> Vec<Corridor> {

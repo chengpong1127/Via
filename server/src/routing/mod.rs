@@ -18,8 +18,7 @@ pub use evaluation::{
 };
 pub use journey::{
     BikeRide, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
-    JourneyMovementKind, JourneyTiming, JourneyTimingError, RealizedJourney, RealizedJourneyError,
-    WalkingMovementKind,
+    JourneyMovementKind, RealizedJourney, RealizedJourneyError, WalkingMovementKind,
 };
 pub use model::{
     EndpointStop, JourneyPlanningLimits, PlannerLimits, PlanningDeadline, PlanningQuery,

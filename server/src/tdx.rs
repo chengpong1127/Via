@@ -11,19 +11,6 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
 
-const DIRECTIONAL_SERVICE_SEPARATOR: &str = "::direction=";
-
-pub fn boarding_point_id(stop_uid: impl Into<String>) -> crate::domain::ids::BoardingPointId {
-    crate::domain::ids::BoardingPointId::new(stop_uid)
-}
-
-pub fn bike_station_id(
-    city: impl Into<String>,
-    station_uid: impl Into<String>,
-) -> crate::domain::ids::BikeStationId {
-    crate::domain::ids::BikeStationId::new(format!("tdx:{}:{}", city.into(), station_uid.into()))
-}
-
 pub const BIKE_CITIES: &[(&str, &str)] = &[
     ("ChanghuaCounty", "changhua-county"),
     ("Chiayi", "chiayi"),
@@ -42,9 +29,13 @@ pub const BIKE_CITIES: &[(&str, &str)] = &[
     ("YunlinCounty", "yunlin-county"),
 ];
 
+pub fn is_bike_city(city: &str) -> bool {
+    BIKE_CITIES.iter().any(|(scope, _)| *scope == city)
+}
+
 pub fn tdx_bike_station_parts(id: &crate::domain::ids::BikeStationId) -> Option<(&str, &str)> {
     let (city, uid) = id.as_str().strip_prefix("tdx:")?.split_once(':')?;
-    if !BIKE_CITIES.iter().any(|(scope, _)| *scope == city)
+    if !is_bike_city(city)
         || uid.is_empty()
         || uid.trim() != uid
         || uid.contains(':')
@@ -62,29 +53,6 @@ pub(crate) fn odata_in_filter(field: &str, values: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{field} in ({values})")
-}
-
-pub fn transit_service_id(
-    sub_route_uid: impl Into<String>,
-) -> crate::domain::ids::TransitPatternId {
-    crate::domain::ids::TransitPatternId::new(sub_route_uid)
-}
-
-pub fn transit_service_id_for_direction(
-    sub_route_uid: impl Into<String>,
-    direction: u8,
-) -> crate::domain::ids::TransitPatternId {
-    crate::domain::ids::TransitPatternId::new(format!(
-        "{}{DIRECTIONAL_SERVICE_SEPARATOR}{direction}",
-        sub_route_uid.into()
-    ))
-}
-
-pub fn tdx_sub_route_uid(pattern_id: &crate::domain::ids::TransitPatternId) -> &str {
-    pattern_id
-        .as_str()
-        .split_once(DIRECTIONAL_SERVICE_SEPARATOR)
-        .map_or_else(|| pattern_id.as_str(), |(sub_route_uid, _)| sub_route_uid)
 }
 
 #[derive(Clone)]
@@ -153,7 +121,7 @@ pub struct TdxClient {
     api_base_url: Url,
     token_url: Url,
     token: Arc<Mutex<Option<CachedToken>>>,
-    pub(crate) settings: TdxSettings,
+    settings: TdxSettings,
 }
 
 struct CachedToken {
@@ -181,21 +149,15 @@ impl TdxClient {
         if api_base_url.host_str().is_none() || token_url.host_str().is_none() {
             return Err(TdxClientError::InvalidConfiguration);
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
-            .timeout(Duration::from_millis(settings.request_timeout_ms))
-            .user_agent("via-data/1.0")
-            .build()
-            .map_err(TdxClientError::ApiRequest)?;
-        let download_client = Client::builder()
-            .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
-            .timeout(Duration::from_secs(settings.download_timeout_seconds))
-            .user_agent("via-data/1.0")
-            .build()
-            .map_err(TdxClientError::ApiRequest)?;
         Ok(Self {
-            client,
-            download_client,
+            client: http_client(
+                &settings,
+                Duration::from_millis(settings.request_timeout_ms),
+            )?,
+            download_client: http_client(
+                &settings,
+                Duration::from_secs(settings.download_timeout_seconds),
+            )?,
             credentials,
             api_base_url,
             token_url,
@@ -371,6 +333,15 @@ impl TdxClient {
     }
 }
 
+fn http_client(settings: &TdxSettings, timeout: Duration) -> Result<Client, TdxClientError> {
+    Client::builder()
+        .connect_timeout(Duration::from_millis(settings.connect_timeout_ms))
+        .timeout(timeout)
+        .user_agent("via-data/1.0")
+        .build()
+        .map_err(TdxClientError::ApiRequest)
+}
+
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
@@ -473,18 +444,41 @@ mod tests {
 
     use super::{TdxClient, TdxCredentials};
 
+    fn token_response() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"access_token":"mock-token","expires_in":300}"#,
+            ))
+            .unwrap()
+    }
+
+    async fn spawn_client(app: Router) -> (TdxClient, String) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = TdxClient::new(
+            TdxCredentials::from_client_credentials("client", "secret"),
+            crate::tdx::TdxSettings {
+                api_base_url: format!("{base_url}/api/"),
+                token_url: format!("{base_url}/token"),
+                ..crate::config::ViaConfig::default().tdx
+            },
+        )
+        .unwrap();
+        (client, base_url)
+    }
+
     async fn mock_response(
         State(body): State<Arc<Vec<u8>>>,
         request: Request<Body>,
     ) -> Response<Body> {
         if request.uri().path() == "/token" {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"access_token":"mock-token","expires_in":300}"#,
-                ))
-                .unwrap();
+            return token_response();
         }
         Response::builder()
             .status(StatusCode::OK)
@@ -497,13 +491,7 @@ mod tests {
         request: Request<Body>,
     ) -> Response<Body> {
         if request.uri().path() == "/token" {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"access_token":"mock-token","expires_in":300}"#,
-                ))
-                .unwrap();
+            return token_response();
         }
         if requests.fetch_add(1, Ordering::SeqCst) == 0 {
             return Response::builder()
@@ -520,8 +508,8 @@ mod tests {
 
     #[test]
     fn bike_identity_parser_rejects_invalid_scopes_and_parts() {
-        use super::{bike_station_id, odata_in_filter, tdx_bike_station_parts};
-        use crate::domain::ids::BikeStationId;
+        use super::{odata_in_filter, tdx_bike_station_parts};
+        use crate::domain::ids::{BikeStationId, bike_station_id};
         let valid = bike_station_id("Taichung", "TXG001");
         assert_eq!(tdx_bike_station_parts(&valid), Some(("Taichung", "TXG001")));
         for value in [
@@ -551,21 +539,7 @@ mod tests {
         let app = Router::new()
             .fallback(any(rate_limited_once))
             .with_state((Arc::new(expected.clone()), requests.clone()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, _) = spawn_client(app).await;
 
         let response = client.get_bytes("availability", &[]).await.unwrap();
 
@@ -579,21 +553,7 @@ mod tests {
         let app = Router::new()
             .fallback(any(rate_limited_once))
             .with_state((Arc::new(b"[]".to_vec()), requests.clone()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, _) = spawn_client(app).await;
 
         let realtime = client.get_json::<serde_json::Value>("live", &[]).await;
 
@@ -610,21 +570,7 @@ mod tests {
         let expected_size = crate::config::ViaConfig::default().tdx.max_response_bytes + 1;
         let body = Arc::new(vec![0x5a; expected_size]);
         let app = Router::new().fallback(any(mock_response)).with_state(body);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let base_url = format!("http://{address}");
-        let client = TdxClient::new(
-            TdxCredentials::from_client_credentials("client", "secret"),
-            crate::tdx::TdxSettings {
-                api_base_url: format!("{base_url}/api/"),
-                token_url: format!("{base_url}/token"),
-                ..crate::config::ViaConfig::default().tdx
-            },
-        )
-        .unwrap();
+        let (client, base_url) = spawn_client(app).await;
         let path = std::env::temp_dir().join(format!(
             "via-tdx-large-download-{}.bin",
             uuid::Uuid::new_v4().simple()

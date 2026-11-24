@@ -310,12 +310,12 @@ fn station_choices_are_bounded_to_three_nearest_per_anchor() {
     let network = BikeShareNetwork::new(stations).with_access_links(access_links);
     let pickups = station_choices(
         network.access_from_boarding_point(&anchor),
-        true,
+        StationRole::Pickup,
         &BikeMovementPolicy::default(),
     );
     let dropoffs = station_choices(
         network.access_to_boarding_point(&anchor),
-        false,
+        StationRole::Dropoff,
         &BikeMovementPolicy::default(),
     );
 

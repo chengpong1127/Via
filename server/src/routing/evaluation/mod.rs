@@ -17,8 +17,8 @@ use super::{
     cache::MatrixCache,
     corridors::{Corridor, CorridorAnchor, PlannedMovement, StaticTransitLeg},
     journey::{
-        BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement, JourneyMovementKind,
-        RealizedJourney, WalkingMovementKind,
+        BIKE_REUSE_COOLDOWN, BikeShareMovement, JourneyAnchor, JourneyAnchorKind, JourneyMovement,
+        JourneyMovementKind, RealizedJourney, WalkingMovementKind,
     },
     model::{FailureSummary, PlanningQuery, RoutingError},
 };
@@ -63,23 +63,23 @@ pub(super) struct CorridorEvaluator<'a> {
 }
 
 #[derive(Default)]
-struct Counters {
+struct EvaluationCounters {
     corridors: AtomicUsize,
     states: AtomicUsize,
     successors: AtomicUsize,
     departure_lookups: AtomicUsize,
 }
 
-struct Run<'e, 'a> {
+struct CorridorEvaluationRun<'e, 'a> {
     evaluator: &'e CorridorEvaluator<'a>,
-    counters: Counters,
+    counters: EvaluationCounters,
     failures: Mutex<FailureSummary>,
 }
 
 impl CorridorEvaluator<'_> {
     pub async fn evaluate(&self, corridors: &[Corridor]) -> Result<Evaluation, RoutingError> {
         let started = std::time::Instant::now();
-        let run = Run::new(self);
+        let run = CorridorEvaluationRun::new(self);
         let journeys = run.evaluate(corridors).await?;
         let counters = &run.counters;
         Ok(Evaluation {
@@ -100,11 +100,11 @@ impl CorridorEvaluator<'_> {
     }
 }
 
-impl<'e, 'a> Run<'e, 'a> {
+impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
     fn new(evaluator: &'e CorridorEvaluator<'a>) -> Self {
         Self {
             evaluator,
-            counters: Counters::default(),
+            counters: EvaluationCounters::default(),
             failures: Mutex::new(FailureSummary::default()),
         }
     }
@@ -114,11 +114,7 @@ impl<'e, 'a> Run<'e, 'a> {
     }
 
     fn check_deadline(&self) -> Result<(), RoutingError> {
-        if self.query().deadline.is_elapsed() {
-            Err(RoutingError::DeadlineExceeded)
-        } else {
-            Ok(())
-        }
+        self.query().deadline.check()
     }
 
     fn record_failure(&self, error: &StreetRoutingError) {
@@ -221,7 +217,7 @@ impl<'e, 'a> Run<'e, 'a> {
         &self,
         state: &EvaluationState,
         edge: &PlannedMovement,
-        anchor: usize,
+        index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
         let PlannedMovement::Transit { legs } = edge else {
             return Ok(Vec::new());
@@ -232,12 +228,12 @@ impl<'e, 'a> Run<'e, 'a> {
             query,
             ..
         } = *self.evaluator;
-        let ready_at = transit_ready_at(state, transit.same_stop_transfer_seconds());
+        let ready_at = state.transit_ready_at(transit.same_stop_transfer_seconds());
         let mut successors = Vec::new();
         for leg in legs {
             self.check_deadline()?;
             validate_transit_leg(transit, leg)?;
-            if !within_query_bounds(query, ready_at) {
+            if !query.admits(ready_at) {
                 continue;
             }
             self.counters
@@ -251,7 +247,7 @@ impl<'e, 'a> Run<'e, 'a> {
             ) {
                 self.check_deadline()?;
                 successors.extend(transit_successor(
-                    transit, query, state, trip, leg, anchor, ready_at,
+                    transit, query, state, trip, leg, index, ready_at,
                 ));
             }
         }
@@ -289,9 +285,8 @@ impl<'e, 'a> Run<'e, 'a> {
                 }
             }
         };
-        Ok(walking_successor(
+        Ok(state.after_walk(
             self.query(),
-            state,
             JourneyMovementKind::Walking {
                 kind,
                 duration_seconds,
@@ -312,17 +307,17 @@ impl<'e, 'a> Run<'e, 'a> {
         let Some(bike_movements) = self.evaluator.bike_movements else {
             return Ok(Vec::new());
         };
-        let (start_anchor, _) = state.bike_departure(index);
+        let departure = state.bike_departure(index);
         let anchors = corridor.anchors();
         let result = bike_movements
-            .movements(&anchors[start_anchor], &anchors[index + 1])
+            .movements(&anchors[departure.start_anchor], &anchors[index + 1])
             .await;
         self.check_deadline()?;
         let movements = result.unwrap_or_else(|error| {
             self.record_failure(&error);
             Vec::new()
         });
-        Ok(bike_successors(self.query(), state, movements, index))
+        Ok(state.after_bike_shares(self.query(), movements, departure, index))
     }
 
     fn finalize(
@@ -394,34 +389,20 @@ fn walking_kind(from: &CorridorAnchor, to: &CorridorAnchor) -> WalkingMovementKi
     }
 }
 
-fn within_query_bounds(query: &PlanningQuery, time: OffsetDateTime) -> bool {
-    time >= query.departure_time
-        && time - query.departure_time
-            <= Duration::seconds(i64::from(query.limits.max_journey_duration_seconds))
-}
-
-fn transit_ready_at(state: &EvaluationState, transfer_seconds: u32) -> OffsetDateTime {
-    if state.last_was_transit {
-        state.ready_at + Duration::seconds(i64::from(transfer_seconds))
-    } else {
-        state.ready_at
-    }
-}
-
 fn transit_successor(
     transit: &TransitRuntime,
     query: &PlanningQuery,
     state: &EvaluationState,
     trip: &Arc<EffectiveTrip>,
     leg: &StaticTransitLeg,
-    anchor: usize,
+    index: usize,
     ready_at: OffsetDateTime,
 ) -> Option<EvaluationState> {
     let arrival = alight_time(transit, trip, leg, ready_at)?;
-    within_query_bounds(query, arrival).then(|| {
+    query.admits(arrival).then(|| {
         state.after_movement(JourneyMovement {
-            from_anchor: anchor,
-            to_anchor: anchor + 1,
+            from_anchor: index,
+            to_anchor: index + 1,
             departure_at: trip.stop_times[leg.board_index].departure_at,
             arrival_at: arrival,
             kind: JourneyMovementKind::Transit {
@@ -431,51 +412,6 @@ fn transit_successor(
             },
         })
     })
-}
-
-fn walking_successor(
-    query: &PlanningQuery,
-    state: &EvaluationState,
-    walking: JourneyMovementKind,
-    duration_seconds: u32,
-    index: usize,
-) -> Option<EvaluationState> {
-    let arrival = state.ready_at + Duration::seconds(i64::from(duration_seconds));
-    within_query_bounds(query, arrival).then(|| {
-        state.after_movement(JourneyMovement {
-            from_anchor: index,
-            to_anchor: index + 1,
-            departure_at: state.ready_at,
-            arrival_at: arrival,
-            kind: walking,
-        })
-    })
-}
-
-fn bike_successors(
-    query: &PlanningQuery,
-    state: &EvaluationState,
-    movements: Vec<BikeShareMovement>,
-    index: usize,
-) -> Vec<EvaluationState> {
-    let (start_anchor, started_at) = state.bike_departure(index);
-    movements
-        .into_iter()
-        .filter_map(|movement| {
-            let arrival = started_at + Duration::seconds(i64::from(movement.total_seconds));
-            if !within_query_bounds(query, arrival) {
-                return None;
-            }
-            state.after_bike_share(
-                movement,
-                start_anchor,
-                index + 1,
-                started_at,
-                arrival,
-                query.departure_time,
-            )
-        })
-        .collect()
 }
 
 fn validate_transit_leg(

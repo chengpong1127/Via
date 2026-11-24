@@ -12,6 +12,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 
+pub(in crate::routing) const BIKE_REUSE_COOLDOWN: Duration = Duration::minutes(15);
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RealizedJourney {
     anchors: Vec<JourneyAnchor>,
@@ -64,7 +66,7 @@ impl RealizedJourney {
             .any(|movement| matches!(movement.kind, JourneyMovementKind::BikeShare { .. }))
     }
 
-    pub fn evaluate_timing(&self) -> Result<JourneyTiming, JourneyTimingError> {
+    pub(in crate::routing) fn evaluate_timing(&self) -> Result<JourneyTiming, JourneyTimingError> {
         let mut current_anchor = 0;
         let mut current_time = self.departure_at;
         let mut timing = JourneyTiming {
@@ -85,8 +87,6 @@ impl RealizedJourney {
                     duration_seconds, ..
                 } => {
                     current_time += Duration::seconds(i64::from(*duration_seconds));
-                    timing.walking_seconds =
-                        timing.walking_seconds.saturating_add(*duration_seconds);
                 }
                 JourneyMovementKind::Transit { .. } => {
                     if current_time > movement.departure_at {
@@ -98,19 +98,18 @@ impl RealizedJourney {
                     movement: bike_movement,
                 } => {
                     current_time += Duration::seconds(i64::from(bike_movement.total_seconds));
-                    timing.walking_seconds = timing
-                        .walking_seconds
-                        .saturating_add(bike_movement.walk_to_pickup.duration_seconds)
-                        .saturating_add(bike_movement.walk_from_dropoff.duration_seconds);
-                    timing.bicycle_seconds = timing
-                        .bicycle_seconds
-                        .saturating_add(bike_movement.bicycle_duration_seconds);
                     timing.bicycle_distance_metres = timing
                         .bicycle_distance_metres
                         .saturating_add(bike_movement.bicycle_distance_metres);
                     timing.bike_share_uses = timing.bike_share_uses.saturating_add(1);
                 }
             }
+            timing.walking_seconds = timing
+                .walking_seconds
+                .saturating_add(movement.kind.walking_seconds());
+            timing.bicycle_seconds = timing
+                .bicycle_seconds
+                .saturating_add(movement.kind.bicycle_seconds());
             current_anchor = movement.to_anchor;
         }
         if current_anchor != self.anchors.len().saturating_sub(1) {
@@ -118,15 +117,6 @@ impl RealizedJourney {
         }
         timing.arrival_at = current_time;
         Ok(timing)
-    }
-    pub fn transit_pattern_sequence(&self) -> Vec<crate::domain::ids::TransitPatternId> {
-        self.movements
-            .iter()
-            .filter_map(|movement| match &movement.kind {
-                JourneyMovementKind::Transit { trip, .. } => Some(trip.pattern_id.clone()),
-                _ => None,
-            })
-            .collect()
     }
     pub(super) fn realtime_evidence_count(&self) -> usize {
         self.movements
@@ -178,6 +168,18 @@ impl BikeShareMovement {
         })
     }
 
+    pub(in crate::routing) fn walking_seconds(&self) -> u32 {
+        self.walk_to_pickup
+            .duration_seconds
+            .saturating_add(self.walk_from_dropoff.duration_seconds)
+    }
+
+    pub(in crate::routing) fn seconds_to_return(&self) -> u32 {
+        self.walk_to_pickup
+            .duration_seconds
+            .saturating_add(self.bicycle_duration_seconds)
+    }
+
     pub(super) fn with_rental_wait(mut self, seconds: u32) -> Option<Self> {
         let route_seconds = self.total_seconds.checked_sub(self.rental_wait_seconds)?;
         self.total_seconds = route_seconds.checked_add(seconds)?;
@@ -193,7 +195,7 @@ pub struct BikeRide {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct JourneyTiming {
+pub(in crate::routing) struct JourneyTiming {
     pub departure_at: OffsetDateTime,
     pub arrival_at: OffsetDateTime,
     pub walking_seconds: u32,
@@ -203,7 +205,7 @@ pub struct JourneyTiming {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum JourneyTimingError {
+pub(in crate::routing) enum JourneyTimingError {
     #[error("realized journey path is not contiguous")]
     NonContiguousPath,
     #[error("realized journey path is incomplete")]

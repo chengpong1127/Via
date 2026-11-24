@@ -22,7 +22,10 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use tokio::sync::Mutex;
 use via_server::{
     domain::{
-        bikeshare::{BikeShareNetwork, BikeStation, BikeStationAccess, BikeWalkingAccess},
+        bikeshare::{
+            BikeShareNetwork, BikeStation, BikeStationAccess, BikeWalkingAccess,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        },
         ids::{BikeStationId, BoardingPointId},
         location::GeoCoordinate,
     },
@@ -137,12 +140,8 @@ async fn source_with_routes(
             }),
         );
     let client = spawn_tdx_fixture(app).await;
-    TdxBikeAvailabilitySource::new(
+    crate::support::tdx::bike_availability_source(
         client,
-        via_server::config::ViaConfig::default()
-            .tdx
-            .batch
-            .bike_stations,
         via_server::config::ViaConfig::default().tdx.bikeshare,
     )
 }
@@ -207,14 +206,12 @@ async fn source_for_cities_with_settings(
             }),
         )
         .with_state(fixture.clone());
-    let batch_size = settings.batch.bike_stations;
     let availability = via_server::tdx::BikeAvailabilitySettings {
         cache_ttl_seconds: cache_ttl.as_secs(),
         ..settings.bikeshare.clone()
     };
-    let source = TdxBikeAvailabilitySource::new(
+    let source = crate::support::tdx::bike_availability_source(
         crate::support::tdx::spawn_tdx_fixture_with_settings(app, settings).await,
-        batch_size,
         availability,
     );
     (source, fixture)
@@ -258,6 +255,8 @@ async fn merges_taipei_and_new_taipei_with_canonical_ids_and_counts() {
     );
 }
 
+const AVAILABILITY_MAX_AGE: TimeDuration = TimeDuration::seconds(120);
+
 #[tokio::test]
 async fn unusable_counts_status_stale_observations_and_directionality_are_filtered() {
     let source = source_with_routes(
@@ -280,30 +279,55 @@ async fn unusable_counts_status_stale_observations_and_directionality_are_filter
         .unwrap();
     let network = network();
     let pickup = network
-        .availability_view(&snapshot)
+        .availability_view_with_policy(
+            &snapshot,
+            OffsetDateTime::now_utc(),
+            AVAILABILITY_MAX_AGE,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        )
         .usable_pickups(&BoardingPointId::new("pickup"));
     assert_eq!(pickup.len(), 1);
     assert_eq!(pickup[0].station_id.as_str(), "tdx:Taipei:TPE-1");
     let dropoff = network
-        .availability_view(&snapshot)
+        .availability_view_with_policy(
+            &snapshot,
+            OffsetDateTime::now_utc(),
+            AVAILABILITY_MAX_AGE,
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        )
         .usable_dropoffs(&BoardingPointId::new("dropoff"));
     assert_eq!(dropoff.len(), 1);
     assert_eq!(dropoff[0].station_id.as_str(), "tdx:Taipei:TPE-1");
     assert!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("disabled"))
             .is_empty()
     );
     assert!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("stale"))
             .is_empty()
     );
     assert_eq!(
         network
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_dropoffs(&BoardingPointId::new("dropoff"))[0]
             .walk_from_station,
         Some(BikeWalkingAccess::new(30, 150))
@@ -330,7 +354,12 @@ async fn provider_clock_skew_within_the_allowance_is_tolerated_but_excess_is_rej
     );
     assert_eq!(
         network()
-            .availability_view(&snapshot)
+            .availability_view_with_policy(
+                &snapshot,
+                OffsetDateTime::now_utc(),
+                AVAILABILITY_MAX_AGE,
+                MAX_BIKE_AVAILABILITY_CLOCK_SKEW
+            )
             .usable_pickups(&BoardingPointId::new("pickup"))
             .len(),
         1
@@ -389,12 +418,8 @@ async fn station_availability_is_cached_and_expiry_refreshes_requested_city() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = TdxBikeAvailabilitySource::new(
+    let source = crate::support::tdx::bike_availability_source(
         spawn_tdx_fixture(app).await,
-        via_server::config::ViaConfig::default()
-            .tdx
-            .batch
-            .bike_stations,
         via_server::tdx::BikeAvailabilitySettings {
             cache_ttl_seconds: (Duration::from_secs(1)).as_secs(),
             ..via_server::config::ViaConfig::default().tdx.bikeshare
@@ -452,12 +477,8 @@ async fn concurrent_consumers_share_one_network_refresh() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = Arc::new(TdxBikeAvailabilitySource::new(
+    let source = Arc::new(crate::support::tdx::bike_availability_source(
         spawn_tdx_fixture(app).await,
-        via_server::config::ViaConfig::default()
-            .tdx
-            .batch
-            .bike_stations,
         via_server::config::ViaConfig::default().tdx.bikeshare,
     ));
     let requested = [id("tdx:Taipei:TPE-1")];
@@ -527,12 +548,8 @@ async fn malformed_stale_only_and_provider_failure_never_fabricate_availability(
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let failing = TdxBikeAvailabilitySource::new(
+    let failing = crate::support::tdx::bike_availability_source(
         spawn_tdx_fixture(app).await,
-        via_server::config::ViaConfig::default()
-            .tdx
-            .batch
-            .bike_stations,
         via_server::config::ViaConfig::default().tdx.bikeshare,
     );
 
@@ -701,12 +718,8 @@ async fn stale_cached_observation_is_refetched_before_cache_ttl() {
                 Json(json!({"access_token": "fixture-token", "expires_in": 300}))
             }),
         );
-    let source = TdxBikeAvailabilitySource::new(
+    let source = crate::support::tdx::bike_availability_source(
         spawn_tdx_fixture(app).await,
-        via_server::config::ViaConfig::default()
-            .tdx
-            .batch
-            .bike_stations,
         via_server::tdx::BikeAvailabilitySettings {
             cache_ttl_seconds: (Duration::from_secs(30)).as_secs(),
             ..via_server::config::ViaConfig::default().tdx.bikeshare
