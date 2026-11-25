@@ -11,6 +11,7 @@ Persistent state for the continuous routing-research loop. Read this first when 
 | `benchmark_results.md` | Baselines and per-experiment numbers, with commands |
 | `scenarios.md` | Reference OD scenarios and external-comparison records |
 | `experiments/EXP-NNN-*.md` | One record per experiment |
+| `tools/` | Analysis scripts and the TDX record/replay harness (see EXP-011) |
 
 ## Ground rules
 - TDX: at most one live request per minute, never concurrent; prefer the offline artifact.
