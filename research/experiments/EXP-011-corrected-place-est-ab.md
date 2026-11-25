@@ -120,4 +120,4 @@ Replay on the Bus x2.5 artifact: est wins 5 -> 2 (luzhou_to_bali -77 min, bali_t
 sanxia_to_banqiao -23 min (with the slower buses a Bus 705 / place-mate alternative becomes the better plan).
 
 Combined over both sets (38 scenarios), uncalibrated: est 11 earlier / 0 later; place alone 2 / 0; place+est 12 / 0.
-Calibrated x2.5 (replay): est 5 / 0 (from 11), place alone 1 / 0, place+est 4 / 0.
+Calibrated x2.5 (replay): est 5 / 0 (from 11), place alone 1 / 0, place+est 6 / 0.
