@@ -67,3 +67,18 @@ not be compared cleanly (load rose to 8 during their runs; the first attempt pan
 
 Status: **not retained yet**. Next: live A/B (base place+est vs place+est with rule B) after 08:00
 on the evening scenarios plus daytime ones, then a full-network replay.
+
+## Replay A/B of rule B (2026-11-25, no TDX)
+
+The 2026-11-24 whole-place edge set (`edges-whole12.json`: whole places nearest-first, cap 12 places, 1,124,824 edges against
+1,066,275) was written into a copy of the 2026-11-25 artifact (`transfer_edges` replaced, count fixed) and the EXP-011 recordings
+(38 scenarios, both sets) were replayed with the TDX record/replay harness, variants `base` and `place+est`, same pinned departures.
+
+| comparison against production edges | better by >30 s | worse by >30 s |
+| --- | --- | --- |
+| place+est | 1 (-1 min, TRA noise) | 3 (cathay_to_dazhi +29 min, xizhi_to_zoo +7 min, huatai_to_ntua +4 min) |
+| base | 3 (-1, -11, +4.8 min as measured against live) | 2 |
+
+Result: rule B does not help in live-like conditions and costs 58,549 extra edges (+5.5 %). The offline "15-19 better / 7-9 worse on
+best static cost" does not translate: discard B26 (do not retry unless Phase 2 evaluates more corridors). Caveat: one morning,
+38 scenarios, bus ride times uncalibrated.
