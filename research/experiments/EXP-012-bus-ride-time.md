@@ -42,6 +42,21 @@ Multiplying every `derived`/`estimated` Bus segment by 2.5 and replaying the EXP
 Mean gap to Google over 20 scenarios barely moves (+22 vs +25 min for base), because the Wenhu-Line gaps dominate; excluding the four
 Wenhu scenarios the base MAE is the same 16.6 minutes: total time is a blunt metric here, the per-leg measurement above is the evidence.
 
+## Effect against Google on 38 scenarios (replay, both EXP-011 sets, Google queried minutes after each plan)
+
+Gap = Via door-to-door minutes minus Google (top-listed option, arrive minus query time); negative = Via faster.
+
+| artifact | variant | median gap | mean gap | MAE | Via >10 min faster | Via >10 min slower |
+| --- | --- | --- | --- | --- | --- | --- |
+| as built (x1) | base | -0.3 | 11.6 | 20.2 | 6 | 12 |
+| as built (x1) | place+est | -5.9 | 2.7 | 17.4 | 10 | 7 |
+| Bus segments x2.5 | base | 1.4 | 13.1 | 19.0 | 3 | 15 |
+| Bus segments x2.5 | place+est | 0.8 | 9.0 | 15.4 | 3 | 14 |
+
+Excluding the 5 scenarios that need the Wenhu Line (BR has no trips in the feed): place+est median gap -7.2 -> 0.0 min, MAE 10.1 -> 10.1,
+"Via over 10 min faster than Google" 9 -> 3. The calibration removes the optimism (Via claiming trips Google calls impossible);
+what remains is coverage (BR line, express buses). Both sets and recordings: `results/`.
+
 ## Recommendation (for the manager)
 
 1. Bus ride-time calibration should be an engineer task: the static profile should scale `derived` Bus segments by a measured factor
