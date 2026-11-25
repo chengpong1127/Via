@@ -59,6 +59,7 @@ pub async fn build_from_fetch_snapshot(
     bike_policy: bike_access::BikeAccessPolicy,
     transfer_policy: static_transfers::TransferSettings,
     same_stop_transfer_seconds: u32,
+    bus_derived_segment_scale_percent: u32,
 ) -> Result<BuildOutput, DataError> {
     let snapshot = fetch::read_snapshot(input)?;
     let bike_share = bikeshare_catalog::parse_tdx_station_catalog(
@@ -72,6 +73,7 @@ pub async fn build_from_fetch_snapshot(
     let bus_parent_routes =
         bus_routes::attach_parent_routes(&mut provider_bindings, &snapshot.bus_routes);
     network.same_stop_transfer_seconds = same_stop_transfer_seconds;
+    network.scale_bus_segment_estimates(bus_derived_segment_scale_percent);
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
         street,

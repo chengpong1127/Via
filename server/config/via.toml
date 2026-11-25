@@ -42,6 +42,7 @@ rental_handling_seconds = 60
 
 [preprocessing]
 same_stop_transfer_seconds = 120
+bus_derived_segment_scale_percent = 100
 
 [preprocessing.transfers]
 radius_metres = 500

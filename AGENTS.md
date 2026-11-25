@@ -39,7 +39,10 @@ is fetched by unique stop and scope and filtered locally.
 
 GTFS is the only static transit source. TDX Bus Route snapshots only supply the
 parent RouteUID of each Bus sub-route for realtime matching. Do not fabricate
-scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data. BikeShare station
+scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data;
+`preprocessing.bus_derived_segment_scale_percent` rescales the Bus segment times that are
+not timetable data (`Derived`, `Estimated`) at build time, calibrated from TDX vehicle
+progress, and never touches `Schedule` segments. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.

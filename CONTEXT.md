@@ -76,7 +76,9 @@ sub-route to its parent RouteUID, because some cities (all of New Taipei) report
 arrival estimates by RouteUID only; realtime matching uses the bound parent and
 falls back to dropping the sub-route's last digit when none is bound. Sparse Bus stop
 times never become fabricated scheduled trips; derived segment costs support
-static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
+static search and the ride time of realtime Bus legs, and `via-data build` rescales them by
+`preprocessing.bus_derived_segment_scale_percent` (measured against TDX vehicle progress)
+because GTFS run times are far shorter than real Taipei bus trips. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
 
 iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient` and always
