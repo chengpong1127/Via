@@ -41,6 +41,12 @@ functionality (not linked, not tracking) and the `UserDefaults` required-reason 
 `ITSAppUsesNonExemptEncryption` is `NO` (HTTPS only). The location usage string and its
 zh-Hant translation live in the build settings and `Via/Resources/InfoPlist.xcstrings`.
 
+`VIA_PRIVACY_POLICY_URL` and `VIA_SUPPORT_URL` (set in `Config/Debug.xcconfig` and
+`Config/Release.xcconfig`, written with `/$()/` for the same reason) reach the app through
+`Via-Info.plist` and default to the GitHub Pages site under `docs/`. The app icon
+(light, dark and tinted 1024 px placeholders) lives in `Via/Resources/Assets.xcassets` and
+is regenerated with `swift Scripts/generate-app-icon.swift Via/Resources/Assets.xcassets/AppIcon.appiconset`.
+
 ## Structure
 
 | Folder | Contents |
