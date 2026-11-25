@@ -44,9 +44,10 @@ alone and on top of est (#42)? How do the plans compare with Google Maps on the 
 
 `research/tools/tdx_record.py` (recording proxy) and `tdx_replay.py` (replay server). Replaying the same 20 scenarios from the
 recorded responses, with departure pinned to the live planning time and fresh/degraded set to 1e8 s:
-73 of 80 plans are identical to live (same legs, arrival within 5 s); the 7 that differ are 2 TRA scenarios (shulin_to_nangang
-+120 s, xizhi_to_zoo +600 s) and xizhi_to_zoo place+est, where the replay server did not have the exact TRA/Metro live-board
-request that the live run made. Bus requests are served from the union of the recorded window filtered by StopUID, so changed
+73 of 80 plans are identical to live (same legs, arrival within 5 s). The 7 that differ are shulin_to_nangang (all 4 variants, +120 s on
+the same TRA ride) and xizhi_to_zoo (base, place +600 s on the same TRA ride; place+est picks another bus plan): TRA live-board
+timing, cause not isolated. The replay server answers Bus, Metro and TRA live-board requests from the union of the recorded window
+filtered by the requested stops/lines/trains (zero unanswered requests), so a changed fan-out still finds data. Bus requests are served from the union of the recorded window filtered by StopUID, so changed
 fan-out still finds predictions. Replay of one 20-scenario x 4-variant run takes about 3 minutes and zero TDX requests.
 Limits: a code change that needs stops or routes absent from the recorded window gets "no prediction"; departure pinned to
 seconds; the replay corpus covers one morning.

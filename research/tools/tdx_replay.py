@@ -48,6 +48,18 @@ class H(BaseHTTPRequestHandler):
                 with lock:
                     if MISS: open(MISS, "a").write(json.dumps({"vt": vt, "kind": "merged", "path": path, "n": len(out)}) + "\n")
                 return self._send(200, json.dumps(out, ensure_ascii=False))
+        if "Metro/LiveBoard" in path:
+            f = urllib.parse.parse_qs(q).get("$filter", [""])[0]
+            wantp = set(re.findall(r"LineID eq '([^']+)' and StationID eq '([^']+)'", f))
+            out = []
+            for r in w:
+                if r["path"] != path: continue
+                try: arr = json.loads(r["body"])
+                except Exception: continue
+                for a in arr:
+                    if (a.get("LineID"), a.get("StationID")) in wantp and a not in out: out.append(a)
+            if any(r["path"] == path for r in w):
+                return self._send(200, json.dumps(out, ensure_ascii=False))
         if "TrainLiveBoard" in path:
             f = urllib.parse.parse_qs(q).get("$filter", [""])[0]
             wantn = set(re.findall(r"TrainNo eq '([^']+)'", f))
