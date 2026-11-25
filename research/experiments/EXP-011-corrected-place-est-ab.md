@@ -121,3 +121,10 @@ sanxia_to_banqiao -23 min (with the slower buses a Bus 705 / place-mate alternat
 
 Combined over both sets (38 scenarios), uncalibrated: est 11 earlier / 0 later; place alone 2 / 0; place+est 12 / 0.
 Calibrated x2.5 (replay): est 5 / 0 (from 11), place alone 1 / 0, place+est 6 / 0.
+
+## Set A repeated at 12:54-14:15 (run C, same 20 pairs, uncalibrated artifact)
+
+`results/exp011c-live.jsonl`, recording `results/exp011c-tdx-record.jsonl`, Google `results/maps-google-aligned-c-20261125.jsonl`.
+place 1 earlier / 0 later (mean -2 s); est 7 / 0 (mean -496 s); place+est 7 / 0 (mean -617 s). Via vs Google (place+est): median gap +1.5 min,
+mean +9.2, 8 of 20 within 10 minutes, Via more than 10 minutes faster in 6. Same picture as 09:07-10:30: est helps, place
+does not on its own. Not replayed on the calibrated artifact (stopped at owner request).
