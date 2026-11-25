@@ -36,7 +36,8 @@ alone and on top of est (#42)? How do the plans compare with Google Maps on the 
 - place on top of est: linkou_chang_gung_to_xinzhuang -487 s and xizhi_to_zoo -2,333 s better than est alone.
 - Nothing got worse in any variant. TDX requests per plan did not rise with place.
 - Walk-only in every variant: xinzhuang_to_muzha (11,204 s) and xiangshan_to_muzha (4,089 s). banqiao_to_neihu and
-  yongning_to_xihu (base) end with a 4,000-5,000 s walk after a Metro BL ride. All four need the Wenhu Line (Metro BR), which the GTFS beta feed lacks (upstream gap, not worked
+  yongning_to_xihu (base) end with a 4,000-5,000 s walk after a Metro BL ride. All four need the Wenhu Line (Metro BR). The artifact has the BR route and both patterns (24 stops) but 0 trips and 0 frequencies:
+  the GTFS beta feed has no BR stop times (upstream gap, not worked
   around, see memory `gtfs-beta-gaps-upstream`). That is 4 of 20 scenarios.
 
 ## Replay without TDX (new harness, item 5)
