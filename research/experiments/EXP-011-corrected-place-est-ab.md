@@ -99,3 +99,25 @@ Reading the gaps:
   (linkou, xizhi) shrink to one (xizhi -11 min). Recommendation: keep #40 in draft; re-run the same replay after the bus
   ride-time fix lands (zero TDX). Structural benefit only until then.
 - Next: EXP-012 (bus ride-time model) is now the highest-value item; est's value must be re-measured with it.
+
+## Second scenario set (B): 18 more named pairs, 11:11-12:23, uncalibrated artifact
+
+`scenarios-named-b.json`, raw rows `results/exp011b-live.jsonl`, recording
+`results/exp011b-tdx-record.jsonl.gz`, Google passes right after each plan (`results/maps-google-aligned-b-20261125.jsonl`).
+Bus-heavy pairs in Taipei, New Taipei, Taoyuan; Wenhu-line pairs avoided except `cathay_to_dazhi` (Dazhi is on BR).
+
+| variant | earlier by >30 s | later | mean arrival change |
+| --- | --- | --- | --- |
+| place | 1 (huatai_to_ntua -4 min) | 0 | -13 s |
+| est | 5 (luzhou_to_bali -53, bali_to_taipei -66, cathay_to_dazhi -29, 2 x -3 min) | 0 | -511 s |
+| place+est | 6 | 0 | -524 s |
+
+Via vs Google (door-to-door from now, place+est): median gap -6.5 min, mean -4.1, 13 of 18 within 10 min. Via is faster than Google
+in 14 of 18, again where it uses buses (fuda_to_yingge -18, jingmei_to_jiantan -16, xindian_to_airport -16, shenkeng_to_jingmei -10).
+Only large positive gap: cathay_to_dazhi (+74): Via walks 165 min (BR line needed, 0 trips in the feed).
+Replay reproduces 68 of 72 plans (the 4 differences are one TRA ride, +/-60 s).
+Replay on the Bus x2.5 artifact: est wins 5 -> 2 (luzhou_to_bali -77 min, bali_to_taipei -13 min); place gets a different win,
+sanxia_to_banqiao -23 min (with the slower buses a Bus 705 / place-mate alternative becomes the better plan).
+
+Combined over both sets (38 scenarios), uncalibrated: est 11 earlier / 0 later; place alone 2 / 0; place+est 12 / 0.
+Calibrated x2.5 (replay): est 5 / 0 (from 11), place alone 1 / 0, place+est 4 / 0.
