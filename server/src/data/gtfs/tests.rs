@@ -123,6 +123,24 @@ fn refresh_fetch_source(snapshot: &Path, source_name: &str) {
     std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 }
 
+fn add_fetch_source(snapshot: &Path, source_name: &str, source_id: &str) {
+    let manifest_path = snapshot.join("manifest.json");
+    let mut manifest =
+        serde_json::from_slice::<FetchManifest>(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let source_path = snapshot.join(crate::data::fetch::source_file_name(source_name).unwrap());
+    let bytes = std::fs::read(source_path).unwrap();
+    manifest.sources.insert(
+        source_name.to_owned(),
+        ViaStaticSource {
+            source_id: source_id.to_owned(),
+            source_url: None,
+            sha256: crate::data::fetch::sha256_hex(&bytes),
+            byte_size: bytes.len() as u64,
+        },
+    );
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+}
+
 fn write_tables(path: &Path, tables: Vec<(&str, String)>) {
     let mut zip = ZipWriter::new(File::create(path).unwrap());
     let options = SimpleFileOptions::default();
@@ -509,6 +527,46 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
             .collect::<Vec<_>>(),
         [".via-static.json"]
     );
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
+async fn build_attaches_estimate_headways_from_bus_schedule_sources() {
+    let input = temporary_path("headway-input.zip");
+    let snapshot = temporary_path("headway-fetch");
+    let output = temporary_path("headway-output");
+    write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
+    let schedule = r#"[{"SubRouteUID":"THB123","Direction":0,"Frequencys":[{"StartTime":"09:00","EndTime":"16:00","MinHeadwayMins":10,"MaxHeadwayMins":10,"ServiceDay":{"Monday":1,"Tuesday":1,"Wednesday":1,"Thursday":1,"Friday":1,"Saturday":1,"Sunday":1}}]}]"#;
+    std::fs::write(snapshot.join("bus-schedule-taipei.json"), schedule).unwrap();
+    add_fetch_source(&snapshot, "bus-schedule-taipei", "tdx-bus-schedule-city");
+
+    let built = build_from_fetch_snapshot(
+        &snapshot,
+        &output,
+        &FakeStreetRouter::builder().build(),
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .bike_access,
+        crate::config::ViaConfig::default().preprocessing.transfers,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .same_stop_transfer_seconds,
+    )
+    .await
+    .unwrap();
+
+    let bindings = &built.via_static.provider_bindings.bus_patterns;
+    assert_eq!(built.diagnostics.bus_estimate_headways, bindings.len());
+    for binding in bindings.values() {
+        assert_eq!(
+            binding.headway_seconds_by_period
+                [crate::domain::transit::service::ServicePeriod::WeekdayDay.index()],
+            Some(600)
+        );
+    }
     std::fs::remove_file(input).unwrap();
     std::fs::remove_dir_all(snapshot).unwrap();
     std::fs::remove_dir_all(output).unwrap();

@@ -54,6 +54,10 @@ pub(crate) fn print_build_diagnostics(diagnostics: &BuildDiagnostics) {
         "bus bindings with a TDX parent route: {}",
         diagnostics.bus_parent_routes
     );
+    println!(
+        "bus bindings with headway estimates: {}",
+        diagnostics.bus_estimate_headways
+    );
     println!("GTFS stops loaded: {}", gtfs.stops_loaded);
     println!("GTFS trips loaded: {}", gtfs.trips_loaded);
     println!(

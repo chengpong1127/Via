@@ -20,6 +20,8 @@ pub struct BusPatternBinding {
     pub realtime_scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tdx_route_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headway_seconds_by_period: Vec<Option<u32>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +64,9 @@ impl TdxProviderBindings {
                 .is_none_or(|route| route.mode != TransitMode::Bus)
                 || binding.tdx_service_id.trim().is_empty()
                 || binding.realtime_scope.trim().is_empty()
+                || !(binding.headway_seconds_by_period.is_empty()
+                    || binding.headway_seconds_by_period.len()
+                        == crate::domain::transit::service::ServicePeriod::ALL.len())
             {
                 return Err(format!("invalid Bus binding for {}", id.as_str()));
             }
@@ -98,5 +103,62 @@ impl TdxProviderBindings {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        ids::{BoardingPointId, TransitRouteId},
+        transit::network::{SegmentProfile, TransitPattern, TransitRoute},
+    };
+
+    fn bound(headways: Vec<Option<u32>>) -> (TdxProviderBindings, TransitNetwork) {
+        let id = TransitPatternId::new("p");
+        let network = TransitNetwork::new(
+            time::Time::from_hms(4, 0, 0).unwrap(),
+            Vec::new(),
+            vec![TransitPattern::new(
+                id.clone(),
+                TransitRouteId::new("r"),
+                Some(0),
+                "T",
+                vec![BoardingPointId::new("a"), BoardingPointId::new("b")],
+                SegmentProfile {
+                    segments: Vec::new(),
+                },
+            )],
+            Vec::new(),
+        )
+        .with_routes(vec![TransitRoute {
+            id: TransitRouteId::new("r"),
+            mode: TransitMode::Bus,
+            label: "r".into(),
+        }]);
+        let bindings = TdxProviderBindings {
+            bus_patterns: HashMap::from([(
+                id,
+                BusPatternBinding {
+                    tdx_service_id: "r".into(),
+                    realtime_scope: "Taipei".into(),
+                    tdx_route_uid: None,
+                    headway_seconds_by_period: headways,
+                },
+            )]),
+            ..TdxProviderBindings::default()
+        };
+        (bindings, network)
+    }
+
+    #[test]
+    fn headway_vectors_must_cover_every_service_period() {
+        let periods = crate::domain::transit::service::ServicePeriod::ALL.len();
+        for headways in [Vec::new(), vec![Some(600); periods]] {
+            let (bindings, network) = bound(headways);
+            assert!(bindings.validate(&network).is_ok());
+        }
+        let (bindings, network) = bound(vec![Some(600); periods - 1]);
+        assert!(bindings.validate(&network).is_err());
     }
 }

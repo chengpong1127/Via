@@ -70,6 +70,7 @@
             "via_alighting_point_id": "metro-stop-2",
             "service_label": "Blue Line",
             "headsign": "Nangang Exhibition Center",
+            "estimated": false,
             "intermediate_stops": [
               {
                 "display_name": "Shandao Temple",

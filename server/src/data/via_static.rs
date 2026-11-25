@@ -366,6 +366,7 @@ mod tests {
                     tdx_service_id: "service".to_owned(),
                     realtime_scope: "Taipei".to_owned(),
                     tdx_route_uid: None,
+                    headway_seconds_by_period: Vec::new(),
                 },
             )]),
             ..TdxProviderBindings::default()

@@ -265,6 +265,11 @@ private struct LegRow: View {
                             .font(.subheadline.weight(.semibold))
                     }
                 }
+                if ride.isEstimated {
+                    Label("Estimated departure", systemImage: "clock.badge.questionmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
                 if !ride.headsign.isEmpty {
                     Text("Toward \(ride.headsign)")
                         .font(.subheadline)

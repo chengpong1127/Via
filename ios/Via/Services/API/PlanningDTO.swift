@@ -138,6 +138,7 @@ nonisolated struct LegDetailsDTO: Decodable, Sendable {
     let viaPatternID: String?
     let serviceLabel: String?
     let headsign: String?
+    let estimated: Bool?
     let pickupStationID: String?
     let pickupStationName: String?
     let dropoffStationID: String?
@@ -150,6 +151,7 @@ nonisolated struct LegDetailsDTO: Decodable, Sendable {
         case viaPatternID = "via_pattern_id"
         case serviceLabel = "service_label"
         case headsign
+        case estimated
         case pickupStationID = "pickup_station_id"
         case pickupStationName = "pickup_station_name"
         case dropoffStationID = "dropoff_station_id"

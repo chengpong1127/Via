@@ -103,7 +103,8 @@ nonisolated enum PlanningMapper {
                 serviceLabel: serviceLabel,
                 headsign: headsign,
                 patternID: patternID,
-                intermediateStops: details.intermediateStops?.map(stop) ?? []
+                intermediateStops: details.intermediateStops?.map(stop) ?? [],
+                isEstimated: details.estimated ?? false
             ))
         case ("bicycle", "bike_share"):
             guard let pickupID = details.pickupStationID,

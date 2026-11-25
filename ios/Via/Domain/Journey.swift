@@ -51,6 +51,7 @@ nonisolated struct TransitRide: Hashable, Sendable {
     let headsign: String
     let patternID: String
     var intermediateStops: [Stop] = []
+    var isEstimated = false
 }
 
 nonisolated struct BikeShareRide: Hashable, Sendable {

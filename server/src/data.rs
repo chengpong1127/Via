@@ -10,6 +10,7 @@ use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod bikeshare_catalog;
+pub mod bus_headways;
 pub mod bus_routes;
 pub mod fetch;
 pub mod gtfs;
@@ -24,6 +25,7 @@ pub struct BuildDiagnostics {
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
     pub bus_parent_routes: usize,
+    pub bus_estimate_headways: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +73,12 @@ pub async fn build_from_fetch_snapshot(
     let (mut network, mut provider_bindings, gtfs) = gtfs::build_network(&snapshot.gtfs_path)?;
     let bus_parent_routes =
         bus_routes::attach_parent_routes(&mut provider_bindings, &snapshot.bus_routes);
+    let bus_estimate_headways = attach_bus_headways(
+        &mut provider_bindings,
+        &network,
+        &snapshot.bus_schedules,
+        &snapshot.manifest.fetched_at,
+    );
     network.same_stop_transfer_seconds = same_stop_transfer_seconds;
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
@@ -100,8 +108,25 @@ pub async fn build_from_fetch_snapshot(
             static_transfers: Some(static_transfers),
             bike_access,
             bus_parent_routes,
+            bus_estimate_headways,
         },
     })
+}
+
+fn attach_bus_headways(
+    bindings: &mut crate::providers::tdx_bindings::TdxProviderBindings,
+    network: &crate::domain::transit::network::TransitNetwork,
+    schedules: &[bus_headways::BusSchedule],
+    fetched_at: &str,
+) -> usize {
+    let Ok(fetched_at) =
+        time::OffsetDateTime::parse(fetched_at, &time::format_description::well_known::Rfc3339)
+    else {
+        return 0;
+    };
+    let (weekday, weekend) = bus_headways::estimate_service_days(fetched_at);
+    let (headways, _) = bus_headways::pattern_headways(network, schedules, weekday, weekend);
+    bus_headways::attach_estimate_headways(bindings, network, &headways)
 }
 
 pub fn load_static_artifact(path: &Path) -> Result<ViaStatic, DataError> {

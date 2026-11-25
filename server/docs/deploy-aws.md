@@ -61,6 +61,8 @@ Values never go through OpenTofu. Create them once:
 
 Artifacts travel through the private artifact bucket (`artifact_bucket` output). Nothing in the cluster holds AWS credentials: `fetch.sh` runs on the node host as root and uses the instance profile (IMDS hop limit 1 keeps pods out).
 
+**Order matters when the artifact format gains fields** (for example Bus headway estimates, `headway_seconds_by_period` on Bus bindings): older servers reject unknown fields, so roll out the new server image first, then publish and activate the new static artifact. The nightly job builds with the image it runs, so the new image must be deployed before its next build is activated.
+
 Publish from a machine with AWS credentials (owner or CI), with `VIA_ARTIFACT_BUCKET` set:
 
     server/deploy/aws/artifacts/publish.sh server/data/build/<build-id> \

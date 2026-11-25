@@ -5,7 +5,7 @@ use crate::domain::{
     journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError, StopVisit},
     ranking::{TransferEvidence, TransferKind},
     transit::network::TransitMode,
-    transit::timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
+    transit::timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
 };
 
 use super::{
@@ -75,8 +75,7 @@ impl ReconstructionState<'_, '_> {
             route,
             &ride_stops,
             ride_times,
-            board.departure_at,
-            alight.arrival_at,
+            trip.timing_basis == TimingBasis::FrequencyEstimate,
         )?);
         if let Some(pending) = self.pending_transfer.take() {
             record_transfer(&mut self.assembly, pending, route.mode, board.departure_at)?;
@@ -161,9 +160,12 @@ fn transit_leg(
     route: &crate::domain::transit::network::TransitRoute,
     stops: &[&crate::domain::transit::network::TransitStop],
     stop_times: &[EffectiveStopTime],
-    departure: OffsetDateTime,
-    arrival: OffsetDateTime,
+    estimated: bool,
 ) -> Result<Leg, PlanningError> {
+    let (Some(first), Some(last)) = (stop_times.first(), stop_times.last()) else {
+        return Err(PlanningError::Internal);
+    };
+    let (departure, arrival) = (first.departure_at, last.arrival_at);
     let [boarding, intermediate @ .., alighting] = stops else {
         return Err(PlanningError::Internal);
     };
@@ -204,6 +206,7 @@ fn transit_leg(
             via_alighting_point_id: alighting.id.as_str().into(),
             service_label: route.label.clone(),
             headsign: pattern.headsign.clone(),
+            estimated,
             intermediate_stops,
         },
         attribution: Vec::new(),

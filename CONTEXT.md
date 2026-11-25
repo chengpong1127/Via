@@ -74,8 +74,14 @@ snapshots; it does not download them. `via-data fetch` can create source
 snapshots, spacing TDX calls by 61 seconds. Bus Route snapshots bind each Bus
 sub-route to its parent RouteUID, because some cities (all of New Taipei) report
 arrival estimates by RouteUID only; realtime matching uses the bound parent and
-falls back to dropping the sub-route's last digit when none is bound. Sparse Bus stop
-times never become fabricated scheduled trips; derived segment costs support
+falls back to dropping the sub-route's last digit when none is bound. Bus Schedule
+snapshots (eight cities) give each Bus pattern without GTFS trips headways per
+service period, derived on the next Wednesday and the next Saturday on or after the fetch
+date and stored on the Bus binding. At request time the Bus source adds
+headway-spaced departures after the last fresh TDX prediction at a stop (two hour
+horizon); these use `FrequencyEstimate` timing with `Fallback` reliability and
+reach the API as `estimated: true` on the transit leg, shown in iOS as 預估班次.
+Sparse Bus stop times never become fabricated scheduled trips; derived segment costs support
 static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
 
@@ -84,7 +90,7 @@ requests a journey departing now.
 
 iOS navigation runs on-device against the selected journey. Walking and cycling
 guidance carries `geometry_index` (into the leg geometry) and `street_name`
-parameters; transit legs carry `intermediate_stops` for the stop countdown.
+parameters; transit legs carry `intermediate_stops` for the stop countdown and an `estimated` flag.
 `NavigationTracker` projects fixes forward along each leg, counts down stops,
 raises action-only alerts and flags off-route or missed connections;
 `NavigationModel` re-plans from the current position with a 60 s cooldown to

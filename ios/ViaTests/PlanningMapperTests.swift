@@ -69,6 +69,20 @@ struct PlanningMapperTests {
         #expect(bike.dropoffStationName == "City Hall")
     }
 
+    @Test func decodesTheEstimatedLabelOnTransitLegs() throws {
+        let json = String(decoding: Fixtures.optionsResponse, as: UTF8.self)
+        let estimated = json.replacingOccurrences(
+            of: #""headsign": "Nangang Exhibition Center","#,
+            with: #""headsign": "Nangang Exhibition Center", "estimated": true,"#
+        )
+        #expect(estimated != json)
+        let ride = try #require(PlanningMapper.plan(from: JSONDecoder().decode(PlanningOutcomeDTO.self, from: Data(estimated.utf8))).options.first?.legs[1].transit)
+        #expect(ride.isEstimated)
+
+        let scheduled = try #require(PlanningMapper.plan(from: JSONDecoder().decode(PlanningOutcomeDTO.self, from: Data(json.utf8))).options.first?.legs[1].transit)
+        #expect(!scheduled.isEstimated)
+    }
+
     @Test func decodesEmptyResult() throws {
         let json = #"{"generated_at":"2026-11-01T09:30:00+08:00","empty":{"code":"no_feasible_journey_option"}}"#
         let outcome = try JSONDecoder().decode(PlanningOutcomeDTO.self, from: Data(json.utf8))

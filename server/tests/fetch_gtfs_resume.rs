@@ -142,7 +142,7 @@ async fn respond(State(mock): State<Mock>, request: Request<Body>) -> Response<B
             .body(Body::from(body))
             .unwrap();
     }
-    if path.contains("/Bus/Route/City/") {
+    if path.contains("/Bus/Route/City/") || path.contains("/Bus/Schedule/City/") {
         return Response::builder().body(Body::from("[]")).unwrap();
     }
     if path != "/gtfs" {
