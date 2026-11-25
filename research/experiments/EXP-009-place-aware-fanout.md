@@ -77,7 +77,7 @@ The 2026-11-24 whole-place edge set (`edges-whole12.json`: whole places nearest-
 | comparison against production edges | better by >30 s | worse by >30 s |
 | --- | --- | --- |
 | place+est | 1 (-1 min, TRA noise) | 3 (cathay_to_dazhi +29 min, xizhi_to_zoo +7 min, huatai_to_ntua +4 min) |
-| base | 3 (-1, -11, +4.8 min as measured against live) | 2 |
+| base | 3 (bali_to_taipei -11 min, xindian -1 min, yingge -1 min) | 2 (xizhi_to_zoo +11 min, jingmei_to_jiantan +5 min) |
 
 Result: rule B does not help in live-like conditions and costs 58,549 extra edges (+5.5 %). The offline "15-19 better / 7-9 worse on
 best static cost" does not translate: discard B26 (do not retry unless Phase 2 evaluates more corridors). Caveat: one morning,
