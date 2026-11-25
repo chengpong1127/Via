@@ -15,6 +15,9 @@ use via_server::{
     street::{DependencyHealth, StreetRouter, StreetRoutingError},
 };
 
+#[allow(dead_code)]
+#[path = "log_capture.rs"]
+pub mod log_capture;
 #[path = "street.rs"]
 pub mod street;
 #[allow(dead_code)]

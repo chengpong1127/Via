@@ -51,7 +51,8 @@ pub fn build_router(
             metrics,
             openapi,
         })
-        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes));
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_bytes))
+        .layer(axum::middleware::from_fn(middleware::record_route_template));
     with_http_timeout(router, http_timeout)
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(

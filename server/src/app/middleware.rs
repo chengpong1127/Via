@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use axum::{
     body::Body,
+    extract::MatchedPath,
     http::{Request, StatusCode},
     middleware::Next,
     response::Response,
@@ -29,12 +30,10 @@ pub(super) fn make_request_span(request: &Request<Body>) -> Span {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("missing_request_id");
     let method = request.method();
-    let path = request.uri().path();
     let span_fields = || {
         (
             request_id,
             method,
-            path,
             field::Empty,
             field::Empty,
             field::Empty,
@@ -43,14 +42,14 @@ pub(super) fn make_request_span(request: &Request<Body>) -> Span {
         )
     };
 
-    if path == "/v1/journey-plans" {
-        let (request_id, method, path, status, outcome, journey_options, error_code, elapsed_ms) =
+    if request.uri().path() == "/v1/journey-plans" {
+        let (request_id, method, status, outcome, journey_options, error_code, elapsed_ms) =
             span_fields();
         tracing::info_span!(
             "journey_plan",
             request_id = %request_id,
             method = %method,
-            path = %path,
+            path = field::Empty,
             selected_modes = field::Empty,
             departure_setting = field::Empty,
             status,
@@ -60,13 +59,13 @@ pub(super) fn make_request_span(request: &Request<Body>) -> Span {
             elapsed_ms,
         )
     } else {
-        let (request_id, method, path, status, outcome, journey_options, error_code, elapsed_ms) =
+        let (request_id, method, status, outcome, journey_options, error_code, elapsed_ms) =
             span_fields();
         tracing::info_span!(
             "http_request",
             request_id = %request_id,
             method = %method,
-            path = %path,
+            path = field::Empty,
             status,
             outcome,
             journey_options,
@@ -74,6 +73,18 @@ pub(super) fn make_request_span(request: &Request<Body>) -> Span {
             elapsed_ms,
         )
     }
+}
+
+/// Records the matched route template as the span `path`, or "unmatched". The raw request path is
+/// never logged: unrouted paths can contain user-supplied coordinates. Runs inside the router so
+/// routing has already happened.
+pub(super) async fn record_route_template(request: Request<Body>, next: Next) -> Response {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unmatched", MatchedPath::as_str);
+    Span::current().record("path", route);
+    next.run(request).await
 }
 
 pub(super) fn on_http_response<B>(response: &Response<B>, latency: Duration, span: &Span) {
