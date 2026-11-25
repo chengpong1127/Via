@@ -47,6 +47,9 @@ pub struct BusDepartureSource {
 const ESTIMATE_HORIZON_SECONDS: i64 = 2 * 60 * 60;
 const MINIMUM_HEADWAY_SECONDS: u32 = 60;
 
+pub static HEADWAY_ESTIMATES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 impl BusDepartureSource {
     pub fn new(context: TdxTimingContext) -> Self {
         Self { context }
@@ -145,7 +148,9 @@ impl BusDepartureSource {
                 self.effective_trip(query, departure_at, Some(status.clone()))
             })
             .collect::<Vec<_>>();
-        departures.extend(self.estimated_departures(query, values));
+        if HEADWAY_ESTIMATES.load(std::sync::atomic::Ordering::Relaxed) {
+            departures.extend(self.estimated_departures(query, values));
+        }
         departures.sort_by(|left, right| {
             left.stop_times
                 .iter()

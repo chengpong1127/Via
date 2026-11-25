@@ -43,7 +43,11 @@ pub struct DenseTopology {
     transfers_by_stop: Vec<Vec<DenseTransfer>>,
     place_by_stop: Vec<PlaceIndex>,
     stops_by_place: Vec<Vec<StopIndex>>,
+    identity: Vec<StopIndex>,
 }
+
+pub static PLACE_EQUIVALENCE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 impl DenseTopology {
     pub(super) fn build(network: &TransitNetwork) -> Self {
@@ -155,6 +159,7 @@ impl DenseTopology {
             });
         }
 
+        let stop_count_for_identity = stop_ids.len() as StopIndex;
         let place_by_stop = places(network, &stop_ids);
         let mut stops_by_place = vec![Vec::new(); stop_ids.len()];
         for (stop, place) in place_by_stop.iter().enumerate() {
@@ -171,6 +176,7 @@ impl DenseTopology {
             transfers_by_stop,
             place_by_stop,
             stops_by_place,
+            identity: (0..stop_count_for_identity).collect(),
         }
     }
 
@@ -207,10 +213,16 @@ impl DenseTopology {
     }
 
     pub fn place(&self, stop: StopIndex) -> PlaceIndex {
+        if !PLACE_EQUIVALENCE.load(std::sync::atomic::Ordering::Relaxed) {
+            return stop;
+        }
         self.place_by_stop[stop as usize]
     }
 
     pub fn stops_in_place(&self, stop: StopIndex) -> &[StopIndex] {
+        if !PLACE_EQUIVALENCE.load(std::sync::atomic::Ordering::Relaxed) {
+            return &self.identity[stop as usize..stop as usize + 1];
+        }
         &self.stops_by_place[self.place(stop) as usize]
     }
 
