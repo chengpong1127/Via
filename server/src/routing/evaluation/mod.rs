@@ -24,11 +24,15 @@ use super::{
 };
 use crate::{
     domain::{
+        ids::BoardingPointId,
         realtime::NormalizedRealtimeValue,
         transit::runtime::TransitRuntime,
         transit::timing::{EffectiveTrip, TimingBasis, TimingReliability, TimingSnapshot},
     },
-    street::{MatrixCell, RouteQuery, RoutingConstraints, StreetRoutingError, StreetTravelMode},
+    street::{
+        Coordinate, MatrixCell, RouteQuery, RoutingConstraints, StreetRoutingError,
+        StreetTravelMode,
+    },
 };
 use bike::BikeMovementSource;
 use pareto::{EvaluatedCandidate, pareto_candidates, prune_states};
@@ -204,7 +208,9 @@ impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
         self.check_deadline()?;
         self.counters.states.fetch_add(1, Ordering::Relaxed);
         let edge = &corridor.edges()[index];
-        let mut successors = self.transit_successors(state, edge, index)?;
+        let mut successors = self
+            .transit_successors(state, corridor, edge, index)
+            .await?;
         successors.extend(self.walking_successor(state, corridor, edge, index).await?);
         successors.extend(self.bike_successors(state, corridor, index).await?);
         self.counters
@@ -213,9 +219,10 @@ impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
         Ok(successors)
     }
 
-    fn transit_successors(
+    async fn transit_successors(
         &self,
         state: &EvaluationState,
+        corridor: &Corridor,
         edge: &PlannedMovement,
         index: usize,
     ) -> Result<Vec<EvaluationState>, RoutingError> {
@@ -236,22 +243,93 @@ impl<'e, 'a> CorridorEvaluationRun<'e, 'a> {
             if !query.admits(ready_at) {
                 continue;
             }
+            let Some(hops) = self.leg_hops(corridor, leg, index).await? else {
+                continue;
+            };
+            let leg_ready_at = ready_at + Duration::seconds(i64::from(hops.board_seconds));
+            if !query.admits(leg_ready_at) {
+                continue;
+            }
             self.counters
                 .departure_lookups
                 .fetch_add(1, Ordering::Relaxed);
             for trip in timing.departures(
                 &leg.pattern_id,
                 leg.board_index,
-                ready_at,
+                leg_ready_at,
                 query.limits.max_departures_per_query,
             ) {
                 self.check_deadline()?;
                 successors.extend(transit_successor(
-                    transit, query, state, trip, leg, index, ready_at,
+                    self.evaluator,
+                    state,
+                    trip,
+                    leg,
+                    index,
+                    leg_ready_at,
+                    hops,
                 ));
             }
         }
         Ok(successors)
+    }
+
+    async fn leg_hops(
+        &self,
+        corridor: &Corridor,
+        leg: &StaticTransitLeg,
+        index: usize,
+    ) -> Result<Option<LegHops>, RoutingError> {
+        let anchors = corridor.anchors();
+        let board = self
+            .stop_hop_seconds(&anchors[index], &leg.board_stop_id, HopDirection::ToStop)
+            .await?;
+        let alight = self
+            .stop_hop_seconds(
+                &anchors[index + 1],
+                &leg.alight_stop_id,
+                HopDirection::FromStop,
+            )
+            .await?;
+        Ok(board
+            .zip(alight)
+            .map(|(board_seconds, alight_seconds)| LegHops {
+                board_seconds,
+                alight_seconds,
+            }))
+    }
+
+    async fn stop_hop_seconds(
+        &self,
+        anchor: &CorridorAnchor,
+        stop_id: &BoardingPointId,
+        direction: HopDirection,
+    ) -> Result<Option<u32>, RoutingError> {
+        if anchor.kind.boarding_point().is_none_or(|id| id == stop_id) {
+            return Ok(Some(0));
+        }
+        let stop = self.evaluator.transit.stop(stop_id).ok_or_else(|| {
+            RoutingError::Internal(format!(
+                "retained transit leg references unknown stop {stop_id:?}"
+            ))
+        })?;
+        let stop_coordinate = stop.coordinate.try_into().map_err(|_| {
+            RoutingError::Internal(format!("stop {stop_id:?} has an invalid coordinate"))
+        })?;
+        let (from, to) = match direction {
+            HopDirection::ToStop => (anchor.coordinate, stop_coordinate),
+            HopDirection::FromStop => (stop_coordinate, anchor.coordinate),
+        };
+        let cell = walking_cell_between(self.evaluator.matrix_cache, from, to).await;
+        self.check_deadline()?;
+        match cell {
+            Ok(MatrixCell::Reachable { duration, .. }) => Ok(Some(duration.0)),
+            Ok(MatrixCell::Unreachable) => Ok(None),
+            Err(error) => {
+                self.record_failure(&error);
+                Ok(None)
+            }
+        }
     }
 
     async fn walking_successor(
@@ -370,14 +448,34 @@ async fn walking_cell(
     from: &CorridorAnchor,
     to: &CorridorAnchor,
 ) -> Result<MatrixCell, StreetRoutingError> {
+    walking_cell_between(matrix_cache, from.coordinate, to.coordinate).await
+}
+
+async fn walking_cell_between(
+    matrix_cache: &MatrixCache,
+    from: Coordinate,
+    to: Coordinate,
+) -> Result<MatrixCell, StreetRoutingError> {
     matrix_cache
         .route_cell(RouteQuery {
             travel_mode: StreetTravelMode::Walking,
-            origin: from.coordinate,
-            destination: to.coordinate,
+            origin: from,
+            destination: to,
             constraints: RoutingConstraints::default(),
         })
         .await
+}
+
+#[derive(Clone, Copy)]
+enum HopDirection {
+    ToStop,
+    FromStop,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LegHops {
+    board_seconds: u32,
+    alight_seconds: u32,
 }
 
 fn walking_kind(from: &CorridorAnchor, to: &CorridorAnchor) -> WalkingMovementKind {
@@ -390,16 +488,17 @@ fn walking_kind(from: &CorridorAnchor, to: &CorridorAnchor) -> WalkingMovementKi
 }
 
 fn transit_successor(
-    transit: &TransitRuntime,
-    query: &PlanningQuery,
+    evaluator: &CorridorEvaluator,
     state: &EvaluationState,
     trip: &Arc<EffectiveTrip>,
     leg: &StaticTransitLeg,
     index: usize,
     ready_at: OffsetDateTime,
+    hops: LegHops,
 ) -> Option<EvaluationState> {
-    let arrival = alight_time(transit, trip, leg, ready_at)?;
-    query.admits(arrival).then(|| {
+    let arrival = alight_time(evaluator.transit, trip, leg, ready_at)?
+        + Duration::seconds(i64::from(hops.alight_seconds));
+    evaluator.query.admits(arrival).then(|| {
         state.after_movement(JourneyMovement {
             from_anchor: index,
             to_anchor: index + 1,
@@ -409,6 +508,8 @@ fn transit_successor(
                 trip: Arc::clone(trip),
                 board_index: leg.board_index,
                 alight_index: leg.alight_index,
+                board_hop_seconds: hops.board_seconds,
+                alight_hop_seconds: hops.alight_seconds,
             },
         })
     })

@@ -48,6 +48,8 @@ pub enum JourneyMovementKind {
         trip: Arc<EffectiveTrip>,
         board_index: usize,
         alight_index: usize,
+        board_hop_seconds: u32,
+        alight_hop_seconds: u32,
     },
 }
 
@@ -58,7 +60,11 @@ impl JourneyMovementKind {
                 duration_seconds, ..
             } => *duration_seconds,
             Self::BikeShare { movement } => movement.walking_seconds(),
-            Self::Transit { .. } => 0,
+            Self::Transit {
+                board_hop_seconds,
+                alight_hop_seconds,
+                ..
+            } => board_hop_seconds.saturating_add(*alight_hop_seconds),
         }
     }
 

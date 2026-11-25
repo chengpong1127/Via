@@ -166,7 +166,8 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
     assert!(next[2].ready_at > next[0].ready_at);
     assert!(next[3].ready_at > next[0].ready_at);
     let mut separate = run
-        .transit_successors(&state, &corridor.edges()[1], 1)
+        .transit_successors(&state, &corridor, &corridor.edges()[1], 1)
+        .await
         .unwrap();
     separate.extend(
         run.walking_successor(&state, &corridor, &corridor.edges()[1], 1)

@@ -363,6 +363,43 @@ fn equivalent_patterns_share_one_retained_corridor_and_remain_available_for_timi
 }
 
 #[test]
+fn lines_serving_the_same_places_under_different_stop_ids_share_one_corridor() {
+    let mut network = network(
+        vec![
+            pattern("bus-a", TransitMode::Bus, &["o", "d"]),
+            pattern("bus-b", TransitMode::Bus, &["o2", "d2"]),
+            pattern("bus-far", TransitMode::Bus, &["o3", "d3"]),
+        ],
+        vec![
+            trip("a", "bus-a", &[0, 100]),
+            trip("b", "bus-b", &[0, 110]),
+            trip("far", "bus-far", &[0, 90]),
+        ],
+    );
+    for stop in &mut network.stops {
+        match stop.id.as_str() {
+            "o2" => stop.name = "o".to_owned(),
+            "d2" => stop.name = "d".to_owned(),
+            "o3" => {
+                stop.name = "o".to_owned();
+                stop.coordinate.latitude += 0.01;
+            }
+            _ => {}
+        }
+    }
+    let runtime = TransitRuntime::new(std::sync::Arc::new(network));
+
+    let (retained_corridors, _) =
+        generate(&runtime, &query("o", "d", &[TransitMode::Bus], 0, 1)).unwrap();
+
+    assert_eq!(retained_corridors.len(), 1);
+    let timing_patterns = pattern_ids(&retained_corridors);
+    assert!(timing_patterns.contains(&TransitPatternId::new("bus-a")));
+    assert!(timing_patterns.contains(&TransitPatternId::new("bus-b")));
+    assert!(!timing_patterns.contains(&TransitPatternId::new("bus-far")));
+}
+
+#[test]
 fn retained_corridor_keeps_equivalent_legs_from_overlapping_patterns() {
     let network = network(
         vec![
