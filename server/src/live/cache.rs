@@ -397,3 +397,133 @@ fn bike_observation_is_current(record: &BikeAvailabilityRecord, max_age: Duratio
     };
     OffsetDateTime::now_utc() - observed_at <= max_age
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::config::ViaConfig;
+
+    /// Bus source that answers from a script and counts upstream calls.
+    struct ScriptedBus {
+        script: Mutex<Vec<LiveBatch<BusArrival>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl ScriptedBus {
+        fn new(mut script: Vec<LiveBatch<BusArrival>>) -> Arc<Self> {
+            script.reverse();
+            Arc::new(Self {
+                script: Mutex::new(script),
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl LiveDataSource for ScriptedBus {
+        async fn bus_arrivals(&self, _scope: &str, stop_uids: &[String]) -> LiveBatch<BusArrival> {
+            *self.calls.lock().unwrap() += 1;
+            let mut batch = self.script.lock().unwrap().pop().expect("scripted answer");
+            batch.upstream_requests = 1;
+            if batch.unavailable.is_empty() {
+                batch.records = stop_uids
+                    .iter()
+                    .map(|stop| BusArrival {
+                        stop_uid: stop.clone(),
+                        sub_route_uid: None,
+                        route_uid: None,
+                        direction: None,
+                        stop_status: None,
+                        estimate_seconds: Some(60),
+                        update_time: "2026-01-01T00:00:00+08:00".to_owned(),
+                    })
+                    .collect();
+            }
+            batch
+        }
+
+        async fn bike_availability(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> LiveBatch<BikeAvailabilityRecord> {
+            unimplemented!()
+        }
+
+        async fn metro_boards(&self, _: &[MetroPair]) -> LiveBatch<MetroBoard, MetroPair> {
+            unimplemented!()
+        }
+
+        async fn tra_delays(&self, _: &[String]) -> LiveBatch<TraDelay> {
+            unimplemented!()
+        }
+    }
+
+    fn failed(reason: UnavailableReason, retry_after: Option<Duration>) -> LiveBatch<BusArrival> {
+        let mut batch = LiveBatch::default();
+        batch.mark_unavailable(&["x".to_owned()], reason);
+        batch.retry_after = retry_after;
+        batch
+    }
+
+    fn cache(inner: Arc<ScriptedBus>) -> CachedLiveData {
+        CachedLiveData::new(inner, &ViaConfig::default().tdx)
+    }
+
+    async fn ask(cache: &CachedLiveData, stop: &str) -> LiveBatch<BusArrival> {
+        cache.bus_arrivals("Taipei", &[stop.to_owned()]).await
+    }
+
+    #[tokio::test]
+    async fn a_429_pauses_live_calls_for_its_retry_after() {
+        let inner = ScriptedBus::new(vec![failed(
+            UnavailableReason::RateLimited,
+            Some(Duration::from_secs(30)),
+        )]);
+        let cache = cache(inner.clone());
+
+        ask(&cache, "a").await;
+        let paused = ask(&cache, "b").await;
+
+        assert_eq!(inner.calls(), 1);
+        assert!(paused.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn repeated_upstream_failures_pause_live_calls() {
+        let inner = ScriptedBus::new(vec![
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            failed(UnavailableReason::UpstreamUnavailable, None),
+        ]);
+        let cache = cache(inner.clone());
+
+        ask(&cache, "a").await;
+        ask(&cache, "b").await;
+        ask(&cache, "c").await;
+
+        assert_eq!(inner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_success_resets_the_failure_count() {
+        let inner = ScriptedBus::new(vec![
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            LiveBatch::default(),
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            LiveBatch::default(),
+        ]);
+        let cache = cache(inner.clone());
+
+        for stop in ["a", "b", "c", "d"] {
+            ask(&cache, stop).await;
+        }
+
+        assert_eq!(inner.calls(), 4);
+    }
+}

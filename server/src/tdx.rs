@@ -264,7 +264,13 @@ impl TdxClient {
             if response.status() == StatusCode::UNAUTHORIZED && !token_refreshed {
                 // The key may have been rotated or the token revoked: drop it and retry once.
                 token_refreshed = true;
-                *self.token.lock().await = None;
+                {
+                    let mut cached = self.token.lock().await;
+                    // A concurrent request may already have replaced the rejected token.
+                    if cached.as_ref().is_some_and(|c| c.value == token) {
+                        *cached = None;
+                    }
+                }
                 token = self.access_token_with(client).await?;
                 continue;
             }
@@ -938,17 +944,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_401_is_an_error_not_a_loop() {
-        let app = Router::new().fallback(any(|request: Request<Body>| async move {
-            if request.uri().path() == "/token" {
-                return token_response();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let app = Router::new().fallback(any(move |request: Request<Body>| {
+            let counted = counted.clone();
+            async move {
+                if request.uri().path() == "/token" {
+                    return token_response();
+                }
+                counted.fetch_add(1, Ordering::SeqCst);
+                Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Body::empty())
+                    .unwrap()
             }
-            Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .body(Body::empty())
-                .unwrap()
         }));
         let (client, _) = spawn_client(app).await;
 
         assert!(client.get_bytes("live", &[]).await.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
