@@ -1028,3 +1028,71 @@ async fn no_estimates_when_the_anchor_period_has_no_headway() {
         TimingBasis::RealtimePrediction
     ));
 }
+
+#[tokio::test]
+async fn bus_scopes_are_fetched_concurrently() {
+    let pattern_ids = vec![
+        TransitPatternId::new("service-taipei"),
+        TransitPatternId::new("service-new-taipei"),
+        TransitPatternId::new("service-taoyuan"),
+    ];
+    let scopes = [
+        ("service-taipei", "Taipei"),
+        ("service-new-taipei", "NewTaipei"),
+        ("service-taoyuan", "Taoyuan"),
+    ];
+    let update = recent_update();
+    let payload = Value::Array(
+        pattern_ids
+            .iter()
+            .map(|pattern_id| arrival(pattern_id.as_str(), "stop-x", 60, &update))
+            .collect(),
+    );
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let app = {
+        let in_flight = in_flight.clone();
+        let peak = peak.clone();
+        Router::new().fallback(any(move |method: Method| {
+            let in_flight = in_flight.clone();
+            let peak = peak.clone();
+            let payload = payload.clone();
+            async move {
+                if method == Method::POST {
+                    return Json(json!({"access_token": "fixture-token", "expires_in": 300}))
+                        .into_response();
+                }
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                Json(payload).into_response()
+            }
+        }))
+    };
+    let tdx = spawn_tdx_fixture(app).await;
+    let network = runtime(network_for_with_scopes(&pattern_ids, &scopes));
+    let bus = Arc::new(BusDepartureSource::new(
+        crate::support::tdx::timing_context(
+            network.clone(),
+            tdx,
+            bindings(network.network(), &scopes),
+        ),
+    ));
+    let resolver = DepartureResolver::new(network, vec![bus as Arc<dyn TransitDepartureSource>]);
+    let needs = pattern_ids
+        .iter()
+        .map(|pattern_id| {
+            DepartureQuery::new(pattern_id.clone(), BoardingPointId::new("stop-x"), NOW, 1)
+        })
+        .collect::<Vec<_>>();
+
+    let results = resolver.next_departures_batch(needs).await;
+
+    assert!(
+        results
+            .iter()
+            .all(|result| result.as_ref().is_ok_and(|trips| !trips.is_empty()))
+    );
+    assert_eq!(peak.load(Ordering::SeqCst), 3);
+}
