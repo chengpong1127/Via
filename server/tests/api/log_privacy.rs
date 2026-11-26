@@ -211,6 +211,7 @@ async fn failing_upstream_error_text(token_status: StatusCode) -> (String, Strin
 
     let error = client
         .get_json::<serde_json::Value>(
+            via_server::tdx::Dataset::Bike,
             "nearby",
             &[("latitude", "25.03911"), ("longitude", "121.53407")],
         )
@@ -225,6 +226,7 @@ async fn upstream_api_errors_do_not_carry_request_query_values() {
     let (error, logs) = failing_upstream_error_text(StatusCode::OK).await;
 
     assert!(error.contains("TDX API request failed"));
+    assert!(logs.contains("tdx upstream response") && logs.contains("content_length"));
     for secret in ["25.03911", "121.53407"] {
         assert!(
             !error.contains(secret),

@@ -15,6 +15,8 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use url::Url;
 
+pub use crate::tdx_usage::{Dataset, usage_summary};
+
 pub const BIKE_CITIES: &[(&str, &str)] = &[
     ("ChanghuaCounty", "changhua-county"),
     ("Chiayi", "chiayi"),
@@ -202,7 +204,11 @@ impl TdxClient {
             ])
             .send()
             .await
-            .map_err(|error| TdxClientError::OAuthRequest(redact_url(error)))?;
+            .map_err(|error| {
+                record_transport_error(Dataset::Token);
+                TdxClientError::OAuthRequest(redact_url(error))
+            })?;
+        record_upstream_call(Dataset::Token, &response);
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
             return Err(rate_limited(response.headers()));
         }
@@ -246,6 +252,7 @@ impl TdxClient {
         url: Url,
         max_rate_limit_retries: usize,
         range_from: Option<(u64, &str)>,
+        dataset: Dataset,
     ) -> Result<Response, TdxClientError> {
         let mut token = self.access_token_with(client).await?;
         let mut retries = 0;
@@ -257,10 +264,11 @@ impl TdxClient {
                     .header(RANGE, format!("bytes={offset}-"))
                     .header(reqwest::header::IF_RANGE, validator);
             }
-            let response = request
-                .send()
-                .await
-                .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))?;
+            let response = request.send().await.map_err(|error| {
+                record_transport_error(dataset);
+                TdxClientError::ApiRequest(redact_url(error))
+            })?;
+            record_upstream_call(dataset, &response);
             if response.status() == StatusCode::UNAUTHORIZED && !token_refreshed {
                 // The key may have been rotated or the token revoked: drop it and retry once.
                 token_refreshed = true;
@@ -292,10 +300,12 @@ impl TdxClient {
 
     pub async fn get_bytes(
         &self,
+        dataset: Dataset,
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<bytes::Bytes, TdxClientError> {
         self.get_url_bytes(
+            dataset,
             self.api_url(path, query)?,
             self.settings.max_rate_limit_retries,
         )
@@ -304,10 +314,11 @@ impl TdxClient {
 
     async fn get_url_bytes(
         &self,
+        dataset: Dataset,
         url: Url,
         max_rate_limit_retries: usize,
     ) -> Result<bytes::Bytes, TdxClientError> {
-        self.read_limited(&self.client, url, max_rate_limit_retries)
+        self.read_limited(&self.client, url, max_rate_limit_retries, dataset)
             .await
     }
 
@@ -316,9 +327,10 @@ impl TdxClient {
         client: &Client,
         url: Url,
         max_rate_limit_retries: usize,
+        dataset: Dataset,
     ) -> Result<bytes::Bytes, TdxClientError> {
         let response = self
-            .authenticated_get_with(client, url, max_rate_limit_retries, None)
+            .authenticated_get_with(client, url, max_rate_limit_retries, None, dataset)
             .await?;
         if response
             .content_length()
@@ -333,15 +345,21 @@ impl TdxClient {
         if body.len() > self.settings.max_response_bytes {
             return Err(TdxClientError::ResponseTooLarge);
         }
+        ::metrics::counter!("via_tdx_response_bytes_total", "dataset" => dataset.as_str())
+            .increment(body.len() as u64);
         Ok(body)
     }
 
+    /// `dataset` is a fixed metric label chosen by the caller (never request data).
     pub async fn get_json<T: DeserializeOwned>(
         &self,
+        dataset: Dataset,
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<T, TdxClientError> {
-        let body = self.get_url_bytes(self.api_url(path, query)?, 0).await?;
+        let body = self
+            .get_url_bytes(dataset, self.api_url(path, query)?, 0)
+            .await?;
         serde_json::from_slice(&body).map_err(TdxClientError::InvalidJson)
     }
 
@@ -350,8 +368,13 @@ impl TdxClient {
         path: &str,
         query: &[(&str, &str)],
     ) -> Result<bytes::Bytes, TdxClientError> {
-        self.read_limited(&self.fetch_client, self.api_url(path, query)?, 0)
-            .await
+        self.read_limited(
+            &self.fetch_client,
+            self.api_url(path, query)?,
+            0,
+            Dataset::Static,
+        )
+        .await
     }
 
     pub async fn download_to_path(
@@ -384,15 +407,27 @@ impl TdxClient {
             .then(|| stored_validator.as_deref().map(|value| (existing, value)))
             .flatten();
         let mut response = match self
-            .authenticated_get_with(&self.download_client, url.clone(), 0, attempt)
+            .authenticated_get_with(
+                &self.download_client,
+                url.clone(),
+                0,
+                attempt,
+                Dataset::Static,
+            )
             .await
         {
             Err(TdxClientError::ApiRequest(error))
                 if attempt.is_some()
                     && error.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) =>
             {
-                self.authenticated_get_with(&self.download_client, url.clone(), 0, None)
-                    .await?
+                self.authenticated_get_with(
+                    &self.download_client,
+                    url.clone(),
+                    0,
+                    None,
+                    Dataset::Static,
+                )
+                .await?
             }
             other => other?,
         };
@@ -401,7 +436,7 @@ impl TdxClient {
             && content_range_start(response.headers()) == Some(existing);
         if attempt.is_some() && !resuming && response.status() == StatusCode::PARTIAL_CONTENT {
             response = self
-                .authenticated_get_with(&self.download_client, url, 0, None)
+                .authenticated_get_with(&self.download_client, url, 0, None, Dataset::Static)
                 .await?;
             resuming = false;
         }
@@ -434,6 +469,8 @@ impl TdxClient {
                 .await
                 .map_err(TdxClientError::DownloadWrite)?;
             bytes_written = bytes_written.saturating_add(chunk.len() as u64);
+            ::metrics::counter!("via_tdx_response_bytes_total", "dataset" => Dataset::Static.as_str())
+                .increment(chunk.len() as u64);
         }
         tokio::io::AsyncWriteExt::flush(&mut file)
             .await
@@ -441,6 +478,40 @@ impl TdxClient {
         let _ = tokio::fs::remove_file(&validator_path).await;
         Ok(bytes_written)
     }
+}
+
+/// Counts a call that failed before any response (timeout, connect, reset); it may still be billed.
+fn record_transport_error(dataset: Dataset) {
+    ::metrics::counter!(
+        "via_tdx_upstream_requests_total",
+        "dataset" => dataset.as_str(),
+        "status" => "error"
+    )
+    .increment(1);
+}
+
+/// Counts one upstream call by dataset and HTTP status and logs its content length. The log and
+/// the labels carry no URL, so no coordinates or ids appear.
+fn record_upstream_call(dataset: Dataset, response: &Response) {
+    let status = response.status().as_u16().to_string();
+    ::metrics::counter!(
+        "via_tdx_upstream_requests_total",
+        "dataset" => dataset.as_str(),
+        "status" => status
+    )
+    .increment(1);
+    if dataset == Dataset::Token || !response.status().is_success() {
+        // Success bodies are counted once read; error and token bodies by declared length.
+        ::metrics::counter!("via_tdx_response_bytes_total", "dataset" => dataset.as_str())
+            .increment(response.content_length().unwrap_or(0));
+    }
+    tracing::debug!(
+        target: "via_server::tdx",
+        dataset = dataset.as_str(),
+        status = response.status().as_u16(),
+        content_length = response.content_length(),
+        "tdx upstream response"
+    );
 }
 
 fn redact_url(mut error: reqwest::Error) -> reqwest::Error {
@@ -615,7 +686,7 @@ mod tests {
         routing::any,
     };
 
-    use super::{TdxClient, TdxCredentials};
+    use super::{Dataset, TdxClient, TdxCredentials};
 
     fn token_response() -> Response<Body> {
         Response::builder()
@@ -848,7 +919,10 @@ mod tests {
             .with_state((Arc::new(expected.clone()), requests.clone()));
         let (client, _) = spawn_client(app).await;
 
-        let response = client.get_bytes("availability", &[]).await.unwrap();
+        let response = client
+            .get_bytes(Dataset::Bus, "availability", &[])
+            .await
+            .unwrap();
 
         assert_eq!(response.as_ref(), expected);
         assert_eq!(requests.load(Ordering::SeqCst), 2);
@@ -862,7 +936,9 @@ mod tests {
             .with_state((Arc::new(b"[]".to_vec()), requests.clone()));
         let (client, _) = spawn_client(app).await;
 
-        let realtime = client.get_json::<serde_json::Value>("live", &[]).await;
+        let realtime = client
+            .get_json::<serde_json::Value>(Dataset::Bus, "live", &[])
+            .await;
 
         assert!(matches!(
             realtime,
@@ -936,7 +1012,7 @@ mod tests {
             .with_state((tokens.clone(), calls.clone()));
         let (client, _) = spawn_client(app).await;
 
-        client.get_bytes("live", &[]).await.unwrap();
+        client.get_bytes(Dataset::Bus, "live", &[]).await.unwrap();
 
         assert_eq!(tokens.load(Ordering::SeqCst), 2);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -961,7 +1037,175 @@ mod tests {
         }));
         let (client, _) = spawn_client(app).await;
 
-        assert!(client.get_bytes("live", &[]).await.is_err());
+        assert!(client.get_bytes(Dataset::Bus, "live", &[]).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn usage_summary_keeps_only_tdx_counters() {
+        let rendered =
+            "# TYPE x counter\nother_total 1\nvia_tdx_response_bytes_total{dataset=\"static\"} 5\n";
+        assert_eq!(
+            crate::tdx::usage_summary(rendered),
+            "via_tdx_response_bytes_total{dataset=\"static\"} 5"
+        );
+    }
+
+    #[tokio::test]
+    async fn counts_each_retry_attempt() {
+        let (_guard, handle) = recorded_metrics();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(any(rate_limited_once))
+            .with_state((Arc::new(b"[]".to_vec()), requests));
+        let (client, _) = spawn_client(app).await;
+
+        client
+            .get_bytes(Dataset::Bike, "availability", &[])
+            .await
+            .unwrap();
+
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(r#"via_tdx_upstream_requests_total{dataset="bike",status="429"} 1"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"via_tdx_upstream_requests_total{dataset="bike",status="200"} 1"#),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn counts_transport_errors() {
+        let (_guard, handle) = recorded_metrics();
+        let (client, _) = spawn_client(Router::new().fallback(any(status_by_path))).await;
+        let dead = TdxClient::new(
+            TdxCredentials::from_client_credentials("c", "s"),
+            crate::tdx::TdxSettings {
+                token_url: "http://127.0.0.1:1/token".into(),
+                ..client.settings().clone()
+            },
+        )
+        .unwrap();
+
+        let _ = dead.get_bytes(Dataset::Bus, "x", &[]).await;
+
+        assert!(
+            handle
+                .render()
+                .contains(r#"via_tdx_upstream_requests_total{dataset="token",status="error"} 1"#)
+        );
+    }
+
+    fn recorded_metrics() -> (
+        metrics::LocalRecorderGuard<'static>,
+        metrics_exporter_prometheus::PrometheusHandle,
+    ) {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        (
+            metrics::set_default_local_recorder(Box::leak(Box::new(recorder))),
+            handle,
+        )
+    }
+
+    async fn status_by_path(request: Request<Body>) -> Response<Body> {
+        match request.uri().path() {
+            "/token" => token_response(),
+            path if path.ends_with("/limited") => Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(Body::empty())
+                .unwrap(),
+            _ => Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::from(vec![b' '; 10]))
+                .unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn counts_upstream_calls_and_bytes_by_dataset_without_request_data() {
+        let (_guard, handle) = recorded_metrics();
+        let (client, _) = spawn_client(Router::new().fallback(any(status_by_path))).await;
+
+        let _ = client
+            .get_bytes(
+                Dataset::Bus,
+                "v2/Bus/EstimatedTimeOfArrival/City/Taipei",
+                &[("$filter", "StopUID eq 'SECRET'")],
+            )
+            .await;
+        let _ = client
+            .get_bytes(Dataset::Bus, "v2/Bus/Stop/limited", &[])
+            .await;
+        let _ = client.fetch_bytes("v2/Bus/Route/City/Taipei", &[]).await;
+        let rendered = handle.render();
+
+        assert!(
+            rendered.contains(r#"via_tdx_upstream_requests_total{dataset="bus",status="200"} 1"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"via_tdx_upstream_requests_total{dataset="bus",status="429"} 1"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered
+                .contains(r#"via_tdx_upstream_requests_total{dataset="static",status="200"} 1"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"via_tdx_response_bytes_total{dataset="bus"} 10"#),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(r#"via_tdx_response_bytes_total{dataset="static"} 10"#),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("SECRET") && !rendered.contains("Taipei"));
+    }
+
+    #[tokio::test]
+    async fn counts_token_rate_limits() {
+        let (_guard, handle) = recorded_metrics();
+        let app = Router::new().fallback(any(|| async {
+            Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(Body::empty())
+                .unwrap()
+        }));
+        let (client, _) = spawn_client(app).await;
+
+        let _ = client
+            .get_bytes(Dataset::Bike, "v2/Bike/Availability/City/Taipei", &[])
+            .await;
+
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(r#"via_tdx_upstream_requests_total{dataset="token",status="429"} 1"#),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn counts_downloaded_bytes_as_static() {
+        let (_guard, handle) = recorded_metrics();
+        let body = Arc::new(vec![1u8; 2048]);
+        let (client, base_url) =
+            spawn_client(Router::new().fallback(any(mock_response)).with_state(body)).await;
+        let path = partial_download("metric", b"", None);
+
+        client
+            .download_to_path(&format!("{base_url}/feed"), &path, false)
+            .await
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert!(
+            handle
+                .render()
+                .contains(r#"via_tdx_response_bytes_total{dataset="static"} 2048"#)
+        );
     }
 }
