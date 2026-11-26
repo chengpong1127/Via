@@ -365,7 +365,7 @@ fn in_input_order<T>(mut items: Vec<(usize, T)>) -> Vec<T> {
     items.into_iter().map(|(_, item)| item).collect()
 }
 
-async fn walking_cell(
+pub(super) async fn walking_cell(
     matrix_cache: &MatrixCache,
     from: &CorridorAnchor,
     to: &CorridorAnchor,

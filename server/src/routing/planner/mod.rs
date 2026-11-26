@@ -3,6 +3,7 @@ mod tests;
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
+use futures_util::StreamExt;
 use time::OffsetDateTime;
 use tracing::Instrument;
 
@@ -20,13 +21,14 @@ use crate::{
 use super::{
     access,
     cache::{MatrixCache, RouteCache},
-    corridors::{self, Corridor, CorridorSearchStats},
+    corridors::{self, Corridor, CorridorSearchStats, PlannedMovement},
     evaluation::{
         CorridorEvaluationStats, CorridorEvaluator,
         bike::{
             BikeAvailabilityLimits, BikeMovementPolicy, BikeMovementSource,
             BikeShareMovementPlanner, BikeShareSession,
         },
+        walking_cell,
     },
     journey::RealizedJourney,
     model::{
@@ -34,6 +36,29 @@ use super::{
     },
     reconstruct::to_street_coordinate,
 };
+
+async fn prefetch_walking_cells(
+    query: &PlanningQuery,
+    corridors: &[Corridor],
+    matrix_cache: &MatrixCache,
+) {
+    let mut pairs = Vec::new();
+    for corridor in corridors {
+        for (index, edge) in corridor.edges().iter().enumerate() {
+            if !matches!(edge, PlannedMovement::RetainedWalking { .. }) {
+                pairs.push((&corridor.anchors()[index], &corridor.anchors()[index + 1]));
+            }
+        }
+    }
+    futures_util::stream::iter(pairs)
+        .for_each_concurrent(
+            query.limits.max_concurrent_phase2_corridors.clamp(1, 8),
+            |(from, to)| async move {
+                let _ = walking_cell(matrix_cache, from, to).await;
+            },
+        )
+        .await;
+}
 
 #[derive(Clone)]
 pub struct MultimodalPlanner {
@@ -141,11 +166,17 @@ impl MultimodalPlanner {
         let (transit_corridors, search) = self.search_static_corridors(&query)?;
         let mut corridors = vec![Corridor::direct_walking(query.origin, query.destination)];
         corridors.extend(transit_corridors);
+        let matrix_cache = Arc::new(MatrixCache::new(route_cache));
         let (snapshots, mut failures) = query
             .deadline
-            .run(self.load_snapshots(&query, &corridors))
+            .run(async {
+                let (loaded, ()) = tokio::join!(
+                    self.load_snapshots(&query, &corridors),
+                    prefetch_walking_cells(&query, &corridors, matrix_cache.as_ref())
+                );
+                loaded
+            })
             .await??;
-        let matrix_cache = Arc::new(MatrixCache::new(route_cache));
         let bike_session = snapshots.bike_availability.map(|availability| {
             BikeShareSession::new(
                 self.bike_planner.clone(),

@@ -600,3 +600,67 @@ async fn direct_walking_is_evaluated_once_without_transit() {
     assert_eq!(report.journeys.len(), 1);
     assert_eq!(report.stats.evaluation.states_expanded, 1);
 }
+
+struct CountingStreetRouter {
+    routes: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl StreetRouter for CountingStreetRouter {
+    async fn matrix(
+        &self,
+        _query: crate::street::MatrixQuery,
+    ) -> Result<crate::street::MatrixResult, crate::street::StreetRoutingError> {
+        Err(crate::street::StreetRoutingError::Unreachable)
+    }
+
+    async fn route(
+        &self,
+        _query: crate::street::RouteQuery,
+    ) -> Result<crate::street::StreetPath, crate::street::StreetRoutingError> {
+        self.routes.fetch_add(1, Ordering::SeqCst);
+        Err(crate::street::StreetRoutingError::Unreachable)
+    }
+}
+
+struct WaitsForWalkingRoutes {
+    routes: Arc<AtomicUsize>,
+    routes_seen_at_completion: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl TimingSnapshotLoader for WaitsForWalkingRoutes {
+    async fn load_snapshot(&self, _queries: Vec<DepartureQuery>) -> TimingSnapshot {
+        for _ in 0..200 {
+            if self.routes.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        self.routes_seen_at_completion
+            .store(self.routes.load(Ordering::SeqCst), Ordering::SeqCst);
+        TimingSnapshot::default()
+    }
+}
+
+#[tokio::test]
+async fn walking_routes_are_requested_while_the_timing_snapshot_loads() {
+    let routes = Arc::new(AtomicUsize::new(0));
+    let timing = Arc::new(WaitsForWalkingRoutes {
+        routes: routes.clone(),
+        routes_seen_at_completion: AtomicUsize::new(0),
+    });
+    let planner = MultimodalPlanner::new(
+        network(),
+        timing.clone(),
+        Arc::new(CountingStreetRouter { routes }),
+        Arc::new(BikeShareNetwork::new(Vec::new())),
+        Arc::new(crate::providers::UnavailableBikeAvailabilitySource),
+        crate::config::ViaConfig::default().bikeshare,
+        crate::routing::BikeAvailabilityLimits::default(),
+    );
+
+    assert!(planner.plan(query(1), test_routes(&planner)).await.is_ok());
+
+    assert!(timing.routes_seen_at_completion.load(Ordering::SeqCst) > 0);
+}
