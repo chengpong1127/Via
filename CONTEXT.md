@@ -62,7 +62,7 @@ Request-time TDX reads go through the `live` module's `LiveDataSource`: Bus
 arrivals by stop and scope, BikeShare availability by station, Metro boards by
 line/station pair and TRA delays by train number. `DirectLiveData` calls TDX,
 `CachedLiveData` caches records per entity (including empty results), serves
-cached entities during a rate limit and stops calling TDX until it clears, and
+cached entities during a rate limit and stops calling TDX until it clears (a pause that doubles while failures repeat), and
 `GatewayLiveData` reads the same interface over HTTP from the `via-tdx-gateway`
 binary. With `tdx.gateway.url` set, server replicas hold no TDX credentials or
 live cache; the single gateway owns both. The `live` module knows TDX records
@@ -96,7 +96,7 @@ parameters; transit legs carry `intermediate_stops` for the stop countdown and a
 `NavigationTracker` projects fixes forward along each leg, counts down stops,
 raises action-only alerts and flags off-route or missed connections;
 `NavigationModel` re-plans from the current position with a 60 s cooldown to
-respect the TDX rate limit.
+stay well under the per-key TDX limit of the plan (`[tdx.fetch]`).
 
 Names follow the type they hold: a `TransitRuntime` is `transit`, a raw
 `TransitNetwork` is `network`, and a `BikeShareNetwork` is `bike_share`.

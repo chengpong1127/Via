@@ -247,8 +247,9 @@ impl TdxClient {
         max_rate_limit_retries: usize,
         range_from: Option<(u64, &str)>,
     ) -> Result<Response, TdxClientError> {
-        let token = self.access_token_with(client).await?;
+        let mut token = self.access_token_with(client).await?;
         let mut retries = 0;
+        let mut token_refreshed = false;
         loop {
             let mut request = client.get(url.clone()).bearer_auth(&token);
             if let Some((offset, validator)) = range_from {
@@ -260,6 +261,13 @@ impl TdxClient {
                 .send()
                 .await
                 .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))?;
+            if response.status() == StatusCode::UNAUTHORIZED && !token_refreshed {
+                // The key may have been rotated or the token revoked: drop it and retry once.
+                token_refreshed = true;
+                *self.token.lock().await = None;
+                token = self.access_token_with(client).await?;
+                continue;
+            }
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if let Some(delay) = retry_after(response.headers())
                     && retries < max_rate_limit_retries
@@ -483,7 +491,14 @@ fn http_client(
         .map_err(|error| TdxClientError::ApiRequest(redact_url(error)))
 }
 
+/// Longest pause a `Retry-After` header may impose on this process.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    parse_retry_after(headers).map(|delay| delay.min(MAX_RETRY_AFTER))
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
@@ -869,5 +884,71 @@ mod tests {
         assert_eq!(bytes_written, expected_size as u64);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), bytes_written);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn retry_after_is_capped_at_sixty_seconds() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "3600".parse().unwrap());
+        assert_eq!(
+            super::retry_after(&headers),
+            Some(std::time::Duration::from_secs(60))
+        );
+        headers.insert("retry-after", "7".parse().unwrap());
+        assert_eq!(
+            super::retry_after(&headers),
+            Some(std::time::Duration::from_secs(7))
+        );
+    }
+
+    /// Answers 401 to the first API call, and counts token requests.
+    async fn unauthorized_once(
+        State((tokens, calls)): State<(Arc<AtomicUsize>, Arc<AtomicUsize>)>,
+        request: Request<Body>,
+    ) -> Response<Body> {
+        if request.uri().path() == "/token" {
+            tokens.fetch_add(1, Ordering::SeqCst);
+            return token_response();
+        }
+        let status = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::OK
+        };
+        Response::builder()
+            .status(status)
+            .body(Body::from("{}"))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_401_drops_the_cached_token_and_retries_once() {
+        let tokens = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(any(unauthorized_once))
+            .with_state((tokens.clone(), calls.clone()));
+        let (client, _) = spawn_client(app).await;
+
+        client.get_bytes("live", &[]).await.unwrap();
+
+        assert_eq!(tokens.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_second_401_is_an_error_not_a_loop() {
+        let app = Router::new().fallback(any(|request: Request<Body>| async move {
+            if request.uri().path() == "/token" {
+                return token_response();
+            }
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .unwrap()
+        }));
+        let (client, _) = spawn_client(app).await;
+
+        assert!(client.get_bytes("live", &[]).await.is_err());
     }
 }

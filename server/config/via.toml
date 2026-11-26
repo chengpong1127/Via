@@ -71,7 +71,7 @@ max_rate_limit_retries = 2
 minimum_token_lifetime_seconds = 60
 token_refresh_margin_seconds = 30
 bike_catalog_page_size = 1000
-rate_limit_backoff_seconds = 30
+rate_limit_backoff_seconds = 3
 
 [tdx.fetch]
 requests_per_minute = 4

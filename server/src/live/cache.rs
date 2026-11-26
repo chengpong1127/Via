@@ -13,6 +13,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use super::{
     BikeAvailabilityRecord, BusArrival, LiveBatch, LiveDataSource, MetroBoard, MetroPair, TraDelay,
     UnavailableReason,
+    backoff::{Breaker, Failure},
 };
 use crate::tdx::TdxSettings;
 
@@ -25,8 +26,7 @@ pub struct CachedLiveData {
     bike: EntityCache<String, BikeAvailabilityRecord>,
     metro: EntityCache<MetroPair, MetroBoard>,
     tra: EntityCache<String, TraDelay>,
-    blocked_until: Mutex<Option<Instant>>,
-    rate_limit_backoff: Duration,
+    breaker: Mutex<Breaker>,
 }
 
 impl CachedLiveData {
@@ -63,40 +63,51 @@ impl CachedLiveData {
             .reusable_while(move |record: &BikeAvailabilityRecord| {
                 bike_observation_is_current(record, bike_max_age)
             }),
-            blocked_until: Mutex::new(None),
-            rate_limit_backoff: Duration::from_secs(settings.rate_limit_backoff_seconds),
+            breaker: Mutex::new(Breaker::new(Duration::from_secs(
+                settings.rate_limit_backoff_seconds,
+            ))),
         }
     }
 
     fn blocked(&self) -> bool {
-        let mut blocked_until = self.blocked_until.lock().expect("rate limit block lock");
-        match *blocked_until {
-            Some(until) if until > Instant::now() => true,
-            Some(_) => {
-                *blocked_until = None;
-                false
-            }
-            None => false,
-        }
+        self.breaker
+            .lock()
+            .expect("rate limit block lock")
+            .is_blocked(Instant::now())
     }
 
-    fn block(&self, retry_after: Option<Duration>) {
-        let duration = retry_after.unwrap_or(self.rate_limit_backoff);
-        if duration.is_zero() {
+    fn observe_outcome<T, K: Clone>(&self, batch: &LiveBatch<T, K>) {
+        let failure = if batch.is_rate_limited() {
+            Failure::RateLimited
+        } else if batch
+            .unavailable
+            .iter()
+            .any(|unavailable| unavailable.reason == UnavailableReason::UpstreamUnavailable)
+        {
+            Failure::Upstream
+        } else if batch.unavailable.is_empty() {
+            self.breaker
+                .lock()
+                .expect("rate limit block lock")
+                .record_success();
             return;
-        }
+        } else {
+            return;
+        };
+        let pause = self
+            .breaker
+            .lock()
+            .expect("rate limit block lock")
+            .record_failure(Instant::now(), failure, batch.retry_after);
+        let Some(pause) = pause else { return };
         ::metrics::counter!("via_live_rate_limit_blocks_total").increment(1);
         tracing::warn!(
             target: "via_server::live",
-            pause_seconds = duration.as_secs(),
-            retry_after_known = retry_after.is_some(),
-            "TDX rate limit reached; live calls are paused and cached entities stay available"
+            pause_seconds = pause.as_secs(),
+            retry_after_known = batch.retry_after.is_some(),
+            rate_limited = failure == Failure::RateLimited,
+            "TDX live calls failed; live calls are paused and cached entities stay available"
         );
-        let until = Instant::now() + duration;
-        let mut blocked_until = self.blocked_until.lock().expect("rate limit block lock");
-        if blocked_until.is_none_or(|current| current < until) {
-            *blocked_until = Some(until);
-        }
     }
 
     async fn load<K, T, F, Fut>(
@@ -152,9 +163,7 @@ impl CachedLiveData {
             return batch;
         }
         let fetched = fetch(missing.clone()).await;
-        if fetched.is_rate_limited() {
-            self.block(fetched.retry_after);
-        }
+        self.observe_outcome(&fetched);
         let failed = fetched
             .unavailable
             .iter()
