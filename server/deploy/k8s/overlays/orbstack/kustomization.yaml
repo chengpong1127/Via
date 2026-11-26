@@ -6,6 +6,11 @@ images:
   - name: via-server
     newName: via-server
     newTag: dev
+replicas:
+  - name: server
+    count: 1
+  - name: valhalla
+    count: 1
 patches:
   - path: local-image.yaml
   - path: volumes.yaml

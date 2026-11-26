@@ -31,6 +31,8 @@ All from `server/`:
 
 Only one TDX consumer may run: the request budget is per key (the free tier is 5 requests per minute), so do not run `via-data fetch` or a second server with the same credentials while testing.
 
+The overlay runs one `server` and one `valhalla` replica (`replicas:` in `overlays/orbstack/kustomization.yaml`; the base and the aws overlay keep 2). Valhalla pods restart often on a loaded Mac, so after any scale change or restart check the pod and, during a data build, the port-forward (`curl -s http://127.0.0.1:8002/status`). While a pod restarts, requests fail until it is Ready again.
+
 ## Reaching it
 
 The overlay makes the `server` Service a LoadBalancer on port 3000. OrbStack publishes it on the Mac's `127.0.0.1` only, not on the Wi-Fi address (verified: the LAN IP refuses connections).
