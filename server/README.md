@@ -80,6 +80,7 @@ The API is then at `http://localhost:3000`; the gateway and Valhalla are
 reachable only inside the cluster. After rebuilding the image, restart the pods
 with `kubectl --context orbstack -n via rollout restart deploy/server deploy/tdx-gateway`.
 Remove everything with `kubectl --context orbstack delete namespace via`.
+A scripted start/update/stop and phone access are in [docs/local-orbstack.md](docs/local-orbstack.md).
 
 The server exposes `POST /v1/journey-plans`, `GET /v1/nearby-stops`,
 `GET /openapi.json`, and `GET /health/street-routing`. Responses are not cached.
