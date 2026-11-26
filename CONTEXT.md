@@ -82,7 +82,9 @@ headway-spaced departures after the last fresh TDX prediction at a stop (two hou
 horizon); these use `FrequencyEstimate` timing with `Fallback` reliability and
 reach the API as `estimated: true` on the transit leg, shown in iOS as 預估班次.
 Sparse Bus stop times never become fabricated scheduled trips; derived segment costs support
-static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
+static search only; `via-data build` rescales them by
+`preprocessing.bus_derived_segment_scale_percent` (measured against TDX vehicle progress)
+because GTFS run times are far shorter than real Taipei bus trips. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
 
 iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient` and always

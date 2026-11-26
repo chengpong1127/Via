@@ -10,6 +10,7 @@ use super::{
     segment_profile::distribute_runtime,
 };
 use crate::data::{build_from_fetch_snapshot, fetch::FetchManifest, via_static::ViaStaticSource};
+use crate::domain::transit::network::SegmentTimeSource;
 use crate::domain::{
     transit::network::{ScheduledStopTime, TransitMode},
     transit::runtime::TransitRuntime,
@@ -389,6 +390,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         crate::config::ViaConfig::default()
             .preprocessing
             .same_stop_transfer_seconds,
+        100,
     )
     .await
     .unwrap();
@@ -554,6 +556,7 @@ async fn build_attaches_estimate_headways_from_bus_schedule_sources() {
         crate::config::ViaConfig::default()
             .preprocessing
             .same_stop_transfer_seconds,
+        100,
     )
     .await
     .unwrap();
@@ -592,7 +595,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -613,7 +617,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -634,7 +639,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -674,6 +680,7 @@ async fn accepts_gtfs_only_fetch_snapshots() {
         crate::config::ViaConfig::default()
             .preprocessing
             .same_stop_transfer_seconds,
+        100,
     )
     .await;
     assert!(build.is_ok());
@@ -703,7 +710,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -725,7 +733,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -747,7 +756,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -776,6 +786,7 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
         config.preprocessing.bike_access,
         config.preprocessing.transfers,
         config.preprocessing.same_stop_transfer_seconds,
+        100,
     )
     .await
     .unwrap();
@@ -788,4 +799,84 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
     std::fs::remove_file(input).unwrap();
     std::fs::remove_dir_all(snapshot).unwrap();
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
+async fn scales_derived_bus_segments_and_leaves_scheduled_timing_alone() {
+    let input = temporary_path("scale-input.zip");
+    let snapshot = temporary_path("scale-fetch");
+    write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
+    let street = FakeStreetRouter::builder().build();
+    let build = |percent: u32, label: &'static str| {
+        let snapshot = snapshot.clone();
+        let street = &street;
+        async move {
+            build_from_fetch_snapshot(
+                &snapshot,
+                &temporary_path(label),
+                street,
+                crate::config::ViaConfig::default()
+                    .preprocessing
+                    .bike_access,
+                crate::config::ViaConfig::default().preprocessing.transfers,
+                crate::config::ViaConfig::default()
+                    .preprocessing
+                    .same_stop_transfer_seconds,
+                percent,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let unscaled = build(100, "scale-100").await;
+    let scaled = build(250, "scale-250").await;
+
+    let segments = |built: &crate::data::BuildOutput, mode: TransitMode| {
+        let network = &built.via_static.transit;
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+        let mut rows = network
+            .patterns
+            .iter()
+            .filter(|pattern| runtime.required_route(&pattern.route_id).mode == mode)
+            .flat_map(|pattern| {
+                pattern
+                    .static_profile
+                    .segments
+                    .iter()
+                    .map(move |segment| (pattern.id.clone(), segment.seconds, segment.source))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            left.0
+                .as_str()
+                .cmp(right.0.as_str())
+                .then(left.1.cmp(&right.1))
+        });
+        rows
+    };
+    let before = segments(&unscaled, TransitMode::Bus);
+    let after = segments(&scaled, TransitMode::Bus);
+    assert!(!before.is_empty());
+    assert!(before.iter().any(|row| row.2 == SegmentTimeSource::Derived));
+    for (old, new) in before.iter().zip(after.iter()) {
+        assert_eq!(old.0, new.0);
+        match old.2 {
+            SegmentTimeSource::Derived | SegmentTimeSource::Estimated => {
+                assert_eq!(new.1, (old.1 * 5).div_ceil(2), "{old:?}")
+            }
+            SegmentTimeSource::Schedule => assert_eq!(new.1, old.1, "{old:?}"),
+        }
+    }
+    assert_eq!(
+        segments(&unscaled, TransitMode::Metro),
+        segments(&scaled, TransitMode::Metro)
+    );
+    assert_ne!(
+        unscaled.via_static.transit.static_network_revision,
+        scaled.via_static.transit.static_network_revision,
+        "the timing change must change the static network revision"
+    );
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
 }

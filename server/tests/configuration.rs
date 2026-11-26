@@ -85,6 +85,10 @@ fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
             "request_timeout_ms = 9223372036854775807",
         ),
         TOML.replace("max_sources = 64", "max_sources = 0"),
+        TOML.replace(
+            "bus_derived_segment_scale_percent = 290",
+            "bus_derived_segment_scale_percent = 0",
+        ),
         TOML.replace("degraded_seconds = 360", "degraded_seconds = 119"),
         TOML.replace("max_targets = 64", "max_targets = 8"),
         TOML.replace(

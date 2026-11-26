@@ -66,6 +66,7 @@ pub struct AccessSettings {
 #[serde(deny_unknown_fields)]
 pub struct PreprocessingSettings {
     pub same_stop_transfer_seconds: u32,
+    pub bus_derived_segment_scale_percent: u32,
     pub transfers: TransferSettings,
     pub bike_access: BikeAccessPolicy,
 }
@@ -214,6 +215,10 @@ impl ViaConfig {
             (
                 "preprocessing.same_stop_transfer_seconds",
                 self.preprocessing.same_stop_transfer_seconds as u64,
+            ),
+            (
+                "preprocessing.bus_derived_segment_scale_percent",
+                self.preprocessing.bus_derived_segment_scale_percent as u64,
             ),
             ("server.port", self.server.port as u64),
             ("server.request_timeout_ms", self.server.request_timeout_ms),

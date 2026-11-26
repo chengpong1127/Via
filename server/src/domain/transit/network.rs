@@ -284,6 +284,32 @@ impl Default for TransitNetwork {
 }
 
 impl TransitNetwork {
+    /// Rescales the Bus segment times that are not timetable data (`Derived` from GTFS run
+    /// times and `Estimated` from distance). `Schedule` segments and other modes are untouched.
+    pub fn scale_bus_segment_estimates(&mut self, percent: u32) {
+        if percent == 100 {
+            return;
+        }
+        let bus_routes = self
+            .routes
+            .iter()
+            .filter(|route| route.mode == TransitMode::Bus)
+            .map(|route| &route.id)
+            .collect::<HashSet<_>>();
+        for pattern in &mut self.patterns {
+            if !bus_routes.contains(&pattern.route_id) {
+                continue;
+            }
+            for segment in &mut pattern.static_profile.segments {
+                if segment.source != SegmentTimeSource::Schedule {
+                    segment.seconds = (u64::from(segment.seconds) * u64::from(percent))
+                        .div_ceil(100)
+                        .min(u64::from(u32::MAX)) as u32;
+                }
+            }
+        }
+    }
+
     pub fn new(
         service_day_boundary: Time,
         stops: Vec<TransitStop>,
