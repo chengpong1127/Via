@@ -7,7 +7,7 @@ use super::{
     BikeAvailabilityRecord, BusArrival, LiveBatch, LiveDataSource, MetroBoard, MetroPair, TraDelay,
     UnavailableReason,
 };
-use crate::tdx::{TdxClient, TdxClientError, is_bike_city, odata_in_filter};
+use crate::tdx::{Dataset, TdxClient, TdxClientError, is_bike_city, odata_in_filter};
 
 const BUS_ARRIVAL_PATH: &str = "v2/Bus/EstimatedTimeOfArrival/City";
 const BIKE_AVAILABILITY_PATH: &str = "v2/Bike/Availability/City";
@@ -48,7 +48,7 @@ impl DirectLiveData {
         let filter = odata_in_filter("StopUID", stops);
         let payload = self
             .tdx
-            .get_json::<serde_json::Value>(path, &[("$filter", filter.as_str())])
+            .get_json::<serde_json::Value>(Dataset::Bus, path, &[("$filter", filter.as_str())])
             .await
             .map_err(Failure::from)?;
         let rows = payload
@@ -68,6 +68,7 @@ impl DirectLiveData {
         let boards = self
             .tdx
             .get_json::<Vec<TdxMetroLiveBoard>>(
+                Dataset::Metro,
                 METRO_LIVE_BOARD_PATH,
                 &[
                     ("$filter", filter.as_str()),
@@ -143,6 +144,7 @@ impl LiveDataSource for DirectLiveData {
             match self
                 .tdx
                 .get_json::<Vec<BikeAvailabilityRecord>>(
+                    Dataset::Bike,
                     &path,
                     &[
                         ("$format", "JSON"),
@@ -185,6 +187,7 @@ impl LiveDataSource for DirectLiveData {
         match self
             .tdx
             .get_json::<TdxTraTrainLiveBoardResponse>(
+                Dataset::Tra,
                 TRA_TRAIN_LIVE_BOARD_PATH,
                 &[("$filter", filter.as_str()), ("$format", "JSON")],
             )

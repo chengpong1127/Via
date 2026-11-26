@@ -140,6 +140,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
+    // The job has no scrape endpoint, so its TDX usage counters are printed at the end (also on
+    // failure) and end up in the job's journal.
+    let handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .ok();
+    let result = run_fetch(args, settings).await;
+    if let Some(handle) = handle {
+        println!(
+            "tdx usage:\n{}",
+            via_server::tdx::usage_summary(&handle.render())
+        );
+    }
+    result
+}
+
+async fn run_fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
     let client = TdxClient::new(tdx_credentials()?, settings.tdx.clone())?;
     let api_base_url = url::Url::parse(&settings.tdx.api_base_url)?;
     let sources = FetchSources::production(

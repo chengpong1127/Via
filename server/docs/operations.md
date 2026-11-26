@@ -52,7 +52,7 @@ Container logs are NOT shipped. Grafana Cloud free keeps logs for 14 days and th
 ### Metric gaps (server code, not changed here)
 
 - There is no end-to-end HTTP request duration or status-code metric. "Plan latency" uses `via_planner_multimodal_search_duration_seconds` (the search phase only; buckets go up to 30s). Request-level latency is in the structured `elapsed_ms` log field only.
-- There is no TDX 429 counter for the static or token paths, only live data (`via_live_rate_limit_blocks_total`, `via_bus_timing_rate_limited_requests_total`).
+- Every upstream TDX call (live, static fetch, token) is counted with its HTTP status in `via_tdx_upstream_requests_total{dataset,status}`, so static and token 429s are visible there. `via_live_rate_limit_blocks_total` and `via_bus_timing_rate_limited_requests_total` still count live 429 pauses.
 - The artifact fetch metric is written by `via-fetch-metric` (an `ExecStopPost` drop-in on `via-artifact-fetch.service`) to `/var/lib/via/textfile/via_artifact_fetch.prom`. It exists only after the first timer run (or `systemctl start via-artifact-fetch.service`).
 
 ## Dashboards and queries to watch
@@ -64,6 +64,7 @@ Explore (Grafana Cloud) queries:
 - Search p50/p95: `histogram_quantile(0.95, sum by (le) (rate(via_planner_multimodal_search_duration_seconds_bucket[10m])))`
 - TDX 429 pauses: `sum(increase(via_live_rate_limit_blocks_total[1h]))`; bus 429s: `sum(increase(via_bus_timing_rate_limited_requests_total[1h]))`
 - TDX upstream calls by dataset: `sum by (dataset) (rate(via_live_upstream_requests_total[5m]))`; gateway latency: `histogram_quantile(0.95, sum by (dataset, le) (rate(via_tdx_gateway_request_seconds_bucket[10m])))`
+- TDX calls by dataset and status: `sum by (dataset, status) (increase(via_tdx_upstream_requests_total[1h]))`; response bytes: `sum by (dataset) (increase(via_tdx_response_bytes_total[1d]))` (see "TDX points per day" below)
 - Memory available: `node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes`
 - Disk free: `via_disk_avail_bytes / via_disk_size_bytes`
 - CPU: `1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))` (planning is CPU-bound; sustained near 1 means capacity)
@@ -127,3 +128,21 @@ Container logs are read on the node, never exported:
     journalctl -u k3s -u via-artifact-fetch.service --since "1 hour ago"
 
 The privacy policy keeps infrastructure logs (IP and timestamp only, no coordinates) for at most 7 days. This is enforced on the node: journald `MaxRetentionSec=6day`, kubelet log rotation (5Mi x 2) with a daily cleanup of rotated pod logs older than 6 days (details: deploy-aws.md section 10). Traefik access logs are off, and metrics carry no request data. Do not add a log shipper, enable access logs, or add request-derived labels without reviewing this bound. If a hard age bound on active log files is needed, restart the deployments weekly.
+
+## TDX points per day
+
+TDX bills monthly points from calls and bytes together. On the Basic category 1,500 calls = 1 point and 150 MB = 1 point (Advanced: 200 calls and 20 MB per point; confirm the category of each endpoint in the TDX member center, usage statistics). Via exports two counters, labelled only by `dataset` (`bus`, `bike`, `metro`, `tra`, `static`, `token`) and `status`, never by location or user:
+
+- `via_tdx_upstream_requests_total{dataset,status}`: every upstream call, including 429s; `status="error"` marks a call that failed before any response (timeout, connect), which TDX may still bill.
+- `via_tdx_response_bytes_total{dataset}`: body bytes received (streamed GTFS downloads count under `static`). Successful bodies are counted as read; error and token bodies by their declared `Content-Length` (0 if absent).
+
+The `static` and `token` counters come from the one-off `via-data fetch` job, which has no scrape endpoint. It prints the `via_tdx_*` totals as a `tdx usage:` block at the end of every run (also on failure); read them in the job journal (`journalctl -u via-artifact-fetch`). They are not in Grafana. The gateway and server export `bus`, `bike`, `metro` and `tra` on `/metrics`.
+
+Estimated points per day (Basic):
+
+```
+sum(increase(via_tdx_upstream_requests_total[1d])) / 1500
+  + sum(increase(via_tdx_response_bytes_total[1d])) / 150e6   # approximately; TDX may mean MiB (5% more)
+```
+
+Multiply by 30 for the month and compare with the plan's points. Bytes are measured after decompression, so the figure may overstate what TDX bills if the transfer is compressed. A 429 call is counted as a call; TDX may or may not bill it. `via_tdx_response_bytes_total` resets on restart; `increase()` handles that. Per-call content length is also logged at debug level (`via_server::tdx`, fields `dataset`, `status`, `content_length`, no URL).
