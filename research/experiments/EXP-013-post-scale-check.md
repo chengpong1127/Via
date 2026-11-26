@@ -51,3 +51,10 @@ overall (275 would centre it); the spread between legs (p10-p90 0.58-1.26) is fa
 - #49 (scale 290) meets the B28 targets except the est-win count, which is a consequence, not a failure (fewer fake wins).
 - Possible follow-up: percent 275 centres the held-out ratio (0.95 to about 1.0). Not worth a PR before the peak-hour runs.
 - Missing-peak runs: the A2 scheduler (`tools/a2_snap.py`) is queued for 21:00 and tomorrow 08:00, 12:30, 15:00, 17:30, 18:30.
+
+## Addendum 2026-11-26 21:45: evening ride-time ratio on the scale-290 artifact
+A2 snapshots at 21:00 (default key) and 21:45 (experiment key, which works: 8 GETs + token), `results/exp012-a2-2100.jsonl.gz`, `exp012-a2-2145.jsonl.gz`:
+5,917 observations, median actual/model 0.92 (p10 0.64, p90 1.17); hour 20: 0.96 (n=675), hour 21: 0.92 (n=5,242); Taipei 0.97, New Taipei 0.85.
+So evening buses run about 5 percent faster than midday (0.95-0.96), well inside the 15 percent band; peak hours are still unmeasured.
+The A2 scheduler now uses the experiment key (`A2_ENV`, `A2_SLEEP=6`): snapshots at 08:00, 08:30, 12:30, 15:00, 17:30, 18:30 on 2026-11-27, 9 requests each.
+TDX request log for this evening: 2 snapshots = 18 requests (9 on the default key, 9 on the experiment key).
