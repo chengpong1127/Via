@@ -8,6 +8,7 @@ resources:
   - network-policies.yaml
   - traefik-config.yaml
   - nightly-static.yaml
+  - monitoring
 images:
   - name: via-server
     newName: ghcr.io/chengpong1127/via-server

@@ -151,12 +151,32 @@ kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=300
 if command -v systemctl >/dev/null 2>&1 && [ -d /opt/via/server/deploy/aws/artifacts ]; then
   install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.service /etc/systemd/system/
   install -m 0644 /opt/via/server/deploy/aws/artifacts/via-artifact-fetch.timer /etc/systemd/system/
+  install -m 0755 /opt/via/server/deploy/aws/bootstrap/via-fetch-metric.sh /usr/local/sbin/via-fetch-metric
+  mkdir -p "$DATA_DIR/textfile"
+  write_if_changed /etc/systemd/system/via-artifact-fetch.service.d/metrics.conf '[Service]
+ExecStopPost=/usr/local/sbin/via-fetch-metric' || true
+  install -m 0755 /opt/via/server/deploy/aws/bootstrap/via-disk-metric.sh /usr/local/sbin/via-disk-metric
+  write_if_changed /etc/systemd/system/via-disk-metric.service '[Unit]
+Description=Write disk usage as a node textfile metric
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/via-disk-metric' || true
+  write_if_changed /etc/systemd/system/via-disk-metric.timer '[Unit]
+Description=Update disk usage metric every minute
+
+[Timer]
+OnCalendar=minutely
+
+[Install]
+WantedBy=timers.target' || true
   systemctl daemon-reload
-  systemctl enable --now via-artifact-fetch.timer
+  systemctl enable --now via-artifact-fetch.timer via-disk-metric.timer
   install -m 0644 /opt/via/server/deploy/aws/artifacts/via-static-activate.service /etc/systemd/system/
   install -m 0644 /opt/via/server/deploy/aws/artifacts/via-static-activate.path /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now via-static-activate.path
+  systemctl start --no-block via-disk-metric.service
 fi
 
 echo "k3s ${K3S_VERSION} and cert-manager ${CERT_MANAGER_VERSION} ready"

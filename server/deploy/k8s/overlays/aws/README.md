@@ -35,7 +35,7 @@ There is no HTTP to HTTPS redirect: plain HTTP is only used for the ACME challen
 
 The `allow-traefik-to-acme-solver` policy lets Traefik reach cert-manager's HTTP-01 solver pods (port 8089) despite the default deny.
 
-Only `/v1/*`, `/openapi.json` and `/health/ready` are routed; `/metrics` is never exposed. NetworkPolicies deny all ingress in `via` except Traefik (kube-system) to server:3000, server to tdx-gateway:3100 and server to valhalla:8002.
+Only `/v1/*`, `/openapi.json` and `/health/ready` are routed; `/metrics` is never exposed. NetworkPolicies deny all ingress in `via` except Traefik (kube-system) to server:3000, server to tdx-gateway:3100 server to valhalla:8002, and the `alloy` pod to the server and tdx-gateway metrics ports (`allow-alloy-to-metrics`). Alloy (`monitoring/`, see `server/docs/operations.md`) needs the out-of-band Secret `grafana-cloud` (keys `url`, `user`, `token`).
 
 The `memory` limit is 2Gi on the server (request 1Gi); tdx-gateway stays at one replica with `Recreate` so only one process talks to TDX.
 

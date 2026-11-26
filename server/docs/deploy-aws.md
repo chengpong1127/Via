@@ -121,6 +121,10 @@ The 05:00 `via-artifact-fetch.timer` now refreshes **tiles only** (`fetch.sh --t
 
 `deploy.sh` refuses to apply if the sha is not hex, if the host or email is malformed, or if `api.example.com` / `ops@example.com` / `set-to-git-sha` remain. It builds the overlay in a temp copy, creates the `tdx-credentials` Secret from SSM and applies it. It is safe to re-run.
 
+## 5b. Monitoring
+
+Create the `grafana-cloud` Secret, load the alert rules and add the external uptime check as described in [operations.md](operations.md) (the Alloy pod is part of the overlay and waits for the Secret).
+
 ## 6. TLS check
 
 Create a DNS A record to `public_ip` (automatic when `route53_zone_id` is set), then:
@@ -158,3 +162,5 @@ Infrastructure logs must not outlive 7 days (the privacy policy keeps only IP an
 The honest bound: rotated files are gone within 7 days, and an active log file is bounded by size (5Mi), not by age. A very quiet container could therefore hold lines older than 7 days in its active file until it fills or the pod is replaced (every rollout replaces the pods). At the expected volume (access logs off, only method, path and status logged) this is acceptable; if a hard age bound is required, restart the deployments weekly.
 
 Re-running the script on an existing node rewrites these files only when they differ, restarting journald or k3s only then.
+
+Day-to-day operation, alerts and incident steps: [operations.md](operations.md).

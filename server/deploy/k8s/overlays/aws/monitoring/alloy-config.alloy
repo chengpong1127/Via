@@ -1,0 +1,164 @@
+prometheus.remote_write "grafana_cloud" {
+	external_labels = {
+		cluster = "via-aws",
+	}
+
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_USER")
+			password = sys.env("GRAFANA_CLOUD_TOKEN")
+		}
+
+		queue_config {
+			max_samples_per_send = 2000
+		}
+	}
+}
+
+discovery.kubernetes "pods" {
+	role = "pod"
+
+	namespaces {
+		names = ["via"]
+	}
+
+	selectors {
+		role  = "pod"
+		label = "app in (server,tdx-gateway)"
+	}
+}
+
+discovery.relabel "via_pods" {
+	targets = discovery.kubernetes.pods.targets
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_container_port_name"]
+		regex         = "http"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_phase"]
+		regex         = "Running"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_label_app"]
+		target_label  = "job"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_name"]
+		target_label  = "instance"
+	}
+}
+
+prometheus.scrape "via" {
+	targets         = discovery.relabel.via_pods.output
+	forward_to      = [prometheus.relabel.via.receiver]
+	metrics_path    = "/metrics"
+	scrape_interval = "30s"
+	scrape_timeout  = "10s"
+}
+
+prometheus.relabel "via" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "via_.*|up"
+		action        = "keep"
+	}
+}
+
+prometheus.exporter.blackbox "ready" {
+	config = "{ modules: { http_2xx: { prober: http, timeout: 5s, http: { valid_status_codes: [200], preferred_ip_protocol: ip4 } } } }"
+
+	target {
+		name    = "server"
+		address = "http://server:3000/health/ready"
+		module  = "http_2xx"
+	}
+
+	target {
+		name    = "tdx-gateway"
+		address = "http://tdx-gateway:3100/health/ready"
+		module  = "http_2xx"
+	}
+}
+
+discovery.relabel "ready" {
+	targets = prometheus.exporter.blackbox.ready.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "via-ready"
+	}
+
+	rule {
+		source_labels = ["__param_target"]
+		regex         = "http://([^:/]+):.*"
+		target_label  = "name"
+	}
+}
+
+prometheus.scrape "ready" {
+	targets         = discovery.relabel.ready.output
+	forward_to      = [prometheus.relabel.ready.receiver]
+	scrape_interval = "30s"
+	scrape_timeout  = "10s"
+}
+
+prometheus.relabel "ready" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "probe_success|probe_duration_seconds"
+		action        = "keep"
+	}
+}
+
+prometheus.exporter.unix "node" {
+	procfs_path = "/host/proc"
+	sysfs_path  = "/host/sys"
+
+	set_collectors = ["cpu", "meminfo", "loadavg", "textfile"]
+
+	textfile {
+		directory = "/host/textfile"
+	}
+}
+
+discovery.relabel "node" {
+	targets = prometheus.exporter.unix.node.targets
+
+	rule {
+		target_label = "job"
+		replacement  = "node"
+	}
+
+	rule {
+		target_label = "instance"
+		replacement  = "via-node"
+	}
+}
+
+prometheus.scrape "node" {
+	targets         = discovery.relabel.node.output
+	forward_to      = [prometheus.relabel.node.receiver]
+	scrape_interval = "60s"
+}
+
+prometheus.relabel "node" {
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+
+	rule {
+		source_labels = ["__name__"]
+		regex         = "node_cpu_seconds_total|node_load(1|5|15)|node_memory_(MemTotal|MemAvailable|SwapTotal|SwapFree)_bytes|via_disk_.*|via_artifact_fetch_.*|up"
+		action        = "keep"
+	}
+}
