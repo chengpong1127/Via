@@ -90,6 +90,7 @@ fn summarise(outcome: &PlanningOutcome) -> serde_json::Value {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_dotenv();
+    let _profile = via_server::app::profiling::init(None)?;
     let args: Vec<String> = std::env::args().collect();
     let artifact = load_static_artifact(&PathBuf::from(&args[1]))?;
     let scenarios: Vec<(String, f64, f64, f64, f64)> =
@@ -182,6 +183,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .store(variant.contains("s1"), Ordering::SeqCst);
             via_server::providers::timing::bus::PARALLEL_SCOPES
                 .store(variant.contains("par"), Ordering::SeqCst);
+            via_server::routing::planner::PREFETCH_WALKING
+                .store(variant.contains("pre"), Ordering::SeqCst);
             let variant_before = counter.requests.load(Ordering::SeqCst);
             let started = std::time::Instant::now();
             let outcome = runtime.routing.plan(request.into()).await;
