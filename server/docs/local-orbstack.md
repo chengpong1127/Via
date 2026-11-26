@@ -64,6 +64,8 @@ The static artifact is built on the host (or in the image) against Valhalla, wit
    `bus_derived_segment_scale_percent` (default 290, `config/via.toml`) is applied at build, so rebuild after changing it.
 4. `deploy/orbstack.sh data <new-build-id>`.
 
+Never `rm -rf` anything under `server/data/build` or `server/data/fetch` by hand: builds are shared by all sessions, and the running pods mount the active one.
+
 `via-data build` repoints `data/build/.via-static-latest.json` to the new build.
 
 ## Troubleshooting
