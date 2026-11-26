@@ -64,3 +64,19 @@ Keep `ios/Via/Resources/Localizable.xcstrings` in step with the code. Any change
 that adds, renames, or removes a user-facing string updates the catalog in the same
 commit: add the key with its zh-Hant translation and delete keys the code no longer
 uses. Format-only keys such as `%@ %@` and the app name need no translation.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on chengpong1127/Via. Work lives on an `ai-team:epic` issue with
+task sub-issues (an `ai-team:` role label each) and decision tickets; status is
+GitHub's own issue status (Backlog, Todo, In progress, In review, Done), not
+labels. Things the human must decide or do are `ai-team:human` issues assigned
+to them. The exact commands are in `docs/agents/board.md`.
+
+### Domain docs
+
+Single-context. Read `CONTEXT.md` and any `docs/adr/` entries on the area before
+working; use its terms; flag a contradiction with an ADR. Create them lazily,
+only by PR.
