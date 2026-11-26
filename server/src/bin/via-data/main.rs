@@ -190,6 +190,7 @@ async fn build(args: BuildArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
         settings.preprocessing.bike_access,
         settings.preprocessing.transfers,
         settings.preprocessing.same_stop_transfer_seconds,
+        settings.preprocessing.bus_derived_segment_scale_percent,
     )
     .await?;
     let latest_static = update_latest_static_link(&output)?;

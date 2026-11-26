@@ -40,7 +40,10 @@ is fetched by unique stop and scope and filtered locally.
 GTFS is the only static transit source. TDX Bus Route snapshots supply the
 parent RouteUID of each Bus sub-route for realtime matching, and TDX Bus Schedule
 snapshots supply headways only for the estimates below. Do not fabricate
-scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data.
+scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data;
+`preprocessing.bus_derived_segment_scale_percent` rescales the Bus segment times that are
+not timetable data (`Derived`, `Estimated`) at build time, calibrated from TDX vehicle
+progress, and never touches `Schedule` segments.
 The one allowed departure estimate: for a Bus pattern with no GTFS trips or
 frequencies, after the last fresh TDX prediction at a stop, add departures one
 headway apart (by service period) for at most two hours. They use
