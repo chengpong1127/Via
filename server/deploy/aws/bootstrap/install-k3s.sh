@@ -176,7 +176,7 @@ WantedBy=timers.target' || true
   install -m 0644 /opt/via/server/deploy/aws/artifacts/via-static-activate.path /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now via-static-activate.path
-  systemctl start --no-block via-disk-metric.service via-artifact-fetch.service
+  systemctl start --no-block via-disk-metric.service
 fi
 
 echo "k3s ${K3S_VERSION} and cert-manager ${CERT_MANAGER_VERSION} ready"

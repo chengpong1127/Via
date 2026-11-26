@@ -89,7 +89,7 @@ p95 search time over 8s for 10 minutes, only while there is traffic (more than 0
 More than 20% of plan requests failed over 15 minutes (at least 10 requests). `kubectl -n via logs deploy/server --tail=200 | grep -i error` (logs contain method, path, status and error code, never coordinates). Typical causes: Valhalla down, deadline exceeded under load, bad data build.
 
 ### TdxRateLimited
-TDX returned 429 and the live cache paused all live calls for `Retry-After` (or `rate_limit_backoff_seconds`); plans continue without live data, using cached entities. See the incident steps below.
+TDX returned 429 and the live cache paused all live calls for `Retry-After` (or `rate_limit_backoff_seconds`); plans continue without live data, using cached entities. See the incident steps below. The counter is created lazily on the first 429, so the rule also matches a newly appeared series (otherwise the first 429 after a pod start would go unnoticed).
 
 ### NodeMemoryLow
 Under 10% of the 8 GiB available for 10 minutes. The server limit is 2Gi per pod. `kubectl top pods -A`; look for a restarting or leaking pod (`kubectl -n via get pods` restarts, OOMKilled in `describe`). Restart the offender; if it recurs, lower load or move to a larger instance.

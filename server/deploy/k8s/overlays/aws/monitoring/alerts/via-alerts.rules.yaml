@@ -48,7 +48,12 @@ groups:
           summary: More than 20% of plan requests fail
           runbook: server/docs/operations.md#viaplanfailureshigh
       - alert: TdxRateLimited
-        expr: sum(increase(via_live_rate_limit_blocks_total[15m])) > 0
+        # The counter is created lazily at 1, so increase() misses the first 429
+        # after a pod start; the second branch catches a newly appeared series.
+        expr: |
+          (sum(increase(via_live_rate_limit_blocks_total[15m])) > 0)
+            or
+          (sum(via_live_rate_limit_blocks_total unless via_live_rate_limit_blocks_total offset 15m) > 0)
         labels:
           severity: warning
         annotations:
