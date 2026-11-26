@@ -175,7 +175,7 @@ AWS documents that free-plan accounts can only launch a short list of EC2 types 
 
 ### Which instance fits
 
-Memory limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisional; the in-node build memory from #36 was not yet published), gateway 128 Mi, plus about 1 Gi for k3s, Traefik and cert-manager. Server, Valhalla, gateway and k3s limits sum to about 4.5 Gi (actual use is usually lower). During the nightly build the sum is about 6.5 Gi of 8 GiB, leaving only about 1 Gi of headroom; this is why the build limit must be confirmed by the #36 measurement. On t4g.medium (4 GiB) the build cannot run next to the other pods. Choose:
+Memory limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisional; the in-node build memory from #36 was not yet published), gateway 128 Mi, Alloy (monitoring) 256 Mi, plus about 1 Gi for k3s, Traefik and cert-manager. Server, Valhalla, gateway and k3s limits sum to about 4.75 Gi (actual use is usually lower). During the nightly build the sum is about 6.75 Gi of 8 GiB, leaving only about 1.25 Gi of headroom; this is why the build limit must be confirmed by the #36 measurement. On t4g.medium (4 GiB) the build cannot run next to the other pods. Choose:
 
 - **t4g.large (8 GiB), recommended.** Everything fits including the nightly build.
 - t4g.medium (4 GiB), only with the nightly build moved off the node (GitHub Actions build, then `publish.sh`; the owner decides, see "Open decision"). Saves about US$30 per month. On this node suspend the CronJob, which is otherwise OOM-killed nightly: `kubectl -n via patch cronjob nightly-static -p '{"spec":{"suspend":true}}'` (re-run after each `deploy.sh`, which re-applies it unsuspended).

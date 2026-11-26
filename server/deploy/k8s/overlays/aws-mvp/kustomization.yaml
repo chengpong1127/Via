@@ -1,6 +1,6 @@
 # MVP sizing on top of the aws overlay: one server replica, memory limits sized
 # for a single 8 GiB node (t4g.large). Build with the same image/host edits as
-# the aws overlay (deploy.sh takes the overlay directory name; see deploy-aws.md).
+# the aws overlay (deploy.sh selects this overlay when VIA_PROFILE=mvp; see deploy-aws.md).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
