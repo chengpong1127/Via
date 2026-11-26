@@ -4,7 +4,7 @@
 # in [vt-5, vt+300]. Exact (path, query) match first; Bus ETA requests are answered from the union of that
 # window's records for the same city, filtered locally by the requested StopUID list (so changed fan-out
 # still finds data). Anything else unmatched returns [] and is logged as a miss.
-import json, re, sys, urllib.parse, threading
+import json, os, re, sys, time, urllib.parse, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 REC, VT, PORT = sys.argv[1], sys.argv[2], int(sys.argv[3])
 MISS = sys.argv[4] if len(sys.argv) > 4 else None
@@ -25,6 +25,7 @@ class H(BaseHTTPRequestHandler):
     def _go(self):
         n = int(self.headers.get("Content-Length") or 0)
         if n: self.rfile.read(n)
+        time.sleep(float(os.environ.get("REPLAY_DELAY_MS", "0")) / 1000)
         if self.path.startswith("/token"):
             return self._send(200, '{"access_token":"replay","expires_in":3600}')
         path, _, q = self.path.partition("?")
