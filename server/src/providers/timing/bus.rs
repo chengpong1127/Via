@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::Arc,
     time::Instant,
 };
 
@@ -8,24 +7,21 @@ use async_trait::async_trait;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::bus_realtime::parse_bus_arrivals;
+use super::context::TdxTimingContext;
 use super::live_error::departure_error;
-use super::realtime_check::RealtimeCheck;
 use super::source::TransitDepartureSource;
-use crate::providers::tdx_bindings::TdxProviderBindings;
 use crate::{
     domain::{
         ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
-        realtime::{ArrivalState, FreshnessPolicy, FreshnessState, NormalizedRealtimeValue},
+        realtime::{ArrivalState, FreshnessState, NormalizedRealtimeValue},
         transit::network::TransitMode,
-        transit::runtime::TransitRuntime,
         transit::service::ServicePeriod,
         transit::timing::{
-            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, ScheduleTiming,
-            TimingBasis, TimingReliability,
+            DepartureError, DepartureQuery, EffectiveStopTime, EffectiveTrip, TimingBasis,
+            TimingReliability,
         },
     },
-    live::{CachedLiveData, DirectLiveData, LiveDataSource, UnavailableReason},
-    tdx::{RealtimeSettings, TdxClient},
+    live::UnavailableReason,
 };
 
 struct RealtimeRequestPlan {
@@ -45,50 +41,15 @@ struct RealtimeDepartureResults {
 }
 
 pub struct BusDepartureSource {
-    transit: Arc<TransitRuntime>,
-    live: Arc<dyn LiveDataSource>,
-    schedule: ScheduleTiming,
-    realtime_check: RealtimeCheck,
-    bindings: Arc<TdxProviderBindings>,
+    context: TdxTimingContext,
 }
 
 const ESTIMATE_HORIZON_SECONDS: i64 = 2 * 60 * 60;
+const MINIMUM_HEADWAY_SECONDS: u32 = 60;
 
 impl BusDepartureSource {
-    pub fn new(transit: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Self {
-        let settings = tdx.settings.clone();
-        Self::with_live_data(
-            transit,
-            Arc::new(CachedLiveData::new(
-                Arc::new(DirectLiveData::new(tdx)),
-                &settings,
-            )),
-            &settings.realtime,
-        )
-    }
-
-    pub fn with_live_data(
-        transit: Arc<TransitRuntime>,
-        live: Arc<dyn LiveDataSource>,
-        realtime: &RealtimeSettings,
-    ) -> Self {
-        Self {
-            schedule: ScheduleTiming::new(transit.clone()),
-            transit,
-            live,
-            realtime_check: RealtimeCheck::new(realtime),
-            bindings: Arc::new(TdxProviderBindings::default()),
-        }
-    }
-
-    pub fn with_bindings(mut self, bindings: Arc<TdxProviderBindings>) -> Self {
-        self.bindings = bindings;
-        self
-    }
-
-    pub fn with_freshness_policy(mut self, freshness_policy: FreshnessPolicy) -> Self {
-        self.realtime_check.freshness = freshness_policy;
-        self
+    pub fn new(context: TdxTimingContext) -> Self {
+        Self { context }
     }
 
     fn effective_trip(
@@ -98,8 +59,8 @@ impl BusDepartureSource {
         evidence: Option<NormalizedRealtimeValue>,
     ) -> Option<EffectiveTrip> {
         let estimated = evidence.is_none();
-        let pattern = self.transit.pattern(&query.pattern_id)?;
-        let board_index = query.resolve_board_index(&self.transit).ok()?;
+        let pattern = self.context.transit.pattern(&query.pattern_id)?;
+        let board_index = query.resolve_board_index(&self.context.transit).ok()?;
         let mut stop_times = Vec::<EffectiveStopTime>::with_capacity(pattern.stops.len());
         let mut previous_departure = None;
         for (index, stop_id) in pattern.stops.iter().enumerate() {
@@ -209,6 +170,7 @@ impl BusDepartureSource {
         values: &[NormalizedRealtimeValue],
     ) -> Vec<EffectiveTrip> {
         let Some(headways) = self
+            .context
             .bindings
             .bus_patterns
             .get(&query.pattern_id)
@@ -243,7 +205,7 @@ impl BusDepartureSource {
             else {
                 break;
             };
-            departure_at += TimeDuration::seconds(i64::from(headway.max(60)));
+            departure_at += TimeDuration::seconds(i64::from(headway.max(MINIMUM_HEADWAY_SECONDS)));
             if departure_at > horizon || query.before.is_some_and(|before| departure_at > before) {
                 break;
             }
@@ -350,11 +312,12 @@ impl BusDepartureSource {
         let mut unscoped_queries = 0;
         for query in active_queries {
             let pair = (query.pattern_id.clone(), query.board_stop_id.clone());
-            let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
+            let Some(pattern) = self.context.transit.pattern(&query.pattern_id) else {
                 unscoped_queries += 1;
                 continue;
             };
             let scope = self
+                .context
                 .bindings
                 .bus_patterns
                 .get(&pattern.id)
@@ -396,7 +359,7 @@ impl BusDepartureSource {
         let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
         let mut parent_route_by_service = HashMap::<String, String>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
-            if let Some(binding) = self.bindings.bus_patterns.get(pattern_id) {
+            if let Some(binding) = self.context.bindings.bus_patterns.get(pattern_id) {
                 patterns_by_service
                     .entry(binding.tdx_service_id.clone())
                     .or_default()
@@ -408,7 +371,7 @@ impl BusDepartureSource {
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
-        let batch = self.live.bus_arrivals(scope, &stop_uids).await;
+        let batch = self.context.live.bus_arrivals(scope, &stop_uids).await;
         ::metrics::counter!("via_bus_timing_realtime_http_requests_total")
             .increment(batch.upstream_requests as u64);
         results.http_requests += batch.upstream_requests;
@@ -434,7 +397,7 @@ impl BusDepartureSource {
             &batch.records,
             &patterns_by_service,
             &parent_route_by_service,
-            &self.realtime_check,
+            &self.context.realtime_check,
         ) {
             Ok(values) => values,
             Err(error) => {
@@ -477,17 +440,14 @@ impl TransitDepartureSource for BusDepartureSource {
         &self,
         query: DepartureQuery,
     ) -> Result<Vec<EffectiveTrip>, DepartureError> {
-        let Some(pattern) = self.transit.pattern(&query.pattern_id) else {
-            return Err(DepartureError::InvalidQuery);
-        };
-        if self.transit.required_route(&pattern.route_id).mode != TransitMode::Bus
-            || !pattern.stops.contains(&query.board_stop_id)
-        {
-            return Err(DepartureError::InvalidQuery);
-        }
-        let mut departures = self.schedule.next_departures(query.clone()).await?;
-        departures.extend(self.schedule.next_frequency_departures(query.clone())?);
-        let board_index = query.resolve_board_index(&self.transit)?;
+        query.validate_for(&self.context.transit, TransitMode::Bus)?;
+        let mut departures = self.context.schedule.next_departures(query.clone()).await?;
+        departures.extend(
+            self.context
+                .schedule
+                .next_frequency_departures(query.clone())?,
+        );
+        let board_index = query.resolve_board_index(&self.context.transit)?;
         departures.sort_by(|left, right| {
             left.stop_times[board_index]
                 .departure_at

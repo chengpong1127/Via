@@ -43,6 +43,8 @@ tracing-chrome = "0.7"
 tokio = { version = "1", features = ["test-util"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+log = "0.4"
+tracing-log = "0.2"
 
 [profile.release]
 strip = true

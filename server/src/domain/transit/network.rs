@@ -7,7 +7,6 @@ use crate::domain::ids::{
     BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
 };
 use crate::domain::location::GeoCoordinate;
-use crate::domain::transit::service::{PatternHeadways, ServicePeriod};
 
 pub fn default_service_day_boundary() -> Time {
     Time::from_hms(4, 0, 0).expect("service-day boundary is valid")
@@ -32,6 +31,26 @@ pub enum TransitMode {
     Metro,
     Rail,
     HighSpeedRail,
+}
+
+impl TransitMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bus => "bus",
+            Self::Metro => "metro",
+            Self::Rail => "rail",
+            Self::HighSpeedRail => "high_speed_rail",
+        }
+    }
+
+    pub const fn estimated_speed_kmh(self) -> f64 {
+        match self {
+            Self::Bus => 60.0,
+            Self::Metro => 100.0,
+            Self::Rail => 160.0,
+            Self::HighSpeedRail => 350.0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,14 +113,18 @@ pub struct ServiceCalendar {
 
 impl ServiceCalendar {
     pub fn runs_on(&self, service_day: Date) -> bool {
-        calendar_runs_on(
-            service_day,
-            &self.weekdays,
-            self.start_date,
-            self.end_date,
-            &self.added_dates,
-            &self.removed_dates,
-        )
+        if self.removed_dates.contains(&service_day) {
+            return false;
+        }
+        if self.added_dates.contains(&service_day) {
+            return true;
+        }
+        if self.start_date.is_some_and(|start| service_day < start)
+            || self.end_date.is_some_and(|end| service_day > end)
+        {
+            return false;
+        }
+        self.weekdays.contains(&service_day.weekday())
     }
 }
 
@@ -191,26 +214,14 @@ pub struct TransitFrequency {
     pub template_stop_times: Vec<ScheduledStopTime>,
 }
 
-fn calendar_runs_on(
-    service_day: Date,
-    active_weekdays: &[Weekday],
-    start_date: Option<Date>,
-    end_date: Option<Date>,
-    added_service_days: &[Date],
-    removed_service_days: &[Date],
-) -> bool {
-    if removed_service_days.contains(&service_day) {
-        return false;
-    }
-    if added_service_days.contains(&service_day) {
-        return true;
-    }
-    if start_date.is_some_and(|start| service_day < start)
-        || end_date.is_some_and(|end| service_day > end)
-    {
-        return false;
-    }
-    active_weekdays.contains(&service_day.weekday())
+fn stop_times_are_chronological(stop_times: &[ScheduledStopTime]) -> bool {
+    !(stop_times
+        .last()
+        .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
+        || stop_times.windows(2).any(|times| {
+            times[0].arrival_seconds > times[0].departure_seconds
+                || times[0].departure_seconds > times[1].arrival_seconds
+        }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,11 +262,9 @@ pub struct TransitNetwork {
     pub frequencies: Vec<TransitFrequency>,
 
     #[serde(default)]
-    pub pattern_headways: Vec<PatternHeadways>,
-
-    #[serde(default)]
     pub transfer_edges: Vec<TransferEdge>,
-    pub default_transfer_seconds: u32,
+    #[serde(rename = "default_transfer_seconds")]
+    pub same_stop_transfer_seconds: u32,
 
     #[serde(default)]
     pub static_network_revision: String,
@@ -275,6 +284,32 @@ impl Default for TransitNetwork {
 }
 
 impl TransitNetwork {
+    /// Rescales the Bus segment times that are not timetable data (`Derived` from GTFS run
+    /// times and `Estimated` from distance). `Schedule` segments and other modes are untouched.
+    pub fn scale_bus_segment_estimates(&mut self, percent: u32) {
+        if percent == 100 {
+            return;
+        }
+        let bus_routes = self
+            .routes
+            .iter()
+            .filter(|route| route.mode == TransitMode::Bus)
+            .map(|route| &route.id)
+            .collect::<HashSet<_>>();
+        for pattern in &mut self.patterns {
+            if !bus_routes.contains(&pattern.route_id) {
+                continue;
+            }
+            for segment in &mut pattern.static_profile.segments {
+                if segment.source != SegmentTimeSource::Schedule {
+                    segment.seconds = (u64::from(segment.seconds) * u64::from(percent))
+                        .div_ceil(100)
+                        .min(u64::from(u32::MAX)) as u32;
+                }
+            }
+        }
+    }
+
     pub fn new(
         service_day_boundary: Time,
         stops: Vec<TransitStop>,
@@ -289,9 +324,8 @@ impl TransitNetwork {
             calendars: Vec::new(),
             trips,
             frequencies: Vec::new(),
-            pattern_headways: Vec::new(),
             transfer_edges: Vec::new(),
-            default_transfer_seconds: 120,
+            same_stop_transfer_seconds: 120,
             static_network_revision: String::new(),
             schedule_revision: String::new(),
         }
@@ -318,11 +352,6 @@ impl TransitNetwork {
         self
     }
 
-    pub fn with_pattern_headways(mut self, pattern_headways: Vec<PatternHeadways>) -> Self {
-        self.pattern_headways = pattern_headways;
-        self
-    }
-
     pub fn with_revisions(
         mut self,
         static_network_revision: impl Into<String>,
@@ -334,11 +363,25 @@ impl TransitNetwork {
     }
 
     pub fn validate(&self) -> Result<(), TransitNetworkValidationError> {
-        if self.static_network_revision.trim().is_empty()
-            || self.schedule_revision.trim().is_empty()
-        {
+        if !self.has_revisions() {
             return Err(TransitNetworkValidationError::MissingRevision);
         }
+        let stop_ids = self.validate_stops()?;
+        let route_ids = self.validate_routes()?;
+        self.validate_patterns(&stop_ids, &route_ids)?;
+        let calendar_ids = self.validate_calendars()?;
+        let pattern_by_id = self
+            .patterns
+            .iter()
+            .map(|pattern| (&pattern.id, pattern))
+            .collect::<HashMap<_, _>>();
+        self.validate_trip_shapes(&pattern_by_id, &calendar_ids)?;
+        let frequency_ids = self.validate_frequencies(&pattern_by_id, &calendar_ids)?;
+        self.validate_trip_ids(&frequency_ids)?;
+        self.validate_transfer_edges(&stop_ids)
+    }
+
+    fn validate_stops(&self) -> Result<HashSet<BoardingPointId>, TransitNetworkValidationError> {
         if self.stops.is_empty() {
             return Err(TransitNetworkValidationError::EmptyStops);
         }
@@ -349,16 +392,16 @@ impl TransitNetwork {
                     stop.id.clone(),
                 ));
             }
-            if !stop.coordinate.latitude.is_finite()
-                || !(-90.0..=90.0).contains(&stop.coordinate.latitude)
-                || !stop.coordinate.longitude.is_finite()
-                || !(-180.0..=180.0).contains(&stop.coordinate.longitude)
-            {
+            if !stop.coordinate.validate() {
                 return Err(TransitNetworkValidationError::InvalidStopCoordinate(
                     stop.id.clone(),
                 ));
             }
         }
+        Ok(stop_ids)
+    }
+
+    fn validate_routes(&self) -> Result<HashSet<TransitRouteId>, TransitNetworkValidationError> {
         let mut route_ids = HashSet::new();
         for route in &self.routes {
             if !route_ids.insert(route.id.clone()) {
@@ -367,6 +410,14 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(route_ids)
+    }
+
+    fn validate_patterns(
+        &self,
+        stop_ids: &HashSet<BoardingPointId>,
+        route_ids: &HashSet<TransitRouteId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         let mut pattern_ids = HashSet::new();
         let mut pattern_topologies = HashSet::new();
         for pattern in &self.patterns {
@@ -415,6 +466,12 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_calendars(
+        &self,
+    ) -> Result<HashSet<ServiceCalendarId>, TransitNetworkValidationError> {
         let mut calendar_ids = HashSet::new();
         for calendar in &self.calendars {
             if !calendar_ids.insert(calendar.id.clone()) {
@@ -433,11 +490,14 @@ impl TransitNetwork {
                 ));
             }
         }
-        let pattern_by_id = self
-            .patterns
-            .iter()
-            .map(|pattern| (&pattern.id, pattern))
-            .collect::<HashMap<_, _>>();
+        Ok(calendar_ids)
+    }
+
+    fn validate_trip_shapes(
+        &self,
+        pattern_by_id: &HashMap<&TransitPatternId, &TransitPattern>,
+        calendar_ids: &HashSet<ServiceCalendarId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         for trip in &self.trips {
             let Some(pattern) = pattern_by_id.get(&trip.pattern_id).copied() else {
                 return Err(TransitNetworkValidationError::UnknownTripPattern(
@@ -451,32 +511,20 @@ impl TransitNetwork {
                     trip.id.clone(),
                 ));
             }
-            if trip
-                .stop_times
-                .last()
-                .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
-                || trip.stop_times.windows(2).any(|times| {
-                    times[0].arrival_seconds > times[0].departure_seconds
-                        || times[0].departure_seconds > times[1].arrival_seconds
-                })
-            {
+            if !stop_times_are_chronological(&trip.stop_times) {
                 return Err(TransitNetworkValidationError::NonChronologicalTrip(
                     trip.id.clone(),
                 ));
             }
         }
-        let mut headway_patterns = HashSet::new();
-        for headways in &self.pattern_headways {
-            if !pattern_by_id.contains_key(&headways.pattern_id)
-                || !headway_patterns.insert(&headways.pattern_id)
-                || headways.seconds_by_period.len() != ServicePeriod::ALL.len()
-                || headways.seconds_by_period.contains(&Some(0))
-            {
-                return Err(TransitNetworkValidationError::InvalidPatternHeadways(
-                    headways.pattern_id.clone(),
-                ));
-            }
-        }
+        Ok(())
+    }
+
+    fn validate_frequencies(
+        &self,
+        pattern_by_id: &HashMap<&TransitPatternId, &TransitPattern>,
+        calendar_ids: &HashSet<ServiceCalendarId>,
+    ) -> Result<HashSet<TransitTripId>, TransitNetworkValidationError> {
         let mut frequency_ids = HashSet::new();
         for frequency in &self.frequencies {
             let Some(pattern) = pattern_by_id.get(&frequency.pattern_id).copied() else {
@@ -489,20 +537,20 @@ impl TransitNetwork {
                 || frequency.headway_seconds == 0
                 || frequency.template_stop_times.len() != pattern.stops.len()
                 || !calendar_ids.contains(&frequency.calendar_id)
-                || frequency
-                    .template_stop_times
-                    .last()
-                    .is_some_and(|last| last.arrival_seconds > last.departure_seconds)
-                || frequency.template_stop_times.windows(2).any(|times| {
-                    times[0].arrival_seconds > times[0].departure_seconds
-                        || times[0].departure_seconds > times[1].arrival_seconds
-                })
+                || !stop_times_are_chronological(&frequency.template_stop_times)
             {
                 return Err(TransitNetworkValidationError::InvalidFrequencyShape(
                     frequency.id.clone(),
                 ));
             }
         }
+        Ok(frequency_ids)
+    }
+
+    fn validate_trip_ids(
+        &self,
+        frequency_ids: &HashSet<TransitTripId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         let mut trip_ids = HashSet::new();
         for trip in &self.trips {
             if !trip_ids.insert(trip.id.clone()) || frequency_ids.contains(&trip.id) {
@@ -511,6 +559,13 @@ impl TransitNetwork {
                 ));
             }
         }
+        Ok(())
+    }
+
+    fn validate_transfer_edges(
+        &self,
+        stop_ids: &HashSet<BoardingPointId>,
+    ) -> Result<(), TransitNetworkValidationError> {
         for edge in &self.transfer_edges {
             if !stop_ids.contains(&edge.from) || !stop_ids.contains(&edge.to) {
                 return Err(TransitNetworkValidationError::UnknownTransferEndpoint {
@@ -551,8 +606,6 @@ impl TransitNetwork {
                 .then(left.start_seconds.cmp(&right.start_seconds))
                 .then(left.id.as_str().cmp(right.id.as_str()))
         });
-        self.pattern_headways
-            .sort_by(|left, right| left.pattern_id.as_str().cmp(right.pattern_id.as_str()));
         self.transfer_edges.sort_by(|left, right| {
             left.from
                 .as_str()
@@ -575,8 +628,8 @@ impl TransitNetwork {
             .map(|_| network)
     }
 
-    pub fn revisions(&self) -> (&str, &str) {
-        (&self.static_network_revision, &self.schedule_revision)
+    pub fn has_revisions(&self) -> bool {
+        !self.static_network_revision.trim().is_empty() && !self.schedule_revision.trim().is_empty()
     }
 }
 
@@ -671,12 +724,7 @@ impl TransitNetwork {
                     }
                 }
             }
-            let kmh = match mode {
-                TransitMode::Bus => 60.0,
-                TransitMode::Metro => 100.0,
-                TransitMode::Rail => 160.0,
-                TransitMode::HighSpeedRail => 350.0,
-            };
+            let kmh = mode.estimated_speed_kmh();
             pattern.static_profile.segments = pattern
                 .stops
                 .windows(2)
@@ -755,8 +803,6 @@ pub enum TransitNetworkValidationError {
     UnknownPatternRoute(TransitPatternId),
     #[error("Transit Pattern {0:?} has an invalid static profile")]
     InvalidPatternProfile(TransitPatternId),
-    #[error("Transit Pattern {0:?} has invalid service headways")]
-    InvalidPatternHeadways(TransitPatternId),
     #[error("Transit Pattern {0:?} duplicates another route/direction/stop sequence")]
     DuplicatePatternTopology(TransitPatternId),
     #[error("duplicate Service Calendar {0:?}")]

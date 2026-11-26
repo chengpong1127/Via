@@ -103,7 +103,7 @@ async fn transit_expansion_emits_multiple_departures_before_pruning() {
     );
     let street = fake_street();
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, None);
-    let run = Run::new(&evaluator);
+    let run = CorridorEvaluationRun::new(&evaluator);
     let next = run
         .expand_state(&EvaluationState::initial(&query), &corridor, 1)
         .await
@@ -151,7 +151,7 @@ async fn expansion_preserves_transit_walking_and_bike_successor_order() {
         vec![bike_movement(0, 1, 240)],
     )]));
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-    let run = Run::new(&evaluator);
+    let run = CorridorEvaluationRun::new(&evaluator);
     let state = EvaluationState::initial(&query);
     let next = run.expand_state(&state, &corridor, 1).await.unwrap();
     let kinds = next
@@ -369,7 +369,7 @@ async fn bike_operation_records_local_failures_and_keeps_walking_fallback() {
             expire_deadline: false,
         };
         let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-        let run = Run::new(&evaluator);
+        let run = CorridorEvaluationRun::new(&evaluator);
         let next = run
             .expand_state(&EvaluationState::initial(&query), &corridor, 0)
             .await
@@ -423,7 +423,7 @@ async fn fatal_transit_outcome_skips_both_surface_operations() {
         expire_deadline: false,
     };
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-    let outcome = Run::new(&evaluator)
+    let outcome = CorridorEvaluationRun::new(&evaluator)
         .expand_state(&EvaluationState::initial(&query), &corridor, 0)
         .await;
     assert!(matches!(outcome, Err(RoutingError::Internal(_))));
@@ -459,7 +459,7 @@ async fn fatal_walking_outcome_skips_bike() {
         expire_deadline: false,
     };
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-    let outcome = Run::new(&evaluator)
+    let outcome = CorridorEvaluationRun::new(&evaluator)
         .expand_state(&EvaluationState::initial(&query), &corridor, 1)
         .await;
     assert!(matches!(outcome, Err(RoutingError::DeadlineExceeded)));
@@ -484,7 +484,7 @@ async fn fatal_bike_outcome_keeps_the_earlier_walking_failure() {
         expire_deadline: true,
     };
     let evaluator = test_evaluator(&network, &snapshot, &query, &street, Some(&bike));
-    let run = Run::new(&evaluator);
+    let run = CorridorEvaluationRun::new(&evaluator);
     let outcome = run
         .expand_state(&EvaluationState::initial(&query), &corridor, 0)
         .await;

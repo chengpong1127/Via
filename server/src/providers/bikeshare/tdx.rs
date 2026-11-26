@@ -10,13 +10,10 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use crate::{
     domain::{
         bikeshare::{BikeAvailabilitySnapshot, BikeStationAvailability},
-        ids::BikeStationId,
+        ids::{BikeStationId, bike_station_id},
     },
-    live::{
-        BikeAvailabilityRecord, CachedLiveData, DirectLiveData, LiveBatch, LiveDataSource,
-        UnavailableReason,
-    },
-    tdx::{TdxClient, bike_station_id, tdx_bike_station_parts},
+    live::{BikeAvailabilityRecord, LiveBatch, LiveDataSource, UnavailableReason},
+    tdx::tdx_bike_station_parts,
 };
 
 use crate::domain::bikeshare::{BikeAvailabilityError, BikeAvailabilitySource};
@@ -29,24 +26,6 @@ pub struct TdxBikeAvailabilitySource {
 
 impl TdxBikeAvailabilitySource {
     pub fn new(
-        tdx_client: Arc<TdxClient>,
-        batch_size: usize,
-        settings: crate::tdx::BikeAvailabilitySettings,
-    ) -> Self {
-        let cache = crate::tdx::TdxSettings {
-            bikeshare: settings.clone(),
-            ..tdx_client.settings.clone()
-        };
-        Self::with_live_data(
-            Arc::new(CachedLiveData::new(
-                Arc::new(DirectLiveData::new(tdx_client).with_bike_batch_size(batch_size)),
-                &cache,
-            )),
-            settings,
-        )
-    }
-
-    pub fn with_live_data(
         live: Arc<dyn LiveDataSource>,
         settings: crate::tdx::BikeAvailabilitySettings,
     ) -> Self {
@@ -194,7 +173,7 @@ fn bike_availability_outcome(error: &BikeAvailabilityError) -> &'static str {
 }
 
 fn normalize_record(city: &str, record: BikeAvailabilityRecord) -> Option<BikeStationAvailability> {
-    let station_uid = record.station_uid?.trim().to_owned();
+    let station_uid = record.station_key()?.to_owned();
     if station_uid.is_empty() {
         return None;
     }

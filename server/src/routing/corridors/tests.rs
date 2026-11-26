@@ -121,11 +121,11 @@ fn query(
             max_candidates: 16,
             max_departures_per_query: 3,
             max_journey_duration_seconds: 4 * 60 * 60,
+            max_static_corridors: k,
             ..crate::routing::PlannerLimits::default()
         },
     )
     .with_allowed_transit_modes(modes.iter().copied())
-    .with_max_static_corridors(k)
 }
 
 fn run(network: &TransitNetwork, query: &PlanningQuery) -> Vec<Corridor> {
@@ -751,49 +751,6 @@ fn transfer_cost_prefers_a_direct_ride_over_a_slightly_faster_transfer() {
             .map(pattern_sequence)
             .collect::<Vec<_>>(),
         vec![vec![TransitPatternId::new("direct")]]
-    );
-}
-
-#[test]
-fn expected_wait_prefers_a_running_line_over_a_faster_line_without_service() {
-    let base = network(
-        vec![
-            pattern("commuter", TransitMode::Bus, &["o", "d"]),
-            pattern("frequent", TransitMode::Bus, &["o", "d2"]),
-        ],
-        vec![
-            trip("commuter-trip", "commuter", &[0, 300]),
-            trip("frequent-trip", "frequent", &[0, 400]),
-        ],
-    );
-    let mut query = query("o", "d", &[TransitMode::Bus], 0, 1);
-    query
-        .destination_egress
-        .push(EndpointStop::new(id("d2"), 60, 75));
-    assert_eq!(
-        run(&base, &query)
-            .iter()
-            .map(pattern_sequence)
-            .collect::<Vec<_>>(),
-        vec![vec![TransitPatternId::new("commuter")]]
-    );
-
-    let with_headways = base.with_pattern_headways(vec![
-        crate::domain::transit::service::PatternHeadways {
-            pattern_id: TransitPatternId::new("commuter"),
-            seconds_by_period: vec![None, Some(1800), None, None, None, None],
-        },
-        crate::domain::transit::service::PatternHeadways {
-            pattern_id: TransitPatternId::new("frequent"),
-            seconds_by_period: vec![Some(600); 6],
-        },
-    ]);
-    assert_eq!(
-        run(&with_headways, &query)
-            .iter()
-            .map(pattern_sequence)
-            .collect::<Vec<_>>(),
-        vec![vec![TransitPatternId::new("frequent")]]
     );
 }
 

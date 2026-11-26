@@ -6,6 +6,7 @@ use std::{
 use crate::support::{
     ProviderContractFixture, assert_cancellation_follow_up_succeeds, assert_malformed_response,
     assert_provider_contract, assert_rate_limited, assert_timeout, assert_unreachable,
+    log_capture::capture_trace_logs, street::coordinate,
 };
 use axum::{
     Json, Router,
@@ -18,10 +19,9 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use time::macros::datetime;
 use via_server::{
-    health::DependencyHealth,
     providers::{OperationalEvent, OperationalEventObserver, ValhallaConfig, ValhallaProvider},
     street::{
-        Coordinate, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
+        DependencyHealth, ManeuverKind, MatrixCell, MatrixOrientation, MatrixQuery, RouteQuery,
         RoutingConstraints, RoutingTime, Seconds, StreetRouter, StreetRoutingError,
         StreetTravelMode,
     },
@@ -85,10 +85,6 @@ async fn spawn_fixture() -> (url::Url, FixtureState) {
         url::Url::parse(&format!("http://{address}/")).unwrap(),
         state,
     )
-}
-
-fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
-    Coordinate::try_new(latitude, longitude).unwrap()
 }
 
 fn config(base_url: url::Url) -> ValhallaConfig {
@@ -195,6 +191,47 @@ async fn operational_events_contain_counts_but_never_coordinates_or_paths() {
     assert!(!serialized.contains("25.04776"));
     assert!(!serialized.contains("121.51706"));
     assert!(!serialized.contains("geometry"));
+}
+
+#[tokio::test]
+async fn valhalla_trace_logs_contain_no_request_coordinates() {
+    let (logs, _guard) = capture_trace_logs();
+    let (base_url, _) = spawn_fixture().await;
+    let provider = ValhallaProvider::new(config(base_url)).unwrap();
+    let origin = coordinate(25.04776, 121.51706);
+    let destination = coordinate(25.03396, 121.56447);
+    provider
+        .matrix(MatrixQuery {
+            orientation: MatrixOrientation::OneToMany,
+            constraints: Default::default(),
+            travel_mode: StreetTravelMode::Walking,
+            sources: vec![origin],
+            targets: vec![destination, coordinate(25.03344, 121.53409)],
+        })
+        .await
+        .unwrap();
+    provider
+        .route(RouteQuery {
+            travel_mode: StreetTravelMode::Walking,
+            origin,
+            destination,
+            constraints: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    let text = logs.text();
+    assert!(!text.is_empty(), "the requests must emit trace output");
+    for secret in [
+        "25.04776",
+        "121.51706",
+        "25.03396",
+        "121.56447",
+        "25.03344",
+        "121.53409",
+    ] {
+        assert!(!text.contains(secret), "{secret} leaked into logs:\n{text}");
+    }
 }
 
 #[tokio::test]

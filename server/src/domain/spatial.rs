@@ -31,17 +31,12 @@ impl SpatialPoint for BikeStation {
     }
 }
 
-/// Index of positions in an immutable point slice. Queries must use the same slice
-/// that was indexed. Third-party geometry stays inside this module and location.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SpatialPointIndex {
     tree: RTree<GeomWithData<[f64; 3], usize>>,
 }
 
-// Unit-sphere coordinate conversion and chord calculations can differ by a few
-// ulps. Expand candidate bounds by this conservative absolute chord tolerance
-// (under a micrometre on Earth); final geographic filtering stays exact.
-const CHORD_PADDING: f64 = 64.0 * f64::EPSILON;
+const CHORD_ROUNDING_TOLERANCE: f64 = 64.0 * f64::EPSILON;
 
 impl SpatialPointIndex {
     pub(crate) fn build(points: &[impl SpatialPoint]) -> Self {
@@ -70,7 +65,7 @@ impl SpatialPointIndex {
             .tree
             .locate_within_distance(
                 coordinate.unit_sphere_point(),
-                (chord + CHORD_PADDING).powi(2),
+                (chord + CHORD_ROUNDING_TOLERANCE).powi(2),
             )
             .map(|point| {
                 let index = point.data;

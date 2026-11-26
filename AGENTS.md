@@ -23,8 +23,7 @@ request snapshots.
 discovery and fixed-corridor evaluation. Each round adds one ride; keep the best
 corridor for each ride count, then the cheapest corridor for each set of transit
 modes, plus near-best corridors up to `max_static_corridors`,
-weighting transfers with the ranking transfer buffers and each boarding with the
-expected wait from static headways, without an expansion cap.
+weighting transfers with the ranking transfer buffers, without an expansion cap.
 Include the direct walking corridor outside that set and evaluate it first. Skip transit search when no transit mode is selected;
 `selected_modes` contains only optional non-walking modes. All corridors use one
 evaluation pass. Expand Transit, Walking, then BikeShare and collect feasible
@@ -38,10 +37,21 @@ and identity; reconstruction consumes it directly. Do not add a RouteGraph to
 the canonical path. Static transfer shortcut lookups are directional; Bus realtime
 is fetched by unique stop and scope and filtered locally.
 
-GTFS is the only static source of transit topology and trips. TDX Bus Schedule
-snapshots only supply static headways for Bus routes that have no GTFS trips and the
-parent RouteUID of each Bus sub-route for realtime matching. Do not
-fabricate scheduled Bus trips from sparse stop times or headways. Derived segment costs are not timetable data. BikeShare station
+GTFS is the only static transit source. TDX Bus Route snapshots supply the
+parent RouteUID of each Bus sub-route for realtime matching, and TDX Bus Schedule
+snapshots supply headways only for the estimates below. Do not fabricate
+scheduled Bus trips from sparse stop times. Derived segment costs are not timetable data;
+`preprocessing.bus_derived_segment_scale_percent` rescales the Bus segment times that are
+not timetable data (`Derived`, `Estimated`) at build time, calibrated from TDX vehicle
+progress, and never touches `Schedule` segments.
+The one allowed departure estimate: for a Bus pattern with no GTFS trips or
+frequencies, after the last fresh TDX prediction at a stop, add departures one
+headway apart (by service period) for at most two hours. They use
+`FrequencyEstimate` timing with `Fallback` reliability, are never scheduled trips,
+and the leg carries `estimated: true` in the API and a visible label in iOS. A real
+prediction or scheduled trip always wins; never add estimates without a fresh
+prediction anchor. GTFS inexact frequencies (`FrequencyEstimate`) carry
+`estimated: true` too. BikeShare station
 metadata requires local TDX snapshots; availability remains request-time data.
 Preserve direct GTFS-to-TDX identifier mapping and report unmapped IDs; do not add
 a database or identity-reconciliation layer.
@@ -57,3 +67,19 @@ Keep `ios/Via/Resources/Localizable.xcstrings` in step with the code. Any change
 that adds, renames, or removes a user-facing string updates the catalog in the same
 commit: add the key with its zh-Hant translation and delete keys the code no longer
 uses. Format-only keys such as `%@ %@` and the app name need no translation.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on chengpong1127/Via. Work lives on an `ai-team:epic` issue with
+task sub-issues (an `ai-team:` role label each) and decision tickets; status is
+GitHub's own issue status (Backlog, Todo, In progress, In review, Done), not
+labels. Things the human must decide or do are `ai-team:human` issues assigned
+to them. The exact commands are in `docs/agents/board.md`.
+
+### Domain docs
+
+Single-context. Read `CONTEXT.md` and any `docs/adr/` entries on the area before
+working; use its terms; flag a contradiction with an ADR. Create them lazily,
+only by PR.

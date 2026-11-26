@@ -10,6 +10,7 @@ use super::{
     segment_profile::distribute_runtime,
 };
 use crate::data::{build_from_fetch_snapshot, fetch::FetchManifest, via_static::ViaStaticSource};
+use crate::domain::transit::network::SegmentTimeSource;
 use crate::domain::{
     transit::network::{ScheduledStopTime, TransitMode},
     transit::runtime::TransitRuntime,
@@ -84,13 +85,14 @@ fn write_fetch_snapshot(gtfs: &PathBuf, snapshot: &PathBuf) {
         ViaStaticSource {
             source_id: source_id.to_owned(),
             source_url: None,
-            sha256: crate::data::sha256_hex(&bytes),
+            sha256: crate::data::fetch::sha256_hex(&bytes),
             byte_size: bytes.len() as u64,
         }
     };
     let manifest = FetchManifest {
         manifest_version: 1,
         fetched_at: "2026-09-28T00:00:00Z".to_owned(),
+        reused_sources: BTreeMap::new(),
         sources: BTreeMap::from([
             ("gtfs".to_owned(), source(&gtfs_path, "local-gtfs-file")),
             (
@@ -117,8 +119,26 @@ fn refresh_fetch_source(snapshot: &Path, source_name: &str) {
     let source = manifest.sources.get_mut(source_name).unwrap();
     let source_path = snapshot.join(crate::data::fetch::source_file_name(source_name).unwrap());
     let bytes = std::fs::read(source_path).unwrap();
-    source.sha256 = crate::data::sha256_hex(&bytes);
+    source.sha256 = crate::data::fetch::sha256_hex(&bytes);
     source.byte_size = bytes.len() as u64;
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+}
+
+fn add_fetch_source(snapshot: &Path, source_name: &str, source_id: &str) {
+    let manifest_path = snapshot.join("manifest.json");
+    let mut manifest =
+        serde_json::from_slice::<FetchManifest>(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let source_path = snapshot.join(crate::data::fetch::source_file_name(source_name).unwrap());
+    let bytes = std::fs::read(source_path).unwrap();
+    manifest.sources.insert(
+        source_name.to_owned(),
+        ViaStaticSource {
+            source_id: source_id.to_owned(),
+            source_url: None,
+            sha256: crate::data::fetch::sha256_hex(&bytes),
+            byte_size: bytes.len() as u64,
+        },
+    );
     std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
 }
 
@@ -370,6 +390,7 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
         crate::config::ViaConfig::default()
             .preprocessing
             .same_stop_transfer_seconds,
+        100,
     )
     .await
     .unwrap();
@@ -514,6 +535,47 @@ async fn builds_network_timing_and_via_transfers_ignoring_gtfs_transfers() {
 }
 
 #[tokio::test]
+async fn build_attaches_estimate_headways_from_bus_schedule_sources() {
+    let input = temporary_path("headway-input.zip");
+    let snapshot = temporary_path("headway-fetch");
+    let output = temporary_path("headway-output");
+    write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
+    let schedule = r#"[{"SubRouteUID":"THB123","Direction":0,"Frequencys":[{"StartTime":"09:00","EndTime":"16:00","MinHeadwayMins":10,"MaxHeadwayMins":10,"ServiceDay":{"Monday":1,"Tuesday":1,"Wednesday":1,"Thursday":1,"Friday":1,"Saturday":1,"Sunday":1}}]}]"#;
+    std::fs::write(snapshot.join("bus-schedule-taipei.json"), schedule).unwrap();
+    add_fetch_source(&snapshot, "bus-schedule-taipei", "tdx-bus-schedule-city");
+
+    let built = build_from_fetch_snapshot(
+        &snapshot,
+        &output,
+        &FakeStreetRouter::builder().build(),
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .bike_access,
+        crate::config::ViaConfig::default().preprocessing.transfers,
+        crate::config::ViaConfig::default()
+            .preprocessing
+            .same_stop_transfer_seconds,
+        100,
+    )
+    .await
+    .unwrap();
+
+    let bindings = &built.via_static.provider_bindings.bus_patterns;
+    assert_eq!(built.diagnostics.bus_estimate_headways, bindings.len());
+    for binding in bindings.values() {
+        assert_eq!(
+            binding.headway_seconds_by_period
+                [crate::domain::transit::service::ServicePeriod::WeekdayDay.index()],
+            Some(600)
+        );
+    }
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
 async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
     let input = temporary_path("strict-input.zip");
     write_gtfs_fixture(&input);
@@ -533,7 +595,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -554,7 +617,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -575,7 +639,8 @@ async fn rejects_incomplete_untracked_and_mismatched_fetch_snapshots() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -615,6 +680,7 @@ async fn accepts_gtfs_only_fetch_snapshots() {
         crate::config::ViaConfig::default()
             .preprocessing
             .same_stop_transfer_seconds,
+        100,
     )
     .await;
     assert!(build.is_ok());
@@ -644,7 +710,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -666,7 +733,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -688,7 +756,8 @@ async fn rejects_malformed_manifest_bike_json_and_gtfs_zip() {
             crate::config::ViaConfig::default().preprocessing.transfers,
             crate::config::ViaConfig::default()
                 .preprocessing
-                .same_stop_transfer_seconds
+                .same_stop_transfer_seconds,
+            100,
         )
         .await
         .is_err()
@@ -717,11 +786,12 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
         config.preprocessing.bike_access,
         config.preprocessing.transfers,
         config.preprocessing.same_stop_transfer_seconds,
+        100,
     )
     .await
     .unwrap();
     let artifact = crate::data::load_static_artifact(&output.join(".via-static.json")).unwrap();
-    assert_eq!(built.via_static.transit.default_transfer_seconds, 75);
+    assert_eq!(built.via_static.transit.same_stop_transfer_seconds, 75);
     assert_eq!(
         TransitRuntime::new(std::sync::Arc::new(artifact.transit)).same_stop_transfer_seconds(),
         75
@@ -729,4 +799,84 @@ async fn configured_same_stop_transfer_buffer_is_embedded_in_built_artifacts() {
     std::fs::remove_file(input).unwrap();
     std::fs::remove_dir_all(snapshot).unwrap();
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[tokio::test]
+async fn scales_derived_bus_segments_and_leaves_scheduled_timing_alone() {
+    let input = temporary_path("scale-input.zip");
+    let snapshot = temporary_path("scale-fetch");
+    write_gtfs_fixture(&input);
+    write_fetch_snapshot(&input, &snapshot);
+    let street = FakeStreetRouter::builder().build();
+    let build = |percent: u32, label: &'static str| {
+        let snapshot = snapshot.clone();
+        let street = &street;
+        async move {
+            build_from_fetch_snapshot(
+                &snapshot,
+                &temporary_path(label),
+                street,
+                crate::config::ViaConfig::default()
+                    .preprocessing
+                    .bike_access,
+                crate::config::ViaConfig::default().preprocessing.transfers,
+                crate::config::ViaConfig::default()
+                    .preprocessing
+                    .same_stop_transfer_seconds,
+                percent,
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let unscaled = build(100, "scale-100").await;
+    let scaled = build(250, "scale-250").await;
+
+    let segments = |built: &crate::data::BuildOutput, mode: TransitMode| {
+        let network = &built.via_static.transit;
+        let runtime = TransitRuntime::new(std::sync::Arc::new(network.clone()));
+        let mut rows = network
+            .patterns
+            .iter()
+            .filter(|pattern| runtime.required_route(&pattern.route_id).mode == mode)
+            .flat_map(|pattern| {
+                pattern
+                    .static_profile
+                    .segments
+                    .iter()
+                    .map(move |segment| (pattern.id.clone(), segment.seconds, segment.source))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            left.0
+                .as_str()
+                .cmp(right.0.as_str())
+                .then(left.1.cmp(&right.1))
+        });
+        rows
+    };
+    let before = segments(&unscaled, TransitMode::Bus);
+    let after = segments(&scaled, TransitMode::Bus);
+    assert!(!before.is_empty());
+    assert!(before.iter().any(|row| row.2 == SegmentTimeSource::Derived));
+    for (old, new) in before.iter().zip(after.iter()) {
+        assert_eq!(old.0, new.0);
+        match old.2 {
+            SegmentTimeSource::Derived | SegmentTimeSource::Estimated => {
+                assert_eq!(new.1, (old.1 * 5).div_ceil(2), "{old:?}")
+            }
+            SegmentTimeSource::Schedule => assert_eq!(new.1, old.1, "{old:?}"),
+        }
+    }
+    assert_eq!(
+        segments(&unscaled, TransitMode::Metro),
+        segments(&scaled, TransitMode::Metro)
+    );
+    assert_ne!(
+        unscaled.via_static.transit.static_network_revision,
+        scaled.via_static.transit.static_network_revision,
+        "the timing change must change the static network revision"
+    );
+    std::fs::remove_file(input).unwrap();
+    std::fs::remove_dir_all(snapshot).unwrap();
 }

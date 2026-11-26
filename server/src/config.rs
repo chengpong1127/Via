@@ -26,7 +26,6 @@ impl Environment {
         Self::from_str(&value)
     }
 
-    /// Matches the live-routing CLI's existing default when VIA_ENV is absent.
     pub fn from_env_or_development() -> Result<Self, ConfigError> {
         match env::var("VIA_ENV") {
             Ok(value) => Self::from_str(&value),
@@ -90,15 +89,12 @@ pub enum ConfigError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConfig {
-    pub environment: Environment,
     pub static_path: PathBuf,
     pub port: u16,
 }
 
 impl ServerConfig {
     pub fn from_settings(settings: &ViaConfig) -> Result<Self, ConfigError> {
-        let environment = Environment::required_from_env()?;
-        settings.validate_environment(environment)?;
         let static_path = env::var_os("VIA_STATIC")
             .map(PathBuf::from)
             .or_else(|| settings.server.static_path.clone())
@@ -107,15 +103,13 @@ impl ServerConfig {
             return Err(ConfigError::MissingStaticPath);
         }
         Ok(Self {
-            environment,
             static_path,
             port: settings.server.port,
         })
     }
 }
 
-pub fn tdx_credentials(settings: &TdxSettings) -> Result<TdxCredentials, ConfigError> {
-    parse_url("tdx.api_base_url", &settings.api_base_url)?;
+pub fn tdx_credentials() -> Result<TdxCredentials, ConfigError> {
     Ok(TdxCredentials::from_client_credentials(
         required_credential("TDX_CLIENT_ID")?,
         required_credential("TDX_CLIENT_SECRET")?,
@@ -134,12 +128,10 @@ impl RuntimeConfig {
         environment: Environment,
         settings: ViaConfig,
     ) -> Result<Self, ConfigError> {
-        settings.validate_environment(environment)?;
         let tdx = match settings.tdx.gateway.url {
             Some(_) => None,
-            None => Some(tdx_credentials(&settings.tdx)?),
+            None => Some(tdx_credentials()?),
         };
-        parse_url("valhalla.base_url", &settings.valhalla.base_url)?;
         Ok(Self {
             environment,
             tdx,

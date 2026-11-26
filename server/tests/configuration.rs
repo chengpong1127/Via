@@ -7,7 +7,7 @@ const TOML: &str = include_str!("../config/via.toml");
 #[test]
 fn tracked_configuration_preserves_routing_and_provider_defaults() {
     let settings = ViaConfig::from_toml(TOML).unwrap();
-    let limits = settings.journey_limits();
+    let limits = settings.journey_limits(Environment::Production);
     assert_eq!(limits.planner.max_transfers, 4);
     assert_eq!(limits.planner.max_static_corridors, 24);
     assert_eq!(limits.planner.max_concurrent_phase2_states, 4);
@@ -15,7 +15,18 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
     assert_eq!(limits.planner.max_candidates, 16);
     assert_eq!(limits.planner.max_departures_per_query, 3);
     assert_eq!(limits.planner.max_journey_duration_seconds, 14_400);
-    assert_eq!(limits.request_timeout, Duration::from_secs(10));
+    assert_eq!(limits.request_timeout, Some(Duration::from_secs(10)));
+    assert_eq!(
+        settings
+            .journey_limits(Environment::Development)
+            .request_timeout,
+        None
+    );
+    assert_eq!(
+        settings.server.http_timeout(Environment::Production),
+        Some(Duration::from_secs(15))
+    );
+    assert_eq!(settings.server.http_timeout(Environment::Development), None);
     assert_eq!(
         settings.routing.ranking,
         via_server::domain::ranking::RankingPolicy::default()
@@ -42,6 +53,26 @@ fn tracked_configuration_preserves_routing_and_provider_defaults() {
 }
 
 #[test]
+fn fetch_defaults_pace_below_the_gateway_headroom_and_tolerate_slow_dns() {
+    let fetch = ViaConfig::from_toml(TOML).unwrap().tdx.fetch;
+    assert_eq!(fetch.requests_per_minute, 4);
+    assert_eq!(fetch.connect_timeout_ms, 5000);
+    assert_eq!(fetch.request_timeout_ms, 30000);
+    assert_eq!(fetch.max_attempts, 4);
+    assert_eq!(fetch.retry_backoff_seconds, 5);
+    for (from, to) in [
+        ("requests_per_minute = 4", "requests_per_minute = 0"),
+        ("max_attempts = 4", "max_attempts = 0"),
+        ("connect_timeout_ms = 5000", "connect_timeout_ms = 0"),
+    ] {
+        assert!(
+            ViaConfig::from_toml(&TOML.replace(from, to)).is_err(),
+            "{to}"
+        );
+    }
+}
+
+#[test]
 fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
     for body in [
         "this is not TOML".to_owned(),
@@ -54,6 +85,10 @@ fn rejects_malformed_unknown_negative_zero_and_overflowing_settings() {
             "request_timeout_ms = 9223372036854775807",
         ),
         TOML.replace("max_sources = 64", "max_sources = 0"),
+        TOML.replace(
+            "bus_derived_segment_scale_percent = 290",
+            "bus_derived_segment_scale_percent = 0",
+        ),
         TOML.replace("degraded_seconds = 360", "degraded_seconds = 119"),
         TOML.replace("max_targets = 64", "max_targets = 8"),
         TOML.replace(
@@ -169,7 +204,13 @@ fn changed_toml_reaches_planning_matrix_and_preprocessing_limits() {
             ),
     )
     .unwrap();
-    assert_eq!(config.journey_limits().planner.max_candidates, 7);
+    assert_eq!(
+        config
+            .journey_limits(Environment::Development)
+            .planner
+            .max_candidates,
+        7
+    );
     assert_eq!(
         config.valhalla.provider_config(false).unwrap().max_sources,
         96
@@ -424,7 +465,7 @@ fn reconstruction_concurrency_is_configurable_and_bounded() {
         assert_eq!(
             ViaConfig::from_toml(&body)
                 .unwrap()
-                .journey_limits()
+                .journey_limits(Environment::Development)
                 .max_concurrent_reconstruction_candidates,
             value
         );

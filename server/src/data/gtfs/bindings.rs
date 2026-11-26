@@ -4,13 +4,12 @@ use gtfs_structures::{RawTrip, Route};
 
 use crate::{
     domain::{
-        ids::{TransitPatternId, TransitTripId},
+        ids::{TransitPatternId, TransitTripId, transit_service_id_for_direction},
         transit::network::{TransitMode, TransitNetwork, TransitStop},
     },
     providers::tdx_bindings::{
         BusPatternBinding, MetroPatternBinding, TdxProviderBindings, TraTripBinding,
     },
-    tdx::transit_service_id_for_direction,
 };
 
 use super::GtfsBuildDiagnostics;

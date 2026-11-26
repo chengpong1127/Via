@@ -1,22 +1,17 @@
 use std::{
-    collections::BTreeMap,
     fs,
-    io::Read,
     path::{Path, PathBuf},
 };
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use thiserror::Error;
-use time::format_description::well_known::Rfc3339;
 
-use crate::data::via_static::{ViaStaticCounts, ViaStaticRevisions, ViaStaticSource};
-use crate::domain::{bikeshare::BikeShareNetwork, transit::network::TransitNetwork};
 use crate::street::StreetRouter;
 
 pub mod bike_access;
 pub mod bikeshare_catalog;
 pub mod bus_headways;
+pub mod bus_routes;
 pub mod fetch;
 pub mod gtfs;
 pub mod static_transfers;
@@ -29,7 +24,6 @@ pub struct BuildDiagnostics {
     pub gtfs: GtfsBuildDiagnostics,
     pub static_transfers: Option<static_transfers::TransferStatistics>,
     pub bike_access: Option<bike_access::BikeAccessDiagnostics>,
-    pub headways: bus_headways::HeadwayDiagnostics,
     pub bus_parent_routes: usize,
     pub bus_estimate_headways: usize,
 }
@@ -67,26 +61,27 @@ pub async fn build_from_fetch_snapshot(
     bike_policy: bike_access::BikeAccessPolicy,
     transfer_policy: static_transfers::TransferSettings,
     same_stop_transfer_seconds: u32,
+    bus_derived_segment_scale_percent: u32,
 ) -> Result<BuildOutput, DataError> {
-    let fetch_inputs = read_fetch_inputs(input)?;
+    let snapshot = fetch::read_snapshot(input)?;
     let bike_share = bikeshare_catalog::parse_tdx_station_catalog(
-        fetch_inputs
+        snapshot
             .bike_station_catalogs
             .iter()
             .map(|(city, body)| (city.as_str(), body.as_str())),
     )?;
-    let sources = fetch_inputs.manifest.sources.clone();
 
-    let (mut network, mut provider_bindings, gtfs) = gtfs::build_network(&fetch_inputs.gtfs_path)?;
+    let (mut network, mut provider_bindings, gtfs) = gtfs::build_network(&snapshot.gtfs_path)?;
     let bus_parent_routes =
-        bus_headways::attach_parent_routes(&mut provider_bindings, &fetch_inputs.bus_schedules);
-    network.default_transfer_seconds = same_stop_transfer_seconds;
-    let (weekday, weekend) = headway_reference_days(&fetch_inputs.manifest.fetched_at)?;
-    let (pattern_headways, headways) =
-        bus_headways::pattern_headways(&network, &fetch_inputs.bus_schedules, weekday, weekend);
-    network.pattern_headways = pattern_headways;
-    let bus_estimate_headways =
-        bus_headways::attach_estimate_headways(&mut provider_bindings, &network);
+        bus_routes::attach_parent_routes(&mut provider_bindings, &snapshot.bus_routes);
+    let bus_estimate_headways = attach_bus_headways(
+        &mut provider_bindings,
+        &network,
+        &snapshot.bus_schedules,
+        &snapshot.manifest.fetched_at,
+    );
+    network.same_stop_transfer_seconds = same_stop_transfer_seconds;
+    network.scale_bus_segment_estimates(bus_derived_segment_scale_percent);
     let static_transfers = static_transfers::enrich_network_with_static_transfers(
         &mut network,
         street,
@@ -100,271 +95,45 @@ pub async fn build_from_fetch_snapshot(
             bike_access::precompute_bike_access(&network, bike_share, street, bike_policy).await?;
         (network, Some(diagnostics))
     };
-    finish_gtfs_build(
-        output,
+    let via_static = ViaStatic::compose(
         network,
         provider_bindings,
         bike_share,
-        fetch_inputs.manifest.fetched_at,
-        sources,
-        BuildDiagnostics {
-            gtfs,
-            static_transfers: Some(static_transfers),
-            bike_access,
-            headways,
-            bus_parent_routes,
-            bus_estimate_headways,
-        },
-    )
-}
-
-struct FetchInputs {
-    manifest: fetch::FetchManifest,
-    gtfs_path: PathBuf,
-    bike_station_catalogs: Vec<(String, String)>,
-    bus_schedules: Vec<bus_headways::BusSchedule>,
-}
-
-fn headway_reference_days(fetched_at: &str) -> Result<(time::Date, time::Date), DataError> {
-    let fetched = time::OffsetDateTime::parse(fetched_at, &Rfc3339)
-        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?
-        .to_offset(crate::domain::taipei_offset())
-        .date();
-    let next = |weekday: time::Weekday| {
-        let days_ahead = (7 + weekday.number_days_from_monday()
-            - fetched.weekday().number_days_from_monday())
-            % 7;
-        fetched + time::Duration::days(i64::from(days_ahead))
-    };
-    Ok((
-        next(time::Weekday::Wednesday),
-        next(time::Weekday::Saturday),
-    ))
-}
-
-fn read_fetch_inputs(input: &Path) -> Result<FetchInputs, DataError> {
-    let required_files = ["gtfs.zip", "manifest.json"]
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
-    let mut actual_files = std::collections::HashSet::new();
-    for entry in fs::read_dir(input).map_err(|error| DataError::Io(input.into(), error))? {
-        let entry = entry.map_err(|error| DataError::Io(input.into(), error))?;
-        let filename = entry.file_name().into_string().map_err(|_| {
-            DataError::InvalidFetchSnapshot("snapshot contains a non-UTF-8 filename".to_owned())
-        })?;
-        if !required_files.contains(filename.as_str())
-            && !crate::tdx::BIKE_CITIES
-                .iter()
-                .any(|(_, slug)| filename == format!("bike-stations-{slug}.json"))
-            && !bus_headways::BUS_SCHEDULE_CITIES
-                .iter()
-                .any(|(_, slug)| filename == format!("bus-schedule-{slug}.json"))
-        {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "untracked source file {filename}"
-            )));
-        }
-        if !entry
-            .file_type()
-            .map_err(|error| DataError::Io(input.into(), error))?
-            .is_file()
-        {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "snapshot entry {filename} is not a regular file"
-            )));
-        }
-        actual_files.insert(filename);
-    }
-    if !required_files
-        .iter()
-        .all(|filename| actual_files.contains(*filename))
-    {
-        let missing_files = required_files
-            .iter()
-            .filter(|filename| !actual_files.contains(**filename))
-            .copied()
-            .collect::<Vec<_>>();
-        return Err(DataError::InvalidFetchSnapshot(format!(
-            "snapshot is missing required files: {}",
-            missing_files.join(", ")
-        )));
-    }
-
-    let manifest_path = input.join("manifest.json");
-    let manifest_body = fs::read_to_string(&manifest_path)
-        .map_err(|error| DataError::Io(manifest_path.clone(), error))?;
-    let manifest = serde_json::from_str::<fetch::FetchManifest>(&manifest_body)
-        .map_err(|error| DataError::InvalidFetchSnapshot(error.to_string()))?;
-    if manifest.manifest_version != 1
-        || time::OffsetDateTime::parse(&manifest.fetched_at, &Rfc3339).is_err()
-    {
-        return Err(DataError::InvalidFetchSnapshot(
-            "unsupported manifest version or invalid fetch timestamp".to_owned(),
-        ));
-    }
-    if !manifest.sources.contains_key("gtfs") {
-        return Err(DataError::InvalidFetchSnapshot(
-            "manifest must contain a gtfs source".to_owned(),
-        ));
-    }
-    let expected_files = manifest
-        .sources
-        .keys()
-        .filter_map(|name| fetch::source_file_name(name))
-        .chain(std::iter::once("manifest.json".to_owned()))
-        .collect::<std::collections::HashSet<_>>();
-    if expected_files != actual_files {
-        return Err(DataError::InvalidFetchSnapshot(
-            "snapshot files do not match manifest sources".to_owned(),
-        ));
-    }
-    let mut bike_station_catalogs = Vec::new();
-    let mut bus_schedules = Vec::new();
-    for (source_name, source) in &manifest.sources {
-        if source.source_id.trim().is_empty()
-            || source.sha256.len() != 64
-            || !source.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "{source_name} has invalid provenance metadata"
-            )));
-        }
-        let filename = fetch::source_file_name(source_name).ok_or_else(|| {
-            DataError::InvalidFetchSnapshot(format!("unknown source {source_name}"))
-        })?;
-        let source_path = input.join(filename);
-        let metadata = fs::metadata(&source_path)
-            .map_err(|error| DataError::Io(source_path.clone(), error))?;
-        if source.byte_size != metadata.len() || source.sha256 != sha256_file(&source_path)? {
-            return Err(DataError::InvalidFetchSnapshot(format!(
-                "{source_name} does not match its fetch provenance"
-            )));
-        }
-        if let Some(city) = fetch::bike_station_city(source_name) {
-            bike_station_catalogs.push((
-                city.to_owned(),
-                fs::read_to_string(&source_path)
-                    .map_err(|error| DataError::Io(source_path.clone(), error))?,
-            ));
-        }
-        if fetch::is_bus_schedule_source(source_name) {
-            let body = fs::read(&source_path)
-                .map_err(|error| DataError::Io(source_path.clone(), error))?;
-            bus_schedules.extend(
-                serde_json::from_slice::<Vec<bus_headways::BusSchedule>>(&body).map_err(
-                    |error| DataError::InvalidFetchSnapshot(format!("{source_name}: {error}")),
-                )?,
-            );
-        }
-    }
-
-    let gtfs_path = input.join("gtfs.zip");
-    Ok(FetchInputs {
-        manifest,
-        gtfs_path,
-        bike_station_catalogs,
-        bus_schedules,
-    })
-}
-
-fn finish_gtfs_build(
-    output: &Path,
-    network: TransitNetwork,
-    provider_bindings: crate::providers::tdx_bindings::TdxProviderBindings,
-    bike_share_network: BikeShareNetwork,
-    fetched_at: String,
-    sources: BTreeMap<String, ViaStaticSource>,
-    diagnostics: BuildDiagnostics,
-) -> Result<BuildOutput, DataError> {
-    let static_revision = revision_for_network(&network, false)?;
-    let schedule_revision = revision_for_network(&network, true)?;
-    let network = network.with_revisions(static_revision.clone(), schedule_revision.clone());
-    let bike_share_revision = revision_for_bike_share_network(&bike_share_network)?;
-    let bike_share_network = bike_share_network.with_revision(bike_share_revision.clone());
-    let via_static = ViaStatic {
-        schema_version: crate::data::via_static::VIA_STATIC_SCHEMA_VERSION,
-        fetched_at,
-        sources,
-        revisions: ViaStaticRevisions {
-            transit_static: static_revision,
-            schedule: schedule_revision,
-            bike_share: bike_share_revision,
-        },
-        counts: ViaStaticCounts {
-            stops: network.stops.len(),
-            routes: network.routes.len(),
-            patterns: network.patterns.len(),
-            trips: network.trips.len(),
-            calendars: network.calendars.len(),
-            frequencies: network.frequencies.len(),
-            transfers: network.transfer_edges.len(),
-            bike_stations: bike_share_network.stations.len(),
-            bike_access_links: bike_share_network.access_links.len(),
-        },
-        transit: network,
-        provider_bindings,
-        bike_share: bike_share_network,
-    };
-    via_static.validate()?;
+        snapshot.manifest.fetched_at,
+        snapshot.manifest.sources,
+    )?;
     write_json_atomic(&output.join(".via-static.json"), &via_static)?;
     Ok(BuildOutput {
         via_static,
-        diagnostics,
+        diagnostics: BuildDiagnostics {
+            gtfs,
+            static_transfers: Some(static_transfers),
+            bike_access,
+            bus_parent_routes,
+            bus_estimate_headways,
+        },
     })
 }
 
-fn sha256_file(path: &Path) -> Result<String, DataError> {
-    let mut file = fs::File::open(path).map_err(|error| DataError::Io(path.into(), error))?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0; 1024 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| DataError::Io(path.into(), error))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
+fn attach_bus_headways(
+    bindings: &mut crate::providers::tdx_bindings::TdxProviderBindings,
+    network: &crate::domain::transit::network::TransitNetwork,
+    schedules: &[bus_headways::BusSchedule],
+    fetched_at: &str,
+) -> usize {
+    let Ok(fetched_at) =
+        time::OffsetDateTime::parse(fetched_at, &time::format_description::well_known::Rfc3339)
+    else {
+        return 0;
+    };
+    let (weekday, weekend) = bus_headways::estimate_service_days(fetched_at);
+    let (headways, _) = bus_headways::pattern_headways(network, schedules, weekday, weekend);
+    bus_headways::attach_estimate_headways(bindings, network, &headways)
 }
 
 pub fn load_static_artifact(path: &Path) -> Result<ViaStatic, DataError> {
     let body = fs::read_to_string(path).map_err(|error| DataError::Io(path.into(), error))?;
     ViaStatic::from_json(&body).map_err(DataError::InvalidViaStatic)
-}
-
-fn revision_for_network(network: &TransitNetwork, schedule: bool) -> Result<String, DataError> {
-    let mut network = network.clone();
-    network.static_network_revision.clear();
-    network.schedule_revision.clear();
-    if schedule {
-        network.stops.clear();
-        network.routes.clear();
-        network.patterns.clear();
-        network.transfer_edges.clear();
-    } else {
-        network.trips.clear();
-        network.calendars.clear();
-        network.frequencies.clear();
-    }
-    let bytes = serde_json::to_vec(&network.canonicalize())
-        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
-    Ok(format!("sha256:{}", sha256_hex(&bytes)))
-}
-
-fn revision_for_bike_share_network(network: &BikeShareNetwork) -> Result<String, DataError> {
-    let mut network = network.clone();
-    network.static_network_revision.clear();
-    let bytes = serde_json::to_vec(&network.canonicalize())
-        .map_err(|error| DataError::InvalidArtifactJson(error.to_string()))?;
-    Ok(format!("sha256:{}", sha256_hex(&bytes)))
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut digest = Sha256::new();
-    digest.update(bytes);
-    format!("{:x}", digest.finalize())
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), DataError> {

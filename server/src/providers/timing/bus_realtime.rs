@@ -5,14 +5,14 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use super::realtime_check::RealtimeCheck;
 use crate::{
     domain::{
-        ids::{BoardingPointId, TransitPatternId},
-        realtime::{ArrivalEstimate, ArrivalState, LiveStatusTimes, NormalizedRealtimeValue},
+        ids::{
+            BoardingPointId, TransitPatternId, boarding_point_id, tdx_sub_route_uid,
+            transit_service_id, transit_service_id_for_direction,
+        },
+        realtime::{ArrivalEstimate, ArrivalState, NormalizedRealtimeValue},
         transit::timing::DepartureError,
     },
     live::BusArrival,
-    tdx::{
-        boarding_point_id, tdx_sub_route_uid, transit_service_id, transit_service_id_for_direction,
-    },
 };
 
 pub(super) fn parse_bus_arrivals(
@@ -29,13 +29,7 @@ pub(super) fn parse_bus_arrivals(
             continue;
         };
         realtime_check.reject_future(published_at, received_at)?;
-        let freshness = realtime_check.freshness.evaluate(
-            LiveStatusTimes {
-                published_at: Some(published_at),
-                received_at,
-            },
-            received_at,
-        );
+        let freshness = realtime_check.freshness_of(published_at, received_at);
         let Some(service_uid) = record
             .sub_route_uid
             .as_deref()

@@ -18,7 +18,7 @@ use via_server::{
         },
         ids::BikeStationId,
         transit::runtime::TransitRuntime,
-        transit::timing::{EffectiveTrip, TimingSnapshot},
+        transit::timing::{EffectiveTrip, TimingBasis, TimingSnapshot},
     },
     providers::UnavailableBikeAvailabilitySource,
     street::{FakeStreetRouter, StreetTravelMode},
@@ -29,7 +29,7 @@ use super::fixtures::{
     option_for_patterns, request, route_body_inner, route_body_with_bike, route_body_with_sources,
     transit_street,
 };
-use crate::support::routing::{path, stop_coordinate};
+use crate::support::routing::{coordinate, path, stop_coordinate};
 
 #[derive(Clone)]
 struct FixtureAvailabilitySource {
@@ -388,16 +388,11 @@ async fn viable_transit_corridor_competes_with_direct_bike_share() {
     let transit = network();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
-    let pickup = via_server::street::Coordinate::try_new(
-        origin.latitude() + 0.0001,
-        origin.longitude() + 0.0001,
-    )
-    .unwrap();
-    let dropoff = via_server::street::Coordinate::try_new(
+    let pickup = coordinate(origin.latitude() + 0.0001, origin.longitude() + 0.0001);
+    let dropoff = coordinate(
         destination.latitude() - 0.0001,
         destination.longitude() - 0.0001,
-    )
-    .unwrap();
+    );
     let pickup_id = BikeStationId::new("direct-pickup");
     let dropoff_id = BikeStationId::new("direct-dropoff");
     let bike_network = Arc::new(
@@ -493,10 +488,10 @@ async fn viable_transit_corridor_competes_with_direct_bike_share() {
 }
 
 async fn trivial_corridor_bike_options(modes: &[&str]) {
-    let origin = via_server::street::Coordinate::try_new(25.0, 121.5).unwrap();
-    let destination = via_server::street::Coordinate::try_new(25.01, 121.51).unwrap();
-    let pickup = via_server::street::Coordinate::try_new(25.0001, 121.5001).unwrap();
-    let dropoff = via_server::street::Coordinate::try_new(25.0099, 121.5099).unwrap();
+    let origin = coordinate(25.0, 121.5);
+    let destination = coordinate(25.01, 121.51);
+    let pickup = coordinate(25.0001, 121.5001);
+    let dropoff = coordinate(25.0099, 121.5099);
     let pickup_id = BikeStationId::new("direct-pickup");
     let dropoff_id = BikeStationId::new("direct-dropoff");
     let bike_network = Arc::new(
@@ -742,7 +737,6 @@ async fn reconstruction_failure_preserves_direct_walking_without_reloading_snaps
                 calls: availability_calls.clone(),
             }),
             limits,
-            false,
         );
         let request = serde_json::from_value::<via_server::api::PlanningRequest>(request(
             origin,
@@ -903,7 +897,6 @@ async fn ranking_corridor_fixture(iterations: usize) {
         Arc::new(BikeShareNetwork::new(Vec::new())),
         Arc::new(UnavailableBikeAvailabilitySource),
         limits,
-        false,
     );
     let mut stable_key = None;
     let mut latency_us = Vec::new();
@@ -974,4 +967,52 @@ async fn ranking_reconstruction_benchmark() {
         ranking_corridor_fixture(1).await;
     }
     ranking_corridor_fixture(1000).await;
+}
+
+#[tokio::test]
+async fn transit_legs_are_labelled_estimated_only_on_frequency_estimate_timing() {
+    for (basis, estimated) in [
+        (TimingBasis::Schedule, false),
+        (TimingBasis::RealtimePrediction, false),
+        (TimingBasis::FrequencyEstimate, true),
+    ] {
+        let transit = network();
+        let origin = near_stop(&transit, "F-M1");
+        let destination = near_stop(&transit, "F-M2-RED");
+        let runtime = TransitRuntime::new(Arc::new(transit.clone()));
+        let mut snapshot = TimingSnapshot::default();
+        for scheduled in transit
+            .trips
+            .iter()
+            .filter(|trip| trip.pattern_id.as_str() == "fixture-mrt-red")
+        {
+            let mut trip =
+                EffectiveTrip::from_scheduled(&runtime, date!(2026 - 08 - 31), &scheduled.id)
+                    .unwrap();
+            trip.timing_basis = basis;
+            snapshot.insert(trip.pattern_id.clone(), 0, vec![trip]);
+        }
+        let timing = Arc::new(CountingTiming {
+            calls: AtomicUsize::new(0),
+            snapshot,
+        });
+        let body = route_body_with_sources(
+            Arc::new(transit_street(
+                &transit,
+                origin,
+                "F-M1",
+                destination,
+                "F-M2-RED",
+            )),
+            timing,
+            request(origin, destination, &["metro"]),
+            Arc::new(BikeShareNetwork::new(Vec::new())),
+            Arc::new(UnavailableBikeAvailabilitySource),
+        )
+        .await;
+        let option = option_for_patterns(&body, &["fixture-mrt-red"]);
+        let details = &option["legs"][1]["details"];
+        assert_eq!(details["type"], "transit");
+        assert_eq!(details["estimated"], estimated, "{basis:?}");
+    }
 }

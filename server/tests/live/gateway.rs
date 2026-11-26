@@ -202,7 +202,7 @@ fn a_gateway_url_replaces_the_tdx_credentials_requirement() {
     );
 
     assert!(config.is_ok());
-    assert!(via_server::runtime::live_data_source(None, &settings.tdx).is_ok());
+    assert!(via_server::app::runtime::live_data_source(None, &settings.tdx).is_ok());
     settings.tdx.gateway.url = None;
-    assert!(via_server::runtime::live_data_source(None, &settings.tdx).is_err());
+    assert!(via_server::app::runtime::live_data_source(None, &settings.tdx).is_err());
 }

@@ -27,9 +27,7 @@ round adds one ride; it keeps the best corridor for each ride count, then
 the cheapest corridor for each set of transit modes, so optimistic derived Bus
 costs cannot crowd out Metro or Rail, plus near-best corridors up to the
 configured cap, with transfers weighted by the
-ranking buffers. Each boarding also costs half the line's static headway for the
-query's `ServicePeriod` (capped at 15 minutes, or 30 minutes when the line has no
-service in that period); patterns without headways add no wait. Corridor evaluation uses request-local snapshots to evaluate
+ranking buffers. Corridor evaluation uses request-local snapshots to evaluate
 fixed corridors plus the direct walking corridor, which starts first and may
 overlap transit evaluation within the configured concurrency limit. Walking is
 always enabled; selected modes are optional transit and BikeShare modes. With no
@@ -71,18 +69,22 @@ live cache; the single gateway owns both. The `live` module knows TDX records
 only: providers keep the GTFS-to-TDX bindings, schedule fallback and freshness
 policy, and the gateway never loads the static artifact.
 
-`via-data build` consumes local GTFS and optional TDX station and Bus Schedule
+`via-data build` consumes local GTFS and optional TDX station and Bus Route
 snapshots; it does not download them. `via-data fetch` can create source
-snapshots, spacing TDX calls by a minute. The build derives `PatternHeadways` per
-Bus and Metro route and direction for six service periods: from GTFS trips when the
-route has any, otherwise from TDX Bus Schedule timetables and frequencies matched
-directly on SubRouteUID and direction, with unmatched sub-routes reported. Rail
-and High Speed Rail carry no headways. The same snapshots give each Bus binding
-its TDX parent RouteUID, because New Taipei arrival estimates name only the parent
-route; realtime parsing prefers it over guessing the parent from the SubRouteUID.
-Sparse Bus stop
-times never become fabricated scheduled trips; derived segment costs support
-static search only. GTFS IDs map to TDX-derived Via IDs where possible, with
+snapshots, spacing TDX calls by 61 seconds. Bus Route snapshots bind each Bus
+sub-route to its parent RouteUID, because some cities (all of New Taipei) report
+arrival estimates by RouteUID only; realtime matching uses the bound parent and
+falls back to dropping the sub-route's last digit when none is bound. Bus Schedule
+snapshots (eight cities) give each Bus pattern without GTFS trips headways per
+service period, derived on the next Wednesday and the next Saturday on or after the fetch
+date and stored on the Bus binding. At request time the Bus source adds
+headway-spaced departures after the last fresh TDX prediction at a stop (two hour
+horizon); these use `FrequencyEstimate` timing with `Fallback` reliability and
+reach the API as `estimated: true` on the transit leg, shown in iOS as 預估班次.
+Sparse Bus stop times never become fabricated scheduled trips; derived segment costs support
+static search only; `via-data build` rescales them by
+`preprocessing.bus_derived_segment_scale_percent` (measured against TDX vehicle progress)
+because GTFS run times are far shorter than real Taipei bus trips. GTFS IDs map to TDX-derived Via IDs where possible, with
 unmapped IDs reported. There is no identity database.
 
 iOS planning uses `JourneyPlanner → HTTPJourneyPlanner → APIClient` and always
@@ -90,7 +92,7 @@ requests a journey departing now.
 
 iOS navigation runs on-device against the selected journey. Walking and cycling
 guidance carries `geometry_index` (into the leg geometry) and `street_name`
-parameters; transit legs carry `intermediate_stops` for the stop countdown.
+parameters; transit legs carry `intermediate_stops` for the stop countdown and an `estimated` flag.
 `NavigationTracker` projects fixes forward along each leg, counts down stops,
 raises action-only alerts and flags off-route or missed connections;
 `NavigationModel` re-plans from the current position with a 60 s cooldown to

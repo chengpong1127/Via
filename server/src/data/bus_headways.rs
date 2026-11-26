@@ -1,18 +1,15 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::Deserialize;
-use time::{Date, Weekday};
+use time::{Date, OffsetDateTime, Weekday};
 
 use crate::{
-    domain::{
-        ids::TransitPatternId,
-        transit::{
-            network::{ServiceCalendar, TransitMode, TransitNetwork},
-            service::{PatternHeadways, ServicePeriod},
-        },
+    domain::taipei_offset,
+    domain::transit::{
+        network::{ServiceCalendar, TransitMode, TransitNetwork},
+        service::{PatternHeadways, ServicePeriod},
     },
     providers::tdx_bindings::TdxProviderBindings,
-    tdx::tdx_sub_route_uid,
 };
 
 pub const BUS_SCHEDULE_CITIES: &[(&str, &str)] = &[
@@ -25,6 +22,25 @@ pub const BUS_SCHEDULE_CITIES: &[(&str, &str)] = &[
     ("Taipei", "taipei"),
     ("Taoyuan", "taoyuan"),
 ];
+
+pub const BUS_SCHEDULE_FIELDS: &str = "SubRouteUID,RouteUID,Direction,Timetables,Frequencys";
+
+pub fn is_bus_schedule_source(source_name: &str) -> bool {
+    BUS_SCHEDULE_CITIES
+        .iter()
+        .any(|(_, slug)| source_name == format!("bus-schedule-{slug}"))
+}
+
+pub fn estimate_service_days(fetched_at: OffsetDateTime) -> (Date, Date) {
+    let today = fetched_at.to_offset(taipei_offset()).date();
+    let next = |weekday: Weekday| {
+        let ahead = (i64::from(weekday.number_days_from_monday())
+            - i64::from(today.weekday().number_days_from_monday()))
+        .rem_euclid(7);
+        today + time::Duration::days(ahead)
+    };
+    (next(Weekday::Wednesday), next(Weekday::Saturday))
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct BusSchedule {
@@ -310,34 +326,10 @@ fn clock_minutes(value: &str) -> Option<u32> {
     (minutes < 60).then_some(hours * 60 + minutes)
 }
 
-pub fn attach_parent_routes(
-    bindings: &mut TdxProviderBindings,
-    schedules: &[BusSchedule],
-) -> usize {
-    let route_by_sub_route = schedules
-        .iter()
-        .filter_map(|schedule| {
-            schedule
-                .route_uid
-                .as_deref()
-                .filter(|route_uid| !route_uid.is_empty() && *route_uid != schedule.sub_route_uid)
-                .map(|route_uid| (schedule.sub_route_uid.as_str(), route_uid))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut attached = 0;
-    for binding in bindings.bus_patterns.values_mut() {
-        let service = TransitPatternId::new(binding.tdx_service_id.as_str());
-        binding.tdx_route_uid = route_by_sub_route
-            .get(tdx_sub_route_uid(&service))
-            .map(|route_uid| (*route_uid).to_owned());
-        attached += usize::from(binding.tdx_route_uid.is_some());
-    }
-    attached
-}
-
 pub fn attach_estimate_headways(
     bindings: &mut TdxProviderBindings,
     network: &TransitNetwork,
+    headways: &[PatternHeadways],
 ) -> usize {
     let scheduled = network
         .trips
@@ -350,8 +342,7 @@ pub fn attach_estimate_headways(
                 .map(|frequency| &frequency.pattern_id),
         )
         .collect::<HashSet<_>>();
-    let headways_by_pattern = network
-        .pattern_headways
+    let headways_by_pattern = headways
         .iter()
         .filter(|headways| !scheduled.contains(&headways.pattern_id))
         .map(|headways| (&headways.pattern_id, &headways.seconds_by_period))
@@ -369,285 +360,195 @@ pub fn attach_estimate_headways(
 
 #[cfg(test)]
 mod tests {
-    use time::macros::date;
+    use time::{Weekday, macros::date};
 
-    use super::{
-        BusSchedule, attach_estimate_headways, attach_parent_routes, clock_minutes,
-        pattern_headways,
-    };
+    use super::*;
     use crate::domain::{
-        ids::{BoardingPointId, TransitPatternId, TransitRouteId},
-        location::GeoCoordinate,
+        ids::{
+            BoardingPointId, ServiceCalendarId, TransitPatternId, TransitRouteId, TransitTripId,
+        },
         transit::network::{
-            SegmentProfile, SegmentTimeSource, SegmentTravelTime, TransitMode, TransitNetwork,
-            TransitPattern, TransitRoute, TransitStop,
+            ScheduledStopTime, SegmentProfile, TransitPattern, TransitRoute, TransitTrip,
         },
     };
+    use crate::providers::tdx_bindings::BusPatternBinding;
+
+    const WEEKDAY: Date = date!(2026 - 11 - 25);
+    const WEEKEND: Date = date!(2026 - 11 - 28);
+
+    fn pattern(id: &str, route: &str) -> TransitPattern {
+        TransitPattern::new(
+            TransitPatternId::new(id),
+            TransitRouteId::new(route),
+            Some(0),
+            "Terminal",
+            vec![BoardingPointId::new("a"), BoardingPointId::new("b")],
+            SegmentProfile {
+                segments: Vec::new(),
+            },
+        )
+    }
 
     fn network() -> TransitNetwork {
-        let stops = ["A", "B"]
-            .map(|id| {
-                TransitStop::new(
-                    BoardingPointId::new(id),
-                    id,
-                    GeoCoordinate {
-                        latitude: 25.0,
-                        longitude: 121.5,
-                    },
-                )
-            })
-            .to_vec();
-        let profile = SegmentProfile {
-            segments: vec![SegmentTravelTime {
-                seconds: 60,
-                source: SegmentTimeSource::Estimated,
-            }],
+        let every_day = ServiceCalendar {
+            id: ServiceCalendarId::new("daily"),
+            weekdays: vec![
+                Weekday::Monday,
+                Weekday::Tuesday,
+                Weekday::Wednesday,
+                Weekday::Thursday,
+                Weekday::Friday,
+                Weekday::Saturday,
+                Weekday::Sunday,
+            ],
+            start_date: None,
+            end_date: None,
+            added_dates: Vec::new(),
+            removed_dates: Vec::new(),
         };
-        let patterns = [("TPE1", 0), ("TPE2", 1)]
-            .map(|(route, direction)| {
-                TransitPattern::new(
-                    TransitPatternId::new(format!("pattern:{route}::direction={direction}")),
-                    TransitRouteId::new(route),
-                    Some(direction),
-                    "",
-                    vec![BoardingPointId::new("A"), BoardingPointId::new("B")],
-                    profile.clone(),
+        let trips = (9..15)
+            .map(|hour| {
+                TransitTrip::new(
+                    TransitTripId::new(format!("gtfs-{hour}")),
+                    TransitPatternId::new("gtfs-pattern"),
+                    ServiceCalendarId::new("daily"),
+                    vec![
+                        ScheduledStopTime::new(hour * 3600, hour * 3600),
+                        ScheduledStopTime::new(hour * 3600 + 300, hour * 3600 + 300),
+                    ],
                 )
             })
-            .to_vec();
+            .collect();
         TransitNetwork::new(
-            crate::domain::transit::network::default_service_day_boundary(),
-            stops,
-            patterns,
+            time::Time::from_hms(4, 0, 0).unwrap(),
             Vec::new(),
+            vec![
+                pattern("gtfs-pattern", "GTFS1"),
+                pattern("tdx-pattern", "TDX1"),
+            ],
+            trips,
         )
         .with_routes(
-            ["TPE1", "TPE2"]
+            ["GTFS1", "TDX1"]
                 .map(|id| TransitRoute {
                     id: TransitRouteId::new(id),
                     mode: TransitMode::Bus,
-                    label: id.to_owned(),
+                    label: id.into(),
                 })
                 .to_vec(),
         )
+        .with_calendars(vec![every_day])
     }
 
-    #[test]
-    fn estimate_headways_attach_only_to_bus_patterns_without_trips() {
-        use crate::domain::ids::{ServiceCalendarId, TransitTripId};
-        use crate::domain::transit::network::{ScheduledStopTime, TransitTrip};
-        use crate::domain::transit::service::PatternHeadways;
-        use crate::providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings};
+    fn schedule(sub_route: &str) -> BusSchedule {
+        let every_day = serde_json::json!({
+            "Monday": 1, "Tuesday": 1, "Wednesday": 1, "Thursday": 1,
+            "Friday": 1, "Saturday": 1, "Sunday": 1
+        });
+        serde_json::from_value(serde_json::json!({
+            "SubRouteUID": sub_route,
+            "Direction": 0,
+            "Frequencys": [{
+                "StartTime": "09:00",
+                "EndTime": "16:00",
+                "MinHeadwayMins": 8,
+                "MaxHeadwayMins": 12,
+                "ServiceDay": every_day
+            }]
+        }))
+        .unwrap()
+    }
 
-        let mut network = network();
-        let ids = network
-            .patterns
+    fn headways_of<'a>(headways: &'a [PatternHeadways], pattern: &str) -> &'a [Option<u32>] {
+        &headways
             .iter()
-            .map(|pattern| pattern.id.clone())
-            .collect::<Vec<_>>();
-        network.trips.push(TransitTrip::new(
-            TransitTripId::new("trip"),
-            ids[1].clone(),
-            ServiceCalendarId::new("daily"),
-            vec![
-                ScheduledStopTime::new(3600, 3600),
-                ScheduledStopTime::new(3660, 3660),
-            ],
-        ));
-        network.pattern_headways = ids
-            .iter()
-            .map(|id| PatternHeadways {
-                pattern_id: id.clone(),
-                seconds_by_period: vec![Some(600); 6],
-            })
-            .collect();
-        let mut bindings = TdxProviderBindings::default();
-        for id in &ids {
-            bindings.bus_patterns.insert(
-                id.clone(),
-                BusPatternBinding {
-                    tdx_service_id: id.as_str().to_owned(),
-                    realtime_scope: "Taipei".to_owned(),
-                    tdx_route_uid: None,
-                    headway_seconds_by_period: Vec::new(),
-                },
-            );
-        }
-
-        assert_eq!(attach_estimate_headways(&mut bindings, &network), 1);
-        assert_eq!(
-            bindings.bus_patterns[&ids[0]].headway_seconds_by_period,
-            vec![Some(600); 6]
-        );
-        assert!(
-            bindings.bus_patterns[&ids[1]]
-                .headway_seconds_by_period
-                .is_empty()
-        );
+            .find(|headways| headways.pattern_id.as_str() == pattern)
+            .unwrap()
+            .seconds_by_period
     }
 
     #[test]
-    fn variants_of_one_route_direction_share_a_combined_headway() {
-        use crate::domain::ids::TransitTripId;
-        use crate::domain::transit::network::{ScheduledStopTime, TransitTrip};
-        use time::Weekday;
-
-        let stops = ["o", "a", "b"]
-            .map(|id| {
-                TransitStop::new(
-                    BoardingPointId::new(id),
-                    id,
-                    GeoCoordinate {
-                        latitude: 25.0,
-                        longitude: 121.5,
-                    },
-                )
-            })
-            .to_vec();
-        let variant = |id: &str, stops: &[&str]| {
-            TransitPattern::fixture(
-                TransitPatternId::new(id),
-                TransitMode::Metro,
-                "BL",
-                "",
-                stops
-                    .iter()
-                    .map(|stop| BoardingPointId::new(*stop))
-                    .collect(),
-            )
-        };
-        let trips = (0..12)
-            .map(|index| {
-                let start = 7 * 3600 + index * 600;
-                TransitTrip::fixture_weekdays(
-                    TransitTripId::new(format!("trip-{index}")),
-                    TransitPatternId::new(if index < 6 { "full" } else { "short" }),
-                    vec![Weekday::Wednesday, Weekday::Saturday],
-                    (0..if index < 6 { 3 } else { 2 })
-                        .map(|stop| ScheduledStopTime::new(start + stop * 60, start + stop * 60))
-                        .collect(),
-                )
-            })
-            .collect::<Vec<_>>();
-        let network = TransitNetwork::fixture(
-            crate::domain::transit::network::default_service_day_boundary(),
-            stops,
-            vec![
-                variant("full", &["o", "a", "b"]),
-                variant("short", &["o", "a"]),
-            ],
-            trips,
-        );
-        let (headways, diagnostics) =
-            pattern_headways(&network, &[], date!(2026 - 11 - 25), date!(2026 - 11 - 28));
-        assert_eq!(diagnostics.from_gtfs, 2);
-        assert!(headways.iter().all(|headways| {
-            headways.seconds_by_period == vec![None, Some(900), None, None, None, Some(5400)]
-        }));
-    }
-
-    #[test]
-    fn frequency_bands_crossing_midnight_count_toward_evening_and_night() {
-        let weekdays = r#"{"Monday":1,"Tuesday":1,"Wednesday":1,"Thursday":1,"Friday":1,"Saturday":0,"Sunday":0}"#;
-        let schedules: Vec<BusSchedule> = serde_json::from_str(&format!(
-            r#"[{{"SubRouteUID":"TPE1","Direction":0,
-                "Frequencys":[{{"StartTime":"22:00","EndTime":"01:00","MinHeadwayMins":30,"MaxHeadwayMins":30,"ServiceDay":{weekdays}}}]}}]"#
-        ))
-        .unwrap();
-        let (headways, _) = pattern_headways(
-            &network(),
-            &schedules,
-            date!(2026 - 11 - 25),
-            date!(2026 - 11 - 28),
-        );
-        assert_eq!(
-            headways[0].seconds_by_period,
-            vec![Some(10_800), None, None, None, Some(4_500), None]
-        );
-    }
-
-    #[test]
-    fn clock_minutes_reads_tdx_clock_strings() {
-        assert_eq!(clock_minutes("05:10"), Some(310));
-        assert_eq!(clock_minutes("24:30"), Some(1470));
-        assert_eq!(clock_minutes("7:61"), None);
-        assert_eq!(clock_minutes("x"), None);
-    }
-
-    #[test]
-    fn tdx_schedules_give_headways_per_service_period() {
-        let weekdays = r#"{"Monday":1,"Tuesday":1,"Wednesday":1,"Thursday":1,"Friday":1,"Saturday":0,"Sunday":0}"#;
-        let saturday = r#"{"Monday":0,"Tuesday":0,"Wednesday":0,"Thursday":0,"Friday":0,"Saturday":1,"Sunday":0}"#;
-        let schedules: Vec<BusSchedule> = serde_json::from_str(&format!(
-            r#"[
-              {{"SubRouteUID":"TPE1","Direction":0,
-                "Frequencys":[{{"StartTime":"06:00","EndTime":"09:00","MinHeadwayMins":8,"MaxHeadwayMins":12,"ServiceDay":{weekdays}}}],
-                "Timetables":[{{"ServiceDay":{saturday},"StopTimes":[{{"DepartureTime":"10:00"}}]}},
-                              {{"ServiceDay":{saturday},"StopTimes":[{{"DepartureTime":"12:00"}}]}}]}},
-              {{"SubRouteUID":"TPE9","Direction":0,"Timetables":[]}}
-            ]"#
-        ))
-        .unwrap();
-        let network = network();
+    fn tdx_frequencies_become_period_headways_for_patterns_without_gtfs_trips() {
         let (headways, diagnostics) = pattern_headways(
-            &network,
-            &schedules,
-            date!(2026 - 11 - 25),
-            date!(2026 - 11 - 28),
+            &network(),
+            &[schedule("TDX1"), schedule("UNKNOWN")],
+            WEEKDAY,
+            WEEKEND,
         );
-        assert_eq!(headways.len(), 1);
-        assert_eq!(
-            headways[0].seconds_by_period,
-            vec![None, Some(600), None, None, None, Some(32_400)]
-        );
+
+        let tdx = headways_of(&headways, "tdx-pattern");
+        assert_eq!(tdx[ServicePeriod::WeekdayDay.index()], Some(600));
+        assert_eq!(tdx[ServicePeriod::Night.index()], None);
+        assert_eq!(tdx[ServicePeriod::WeekdayEveningPeak.index()], None);
         assert_eq!(diagnostics.from_tdx, 1);
-        assert_eq!(diagnostics.without_headways, 1);
         assert_eq!(
-            diagnostics
-                .unmapped_tdx_sub_routes
-                .into_iter()
-                .collect::<Vec<_>>(),
-            vec!["TPE9:0".to_owned()]
+            diagnostics.unmapped_tdx_sub_routes,
+            BTreeSet::from(["UNKNOWN:0".to_owned()])
         );
     }
 
     #[test]
-    fn schedules_attach_tdx_parent_routes_to_bus_bindings() {
-        use crate::providers::tdx_bindings::{BusPatternBinding, TdxProviderBindings};
-        let binding = |service: &str| BusPatternBinding {
-            tdx_service_id: service.to_owned(),
-            realtime_scope: "NewTaipei".to_owned(),
+    fn gtfs_trips_take_precedence_over_tdx_schedules() {
+        let (headways, diagnostics) =
+            pattern_headways(&network(), &[schedule("GTFS1")], WEEKDAY, WEEKEND);
+
+        assert_eq!(diagnostics.from_gtfs, 1);
+        assert_eq!(diagnostics.from_tdx, 0);
+        let gtfs = headways_of(&headways, "gtfs-pattern");
+        assert_eq!(gtfs[ServicePeriod::WeekdayDay.index()], Some(4200));
+    }
+
+    #[test]
+    fn only_patterns_without_gtfs_trips_receive_estimate_headways() {
+        let network = network();
+        let (headways, _) = pattern_headways(&network, &[schedule("TDX1")], WEEKDAY, WEEKEND);
+        let binding = |id: &str| BusPatternBinding {
+            tdx_service_id: id.into(),
+            realtime_scope: "Taipei".into(),
             tdx_route_uid: None,
             headway_seconds_by_period: Vec::new(),
         };
         let mut bindings = TdxProviderBindings {
-            bus_patterns: std::collections::HashMap::from([
-                (
-                    TransitPatternId::new("a"),
-                    binding("NWT157552::direction=0"),
-                ),
-                (TransitPatternId::new("b"), binding("TAO1001::direction=0")),
-                (
-                    TransitPatternId::new("c"),
-                    binding("NWT999999::direction=1"),
-                ),
-            ]),
+            bus_patterns: [
+                (TransitPatternId::new("gtfs-pattern"), binding("GTFS1")),
+                (TransitPatternId::new("tdx-pattern"), binding("TDX1")),
+            ]
+            .into(),
             ..TdxProviderBindings::default()
         };
-        let schedules: Vec<BusSchedule> = serde_json::from_value(serde_json::json!([
-            {"SubRouteUID": "NWT157552", "RouteUID": "NWT16517", "Direction": 0},
-            {"SubRouteUID": "TAO1001", "RouteUID": "TAO1001", "Direction": 0}
-        ]))
-        .unwrap();
 
-        assert_eq!(attach_parent_routes(&mut bindings, &schedules), 1);
-        let parent = |id: &str| {
-            bindings.bus_patterns[&TransitPatternId::new(id)]
-                .tdx_route_uid
-                .clone()
-        };
-        assert_eq!(parent("a").as_deref(), Some("NWT16517"));
-        assert_eq!(parent("b"), None);
-        assert_eq!(parent("c"), None);
+        let attached = attach_estimate_headways(&mut bindings, &network, &headways);
+
+        assert_eq!(attached, 1);
+        assert!(
+            bindings.bus_patterns[&TransitPatternId::new("gtfs-pattern")]
+                .headway_seconds_by_period
+                .is_empty()
+        );
+        assert_eq!(
+            bindings.bus_patterns[&TransitPatternId::new("tdx-pattern")].headway_seconds_by_period
+                [ServicePeriod::WeekdayDay.index()],
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn estimate_service_days_are_the_next_local_wednesday_and_saturday() {
+        let (weekday, weekend) =
+            estimate_service_days(time::macros::datetime!(2026-11-24 22:30 UTC));
+        assert_eq!(weekday, date!(2026 - 11 - 25));
+        assert_eq!(weekend, date!(2026 - 11 - 28));
+        let (weekday, weekend) =
+            estimate_service_days(time::macros::datetime!(2026-11-28 10:00 +08:00));
+        assert_eq!(weekday, date!(2026 - 12 - 02));
+        assert_eq!(weekend, date!(2026 - 11 - 28));
+    }
+
+    #[test]
+    fn clock_minutes_reads_hh_mm_and_rejects_garbage() {
+        assert_eq!(clock_minutes("09:30:00"), Some(570));
+        assert_eq!(clock_minutes("25:10"), Some(1510));
+        assert_eq!(clock_minutes("9:75"), None);
+        assert_eq!(clock_minutes("noon"), None);
     }
 }

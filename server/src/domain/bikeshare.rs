@@ -138,7 +138,6 @@ impl BikeAvailabilitySnapshot {
     }
 }
 
-pub const DEFAULT_BIKE_AVAILABILITY_MAX_AGE: Duration = Duration::seconds(120);
 pub const MAX_BIKE_AVAILABILITY_CLOCK_SKEW: Duration = Duration::seconds(300);
 
 pub struct BikeAvailabilityView<'a> {
@@ -150,30 +149,6 @@ pub struct BikeAvailabilityView<'a> {
 }
 
 impl<'a> BikeAvailabilityView<'a> {
-    fn new(network: &'a BikeShareNetwork, snapshot: &'a BikeAvailabilitySnapshot) -> Self {
-        Self::at(
-            network,
-            snapshot,
-            OffsetDateTime::now_utc(),
-            DEFAULT_BIKE_AVAILABILITY_MAX_AGE,
-        )
-    }
-
-    fn at(
-        network: &'a BikeShareNetwork,
-        snapshot: &'a BikeAvailabilitySnapshot,
-        now: OffsetDateTime,
-        max_age: Duration,
-    ) -> Self {
-        Self {
-            network,
-            snapshot,
-            now,
-            max_age,
-            max_clock_skew: MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
-        }
-    }
-
     pub fn usable_pickups(
         &self,
         boarding_point_id: &BoardingPointId,
@@ -182,7 +157,7 @@ impl<'a> BikeAvailabilityView<'a> {
             .access_from_boarding_point(boarding_point_id)
             .iter()
             .filter(|access| access.walk_to_station.is_some())
-            .filter(|access| self.station_usable_as_pickup(&access.station_id))
+            .filter(|access| self.can_pick_up_at(&access.station_id))
             .collect()
     }
 
@@ -194,43 +169,34 @@ impl<'a> BikeAvailabilityView<'a> {
             .access_to_boarding_point(boarding_point_id)
             .into_iter()
             .filter(|access| access.walk_from_station.is_some())
-            .filter(|access| self.station_usable_as_dropoff(&access.station_id))
+            .filter(|access| self.can_return_at(&access.station_id))
             .collect()
     }
 
     pub fn can_pick_up_at(&self, station_id: &BikeStationId) -> bool {
-        self.station_usable_as_pickup(station_id)
+        self.serviceable_with(station_id, |availability| availability.available_bikes > 0)
     }
 
     pub fn can_return_at(&self, station_id: &BikeStationId) -> bool {
-        self.station_usable_as_dropoff(station_id)
+        self.serviceable_with(station_id, |availability| {
+            availability.available_return_slots > 0
+        })
     }
 
-    fn station_usable_as_pickup(&self, station_id: &BikeStationId) -> bool {
-        self.station_is_serviceable(station_id)
+    fn serviceable_with(
+        &self,
+        station_id: &BikeStationId,
+        has_capacity: impl Fn(&BikeStationAvailability) -> bool,
+    ) -> bool {
+        self.network.station(station_id).is_some()
             && self
                 .snapshot
-                .station(station_id)
-                .is_some_and(|availability| availability.available_bikes > 0)
-    }
-
-    fn station_usable_as_dropoff(&self, station_id: &BikeStationId) -> bool {
-        self.station_is_serviceable(station_id)
-            && self
-                .snapshot
-                .station(station_id)
-                .is_some_and(|availability| availability.available_return_slots > 0)
-    }
-
-    fn station_is_serviceable(&self, station_id: &BikeStationId) -> bool {
-        self.network.station(station_id).is_some_and(|_| {
-            self.snapshot
                 .station(station_id)
                 .is_some_and(|availability| {
                     availability.is_fresh_with_skew(self.now, self.max_age, self.max_clock_skew)
                         && availability.in_service
+                        && has_capacity(availability)
                 })
-        })
     }
 }
 
@@ -325,22 +291,6 @@ impl BikeShareNetwork {
             .unwrap_or_default()
     }
 
-    pub fn availability_view<'a>(
-        &'a self,
-        snapshot: &'a BikeAvailabilitySnapshot,
-    ) -> BikeAvailabilityView<'a> {
-        BikeAvailabilityView::new(self, snapshot)
-    }
-
-    pub fn availability_view_at<'a>(
-        &'a self,
-        snapshot: &'a BikeAvailabilitySnapshot,
-        now: OffsetDateTime,
-        max_age: Duration,
-    ) -> BikeAvailabilityView<'a> {
-        BikeAvailabilityView::at(self, snapshot, now, max_age)
-    }
-
     pub fn availability_view_with_policy<'a>(
         &'a self,
         snapshot: &'a BikeAvailabilitySnapshot,
@@ -348,9 +298,13 @@ impl BikeShareNetwork {
         max_age: Duration,
         max_clock_skew: Duration,
     ) -> BikeAvailabilityView<'a> {
-        let mut view = BikeAvailabilityView::at(self, snapshot, now, max_age);
-        view.max_clock_skew = max_clock_skew;
-        view
+        BikeAvailabilityView {
+            network: self,
+            snapshot,
+            now,
+            max_age,
+            max_clock_skew,
+        }
     }
 
     pub fn validate(&self) -> Result<(), BikeShareNetworkValidationError> {
@@ -710,7 +664,12 @@ mod tests {
             ),
         );
         let snapshot = BikeAvailabilitySnapshot::new(now, stations);
-        let view = network.availability_view_at(&snapshot, now, Duration::seconds(120));
+        let view = network.availability_view_with_policy(
+            &snapshot,
+            now,
+            Duration::seconds(120),
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        );
 
         assert_eq!(
             view.usable_pickups(&BoardingPointId::new("bp"))
@@ -770,7 +729,12 @@ mod tests {
             ),
         );
         let disabled = BikeAvailabilitySnapshot::new(now, stations);
-        let view = network.availability_view_at(&disabled, now, Duration::seconds(120));
+        let view = network.availability_view_with_policy(
+            &disabled,
+            now,
+            Duration::seconds(120),
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        );
         assert!(view.usable_pickups(&BoardingPointId::new("bp")).is_empty());
         assert!(view.usable_dropoffs(&BoardingPointId::new("bp")).is_empty());
 
@@ -786,7 +750,12 @@ mod tests {
             ),
         );
         let stale = BikeAvailabilitySnapshot::new(now, stations);
-        let view = network.availability_view_at(&stale, now, Duration::seconds(120));
+        let view = network.availability_view_with_policy(
+            &stale,
+            now,
+            Duration::seconds(120),
+            MAX_BIKE_AVAILABILITY_CLOCK_SKEW,
+        );
         assert!(view.usable_pickups(&BoardingPointId::new("bp")).is_empty());
         assert!(view.usable_dropoffs(&BoardingPointId::new("bp")).is_empty());
     }

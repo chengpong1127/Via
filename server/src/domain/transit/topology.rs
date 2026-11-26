@@ -2,19 +2,11 @@ use std::collections::HashMap;
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
-    transit::{
-        network::{SegmentTravelTime, TransitMode, TransitNetwork},
-        service::ServicePeriod,
-    },
+    transit::network::{SegmentTravelTime, TransitMode, TransitNetwork},
 };
 
 pub type StopIndex = u32;
 pub type PatternIndex = u32;
-pub type PlaceIndex = u32;
-
-pub const SERVICE_PERIOD_COUNT: usize = ServicePeriod::ALL.len();
-
-const PLACE_RADIUS_METRES: f64 = 100.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DensePosition {
@@ -35,7 +27,6 @@ pub struct DensePattern {
     pub line: u64,
     pub stops: Vec<StopIndex>,
     pub segments: Vec<SegmentTravelTime>,
-    pub headways: Option<[Option<u32>; SERVICE_PERIOD_COUNT]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -47,7 +38,6 @@ pub struct DenseTopology {
     patterns: Vec<DensePattern>,
     positions_by_stop: Vec<Vec<DensePosition>>,
     transfers_by_stop: Vec<Vec<DenseTransfer>>,
-    place_by_stop: Vec<PlaceIndex>,
 }
 
 impl DenseTopology {
@@ -90,11 +80,6 @@ impl DenseTopology {
                 .as_str()
                 .cmp(network.patterns[*right].id.as_str())
         });
-        let headways_by_pattern = network
-            .pattern_headways
-            .iter()
-            .map(|headways| (&headways.pattern_id, headways))
-            .collect::<HashMap<_, _>>();
         let mut pattern_ids = Vec::with_capacity(pattern_order.len());
         let mut patterns = Vec::with_capacity(pattern_order.len());
         for network_position in pattern_order {
@@ -114,11 +99,6 @@ impl DenseTopology {
                 line,
                 stops: pattern.stops.iter().map(|id| stop_by_id[id]).collect(),
                 segments: pattern.static_profile.segments.clone(),
-                headways: headways_by_pattern.get(&pattern.id).map(|headways| {
-                    std::array::from_fn(|period| {
-                        headways.seconds_by_period.get(period).copied().flatten()
-                    })
-                }),
             });
         }
         let pattern_by_id = pattern_ids
@@ -170,8 +150,6 @@ impl DenseTopology {
             });
         }
 
-        let place_by_stop = places(network, &stop_ids);
-
         Self {
             stop_ids,
             stop_by_id,
@@ -180,7 +158,6 @@ impl DenseTopology {
             patterns,
             positions_by_stop,
             transfers_by_stop,
-            place_by_stop,
         }
     }
 
@@ -215,51 +192,6 @@ impl DenseTopology {
     pub fn transfers_from(&self, stop: StopIndex) -> &[DenseTransfer] {
         &self.transfers_by_stop[stop as usize]
     }
-
-    pub fn place(&self, stop: StopIndex) -> PlaceIndex {
-        self.place_by_stop[stop as usize]
-    }
-}
-
-fn places(network: &TransitNetwork, stop_ids: &[BoardingPointId]) -> Vec<PlaceIndex> {
-    let stop_by_id = network
-        .stops
-        .iter()
-        .map(|stop| (&stop.id, stop))
-        .collect::<HashMap<_, _>>();
-    let mut stops_by_name = HashMap::<&str, Vec<usize>>::new();
-    for (index, id) in stop_ids.iter().enumerate() {
-        if let Some(stop) = stop_by_id.get(id) {
-            stops_by_name
-                .entry(stop.name.as_str())
-                .or_default()
-                .push(index);
-        }
-    }
-    let mut root = (0..stop_ids.len()).collect::<Vec<_>>();
-    fn find(root: &mut [usize], mut index: usize) -> usize {
-        while root[index] != index {
-            root[index] = root[root[index]];
-            index = root[index];
-        }
-        index
-    }
-    for members in stops_by_name.values() {
-        for (position, &left) in members.iter().enumerate() {
-            for &right in &members[position + 1..] {
-                let distance = stop_by_id[&stop_ids[left]]
-                    .coordinate
-                    .distance_metres(stop_by_id[&stop_ids[right]].coordinate);
-                if distance <= PLACE_RADIUS_METRES {
-                    let (left_root, right_root) = (find(&mut root, left), find(&mut root, right));
-                    root[left_root.max(right_root)] = left_root.min(right_root);
-                }
-            }
-        }
-    }
-    (0..stop_ids.len())
-        .map(|index| find(&mut root, index) as PlaceIndex)
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,0 +1,117 @@
+groups:
+  - name: via
+    rules:
+      - alert: ViaReadinessDown
+        expr: probe_success{name="server"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Via server /health/ready is failing
+          runbook: server/docs/operations.md#viareadinessdown
+      - alert: TdxGatewayNotReady
+        expr: probe_success{name="tdx-gateway"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TDX gateway /health/ready is failing
+          runbook: server/docs/operations.md#tdxgatewaynotready
+      - alert: ViaMetricsMissing
+        expr: absent(up{job="server"} == 1) or absent(up{job="tdx-gateway"} == 1)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful scrape of the server or tdx-gateway (or Alloy is down)
+          runbook: server/docs/operations.md#viametricsmissing
+      - alert: ViaPlanLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(via_planner_multimodal_search_duration_seconds_bucket[10m]))) > 8
+          and sum(rate(via_planner_multimodal_search_duration_seconds_count[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: p95 multimodal search time above 8s
+          runbook: server/docs/operations.md#viaplanlatencyhigh
+      - alert: ViaPlanFailuresHigh
+        expr: |
+          sum(increase(via_planning_failures_total[15m]))
+            / sum(increase(via_planning_requests_total[15m])) > 0.2
+          and sum(increase(via_planning_requests_total[15m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 20% of plan requests fail
+          runbook: server/docs/operations.md#viaplanfailureshigh
+      - alert: TdxRateLimited
+        # The counter is created lazily at 1, so increase() misses the first 429
+        # after a pod start; the second branch catches a newly appeared series.
+        expr: |
+          (sum(increase(via_live_rate_limit_blocks_total[15m])) > 0)
+            or
+          (sum(via_live_rate_limit_blocks_total unless via_live_rate_limit_blocks_total offset 15m) > 0)
+        labels:
+          severity: warning
+        annotations:
+          summary: TDX returned 429 and live calls were paused
+          runbook: server/docs/operations.md#tdxratelimited
+      - alert: NodeMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Less than 10% of node memory is available
+          runbook: server/docs/operations.md#nodememorylow
+      - alert: NodeDiskLow
+        expr: |
+          via_disk_avail_bytes{mountpoint=~"/|/var/lib/via"}
+            / via_disk_size_bytes{mountpoint=~"/|/var/lib/via"} < 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Less than 15% free on {{ $labels.mountpoint }}
+          runbook: server/docs/operations.md#nodedisklow
+      - alert: ArtifactFetchFailed
+        expr: via_artifact_fetch_last_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The last via-artifact-fetch.service run failed
+          runbook: server/docs/operations.md#artifactfetchfailed
+      - alert: ArtifactFetchStale
+        expr: time() - via_artifact_fetch_last_success_timestamp_seconds > 3 * 86400
+        labels:
+          severity: warning
+        annotations:
+          summary: No successful artifact fetch for 3 days
+          runbook: server/docs/operations.md#artifactfetchfailed
+      - alert: NodeMetricsMissing
+        expr: absent(node_memory_MemAvailable_bytes) or absent(via_disk_avail_bytes)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Node memory or disk metrics are missing, so the node alerts cannot fire
+          runbook: server/docs/operations.md#nodemetricsmissing
+      - alert: ArtifactFetchMetricMissing
+        expr: absent(via_artifact_fetch_last_run_timestamp_seconds)
+        for: 1d
+        labels:
+          severity: warning
+        annotations:
+          summary: via-artifact-fetch has never written its metric (timer not installed or textfile unreadable)
+          runbook: server/docs/operations.md#artifactfetchmetricmissing
+      - alert: NodeDiskMetricStale
+        expr: time() - via_disk_last_run_timestamp_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: via-disk-metric has not run for 10 minutes, so disk values are stale
+          runbook: server/docs/operations.md#nodediskmetricstale

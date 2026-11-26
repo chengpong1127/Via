@@ -3,9 +3,9 @@ use time::OffsetDateTime;
 use crate::domain::{
     ids::EffectiveTripId,
     journey::{Guidance, Leg, LegDetails, LegMode, Place, PlanningError, StopVisit},
-    ranking::TransferEvidence,
+    ranking::{TransferEvidence, TransferKind},
     transit::network::TransitMode,
-    transit::timing::{EffectiveStopTime, EffectiveTrip, TimingReliability},
+    transit::timing::{EffectiveStopTime, EffectiveTrip, TimingBasis, TimingReliability},
 };
 
 use super::{
@@ -68,15 +68,14 @@ impl ReconstructionState<'_, '_> {
             .map(evidence::from_realtime_value)
             .collect::<Vec<_>>();
         self.assembly.live_evidence.extend(live_evidence);
-        let leg_id = format!("candidate_leg_{}", self.assembly.legs.len());
+        let leg_id = self.assembly.next_leg_id();
         self.assembly.legs.push(transit_leg(
             leg_id.clone(),
             pattern,
             route,
             &ride_stops,
             ride_times,
-            board.departure_at,
-            alight.arrival_at,
+            trip.timing_basis == TimingBasis::FrequencyEstimate,
         )?);
         if let Some(pending) = self.pending_transfer.take() {
             record_transfer(&mut self.assembly, pending, route.mode, board.departure_at)?;
@@ -147,9 +146,8 @@ fn record_transfer(
 ) -> Result<(), PlanningError> {
     let available_seconds =
         seconds_between(pending.from_arrival, departure).ok_or(PlanningError::Internal)?;
-    let kind = evidence::transfer_kind(pending.from_mode, Some(to_mode));
     assembly.transfer_evidence.push(TransferEvidence {
-        kind,
+        kind: TransferKind::between(pending.from_mode, to_mode),
         physical_seconds: pending.duration_seconds,
         available_seconds,
     });
@@ -162,9 +160,12 @@ fn transit_leg(
     route: &crate::domain::transit::network::TransitRoute,
     stops: &[&crate::domain::transit::network::TransitStop],
     stop_times: &[EffectiveStopTime],
-    departure: OffsetDateTime,
-    arrival: OffsetDateTime,
+    estimated: bool,
 ) -> Result<Leg, PlanningError> {
+    let (Some(first), Some(last)) = (stop_times.first(), stop_times.last()) else {
+        return Err(PlanningError::Internal);
+    };
+    let (departure, arrival) = (first.departure_at, last.arrival_at);
     let [boarding, intermediate @ .., alighting] = stops else {
         return Err(PlanningError::Internal);
     };
@@ -205,6 +206,7 @@ fn transit_leg(
             via_alighting_point_id: alighting.id.as_str().into(),
             service_label: route.label.clone(),
             headsign: pattern.headsign.clone(),
+            estimated,
             intermediate_stops,
         },
         attribution: Vec::new(),

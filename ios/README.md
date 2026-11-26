@@ -23,10 +23,29 @@ the Mac's Tailscale Serve name (`https://<machine>.<tailnet>.ts.net`, see
 App Transport Security allows plain HTTP only to IP addresses, so a host name needs
 HTTPS. `VIA_BUNDLE_ID` there overrides the app and extension bundle identifiers if
 `org.via.journey` is unavailable to your team.
-Release builds require an HTTPS `VIA_API_BASE_URL` build setting and fail at startup
-when it is missing or insecure. The setting reaches the app through `Via-Info.plist`,
-so either configuration can be pointed elsewhere, for example
-`xcodebuild … VIA_API_BASE_URL=http://127.0.0.1:3100`.
+Release builds use `Config/Release.xcconfig`, which leaves `VIA_API_BASE_URL` empty and
+optionally includes `Config/Local.Release.xcconfig` (ignored by git; copy
+`Config/Local.Release.xcconfig.example`). A "Check Release Configuration" run script
+phase fails any Release or archive build whose `VIA_API_BASE_URL` is empty or not
+`https://`, so CI can instead pass it on the command line, for example
+`xcodebuild … -configuration Release VIA_API_BASE_URL=https://api.example.com`. If a
+bad value still reaches the app, requests go to an unreachable placeholder host and the
+planner reports a server-unreachable error instead of crashing. The setting reaches the
+app through `Via-Info.plist`, so Debug can be pointed elsewhere too, for example
+`VIA_API_BASE_URL=http://127.0.0.1:3100`.
+
+`Via/PrivacyInfo.xcprivacy` and `ViaLiveActivity/PrivacyInfo.xcprivacy` are the privacy
+manifests for the app and the extension. The app declares precise location for app
+functionality (not linked, not tracking) and the `UserDefaults` required-reason API
+(`CA92.1`); update them when adding data collection or required-reason APIs.
+`ITSAppUsesNonExemptEncryption` is `NO` (HTTPS only). The location usage string and its
+zh-Hant translation live in the build settings and `Via/Resources/InfoPlist.xcstrings`.
+
+`VIA_PRIVACY_POLICY_URL` and `VIA_SUPPORT_URL` (set in `Config/Debug.xcconfig` and
+`Config/Release.xcconfig`, written with `/$()/` for the same reason) reach the app through
+`Via-Info.plist` and default to the GitHub Pages site under `docs/`. The app icon
+(light, dark and tinted 1024 px, white logo on black, no alpha, no pre-rounded corners) lives in
+`Via/Resources/Assets.xcassets/AppIcon.appiconset`.
 
 ## Structure
 

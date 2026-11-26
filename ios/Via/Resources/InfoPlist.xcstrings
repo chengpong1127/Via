@@ -33,13 +33,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Via uses your location to show where you are and to plan trips from there."
+            "value" : "Via uses your location to show where you are, to plan trips from there, and to keep guiding you during navigation, including while your screen is locked."
           }
         },
         "zh-Hant" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Via 會使用你的位置顯示你所在之處，並以此規劃行程。"
+            "state" : "translated",
+            "value" : "Via 會使用你的位置顯示你所在之處、以此規劃行程，並在導航期間持續為你引導，包括螢幕鎖定時。"
           }
         }
       }
