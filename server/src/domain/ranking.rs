@@ -97,6 +97,24 @@ impl RankingPolicy {
             .filter_map(|candidate| self.classify(candidate))
             .collect();
 
+        if std::env::var("VIA_DUMP_RANK").is_ok() {
+            for (i, c) in eligible_candidates.iter().enumerate() {
+                let m = c.metrics();
+                let by: Vec<usize> = eligible_candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, o)| *j != i && dominates(self, o, c))
+                    .map(|(j, _)| j)
+                    .take(3)
+                    .collect();
+                eprintln!(
+                    "RANKDUMP {} class={:?} arr={} tr={} walk={} bike={} uses={} rel={:?} seq={:?} dom_by={:?}",
+                    i, c.class, m.arrival_epoch_seconds, m.transfer_count, m.walking_seconds,
+                    m.bicycle_seconds, m.bike_share_uses, m.timing_reliability,
+                    m.main_pattern_sequence, by
+                );
+            }
+        }
         eligible_candidates = remove_dominated(self, eligible_candidates);
         eligible_candidates.sort_by(|left, right| self.compare_ranked(left, right));
 
