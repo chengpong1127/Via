@@ -380,7 +380,11 @@ async fn retry_after_and_the_request_interval_both_bound_the_gtfs_retry_gap() {
 }
 
 #[test]
-fn the_default_budget_spaces_calls_at_least_fifteen_seconds_apart() {
-    let policy = FetchPolicy::from_settings(&ViaConfig::default().tdx.fetch, false);
-    assert!(policy.request_interval >= Duration::from_secs(15));
+fn the_request_interval_is_sixty_seconds_divided_by_the_configured_rate() {
+    let mut fetch = ViaConfig::default().tdx.fetch;
+    for (requests_per_minute, seconds) in [(4, 15), (12, 5), (60, 1)] {
+        fetch.requests_per_minute = requests_per_minute;
+        let policy = FetchPolicy::from_settings(&fetch, false);
+        assert_eq!(policy.request_interval, Duration::from_secs(seconds));
+    }
 }

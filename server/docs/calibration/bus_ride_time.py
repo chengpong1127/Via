@@ -1,6 +1,6 @@
 """Calibrate preprocessing.bus_derived_segment_scale_percent from TDX Bus/RealTimeNearStop.
 
-collect <out.jsonl> [City ...]   one GET per city, 45 s apart (TDX allows 5 requests per minute per key)
+collect <out.jsonl> [City ...]   one GET per city, 45 s apart (the free-tier key limit is 5 requests per minute; see the plan in the TDX member center)
 analyze <artifact.json> <a2.jsonl> ...
     For each bus on duty at its 7th stop or later, compares the time since its trip started
     (GPSTime - TripStartTime) with the sum of the artifact's segment seconds up to that stop.

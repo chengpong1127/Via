@@ -1385,31 +1385,29 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[tokio::test]
-    async fn every_tdx_call_waits_for_the_request_budget() {
-        let (client, mut sources, state) = mock_client(false, false).await;
-        sources.policy.request_interval = Duration::from_millis(60);
-        state.script_failure("/basic/v2/Bike/Station/City/Taipei?", 503, None);
-        let root = temporary_root("pacing");
-
-        fetch_with_local_gtfs(&root, "20260928T041542Z", &client, &sources)
-            .await
-            .unwrap();
-
-        let requests = state.requests.lock().unwrap();
-        let times = state.request_times.lock().unwrap();
-        let api_times = requests
-            .iter()
-            .zip(times.iter())
-            .filter(|(path, _)| !path.starts_with("/token"))
-            .map(|(_, time)| *time)
-            .collect::<Vec<_>>();
-        assert!(api_times.len() > 10);
-        for pair in api_times.windows(2) {
-            assert!(pair[1] - pair[0] >= Duration::from_millis(55));
+    /// Runs on tokio's paused clock, so the gaps are exact and need no real waiting.
+    #[tokio::test(start_paused = true)]
+    async fn the_pacer_spaces_every_call_by_the_request_interval() {
+        let interval = Duration::from_millis(60);
+        let mut pacer = RequestPacer::new(interval);
+        let mut started = Vec::new();
+        for _ in 0..5 {
+            pacer.wait().await;
+            started.push(tokio::time::Instant::now());
         }
-        drop((requests, times));
-        fs::remove_dir_all(root).unwrap();
+        for pair in started.windows(2) {
+            assert_eq!(pair[1] - pair[0], interval);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_pacer_does_not_wait_when_the_work_between_calls_was_slower_than_the_interval() {
+        let mut pacer = RequestPacer::new(Duration::from_millis(60));
+        pacer.wait().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let before = tokio::time::Instant::now();
+        pacer.wait().await;
+        assert_eq!(tokio::time::Instant::now(), before);
     }
 
     #[tokio::test]

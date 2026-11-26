@@ -89,7 +89,7 @@ p95 search time over 8s for 10 minutes, only while there is traffic (more than 0
 More than 20% of plan requests failed over 15 minutes (at least 10 requests). `kubectl -n via logs deploy/server --tail=200 | grep -i error` (logs contain method, path, status and error code, never coordinates). Typical causes: Valhalla down, deadline exceeded under load, bad data build.
 
 ### TdxRateLimited
-TDX returned 429 and the live cache paused all live calls for `Retry-After` (or `rate_limit_backoff_seconds`); plans continue without live data, using cached entities. See the incident steps below. The counter is created lazily on the first 429, so the rule also matches a newly appeared series (otherwise the first 429 after a pod start would go unnoticed).
+TDX returned 429, or repeated 5xx/unexpected 4xx, and the live cache paused all live calls for `Retry-After` (capped at 60 s; without the header `rate_limit_backoff_seconds`, doubling on consecutive failures up to 60 s); plans continue without live data, using cached entities. See the incident steps below. The counter is created lazily on the first 429, so the rule also matches a newly appeared series (otherwise the first 429 after a pod start would go unnoticed).
 
 ### NodeMemoryLow
 Under 10% of the 8 GiB available for 10 minutes. The server limit is 2Gi per pod. `kubectl top pods -A`; look for a restarting or leaking pod (`kubectl -n via get pods` restarts, OOMKilled in `describe`). Restart the offender; if it recurs, lower load or move to a larger instance.
@@ -111,11 +111,11 @@ No `via_artifact_fetch_last_run_timestamp_seconds` for a day: `systemctl list-ti
 
 ## TDX 429 incident steps
 
-1. Confirm: `TdxRateLimited` fired, or `kubectl -n via logs deploy/server | grep 'rate limit'` and `kubectl -n via logs deploy/tdx-gateway | grep 'rate limit'`. TDX allows 5 requests per minute for our credentials; the server pauses itself, so users keep getting plans without live data.
+1. Confirm: `TdxRateLimited` fired, or `kubectl -n via logs deploy/server | grep 'rate limit'` and `kubectl -n via logs deploy/tdx-gateway | grep 'rate limit'`. The request limit is per key and set by the TDX plan (the free tier is 5 requests per minute; see https://tdx.transportdata.tw/pricing and `[tdx.fetch]`); the server pauses itself, so users keep getting plans without live data.
 2. Check who else is calling: only the single `tdx-gateway` pod should use the credentials (it runs with `Recreate`, one replica). Make sure no one is running `via-data`, a local server or a test with the same TDX client id: any use of the key counts against the same limit.
 3. Check the demand: plans per minute and `sum by (dataset) (rate(via_live_upstream_requests_total[5m]))`. A spike means abuse or a campaign; tighten `plan-rate-limit` in `overlays/aws/middlewares.yaml` and redeploy.
 4. Wait: the pause ends by itself after `Retry-After`. Do not restart the gateway repeatedly, since the cache and the pause state are in memory and a restart removes both.
-5. If it persists for hours, check the TDX developer console (quota, key status) and raise the backoff via `rate_limit_backoff_seconds` ([configuration.md](configuration.md)).
+5. 429 or quota exhausted? Check the TDX member center (usage statistics). TDX bills calls and bytes as monthly points: it emails at 80% and stops service at 105% for the rest of the month, so a key out of points fails for days, not seconds. If it persists for hours, check the console (quota, key status) and, if pauses are too short or too long, tune the first step `rate_limit_backoff_seconds` ([configuration.md](configuration.md)); pauses double up to 60 s and `Retry-After` values above 60 s are capped, so no setting pauses longer.
 
 ## Logs and privacy
 

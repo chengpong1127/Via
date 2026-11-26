@@ -13,6 +13,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use super::{
     BikeAvailabilityRecord, BusArrival, LiveBatch, LiveDataSource, MetroBoard, MetroPair, TraDelay,
     UnavailableReason,
+    backoff::{Breaker, Failure},
 };
 use crate::tdx::TdxSettings;
 
@@ -25,8 +26,7 @@ pub struct CachedLiveData {
     bike: EntityCache<String, BikeAvailabilityRecord>,
     metro: EntityCache<MetroPair, MetroBoard>,
     tra: EntityCache<String, TraDelay>,
-    blocked_until: Mutex<Option<Instant>>,
-    rate_limit_backoff: Duration,
+    breaker: Mutex<Breaker>,
 }
 
 impl CachedLiveData {
@@ -63,40 +63,51 @@ impl CachedLiveData {
             .reusable_while(move |record: &BikeAvailabilityRecord| {
                 bike_observation_is_current(record, bike_max_age)
             }),
-            blocked_until: Mutex::new(None),
-            rate_limit_backoff: Duration::from_secs(settings.rate_limit_backoff_seconds),
+            breaker: Mutex::new(Breaker::new(Duration::from_secs(
+                settings.rate_limit_backoff_seconds,
+            ))),
         }
     }
 
     fn blocked(&self) -> bool {
-        let mut blocked_until = self.blocked_until.lock().expect("rate limit block lock");
-        match *blocked_until {
-            Some(until) if until > Instant::now() => true,
-            Some(_) => {
-                *blocked_until = None;
-                false
-            }
-            None => false,
-        }
+        self.breaker
+            .lock()
+            .expect("rate limit block lock")
+            .is_blocked(Instant::now())
     }
 
-    fn block(&self, retry_after: Option<Duration>) {
-        let duration = retry_after.unwrap_or(self.rate_limit_backoff);
-        if duration.is_zero() {
+    fn observe_outcome<T, K: Clone>(&self, batch: &LiveBatch<T, K>) {
+        let failure = if batch.is_rate_limited() {
+            Failure::RateLimited
+        } else if batch
+            .unavailable
+            .iter()
+            .any(|unavailable| unavailable.reason == UnavailableReason::UpstreamUnavailable)
+        {
+            Failure::Upstream
+        } else if batch.unavailable.is_empty() {
+            self.breaker
+                .lock()
+                .expect("rate limit block lock")
+                .record_success();
             return;
-        }
+        } else {
+            return;
+        };
+        let pause = self
+            .breaker
+            .lock()
+            .expect("rate limit block lock")
+            .record_failure(Instant::now(), failure, batch.retry_after);
+        let Some(pause) = pause else { return };
         ::metrics::counter!("via_live_rate_limit_blocks_total").increment(1);
         tracing::warn!(
             target: "via_server::live",
-            pause_seconds = duration.as_secs(),
-            retry_after_known = retry_after.is_some(),
-            "TDX rate limit reached; live calls are paused and cached entities stay available"
+            pause_seconds = pause.as_secs(),
+            retry_after_known = batch.retry_after.is_some(),
+            rate_limited = failure == Failure::RateLimited,
+            "TDX live calls failed; live calls are paused and cached entities stay available"
         );
-        let until = Instant::now() + duration;
-        let mut blocked_until = self.blocked_until.lock().expect("rate limit block lock");
-        if blocked_until.is_none_or(|current| current < until) {
-            *blocked_until = Some(until);
-        }
     }
 
     async fn load<K, T, F, Fut>(
@@ -152,9 +163,7 @@ impl CachedLiveData {
             return batch;
         }
         let fetched = fetch(missing.clone()).await;
-        if fetched.is_rate_limited() {
-            self.block(fetched.retry_after);
-        }
+        self.observe_outcome(&fetched);
         let failed = fetched
             .unavailable
             .iter()
@@ -387,4 +396,134 @@ fn bike_observation_is_current(record: &BikeAvailabilityRecord, max_age: Duratio
         return true;
     };
     OffsetDateTime::now_utc() - observed_at <= max_age
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::config::ViaConfig;
+
+    /// Bus source that answers from a script and counts upstream calls.
+    struct ScriptedBus {
+        script: Mutex<Vec<LiveBatch<BusArrival>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl ScriptedBus {
+        fn new(mut script: Vec<LiveBatch<BusArrival>>) -> Arc<Self> {
+            script.reverse();
+            Arc::new(Self {
+                script: Mutex::new(script),
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl LiveDataSource for ScriptedBus {
+        async fn bus_arrivals(&self, _scope: &str, stop_uids: &[String]) -> LiveBatch<BusArrival> {
+            *self.calls.lock().unwrap() += 1;
+            let mut batch = self.script.lock().unwrap().pop().expect("scripted answer");
+            batch.upstream_requests = 1;
+            if batch.unavailable.is_empty() {
+                batch.records = stop_uids
+                    .iter()
+                    .map(|stop| BusArrival {
+                        stop_uid: stop.clone(),
+                        sub_route_uid: None,
+                        route_uid: None,
+                        direction: None,
+                        stop_status: None,
+                        estimate_seconds: Some(60),
+                        update_time: "2026-01-01T00:00:00+08:00".to_owned(),
+                    })
+                    .collect();
+            }
+            batch
+        }
+
+        async fn bike_availability(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> LiveBatch<BikeAvailabilityRecord> {
+            unimplemented!()
+        }
+
+        async fn metro_boards(&self, _: &[MetroPair]) -> LiveBatch<MetroBoard, MetroPair> {
+            unimplemented!()
+        }
+
+        async fn tra_delays(&self, _: &[String]) -> LiveBatch<TraDelay> {
+            unimplemented!()
+        }
+    }
+
+    fn failed(reason: UnavailableReason, retry_after: Option<Duration>) -> LiveBatch<BusArrival> {
+        let mut batch = LiveBatch::default();
+        batch.mark_unavailable(&["x".to_owned()], reason);
+        batch.retry_after = retry_after;
+        batch
+    }
+
+    fn cache(inner: Arc<ScriptedBus>) -> CachedLiveData {
+        CachedLiveData::new(inner, &ViaConfig::default().tdx)
+    }
+
+    async fn ask(cache: &CachedLiveData, stop: &str) -> LiveBatch<BusArrival> {
+        cache.bus_arrivals("Taipei", &[stop.to_owned()]).await
+    }
+
+    #[tokio::test]
+    async fn a_429_pauses_live_calls_for_its_retry_after() {
+        let inner = ScriptedBus::new(vec![failed(
+            UnavailableReason::RateLimited,
+            Some(Duration::from_secs(30)),
+        )]);
+        let cache = cache(inner.clone());
+
+        ask(&cache, "a").await;
+        let paused = ask(&cache, "b").await;
+
+        assert_eq!(inner.calls(), 1);
+        assert!(paused.is_rate_limited());
+    }
+
+    #[tokio::test]
+    async fn repeated_upstream_failures_pause_live_calls() {
+        let inner = ScriptedBus::new(vec![
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            failed(UnavailableReason::UpstreamUnavailable, None),
+        ]);
+        let cache = cache(inner.clone());
+
+        ask(&cache, "a").await;
+        ask(&cache, "b").await;
+        ask(&cache, "c").await;
+
+        assert_eq!(inner.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_success_resets_the_failure_count() {
+        let inner = ScriptedBus::new(vec![
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            LiveBatch::default(),
+            failed(UnavailableReason::UpstreamUnavailable, None),
+            LiveBatch::default(),
+        ]);
+        let cache = cache(inner.clone());
+
+        for stop in ["a", "b", "c", "d"] {
+            ask(&cache, stop).await;
+        }
+
+        assert_eq!(inner.calls(), 4);
+    }
 }

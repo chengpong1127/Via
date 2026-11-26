@@ -57,7 +57,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: TDX returned 429 and live calls were paused
+          summary: TDX returned 429 or repeated errors and live calls were paused
           runbook: server/docs/operations.md#tdxratelimited
       - alert: NodeMemoryLow
         expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10

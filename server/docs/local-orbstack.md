@@ -29,7 +29,7 @@ All from `server/`:
 
 `up` is also the update path: pull `main`, run `up`. It builds the image from the current checkout, writes the git-ignored `overlays/orbstack/volumes.yaml` (hostPath of the tiles and the chosen build), and restarts the pods. Without a build id it uses the build `data/build/.via-static-latest.json` points to. The server needs the build id directory to hold `.via-static.json`.
 
-Only one TDX consumer may run: the 5 requests per minute budget is per key, so do not run `via-data fetch` or a second server with the same credentials while testing.
+Only one TDX consumer may run: the request budget is per key (the free tier is 5 requests per minute), so do not run `via-data fetch` or a second server with the same credentials while testing.
 
 ## Reaching it
 
@@ -42,7 +42,7 @@ The overlay makes the `server` Service a LoadBalancer on port 3000. OrbStack pub
 
   The `/$()/` keeps xcconfig from reading `//` as a comment. Debug builds allow plain HTTP (`ViaServer.validatedURL`); Release builds require HTTPS and are not changed. App Transport Security does not apply to IP-address hosts, so no Info.plist exception is needed. iOS is expected to ask for Local Network permission (untested on a device; if no prompt appears, the app may need an `NSLocalNetworkUsageDescription` key). The Mac firewall must allow incoming connections to OrbStack.
 
-**Security:** `lan` has no authentication and is reachable by every device on that network. Anyone there can run plans, spend the shared 5 requests per minute TDX budget and see your queries. Use only a trusted network and press Ctrl-C when done (`pkill -f 'port-forward svc/server'` if it was backgrounded).
+**Security:** `lan` has no authentication and is reachable by every device on that network. Anyone there can run plans, spend the shared per-key TDX budget and see your queries. Use only a trusted network and press Ctrl-C when done (`pkill -f 'port-forward svc/server'` if it was backgrounded).
 
 Check: `curl -s http://127.0.0.1:3000/health/ready`.
 
@@ -50,7 +50,7 @@ Check: `curl -s http://127.0.0.1:3000/health/ready`.
 
 The static artifact is built on the host (or in the image) against Valhalla, with the TDX budget in mind.
 
-1. Download only the GTFS zip (one TDX call) into a new `server/data/fetch/<timestamp>/`, copy the previous snapshot's `bike-stations-*.json` and `bus-*.json`, and update `manifest.json`. Do not run a bare `via-data fetch`: it bursts past 5 requests per minute.
+1. Download only the GTFS zip (one TDX call) into a new `server/data/fetch/<timestamp>/`, copy the previous snapshot's `bike-stations-*.json` and `bus-*.json`, and update `manifest.json`. Do not run a bare `via-data fetch`: it bursts past the free-tier limit of 5 requests per minute.
 2. Port-forward Valhalla: `kubectl --context orbstack -n via port-forward svc/valhalla 8002:8002 --address 127.0.0.1` (the build container reaches it through `host.docker.internal`; verified). Do not bind it to 0.0.0.0: Valhalla has no authentication. Stop it after the build (`pkill -f 'port-forward svc/valhalla'`).
 3. Build (about 30 minutes on this Mac), with the image so the code matches the running server:
 
