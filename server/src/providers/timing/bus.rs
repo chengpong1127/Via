@@ -21,7 +21,7 @@ use crate::{
             TimingReliability,
         },
     },
-    live::UnavailableReason,
+    live::{BusArrival, LiveBatch, UnavailableReason},
 };
 
 struct RealtimeRequestPlan {
@@ -247,9 +247,14 @@ impl BusDepartureSource {
 
         let mut results = RealtimeDepartureResults::default();
         let scope_count = plan.stops_by_scope.len();
-        for (scope, unique_stops) in &plan.stops_by_scope {
-            self.fetch_scope(scope, unique_stops, &plan, &mut results)
-                .await;
+        let fetched = futures_util::future::join_all(plan.stops_by_scope.iter().map(
+            |(scope, unique_stops)| async move {
+                (scope, self.fetch_arrivals(scope, unique_stops).await)
+            },
+        ))
+        .await;
+        for (scope, batch) in fetched {
+            self.record_arrivals(scope, batch, &plan, &mut results);
         }
 
         let outcome = if results
@@ -344,18 +349,26 @@ impl BusDepartureSource {
         }
     }
 
-    async fn fetch_scope(
+    async fn fetch_arrivals(
         &self,
         scope: &str,
         unique_stops: &HashSet<BoardingPointId>,
-        plan: &RealtimeRequestPlan,
-        results: &mut RealtimeDepartureResults,
-    ) {
+    ) -> LiveBatch<BusArrival> {
         let mut stop_uids = unique_stops
             .iter()
             .map(|stop| stop.as_str().to_owned())
             .collect::<Vec<_>>();
         stop_uids.sort();
+        self.context.live.bus_arrivals(scope, &stop_uids).await
+    }
+
+    fn record_arrivals(
+        &self,
+        scope: &str,
+        batch: LiveBatch<BusArrival>,
+        plan: &RealtimeRequestPlan,
+        results: &mut RealtimeDepartureResults,
+    ) {
         let mut patterns_by_service = HashMap::<String, Vec<TransitPatternId>>::new();
         let mut parent_route_by_service = HashMap::<String, String>::new();
         for pattern_id in plan.services_by_scope.get(scope).into_iter().flatten() {
@@ -371,7 +384,6 @@ impl BusDepartureSource {
             }
         }
         let scope_pairs = plan.pairs_by_scope.get(scope).cloned().unwrap_or_default();
-        let batch = self.context.live.bus_arrivals(scope, &stop_uids).await;
         ::metrics::counter!("via_bus_timing_realtime_http_requests_total")
             .increment(batch.upstream_requests as u64);
         results.http_requests += batch.upstream_requests;
