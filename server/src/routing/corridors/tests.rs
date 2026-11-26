@@ -864,3 +864,51 @@ fn retained_corridors_prefer_distinct_ride_sequences_over_stop_variants() {
     assert_eq!(corridors.len(), 2);
     assert!(sequences.contains(&vec![TransitPatternId::new("other")]));
 }
+
+#[test]
+fn trip_less_non_bus_patterns_never_enter_corridor_search() {
+    let dead = pattern("dead-line", TransitMode::Metro, &["o", "d"]);
+    let timed = pattern("timed-line", TransitMode::Metro, &["o", "mid", "d"]);
+    let network = network(
+        vec![dead, timed],
+        vec![trip("t1", "timed-line", &[0, 120, 240])],
+    );
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 0, 8));
+
+    assert_eq!(
+        pattern_ids(&corridors),
+        HashSet::from([TransitPatternId::new("timed-line")])
+    );
+}
+
+#[test]
+fn trip_less_bus_patterns_are_kept_for_live_predictions() {
+    let bus = pattern("live-bus", TransitMode::Bus, &["o", "d"]);
+    let network = network(vec![bus], Vec::new());
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Bus], 0, 8));
+
+    assert_eq!(
+        pattern_ids(&corridors),
+        HashSet::from([TransitPatternId::new("live-bus")])
+    );
+}
+
+#[test]
+fn dead_patterns_no_longer_crowd_out_the_timed_plan() {
+    // The shorter dead line would take the single corridor slot.
+    let dead = pattern("a-dead", TransitMode::Metro, &["o", "d"]);
+    let timed = pattern("z-timed", TransitMode::Metro, &["o", "mid", "d"]);
+    let network = network(
+        vec![dead, timed],
+        vec![trip("t1", "z-timed", &[0, 120, 240])],
+    );
+
+    let corridors = run(&network, &query("o", "d", &[TransitMode::Metro], 0, 1));
+
+    assert_eq!(
+        pattern_ids(&corridors),
+        HashSet::from([TransitPatternId::new("z-timed")])
+    );
+}

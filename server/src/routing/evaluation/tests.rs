@@ -51,6 +51,36 @@ fn pattern(id: &str, mode: TransitMode, stops: &[&str]) -> TransitPattern {
     )
 }
 
+/// Placeholder weekday trips for non-Bus patterns: corridor search drops
+/// non-Bus patterns without trips or frequencies. Tests inject timing through
+/// the snapshot, so these trips are never read.
+fn placeholder_trips(
+    patterns: &[TransitPattern],
+) -> Vec<crate::domain::transit::network::TransitTrip> {
+    patterns
+        .iter()
+        .filter(|pattern| !pattern.route_id.as_str().starts_with("fixture:Bus:"))
+        .map(|pattern| {
+            crate::domain::transit::network::TransitTrip::fixture_weekdays(
+                crate::domain::ids::TransitTripId::new(format!(
+                    "placeholder-{}",
+                    pattern.id.as_str()
+                )),
+                pattern.id.clone(),
+                vec![time::Weekday::Monday],
+                (0..pattern.stops.len() as u32)
+                    .map(|index| {
+                        crate::domain::transit::network::ScheduledStopTime::new(
+                            index * 60,
+                            index * 60,
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 fn network(
     patterns: Vec<TransitPattern>,
     stop_ids: &[&str],
@@ -60,8 +90,8 @@ fn network(
         TransitNetwork::fixture(
             Time::from_hms(4, 0, 0).unwrap(),
             stop_ids.iter().map(|id| stop(id)).collect(),
-            patterns,
-            Vec::new(),
+            patterns.clone(),
+            placeholder_trips(&patterns),
         )
         .with_transfer_edges(transfers),
     )))

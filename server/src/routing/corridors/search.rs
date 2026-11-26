@@ -797,6 +797,14 @@ fn equivalent_legs_for(
         }
         let mut legs = Vec::new();
         for position in transit.pattern_positions_at(&leg.board_stop_id) {
+            // Patterns the dense topology dropped (never timeable) are not alternatives.
+            if transit
+                .dense()
+                .pattern_index(&position.pattern_id)
+                .is_none()
+            {
+                continue;
+            }
             let Some((pattern, _)) = pattern_with_mode(transit, &position.pattern_id, &[key.mode])
             else {
                 continue;

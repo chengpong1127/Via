@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::domain::{
     ids::{BoardingPointId, TransitPatternId},
@@ -80,6 +80,17 @@ impl DenseTopology {
                 .as_str()
                 .cmp(network.patterns[*right].id.as_str())
         });
+        let timed_patterns = network
+            .trips
+            .iter()
+            .map(|trip| &trip.pattern_id)
+            .chain(
+                network
+                    .frequencies
+                    .iter()
+                    .map(|frequency| &frequency.pattern_id),
+            )
+            .collect::<HashSet<_>>();
         let mut pattern_ids = Vec::with_capacity(pattern_order.len());
         let mut patterns = Vec::with_capacity(pattern_order.len());
         for network_position in pattern_order {
@@ -88,6 +99,12 @@ impl DenseTopology {
                 continue;
             };
             let mode = network.routes[*route_position].mode;
+            // Only Bus gets live predictions; a pattern with no trips and no
+            // frequencies on any other mode can never be timed, and would
+            // crowd timeable corridors out of the search budget.
+            if mode != TransitMode::Bus && !timed_patterns.contains(&pattern.id) {
+                continue;
+            }
             let pattern_index = patterns.len() as u64;
             let line = match mode {
                 TransitMode::Rail | TransitMode::HighSpeedRail => (1 << 32) | pattern_index,

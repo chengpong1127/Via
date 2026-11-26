@@ -157,6 +157,22 @@ fn multiple_mode_corridors_network() -> Arc<TransitRuntime> {
             vec![BoardingPointId::new(from), BoardingPointId::new(to)],
         )
     };
+    let patterns = vec![
+        pattern("bus-a", TransitMode::Bus, "origin", "bus-end-a"),
+        pattern(
+            "metro-a",
+            TransitMode::Metro,
+            "metro-start-a",
+            "destination",
+        ),
+        pattern("bus-b", TransitMode::Bus, "origin", "bus-end-b"),
+        pattern(
+            "metro-b",
+            TransitMode::Metro,
+            "metro-start-b",
+            "destination",
+        ),
+    ];
     let network = TransitNetwork::fixture(
         Time::from_hms(4, 0, 0).unwrap(),
         [
@@ -170,23 +186,30 @@ fn multiple_mode_corridors_network() -> Arc<TransitRuntime> {
         .into_iter()
         .map(stop)
         .collect(),
-        vec![
-            pattern("bus-a", TransitMode::Bus, "origin", "bus-end-a"),
-            pattern(
-                "metro-a",
-                TransitMode::Metro,
-                "metro-start-a",
-                "destination",
-            ),
-            pattern("bus-b", TransitMode::Bus, "origin", "bus-end-b"),
-            pattern(
-                "metro-b",
-                TransitMode::Metro,
-                "metro-start-b",
-                "destination",
-            ),
-        ],
-        Vec::new(),
+        patterns.clone(),
+        // Non-Bus patterns need a trip to survive corridor search; timing is injected.
+        patterns
+            .iter()
+            .filter(|pattern| !pattern.route_id.as_str().starts_with("fixture:Bus:"))
+            .map(|pattern| {
+                crate::domain::transit::network::TransitTrip::fixture_weekdays(
+                    crate::domain::ids::TransitTripId::new(format!(
+                        "placeholder-{}",
+                        pattern.id.as_str()
+                    )),
+                    pattern.id.clone(),
+                    vec![time::Weekday::Monday],
+                    (0..pattern.stops.len() as u32)
+                        .map(|index| {
+                            crate::domain::transit::network::ScheduledStopTime::new(
+                                index * 60,
+                                index * 60,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
     )
     .with_transfer_edges(vec![
         crate::domain::transit::network::TransferEdge::new(

@@ -791,7 +791,7 @@ impl via_server::street::StreetRouter for RankingStreet {
 async fn ranking_corridor_fixture(iterations: usize) {
     use time::{Duration, macros::datetime};
     use via_server::domain::{
-        ids::{BoardingPointId, EffectiveTripId, TransitPatternId},
+        ids::{BoardingPointId, EffectiveTripId, TransitPatternId, TransitTripId},
         transit::timing::{EffectiveStopTime, TimingBasis, TimingReliability},
     };
     use via_server::routing::{JourneyPlanningLimits, RoutingService};
@@ -821,6 +821,11 @@ async fn ranking_corridor_fixture(iterations: usize) {
     }
     transit.patterns = vec![red.clone(), alternative.clone()];
     transit.trips.retain(|trip| trip.pattern_id == red.id);
+    // Corridor search drops non-Bus patterns without trips; timing comes from the snapshot.
+    let mut alternative_trip = transit.trips[0].clone();
+    alternative_trip.id = TransitTripId::new("alternative-placeholder");
+    alternative_trip.pattern_id = alternative.id.clone();
+    transit.trips.push(alternative_trip);
     transit.transfer_edges.clear();
     let origin = near_stop(&transit, "F-M1");
     let destination = near_stop(&transit, "F-M2-RED");
