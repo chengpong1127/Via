@@ -1,3 +1,5 @@
+# AWS is paused: the OrbStack overlay refreshes weekly with weekly-refresh (docs/local-orbstack.md).
+# This nightly job is kept working and unchanged.
 # Nightly static-data refresh: paced GTFS fetch, build, hand-over to the node
 # host (via-static-activate.path -> fetch.sh --incoming validates, activates,
 # restarts and rolls back). Skips the build when the GTFS checksum is unchanged.

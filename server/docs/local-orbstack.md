@@ -1,11 +1,11 @@
 # Local stack on OrbStack
 
-Runs the whole backend (server x2, TDX gateway, Valhalla) on this Mac's OrbStack Kubernetes cluster, for hand testing from the iOS simulator or a phone. Local only: no AWS. For production see [deploy-aws.md](deploy-aws.md).
+Runs the whole backend (server, TDX gateway, Valhalla) and the weekly data refresh on this Mac's OrbStack Kubernetes cluster, for hand testing from the iOS simulator or a phone. Local only: no AWS. For production see [deploy-aws.md](deploy-aws.md).
 
 ## One-time setup
 
 1. OrbStack running with Kubernetes enabled (`kubectl --context orbstack get nodes`).
-2. Valhalla tiles at `server/var/valhalla` (or set `VIA_TILES_DIR`) and a static build under `server/data/build/<build-id>/` (see "Refresh data").
+2. Valhalla tiles at `server/var/valhalla` (or set `VIA_TILES_DIR`) and a first static build under `server/data/build/<build-id>/` (see "First build"). After that the weekly job keeps the build fresh.
 3. The TDX credentials Secret. Never commit it or paste it in a chat. From `server/.env` without printing it:
 
        kubectl --context orbstack create namespace via --dry-run=client -o yaml | kubectl --context orbstack apply -f -
@@ -24,12 +24,13 @@ All from `server/`:
     deploy/orbstack.sh up <build-id>   # same, with a specific static build
     deploy/orbstack.sh status          # pods, service, /health/ready
     deploy/orbstack.sh data <build-id> # switch static build, restart server pods
+    deploy/orbstack.sh refresh         # run the weekly data refresh now and follow its log (see Weekly refresh)
     deploy/orbstack.sh lan             # Wi-Fi access for a phone (foreground, port 3001, NO AUTH: see Reaching it)
     deploy/orbstack.sh down            # delete deployments and services; keeps the namespace, Secret, data and tiles
 
-`up` is also the update path: pull `main`, run `up`. It builds the image from the current checkout, writes the git-ignored `overlays/orbstack/volumes.yaml` (hostPath of the tiles and the chosen build), and restarts the pods. Without a build id it uses the build `data/build/.via-static-latest.json` points to. The server needs the build id directory to hold `.via-static.json`.
+`up` is also the update path: pull `main`, run `up`. It builds the `via-server:dev` and `via-refresh:dev` images from the current checkout, writes the git-ignored `overlays/orbstack/volumes.yaml` (hostPath of the tiles, the chosen build and the data directory), and restarts the pods. Without a build id it uses the build `data/build/.via-static-latest.json` points to. The server needs the build id directory to hold `.via-static.json`.
 
-Only one TDX consumer may run: the request budget is per key (the free tier is 5 requests per minute), so do not run `via-data fetch` or a second server with the same credentials while testing.
+The TDX request budget is per key and shared by every process that uses it (the key allows 5 requests per second; see the TDX member center for the plan): the server, the gateway, the weekly job and any `via-data fetch` or research run all draw from it.
 
 The overlay runs one `server` and one `valhalla` replica (`replicas:` in `overlays/orbstack/kustomization.yaml`; the base and the aws overlay keep 2). Valhalla pods restart often on a loaded Mac, so after any scale change or restart check the pod and, during a data build, the port-forward (`curl -s http://127.0.0.1:8002/status`). While a pod restarts, requests fail until it is Ready again.
 
@@ -48,27 +49,45 @@ The overlay makes the `server` Service a LoadBalancer on port 3000. OrbStack pub
 
 Check: `curl -s http://127.0.0.1:3000/health/ready`.
 
-## Refresh data
+## Weekly refresh
 
-The static artifact is built on the host (or in the image) against Valhalla, with the TDX budget in mind.
+A CronJob, `weekly-refresh` (namespace `via`), refreshes all static data once a week: Sunday 23:00 Asia/Taipei. One job does everything, staged in `overlays/orbstack/refresh-static.sh`:
 
-1. Download only the GTFS zip (one TDX call) into a new `server/data/fetch/<timestamp>/`, copy the previous snapshot's `bike-stations-*.json` and `bus-*.json`, and update `manifest.json`. Do not run a bare `via-data fetch`: it bursts past the free-tier limit of 5 requests per minute.
-2. Port-forward Valhalla: `kubectl --context orbstack -n via port-forward svc/valhalla 8002:8002 --address 127.0.0.1` (the build container reaches it through `host.docker.internal`; verified). Do not bind it to 0.0.0.0: Valhalla has no authentication. Stop it after the build (`pkill -f 'port-forward svc/valhalla'`).
-3. Build (about 30 minutes on this Mac), with the image so the code matches the running server:
+1. **Fetch**: one `via-data fetch` downloads the GTFS zip and every TDX file the build needs (Bike stations, Bus routes, Bus schedules), paced at `VIA_FETCH_REQUESTS_PER_MINUTE` (60, so 1 request per second, a fifth of the key's 5 per second, which leaves room for the live server). The job fails here if TDX gave a transient error and `via-data` fell back to an older copy of a file (`reused_sources` in the snapshot manifest): a partial refresh is never built.
+2. **Build**: `via-data build` against Valhalla through the in-cluster Service (`http://valhalla:8002/`; no port-forward). About 30 minutes, and it loads Valhalla for that time, so plans from the server are slower meanwhile.
+3. **Validate**: `via-data validate` loads the new artifact.
+4. **Activate**: the job patches the `static` hostPath of `deploy/server` to the new build directory. The one-replica server rolls over with a surge pod, so the old pod keeps serving until the new one passes `/health/ready`. If the new pod is not Ready within `ROLLOUT_TIMEOUT` (600 s), the job runs `kubectl rollout undo` and fails. A rolling replacement, not an in-place reload, is the activation because the server reads its artifact only at start and the rollout gives readiness gating and rollback for free.
 
-       docker run --rm --entrypoint via-data \
-         -e VIA_VALHALLA_URL=http://host.docker.internal:8002/ \
-         -v "$PWD/data:/build/server/data" via-server:dev \
-         build --input /build/server/data/fetch/<timestamp>
+If any step fails, the Job exits non-zero (its pod and log are kept; three failed Jobs are retained), the server stays on the build it already uses, and `data/build/.via-static-latest.json` (moved by `via-data build`) is put back where it was. The job never deletes anything under `server/data`: new builds and snapshots accumulate (about 0.5 GB each per week); prune by hand only builds that no pod mounts and no research run uses.
 
-   The build wrote the artifact and repointed `data/build/.via-static-latest.json`, but the container then did not exit once. When that link has moved and `.via-static.json` ends in valid JSON (`jq -e . <file>`), run `docker stop` on the container.
+All settings are in `overlays/orbstack/refresh.yaml`: `schedule` and `timeZone` (the zone is explicit; the cluster rejects an unknown one, and a Taipei-time test CronJob was verified to fire at the Taipei minute), `VIA_FETCH_REQUESTS_PER_MINUTE`, `ROLLOUT_TIMEOUT`, and `startingDeadlineSeconds` (a run missed while the Mac sleeps still starts if the Mac wakes within 6 hours). The credentials come from the existing `tdx-credentials` Secret; the script never prints them. The job's ServiceAccount may only get, list, watch and patch `deploy/server` and read ReplicaSets.
 
-   `bus_derived_segment_scale_percent` (default 290, `config/via.toml`) is applied at build, so rebuild after changing it.
-4. `deploy/orbstack.sh data <new-build-id>`.
+Run it by hand, from `server/`:
 
-Never `rm -rf` anything under `server/data/build` or `server/data/fetch` by hand: builds are shared by all sessions, and the running pods mount the active one.
+    deploy/orbstack.sh refresh
 
-`via-data build` repoints `data/build/.via-static-latest.json` to the new build.
+or `kubectl --context orbstack -n via create job --from=cronjob/weekly-refresh my-refresh`. `orbstack.sh up` installs or updates the CronJob (and builds the `via-refresh:dev` image: `via-server:dev` plus `kubectl`). `kubectl --context orbstack -n via get cronjob,jobs` shows the schedule and past runs; `kubectl --context orbstack -n via logs job/<name>` the log, ending with a `tdx usage:` block. Use `kubectl ... patch cronjob weekly-refresh -p '{"spec":{"suspend":true}}'` to pause it.
+
+**TDX budget of one run**: about 50 calls and 0.5 GB. The snapshot of 2026-11-25 had 41 files (GTFS 468 MB, 12 Bike catalogs, 22 Bus route files, 6 Bus schedule files, 503 MB in all), so one run is roughly 50 calls (Bike catalogs may take a second page) and 3.5 points on the Basic category (`calls / 1500 + bytes / 150 MB`, see [operations.md](operations.md), "TDX points per day"), about 15 to 17 points in a month of 4 to 5 runs. This is an estimate from file sizes; the `tdx usage:` block at the end of a job log has the measured numbers (calls by status and response bytes by dataset), and the first run on the real cluster should replace this paragraph's figures.
+
+Edit `refresh-static.sh`, `refresh.yaml` or the other files in the overlay and run `overlays/orbstack/tests/run.sh` (bash, jq, kubectl; no cluster): fake `via-data`/`kubectl` tests of every failure path plus a rendered-manifest golden file (`tests/render.sh --update` after an intended change to the manifests).
+
+## First build
+
+A fresh Mac has no build, so the server cannot start and the job has nothing to update. Make the first one by hand after `up` has built `via-server:dev` (or from the host with `cargo run --bin via-data`): a bare `via-data fetch` is now paced and safe,
+
+    kubectl --context orbstack -n via port-forward svc/valhalla 8002:8002 --address 127.0.0.1 &
+    docker run --rm --entrypoint via-data -e VIA_VALHALLA_URL=http://host.docker.internal:8002/ \
+      -v "$PWD/data:/build/server/data" via-server:dev fetch
+    docker run --rm --entrypoint via-data -e VIA_VALHALLA_URL=http://host.docker.internal:8002/ \
+      -v "$PWD/data:/build/server/data" via-server:dev build
+    pkill -f 'port-forward svc/valhalla'
+
+(the credentials come from `-e TDX_CLIENT_ID -e TDX_CLIENT_SECRET` after `set -a; . ./.env; set +a`; do not echo them), then `deploy/orbstack.sh up`. `bus_derived_segment_scale_percent` (default 290, `config/via.toml`) is applied at build, so changing it needs a rebuild: run the job.
+
+To serve an older or experimental build, `deploy/orbstack.sh data <build-id>`. The next weekly run replaces it with a fresh build.
+
+Never `rm -rf` anything under `server/data/build` or `server/data/fetch` by hand: builds are shared by all sessions, and the running pods mount the active one. `via-data build` repoints `data/build/.via-static-latest.json` to the new build.
 
 ## Troubleshooting
 
