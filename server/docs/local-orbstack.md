@@ -63,6 +63,8 @@ If any step fails, the Job exits non-zero (its pod and log are kept; three faile
 
 All settings are in `overlays/orbstack/refresh.yaml`: `schedule` and `timeZone` (the zone is explicit; the cluster rejects an unknown one, and a Taipei-time test CronJob was verified to fire at the Taipei minute), `BUILD_TIMEOUT_SECONDS`, `ROLLOUT_TIMEOUT`, `startingDeadlineSeconds` (3600: a run missed while the Mac sleeps still starts if the Mac wakes within an hour, so it cannot start Monday morning, and otherwise waits for next Sunday) and the container `resources` (request 2 Gi, limit 4 Gi memory: provisional, from the earlier measurement of a resident set of at least 1.5 GiB for an unfinished build; after the first completed run read the peak with `kubectl --context orbstack top pod` during the build, or `docker stats`, and set the limit to about 1.5 times that, so an OOM kill hits the job rather than Valhalla or the server). The credentials come from the existing `tdx-credentials` Secret; the script never prints them. The job's ServiceAccount may only get, list, watch and patch `deploy/server` and read ReplicaSets.
 
+Auto-deploy of `main` (see "Auto-deploy") skips while any Job is active in `via`, so it does not run `orbstack.sh up` in the middle of a refresh. After a refresh the server runs the new build; a later auto-deploy or `up` keeps it, because both use the build `.via-static-latest.json` points to, which the job leaves on the build it activated (or restores after a failure).
+
 Run it by hand, from `server/`:
 
     deploy/orbstack.sh refresh
