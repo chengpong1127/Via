@@ -25,12 +25,18 @@ case "${args[0]}" in
   build)
     [ "${args[1]}" = "--input" ] || exit 2
     [ -f "${args[2]}/manifest.json" ] || { echo "no snapshot ${args[2]}" >&2; exit 1; }
-    [ -z "${FAKE_BUILD_FAIL:-}" ] || { echo "build failed" >&2; exit 1; }
+    mode="${FAKE_BUILD_MODE:-ok}"
+    [ "$mode" != fail ] || { echo "build failed" >&2; exit 1; }
     mkdir -p "$DATA_DIR/build/$ts"
     printf '{"ok":"%s"%s}' "$ts" "${FAKE_ARTIFACT_EXTRA:-}" >"$DATA_DIR/build/$ts/.via-static.json"
     ln -sfn "$ts/.via-static.json" "$DATA_DIR/build/.via-static-latest.json"
+    case "$mode" in
+      link-then-fail) echo "build failed after moving the link" >&2; exit 1 ;;
+      link-then-hang) echo $$ >"$FAKE_STATE/build.pid"; exec sleep 300 ;;
+    esac
     echo "static artifact: $DATA_DIR/build/$ts/.via-static.json"
     echo "latest static artifact: $DATA_DIR/build/.via-static-latest.json"
+    if [ "$mode" = artifact-then-hang ]; then echo $$ >"$FAKE_STATE/build.pid"; exec sleep 300; fi
     ;;
   validate)
     [ "${args[1]}" = "--static" ] || exit 2
