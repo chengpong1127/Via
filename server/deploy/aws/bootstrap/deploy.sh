@@ -30,11 +30,19 @@ if [ -n "${VIA_ACME_EMAIL:-}" ] && ! [[ "$VIA_ACME_EMAIL" =~ ^[A-Za-z0-9._+-]+@[
   exit 2
 fi
 
+case "${VIA_PROFILE:-}" in
+  ""|prod|mvp) ;;
+  *) echo "VIA_PROFILE must be empty, prod or mvp, got: ${VIA_PROFILE}" >&2; exit 2 ;;
+esac
+
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../k8s" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cp -R "$src/." "$work/"
 overlay="$work/overlays/aws"
+# VIA_PROFILE=mvp applies the sizing patch from overlays/aws-mvp on top of aws.
+apply_dir="$overlay"
+if [ "${VIA_PROFILE:-}" = "mvp" ]; then apply_dir="$work/overlays/aws-mvp"; fi
 
 if [ -n "${VIA_API_HOST:-}" ]; then
   sed -i "s/api\.example\.com/${VIA_API_HOST}/g" "$overlay"/*.yaml
@@ -45,7 +53,7 @@ fi
 
 (cd "$overlay" && kustomize edit set image "via-server=ghcr.io/chengpong1127/via-server:${sha}")
 
-rendered="$(kubectl kustomize "$overlay")"
+rendered="$(kubectl kustomize "$apply_dir")"
 if grep -qE 'set-to-git-sha|api\.example\.com|ops@example\.com' <<<"$rendered"; then
   echo "placeholders remain; set VIA_API_HOST and VIA_ACME_EMAIL" >&2
   exit 1
@@ -60,5 +68,5 @@ kubectl -n via create secret generic tdx-credentials \
   --from-file=TDX_CLIENT_SECRET=<(printf '%s' "$client_secret") \
   --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl apply -k "$overlay"
+kubectl apply -k "$apply_dir"
 kubectl -n via rollout status deploy/server --timeout=300s

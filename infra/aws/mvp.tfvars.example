@@ -1,0 +1,8 @@
+# MVP profile: one small node for the owner's own testing. Use with
+#   tofu plan -var-file=terraform.tfvars -var-file=mvp.tfvars
+# (copy this file to mvp.tfvars; later files win, so keep artifact_bucket_name
+# and repo_ref in terraform.tfvars).
+instance_type      = "t4g.large" # 2 vCPU, 8 GiB arm64. See server/docs/deploy-aws.md for the free-plan caveat.
+root_volume_gb     = 20          # OS + k3s binaries + images; the state is on the data volume
+data_volume_gb     = 20          # 538 MB static build x3 kept, tiles, snapshots, k3s state
+snapshot_retention = 2           # snapshots bill per changed block; 2 daily copies are enough for a single tester

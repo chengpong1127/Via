@@ -1,0 +1,17 @@
+name: deploy-checks
+on:
+  pull_request:
+    paths: ["server/deploy/**", "infra/aws/**"]
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kustomize (pinned)
+        run: |
+          v=v5.4.3
+          curl -fsSL -o k.tgz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F$v/kustomize_${v}_linux_amd64.tar.gz"
+          echo "3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7  k.tgz" | sha256sum -c -
+          sudo tar -xzf k.tgz -C /usr/local/bin kustomize
+      - run: server/deploy/k8s/overlays/aws-mvp/check.sh
+      - run: server/deploy/aws/bootstrap/test-profile.sh

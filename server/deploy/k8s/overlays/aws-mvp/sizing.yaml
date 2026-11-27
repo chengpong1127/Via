@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: server
+          resources:
+            requests: {cpu: 250m, memory: 768Mi}
+            limits: {memory: 2Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valhalla
+spec:
+  template:
+    spec:
+      containers:
+        - name: valhalla
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 1536Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-static
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: nightly-static
+              resources:
+                requests: {cpu: 500m, memory: 1Gi}
+                limits: {memory: 2Gi}

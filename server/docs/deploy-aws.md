@@ -164,3 +164,52 @@ The honest bound: rotated files are gone within 7 days, and an active log file i
 Re-running the script on an existing node rewrites these files only when they differ, restarting journald or k3s only then.
 
 Day-to-day operation, alerts and incident steps: [operations.md](operations.md).
+
+## 11. MVP profile (owner-only testing, minimum cost)
+
+For the first weeks, with about US$100 of credits and no public users, run the same stack on one smaller node. Profile files: `infra/aws/mvp.tfvars.example` (instance and volume sizes) and `server/deploy/k8s/overlays/aws-mvp` (one server replica, memory limits for 8 GiB; `check.sh` there renders it and asserts the sizing, run by `.github/workflows/deploy-checks.yml` together with `bootstrap/test-profile.sh`). `deploy.sh` applies the overlay when `VIA_PROFILE=mvp` is set. The default profile (m7g.large, 40+40 GB, 2 replicas) stays the production design.
+
+### Free-plan instance types (verify first)
+
+AWS documents that free-plan accounts can only launch a short list of EC2 types (at the time of writing t3.micro, t3.small, t4g.micro, t4g.small, c7i-flex.large, m7i-flex.large). This was not verifiable without the account, so treat it as likely: if `tofu apply` refuses `t4g.large`, the cheapest allowed type that has 8 GiB is `m7i-flex.large` (x86_64). It needs an amd64 AMI and an amd64 server image (CI builds arm64 only today), so the alternative is to upgrade the account to a paid plan (credits carry over) and keep Graviton. t4g.small (2 GiB) is allowed but too small: Valhalla, the server and k3s alone use about 3 GiB.
+
+### Which instance fits
+
+Memory limits in the overlay: server 2 Gi, Valhalla 1.5 Gi, nightly build 2 Gi (provisional; the in-node build memory from #36 was not yet published), gateway 128 Mi, Alloy (monitoring) 256 Mi, plus about 1 Gi for k3s, Traefik and cert-manager. Server, Valhalla, gateway and k3s limits sum to about 4.75 Gi (actual use is usually lower). During the nightly build the sum is about 6.75 Gi of 8 GiB, leaving only about 1.25 Gi of headroom; this is why the build limit must be confirmed by the #36 measurement. On t4g.medium (4 GiB) the build cannot run next to the other pods. Choose:
+
+- **t4g.large (8 GiB), recommended.** Everything fits including the nightly build.
+- t4g.medium (4 GiB), only with the nightly build moved off the node (GitHub Actions build, then `publish.sh`; the owner decides, see "Open decision"). Saves about US$30 per month. On this node suspend the CronJob, which is otherwise OOM-killed nightly: `kubectl -n via patch cronjob nightly-static -p '{"spec":{"suspend":true}}'` (re-run after each `deploy.sh`, which re-applies it unsuspended).
+
+### Cost per month (ap-southeast-2, on-demand, approximate; confirm in the AWS Pricing Calculator)
+
+| Item | t4g.large | t4g.medium + CI build | default m7g.large |
+|---|---|---|---|
+| Compute | 59 | 29 | 72 |
+| EBS gp3 (20+20 GB MVP, 40+40 GB default) | 4 | 4 | 8 |
+| Public IPv4 (the Elastic IP; the instance has no second public IP) | 4 | 4 | 4 |
+| Snapshots (2 daily copies, incremental) | 1 | 1 | 2 |
+| S3 (bucket under 1 GB, a few requests) | 0 | 0 | 0 |
+| Data transfer out (owner testing) | 0 | 0 | 0 |
+| **Total US$ / month** | **about 68** | **about 38** | **about 86** |
+| **US$100 lasts** | **about 1.5 months** | **about 2.6 months** | **about 1.2 months** |
+
+Compute is the lever. Stopping the instance when not testing (`aws ec2 stop-instances`) removes compute, leaving about US$9 per month for EBS, the idle Elastic IP and snapshots; k3s and the data survive a stop. Starting again needs no redeploy.
+
+Caveats: the table is approximate (about 5 percent either way, not verified against the calculator; compute may be US$2-3 lower per month). t4g instances are burstable: with 2 vCPU the baseline is 30 percent each, and the nightly build or a burst of planning requests can exhaust CPU credits, after which the node is throttled (unlimited mode, the default for t4g, instead bills the surplus at about US$0.05 per vCPU-hour). Watch `CPUCreditBalance` during the first weeks.
+
+### Nothing else to pay for
+
+No NAT gateway (public subnet, security group only allows 80 and 443), no load balancer (Traefik on the node), no Route 53 (DNS is at the registrar: one A record to the Elastic IP), no CloudWatch agent, alarms or log groups (Alloy sends metrics to Grafana Cloud's free tier), no extra snapshots beyond the lifecycle policy. Data transfer in is free. Zero request-coordinate logging and the 7-day log bound (section 10) are unchanged in this profile.
+
+### Open decision
+
+If the nightly in-node build is judged too heavy for the node you choose, the fallbacks are weekly in-node builds or a GitHub Actions build with `publish.sh`. This note does not choose; report the measured peak from #36 and decide.
+
+### First deploy, cheapest path
+
+1. Sign in to the AWS console, confirm credits and set a US$50 budget alert. Try the MVP instance in the console launch wizard first, or rely on `tofu plan` failing safely, to learn which types the free plan allows.
+2. `cp infra/aws/mvp.tfvars.example infra/aws/mvp.tfvars`; edit `terraform.tfvars` (bucket name, `repo_ref`); `tofu plan -var-file=terraform.tfvars -var-file=mvp.tfvars`, then `apply` (sections 2 and 3).
+3. Put the TDX credentials into SSM (section 3). Open an SSM session, wait for `BOOTSTRAP-OK`.
+4. Deploy with `VIA_PROFILE=mvp VIA_API_HOST=tilo.chengpeng.dev VIA_ACME_EMAIL=<owner email> deploy.sh <image-sha>` (section 5). Without DNS use `<ip-with-dashes>.sslip.io` for the first test.
+5. Load data: the first static build is made by running the nightly job once (`kubectl -n via create job --from=cronjob/nightly-static first-run`), then `sudo fetch.sh --tiles` after publishing tiles (section 4). Point the A record at the Elastic IP and check `https://<host>/health/ready`.
+6. When not testing, stop the instance. To scale up later, change `instance_type` and apply without the mvp var-file.
