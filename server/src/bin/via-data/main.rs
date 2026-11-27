@@ -3,6 +3,7 @@ mod report;
 
 use std::{
     error::Error,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -24,7 +25,7 @@ use via_server::{
     },
     providers::valhalla::ValhallaProvider,
     street::{DependencyHealth, StreetRouter},
-    tdx::TdxClient,
+    tdx::{TdxClient, TdxFetchSettings},
 };
 
 #[derive(Parser, Debug)]
@@ -136,7 +137,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
-    Ok(())
+    std::io::stdout().flush()?;
+    std::process::exit(0)
 }
 
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
@@ -155,12 +157,31 @@ async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Erro
     result
 }
 
+const FETCH_PACE_ENV: &str = "VIA_FETCH_REQUESTS_PER_MINUTE";
+
+fn fetch_settings(
+    settings: &ViaConfig,
+    requests_per_minute: Option<&str>,
+) -> Result<TdxFetchSettings, Box<dyn Error>> {
+    let mut fetch = settings.tdx.fetch.clone();
+    if let Some(value) = requests_per_minute {
+        fetch.requests_per_minute = value
+            .parse::<u32>()
+            .ok()
+            .filter(|pace| *pace > 0)
+            .ok_or_else(|| format!("{FETCH_PACE_ENV} must be a positive integer, got {value:?}"))?;
+    }
+    Ok(fetch)
+}
+
 async fn run_fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
+    let pace = std::env::var(FETCH_PACE_ENV).ok();
+    let fetch = fetch_settings(settings, pace.as_deref())?;
     let client = TdxClient::new(tdx_credentials()?, settings.tdx.clone())?;
     let api_base_url = url::Url::parse(&settings.tdx.api_base_url)?;
     let sources = FetchSources::production(
         api_base_url.as_str(),
-        FetchPolicy::from_settings(&settings.tdx.fetch, args.gtfs_only),
+        FetchPolicy::from_settings(&fetch, args.gtfs_only),
     );
     let snapshot = fetch_snapshot(args.gtfs_file.as_deref(), &client, &sources).await?;
     let latest_snapshot = update_latest_fetch_link(&snapshot.path)?;
@@ -423,5 +444,49 @@ fn mode_name(mode: TransitMode) -> &'static str {
         TransitMode::Metro => "Metro",
         TransitMode::Rail => "TRA",
         TransitMode::HighSpeedRail => "THSR",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fetch_settings;
+    use via_server::config::ViaConfig;
+
+    fn shipped() -> ViaConfig {
+        ViaConfig::default()
+    }
+
+    #[test]
+    fn the_shipped_fetch_pace_is_used_without_an_override() {
+        let settings = shipped();
+        let fetch = fetch_settings(&settings, None).unwrap();
+        assert_eq!(
+            fetch.requests_per_minute,
+            settings.tdx.fetch.requests_per_minute
+        );
+        assert_eq!(fetch.requests_per_minute, 4);
+    }
+
+    #[test]
+    fn the_override_replaces_only_the_request_pace() {
+        let settings = shipped();
+        let fetch = fetch_settings(&settings, Some("60")).unwrap();
+        assert_eq!(fetch.requests_per_minute, 60);
+        assert_eq!(fetch.max_attempts, settings.tdx.fetch.max_attempts);
+        assert_eq!(
+            fetch.retry_backoff_seconds,
+            settings.tdx.fetch.retry_backoff_seconds
+        );
+    }
+
+    #[test]
+    fn an_override_that_is_not_a_positive_integer_is_refused() {
+        let settings = shipped();
+        for value in ["0", "-3", "abc", "", "1.5"] {
+            assert!(
+                fetch_settings(&settings, Some(value)).is_err(),
+                "{value:?} should be refused"
+            );
+        }
     }
 }

@@ -86,6 +86,8 @@ Data rollback: `sudo fetch.sh --static <previous-id>` (kept builds are re-activa
 
 ### Nightly refresh (no manual step)
 
+AWS is paused. The local OrbStack stack refreshes weekly instead, with one fetch-build-validate-activate job ([local-orbstack.md](local-orbstack.md)); this nightly design is kept working but is not the current plan.
+
 A Kubernetes CronJob, `nightly-static` (aws overlay), runs at 03:00 Asia/Taipei:
 
 1. `via-data fetch --gtfs-only` (one paced TDX call, see `tdx.fetch.requests_per_minute`, default 4 per minute, the free-tier pace; the very first run has no snapshot and does a full paced fetch, a few minutes). Snapshots live in `/var/lib/via/pipeline` (mounted at `/build/server/data`).

@@ -1,0 +1,3 @@
+# The server image plus kubectl, for the weekly-refresh CronJob. Built by `deploy/orbstack.sh up`.
+FROM via-server:dev
+COPY --from=registry.k8s.io/kubectl:v1.36.5 /bin/kubectl /usr/local/bin/kubectl

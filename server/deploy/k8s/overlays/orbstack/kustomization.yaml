@@ -1,10 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+namespace: via
 resources:
   - ../../base
+  - refresh.yaml
+configMapGenerator:
+  - name: refresh-scripts
+    files:
+      - refresh-static.sh
+generatorOptions:
+  disableNameSuffixHash: true
 images:
   - name: via-server
     newName: via-server
+    newTag: dev
+  - name: via-refresh
+    newName: via-refresh
     newTag: dev
 replicas:
   - name: server

@@ -25,3 +25,24 @@ spec:
           hostPath:
             path: /absolute/path/to/Via/server/data/build/<build-id>
             type: Directory
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly-refresh
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: refresh
+              env:
+                - name: HOST_DATA_DIR
+                  value: /absolute/path/to/Via/server/data
+          volumes:
+            - name: data
+              emptyDir: null
+              hostPath:
+                path: /absolute/path/to/Via/server/data
+                type: Directory
