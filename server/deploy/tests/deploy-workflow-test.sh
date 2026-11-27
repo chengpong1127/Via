@@ -21,6 +21,7 @@ lint() {
   grep -q "workflow_run.conclusion == 'success'" "$file" || echo "missing conclusion == 'success' guard"
   grep -q "workflow_run.event == 'push'" "$file" || echo "missing event == 'push' guard (fork pull requests can have head branch main)"
   grep -q "workflow_run.head_repository.full_name == github.repository" "$file" || echo "missing same-repository guard"
+  grep -q "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$file" || echo "workflow_dispatch must be limited to refs/heads/main"
   grep -Eq '^    runs-on: \[self-hosted, via-orbstack\]$' "$file" || echo "runs-on must be [self-hosted, via-orbstack]"
   awk '/^permissions:/ {p=1; next} /^[^ ]/ {p=0} p && NF' "$file" | tr -d ' ' | tr '\n' ' ' | grep -qx 'contents:read ' || echo "top-level permissions must be exactly contents: read"
   ! grep -Eq 'secrets\.|secrets:' <<<"$code" || echo "must not use secrets"
@@ -31,6 +32,8 @@ lint() {
 }
 
 fails=0
+others="$(grep -l 'self-hosted' "$repo"/.github/workflows/*.yml | grep -v '/deploy-orbstack.yml$' || true)"
+if [ -z "$others" ]; then echo "ok   no other workflow uses a self-hosted runner"; else echo "FAIL other workflows use self-hosted: $others"; fails=$((fails + 1)); fi
 expect_clean() {
   local out
   out="$(lint "$1")"
@@ -56,6 +59,12 @@ mutate "s/ && github.event.workflow_run.event == 'push'//"
 expect_violation "$tmp/m.yml" "missing push-event guard is rejected"
 mutate "s/ == 'success'/ == 'failure'/"
 expect_violation "$tmp/m.yml" "missing success guard is rejected"
+mutate "s/ && github.ref == 'refs\/heads\/main'//"
+expect_violation "$tmp/m.yml" "dispatch without the main ref guard is rejected"
+mutate 's/^    branches: \[main\]$/    branches: [main, dev]/'
+expect_violation "$tmp/m.yml" "wider branch filter is rejected"
+mutate 's/ && github.event.workflow_run.head_repository.full_name == github.repository//'
+expect_violation "$tmp/m.yml" "missing same-repository guard is rejected"
 mutate 's/^    runs-on: .*/    runs-on: ubuntu-latest/'
 expect_violation "$tmp/m.yml" "wrong runner is rejected"
 mutate 's/^  contents: read/  contents: write/'
