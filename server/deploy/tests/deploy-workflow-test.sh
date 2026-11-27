@@ -64,6 +64,7 @@ mutate 's/^  cancel-in-progress: false/  cancel-in-progress: true/'
 expect_violation "$tmp/m.yml" "cancelling a running deploy is rejected"
 mutate 's/^    timeout-minutes:.*//'
 expect_violation "$tmp/m.yml" "missing timeout is rejected"
+# shellcheck disable=SC2016
 { cat "$workflow"; echo '      - run: echo ${{ secrets.TDX_CLIENT_SECRET }}'; } >"$tmp/m.yml"
 expect_violation "$tmp/m.yml" "secrets use is rejected"
 
