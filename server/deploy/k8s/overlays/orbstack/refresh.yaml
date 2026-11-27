@@ -1,0 +1,104 @@
+# Weekly static-data refresh: fetch (GTFS and every TDX file), build, validate, then
+# point the server at the new build. See refresh-static.sh and docs/local-orbstack.md.
+#
+# Settings, all in this file:
+#   schedule / timeZone               when it runs (Sunday 23:00 Taipei)
+#   VIA_FETCH_REQUESTS_PER_MINUTE     fetch pacing, below the key's 5 req/s limit shared with the live server
+#   ROLLOUT_TIMEOUT                   how long the new server pod may take to become Ready
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly-refresh
+spec:
+  schedule: "0 23 * * 0"
+  timeZone: Asia/Taipei
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 21600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 14400
+      template:
+        metadata:
+          labels:
+            app: weekly-refresh
+        spec:
+          restartPolicy: Never
+          serviceAccountName: weekly-refresh
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+          containers:
+            - name: refresh
+              image: via-refresh
+              imagePullPolicy: Never
+              command: ["/bin/bash", "/scripts/refresh-static.sh"]
+              env:
+                - name: VIA_ENV
+                  value: production
+                - name: VIA_VALHALLA_URL
+                  value: http://valhalla:8002/
+                - name: VIA_FETCH_REQUESTS_PER_MINUTE
+                  value: "60"
+                - name: ROLLOUT_TIMEOUT
+                  value: 600s
+                - name: TDX_CLIENT_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: tdx-credentials
+                      key: TDX_CLIENT_ID
+                - name: TDX_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: tdx-credentials
+                      key: TDX_CLIENT_SECRET
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: data
+                  mountPath: /build/server/data
+          volumes:
+            - name: scripts
+              configMap:
+                name: refresh-scripts
+                defaultMode: 0555
+            - name: data
+              emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: weekly-refresh
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: weekly-refresh
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["server"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: weekly-refresh
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: weekly-refresh
+subjects:
+  - kind: ServiceAccount
+    name: weekly-refresh
