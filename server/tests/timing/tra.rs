@@ -225,7 +225,7 @@ fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Depa
 }
 
 #[tokio::test]
-async fn fresh_tra_realtime_overrides_static_timing_with_realtime_timing() {
+async fn fresh_tra_realtime_overrides_static_timing() {
     let update = recent_update();
     let (tdx, _) = fixture_client(
         payload(vec![train("100", 7, &update)], &update),
