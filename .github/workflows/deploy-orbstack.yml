@@ -1,0 +1,39 @@
+name: Deploy to OrbStack
+
+# Runs on the owner's Mac (self-hosted runner). Only a CI-green commit of main can start it:
+# workflow_run fires after the Rust server workflow, which only runs for server/** changes, and the
+# job guard rejects any run whose conclusion is not success, whose event is not push (a fork pull
+# request can have head branch main), or that came from another repository. workflow_dispatch needs
+# write access and is limited to main; the deploy script re-checks CI for that commit.
+# Never add pull_request, pull_request_target, issue_comment or secrets here. See server/docs/local-orbstack.md.
+on:
+  workflow_run:
+    workflows: ["Rust server"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: via-orbstack-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      || github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: [self-hosted, via-orbstack]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Deploy
+        env:
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: server/deploy/orbstack-deploy.sh "$DEPLOY_SHA"
