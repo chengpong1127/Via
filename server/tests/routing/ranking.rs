@@ -22,8 +22,8 @@ fn candidate(key: &str, arrival: i64) -> RankingCandidate {
 fn fallback_timing_makes_a_journey_feasible() {
     let mut realtime = candidate("realtime", 2_000);
     realtime.walking_seconds = 500;
-    let mut delay_adjusted = candidate("delay-adjusted", 2_001);
-    delay_adjusted.walking_seconds = 400;
+    let mut tra_delay = candidate("tra-delay", 2_001);
+    tra_delay.walking_seconds = 400;
     let mut schedule = candidate("schedule", 2_002);
     schedule.walking_seconds = 300;
     let mut frequency = candidate("frequency", 2_003);
@@ -37,14 +37,14 @@ fn fallback_timing_makes_a_journey_feasible() {
         result_limit: 5,
         ..RankingPolicy::default()
     }
-    .rank(vec![realtime, delay_adjusted, schedule, frequency, mixed]);
+    .rank(vec![realtime, tra_delay, schedule, frequency, mixed]);
 
     let classes = ranked
         .iter()
         .map(|journey| (journey.candidate.stable_key.as_str(), journey.class))
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(classes["realtime"], JourneyClass::Reliable);
-    assert_eq!(classes["delay-adjusted"], JourneyClass::Reliable);
+    assert_eq!(classes["tra-delay"], JourneyClass::Reliable);
     assert_eq!(classes["schedule"], JourneyClass::Reliable);
     assert_eq!(classes["frequency"], JourneyClass::Feasible);
     assert_eq!(classes["mixed"], JourneyClass::Feasible);

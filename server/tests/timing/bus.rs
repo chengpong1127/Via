@@ -533,7 +533,7 @@ async fn realtime_effective_trip_uses_indexed_static_shape_without_identity() {
         .await
         .unwrap()[0];
     assert_eq!(trip.scheduled_trip_id, None);
-    assert!(matches!(trip.timing_basis, TimingBasis::RealtimePrediction));
+    assert!(matches!(trip.timing_basis, TimingBasis::Realtime));
     assert!(trip.stop_times[1].arrival_at > trip.stop_times[0].departure_at);
     assert!(
         trip.stop_times
@@ -588,7 +588,7 @@ async fn realtime_bus_uses_derived_downstream_segment_without_a_fabricated_sched
         .await
         .unwrap()[0];
     assert_eq!(trip.scheduled_trip_id, None);
-    assert_eq!(trip.timing_basis, TimingBasis::RealtimePrediction);
+    assert_eq!(trip.timing_basis, TimingBasis::Realtime);
     assert_eq!(
         trip.stop_times[1].arrival_at - trip.stop_times[0].departure_at,
         Duration::seconds(347)
@@ -897,7 +897,7 @@ async fn bus_batches_two_hundred_stops_and_obeys_changed_toml() {
         assert_eq!(results.len(), count);
         assert!(results.iter().all(|result| {
             result.as_ref().is_ok_and(|trips| {
-                trips.len() == 1 && trips[0].timing_basis == TimingBasis::RealtimePrediction
+                trips.len() == 1 && trips[0].timing_basis == TimingBasis::Realtime
             })
         }));
     }
@@ -921,10 +921,7 @@ async fn headway_estimates_follow_the_last_fresh_prediction_and_are_labelled() {
         .await
         .unwrap();
     assert_eq!(departures.len(), 3);
-    assert!(matches!(
-        departures[0].timing_basis,
-        TimingBasis::RealtimePrediction
-    ));
+    assert!(matches!(departures[0].timing_basis, TimingBasis::Realtime));
     assert_eq!(
         departures[0].timing_reliability,
         TimingReliability::Reliable
@@ -1023,10 +1020,7 @@ async fn no_estimates_when_the_anchor_period_has_no_headway() {
         .await
         .unwrap();
     assert_eq!(departures.len(), 1);
-    assert!(matches!(
-        departures[0].timing_basis,
-        TimingBasis::RealtimePrediction
-    ));
+    assert!(matches!(departures[0].timing_basis, TimingBasis::Realtime));
 }
 
 #[tokio::test]

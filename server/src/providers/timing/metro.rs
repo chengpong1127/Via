@@ -106,7 +106,7 @@ impl MetroDepartureSource {
             pattern_id: pattern_id.clone(),
             scheduled_trip_id: None,
             stop_times,
-            timing_basis: TimingBasis::RealtimePrediction,
+            timing_basis: TimingBasis::Realtime,
             timing_reliability: TimingReliability::Reliable,
             observed_at: Some(observed_at),
             evidence: vec![NormalizedRealtimeValue {

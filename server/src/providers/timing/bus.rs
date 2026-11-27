@@ -103,7 +103,7 @@ impl BusDepartureSource {
             timing_basis: if estimated {
                 TimingBasis::FrequencyEstimate
             } else {
-                TimingBasis::RealtimePrediction
+                TimingBasis::Realtime
             },
             timing_reliability: if estimated {
                 TimingReliability::Fallback

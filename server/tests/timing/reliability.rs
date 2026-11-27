@@ -145,7 +145,7 @@ async fn static_fallback_errors_are_returned() {
 async fn fresh_realtime_keeps_reliable_timing() {
     let source = FixtureSource {
         realtime: Some(Ok(vec![trip(
-            TimingBasis::RealtimePrediction,
+            TimingBasis::Realtime,
             TimingReliability::Reliable,
         )])),
         static_result: Ok(Vec::new()),

@@ -241,7 +241,7 @@ async fn fresh_metro_realtime_overrides_static_and_materializes_downstream_times
     let departures = resolver.next_departures(query(after)).await.unwrap();
 
     assert_eq!(departures.len(), 1);
-    assert_eq!(departures[0].timing_basis, TimingBasis::RealtimePrediction);
+    assert_eq!(departures[0].timing_basis, TimingBasis::Realtime);
     assert_eq!(
         departures[0].timing_reliability,
         TimingReliability::Reliable
@@ -285,7 +285,7 @@ async fn metro_realtime_matches_station_line_and_direction() {
     let departures = resolver.next_departures(query(after)).await.unwrap();
 
     assert_eq!(departures.len(), 1);
-    assert_eq!(departures[0].timing_basis, TimingBasis::RealtimePrediction);
+    assert_eq!(departures[0].timing_basis, TimingBasis::Realtime);
 }
 
 #[tokio::test]
@@ -357,7 +357,7 @@ async fn duplicate_metro_queries_use_one_batched_tdx_request() {
     assert!(results.iter().all(|result| {
         result
             .as_ref()
-            .is_ok_and(|trips| trips[0].timing_basis == TimingBasis::RealtimePrediction)
+            .is_ok_and(|trips| trips[0].timing_basis == TimingBasis::Realtime)
     }));
 }
 
@@ -415,7 +415,7 @@ async fn metro_batches_unique_pairs_and_obeys_changed_toml() {
         assert_eq!(results.len(), count);
         assert!(results.iter().all(|result| {
             result.as_ref().is_ok_and(|trips| {
-                trips.len() == 1 && trips[0].timing_basis == TimingBasis::RealtimePrediction
+                trips.len() == 1 && trips[0].timing_basis == TimingBasis::Realtime
             })
         }));
     }
