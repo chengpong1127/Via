@@ -26,8 +26,8 @@ spec:
               value: production
             - name: VIA_VALHALLA_URL
               value: http://valhalla:8002/
-            - name: VIA_FETCH_REQUESTS_PER_MINUTE
-              value: "60"
+            - name: BUILD_TIMEOUT_SECONDS
+              value: "7200"
             - name: ROLLOUT_TIMEOUT
               value: 600s
             - name: TDX_CLIENT_ID
@@ -43,6 +43,12 @@ spec:
             image: via-refresh:dev
             imagePullPolicy: Never
             name: refresh
+            resources:
+              limits:
+                memory: 4Gi
+              requests:
+                cpu: 500m
+                memory: 2Gi
             securityContext:
               allowPrivilegeEscalation: false
               capabilities:
@@ -70,7 +76,7 @@ spec:
               name: refresh-scripts
             name: scripts
   schedule: 0 23 * * 0
-  startingDeadlineSeconds: 21600
+  startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   timeZone: Asia/Taipei
 

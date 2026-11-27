@@ -1,10 +1,13 @@
 # Weekly static-data refresh: fetch (GTFS and every TDX file), build, validate, then
 # point the server at the new build. See refresh-static.sh and docs/local-orbstack.md.
 #
-# Settings, all in this file:
+# Settings in this file:
 #   schedule / timeZone               when it runs (Sunday 23:00 Taipei)
-#   VIA_FETCH_REQUESTS_PER_MINUTE     fetch pacing, below the key's 5 req/s limit shared with the live server
+#   startingDeadlineSeconds           a run missed while the Mac sleeps still starts within this long
+#   BUILD_TIMEOUT_SECONDS             a build that has not printed its artifact by then is stopped
 #   ROLLOUT_TIMEOUT                   how long the new server pod may take to become Ready
+#   resources                         provisional until a run has been measured (docs/local-orbstack.md)
+# TDX fetch pacing is not here: it is tdx.fetch.requests_per_minute in config/via.toml.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -13,7 +16,7 @@ spec:
   schedule: "0 23 * * 0"
   timeZone: Asia/Taipei
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 21600
+  startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -41,8 +44,8 @@ spec:
                   value: production
                 - name: VIA_VALHALLA_URL
                   value: http://valhalla:8002/
-                - name: VIA_FETCH_REQUESTS_PER_MINUTE
-                  value: "60"
+                - name: BUILD_TIMEOUT_SECONDS
+                  value: "7200"
                 - name: ROLLOUT_TIMEOUT
                   value: 600s
                 - name: TDX_CLIENT_ID
@@ -59,6 +62,12 @@ spec:
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 2Gi
+                limits:
+                  memory: 4Gi
               volumeMounts:
                 - name: scripts
                   mountPath: /scripts

@@ -5,7 +5,7 @@ Runs the whole backend (server, TDX gateway, Valhalla) and the weekly data refre
 ## One-time setup
 
 1. OrbStack running with Kubernetes enabled (`kubectl --context orbstack get nodes`).
-2. Valhalla tiles at `server/var/valhalla` (or set `VIA_TILES_DIR`) and a first static build under `server/data/build/<build-id>/` (see "First build"). After that the weekly job keeps the build fresh.
+2. Valhalla tiles at `server/var/valhalla` (or set `VIA_TILES_DIR`) and a first static build under `server/data/build/<build-id>/` (see "Refresh data", "First build"). After that the weekly job keeps the build fresh.
 3. The TDX credentials Secret. Never commit it or paste it in a chat. From `server/.env` without printing it:
 
        kubectl --context orbstack create namespace via --dry-run=client -o yaml | kubectl --context orbstack apply -f -
@@ -24,7 +24,7 @@ All from `server/`:
     deploy/orbstack.sh up <build-id>   # same, with a specific static build
     deploy/orbstack.sh status          # pods, service, /health/ready
     deploy/orbstack.sh data <build-id> # switch static build, restart server pods
-    deploy/orbstack.sh refresh         # run the weekly data refresh now and follow its log (see Weekly refresh)
+    deploy/orbstack.sh refresh         # run the weekly data refresh now and follow its log (see "Refresh data")
     deploy/orbstack.sh lan             # Wi-Fi access for a phone (foreground, port 3001, NO AUTH: see Reaching it)
     deploy/orbstack.sh down            # delete deployments and services; keeps the namespace, Secret, data and tiles
 
@@ -49,24 +49,25 @@ The overlay makes the `server` Service a LoadBalancer on port 3000. OrbStack pub
 
 Check: `curl -s http://127.0.0.1:3000/health/ready`.
 
-## Weekly refresh
+## Refresh data
 
 A CronJob, `weekly-refresh` (namespace `via`), refreshes all static data once a week: Sunday 23:00 Asia/Taipei. One job does everything, staged in `overlays/orbstack/refresh-static.sh`:
 
-1. **Fetch**: one `via-data fetch` downloads the GTFS zip and every TDX file the build needs (Bike stations, Bus routes, Bus schedules), paced at `VIA_FETCH_REQUESTS_PER_MINUTE` (60, so 1 request per second, a fifth of the key's 5 per second, which leaves room for the live server). The job fails here if TDX gave a transient error and `via-data` fell back to an older copy of a file (`reused_sources` in the snapshot manifest): a partial refresh is never built.
-2. **Build**: `via-data build` against Valhalla through the in-cluster Service (`http://valhalla:8002/`; no port-forward). About 30 minutes, and it loads Valhalla for that time, so plans from the server are slower meanwhile.
+0. **Preflight**: before any TDX call the job reads `deploy/server` (RBAC works, a static hostPath exists) and checks Valhalla's `/status`, so a missing server or a down Valhalla fails the run without spending quota.
+1. **Fetch**: one `via-data fetch` downloads the GTFS zip and every TDX file the build needs (Bike stations, Bus routes, Bus schedules), paced by `tdx.fetch.requests_per_minute` in `config/via.toml` (60, so 1 request per second, a fifth of the key's 5 per second, which leaves room for the live server; this is the only place the pacing is set). The job fails here if TDX gave a transient error and `via-data` fell back to an older copy of a file (`reused_sources` in the snapshot manifest): a partial refresh is never built.
+2. **Build**: `via-data build` against Valhalla through the in-cluster Service (`http://valhalla:8002/`; no port-forward). About 30 to 50 minutes (earlier local builds on a loaded Mac took that long and some hit Valhalla timeouts), and it loads Valhalla for that time, so plans from the server are slower meanwhile. `via-data build` moves `data/build/.via-static-latest.json` as its last step and has once been seen not to exit afterwards. The job therefore runs the build in the background and waits for its `static artifact:` line; if the process lingers more than `BUILD_EXIT_GRACE_SECONDS` (30 s) after that line, the job validates the artifact and stops the process. A build that never prints the line is stopped after `BUILD_TIMEOUT_SECONDS` (7200).
 3. **Validate**: `via-data validate` loads the new artifact.
 4. **Activate**: the job patches the `static` hostPath of `deploy/server` to the new build directory. The one-replica server rolls over with a surge pod, so the old pod keeps serving until the new one passes `/health/ready`. If the new pod is not Ready within `ROLLOUT_TIMEOUT` (600 s), the job runs `kubectl rollout undo` and fails. A rolling replacement, not an in-place reload, is the activation because the server reads its artifact only at start and the rollout gives readiness gating and rollback for free.
 
-If any step fails, the Job exits non-zero (its pod and log are kept; three failed Jobs are retained), the server stays on the build it already uses, and `data/build/.via-static-latest.json` (moved by `via-data build`) is put back where it was. The job never deletes anything under `server/data`: new builds and snapshots accumulate (about 0.5 GB each per week); prune by hand only builds that no pod mounts and no research run uses.
+If any step fails, the Job exits non-zero (its pod and log are kept; three failed Jobs are retained), the server stays on the build it already uses, and `data/build/.via-static-latest.json` is put back where it was whenever the job did not finish successfully and the link now points at a build this run created (also on a failed or hung build and on SIGTERM when the pod is deleted or hits its deadline), so a later `orbstack.sh up` never deploys an unvalidated build. A run that was SIGKILLed after the 30 s grace period cannot restore it; check `readlink data/build/.via-static-latest.json` after a deadline kill. The job never deletes anything under `server/data`: new builds and snapshots accumulate (about 0.5 GB each per week); prune by hand only builds that no pod mounts and no research run uses.
 
-All settings are in `overlays/orbstack/refresh.yaml`: `schedule` and `timeZone` (the zone is explicit; the cluster rejects an unknown one, and a Taipei-time test CronJob was verified to fire at the Taipei minute), `VIA_FETCH_REQUESTS_PER_MINUTE`, `ROLLOUT_TIMEOUT`, and `startingDeadlineSeconds` (a run missed while the Mac sleeps still starts if the Mac wakes within 6 hours). The credentials come from the existing `tdx-credentials` Secret; the script never prints them. The job's ServiceAccount may only get, list, watch and patch `deploy/server` and read ReplicaSets.
+All settings are in `overlays/orbstack/refresh.yaml`: `schedule` and `timeZone` (the zone is explicit; the cluster rejects an unknown one, and a Taipei-time test CronJob was verified to fire at the Taipei minute), `BUILD_TIMEOUT_SECONDS`, `ROLLOUT_TIMEOUT`, `startingDeadlineSeconds` (3600: a run missed while the Mac sleeps still starts if the Mac wakes within an hour, so it cannot start Monday morning, and otherwise waits for next Sunday) and the container `resources` (request 2 Gi, limit 4 Gi memory: provisional, from the earlier measurement of a resident set of at least 1.5 GiB for an unfinished build; after the first completed run read the peak with `kubectl --context orbstack top pod` during the build, or `docker stats`, and set the limit to about 1.5 times that, so an OOM kill hits the job rather than Valhalla or the server). The credentials come from the existing `tdx-credentials` Secret; the script never prints them. The job's ServiceAccount may only get, list, watch and patch `deploy/server` and read ReplicaSets.
 
 Run it by hand, from `server/`:
 
     deploy/orbstack.sh refresh
 
-or `kubectl --context orbstack -n via create job --from=cronjob/weekly-refresh my-refresh`. `orbstack.sh up` installs or updates the CronJob (and builds the `via-refresh:dev` image: `via-server:dev` plus `kubectl`). `kubectl --context orbstack -n via get cronjob,jobs` shows the schedule and past runs; `kubectl --context orbstack -n via logs job/<name>` the log, ending with a `tdx usage:` block. Use `kubectl ... patch cronjob weekly-refresh -p '{"spec":{"suspend":true}}'` to pause it.
+or `kubectl --context orbstack -n via create job --from=cronjob/weekly-refresh my-refresh`. `orbstack.sh up` installs or updates the CronJob (and builds the `via-refresh:dev` image: `via-server:dev` plus `kubectl`). `kubectl --context orbstack -n via get cronjob,jobs` shows the schedule and past runs; `kubectl --context orbstack -n via logs job/<name>` the log, ending with a `tdx usage:` block. Use `kubectl ... patch cronjob weekly-refresh -p '{"spec":{"suspend":true}}'` to pause it. Nothing notifies you of a failed run (`get cronjob` shows only `LAST SCHEDULE`): after a Sunday, run `kubectl --context orbstack -n via get jobs -l app=weekly-refresh` and look for `Complete`, or `... get cronjob weekly-refresh -o jsonpath='{.status.lastSuccessfulTime}'`.
 
 **TDX budget of one run**: about 50 calls and 0.5 GB. The snapshot of 2026-11-25 had 41 files (GTFS 468 MB, 12 Bike catalogs, 22 Bus route files, 6 Bus schedule files, 503 MB in all), so one run is roughly 50 calls (Bike catalogs may take a second page) and 3.5 points on the Basic category (`calls / 1500 + bytes / 150 MB`, see [operations.md](operations.md), "TDX points per day"), about 15 to 17 points in a month of 4 to 5 runs. This is an estimate from file sizes; the `tdx usage:` block at the end of a job log has the measured numbers (calls by status and response bytes by dataset), and the first run on the real cluster should replace this paragraph's figures.
 

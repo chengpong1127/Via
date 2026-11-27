@@ -41,6 +41,8 @@ check "schedule is Sunday 23:00" "$(sed -n 's/^  schedule: //p' "$tmp/weekly-ref
 check "timezone is stated explicitly" "$(sed -n 's/^  timeZone: //p' "$tmp/weekly-refresh.yaml")" "Asia/Taipei"
 check "a second run never overlaps the first" "$(sed -n 's/^  concurrencyPolicy: //p' "$tmp/weekly-refresh.yaml")" "Forbid"
 check "the job does not retry a failed run on its own" "$(sed -n 's/^      backoffLimit: //p' "$tmp/weekly-refresh.yaml")" "0"
+check "a missed run cannot start much later than the night slot" "$(sed -n 's/^  startingDeadlineSeconds: //p' "$tmp/weekly-refresh.yaml")" "3600"
+check "the job has a memory limit so a build cannot OOM its neighbours" "$(grep -c '^                memory: 4Gi$' "$tmp/weekly-refresh.yaml")" "1"
 check "TDX key comes from the tdx-credentials Secret" "$(grep -c 'name: tdx-credentials' "$tmp/weekly-refresh.yaml")" "2"
 check "valhalla is reached through the in-cluster service" "$(grep -c 'value: http://valhalla:8002/' "$tmp/weekly-refresh.yaml")" "1"
 
