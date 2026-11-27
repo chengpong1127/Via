@@ -33,7 +33,7 @@ def check(by,label,f,t):
                 elif fi or ti: seen.add('ONE-END')
     return '/'.join(sorted(seen)) or 'STOPS-ABSENT'
 if __name__=='__main__':
-    cur=load('bus.pkl'); sor=load('bus_sor.pkl'); legs={}
+    cur=load(os.environ.get('CURPKL','bus.pkl')); sor=load('bus_sor.pkl'); legs={}
     for fn in sys.argv[1:]:
         sec=None
         for line in open(fn):

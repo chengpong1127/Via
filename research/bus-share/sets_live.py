@@ -7,10 +7,11 @@ from paired import digest
 SC='/private/tmp/claude-501/-Users-chengpong--claude-spares-spare-3iGH7G/bf7b6f26-03b4-4dfe-ab20-0e635a962ce6/scratchpad/exp013/'
 scen=json.load(open(SC+'set-a.json'))+json.load(open(SC+'set-b.json'))
 SERVERS={'B_nodead':'http://127.0.0.1:3011','C_sor':'http://127.0.0.1:3012'}
+if os.environ.get('EXTRA'): SERVERS['D_nodetour']='http://127.0.0.1:3013'
 MODES=tuple(os.environ.get('MODES','bus,metro,tra,thsr,bike_share').split(','))
 slot=sys.argv[1]
 for i,(n,a,b,c,d) in enumerate(scen):
-    order=list(SERVERS); order=order[i%2:]+order[:i%2]
+    order=list(SERVERS); k=i%len(order); order=order[k:]+order[:k]
     for sv in order:
         for attempt in (0,1):
             now=datetime.datetime.now().strftime('%H:%M:%S')
