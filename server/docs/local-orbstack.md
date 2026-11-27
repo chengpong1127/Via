@@ -75,3 +75,62 @@ Never `rm -rf` anything under `server/data/build` or `server/data/fetch` by hand
 - Pod `CreateContainerConfigError`: the `tdx-credentials` Secret is missing.
 - Server not Ready: `kubectl --context orbstack -n via logs deploy/server --tail=50`; usually the build directory has no `.via-static.json` or Valhalla is not ready.
 - Logs never contain request coordinates; do not add any.
+
+## Auto-deploy
+
+A GitHub Actions self-hosted runner on this Mac deploys `main` to the stack after the `Rust server` CI is green. Workflow: `.github/workflows/deploy-orbstack.yml`; script: `deploy/orbstack-deploy.sh`. Nothing happens until you register the runner (below). Auto-deploy never builds data: it only reads `VIA_DATA_DIR` and `VIA_TILES_DIR` and runs `orbstack.sh up` for the commit, which uses the build `data/build/.via-static-latest.json` points to at that moment. The weekly data refresh is separate.
+
+### What it does
+
+1. `workflow_run` fires when `Rust server` completes on `main`. The job runs only if the conclusion is `success`, the triggering event is `push` and the run is from this repository. (The event check matters: a fork pull request can have a branch named `main`.) `workflow_dispatch` is also allowed, on `main` only; the script then asks the GitHub API for a green `Rust server` push run for that commit.
+2. It checks out exactly that commit in the runner workspace (`~/actions-runner-via/_work/Via/Via`, the dedicated directory) and the script refuses to go on unless `HEAD` is that commit, the commit is on `origin/main`, and `VIA_DATA_DIR` / `VIA_TILES_DIR` are outside the checkout (a checkout clean must never reach shared data). It skips a commit older than the one already deployed.
+3. It runs `orbstack.sh up`, then polls `http://127.0.0.1:3000/health/ready` (up to 120 s, `VIA_READY_TIMEOUT`), then records the commit on the `server` Deployment (annotation `via.local/deployed-sha`).
+4. If the build, apply, rollout or readiness check fails, the job fails (red run, pod list and server log tail in the log, outcome in the run summary) after rolling every Deployment back to its previous revision and restoring the previous image (`via-server:previous` is tagged before each deploy). The old pods keep serving during a failed rollout, so a failure usually means no downtime.
+5. One deploy at a time (`concurrency` group, running deploys are never cancelled), a 60 minute timeout, `permissions: contents: read`, no `secrets.*`. The TDX Secret exists only in the cluster.
+
+A change to `deploy-orbstack.yml` alone does not run `Rust server`, so deploy it with Actions > Deploy to OrbStack > Run workflow.
+
+### Pause switch
+
+    touch ~/.via-no-deploy     # pause: the job exits successfully, log line "paused: ... not deploying"
+    rm ~/.via-no-deploy        # resume
+
+Use it while you test by hand and during a data build. It only stops deploys that have not started; a running deploy finishes. Set `VIA_NO_DEPLOY_FILE` in the runner `.env` to use another path.
+
+### Register the runner
+
+Do this on the repo (Settings > Actions > Runners > New self-hosted runner, macOS, ARM64). The page shows the download commands and a one-time registration token; do not paste the token anywhere else.
+
+    mkdir ~/actions-runner-via && cd ~/actions-runner-via
+    # download and extract as shown on the GitHub page, then:
+    ./config.sh --url https://github.com/chengpong1127/Via --token <token from the page> --labels via-orbstack --name via-orbstack
+    printf 'VIA_DATA_DIR=%s\nVIA_TILES_DIR=%s\n' "$HOME/Documents/Via/server/data" "$HOME/Documents/Via/server/var/valhalla" > .env
+    echo "$PATH" > .path          # run in a shell where kubectl, docker, jq, curl and git work
+    ./svc.sh install && ./svc.sh start
+
+Use the real absolute paths of your shared data and tiles directories. `svc.sh` installs a launchd agent for your user, so it runs while you are logged in, with OrbStack running. The runner needs `kubectl`, `docker`, `jq`, `curl` and `git` in `.path`.
+
+### Public repo risks and settings
+
+The repo is public and the runner executes code as your user, with Docker and cluster-admin `kubectl` (so it can read the TDX Secret and your files). Treat this as remote code execution on your Mac:
+
+- The workflow never triggers on `pull_request`, `pull_request_target`, `issue_comment` or anything else a fork can start; `server/deploy/tests/deploy-workflow-test.sh` fails CI if that changes. Never add another workflow with `runs-on: [self-hosted, ...]`.
+- Whoever can push to `main` or run workflows can run code on this Mac, so keep write access to people you trust and protect `main` (require a pull request).
+- Settings > Actions > General: "Fork pull request workflows from outside collaborators" = Require approval for all outside collaborators; Workflow permissions = Read repository contents. If the repo belongs to an organization, restrict the runner group to this repository (Settings > Actions > Runner groups). A repo-level runner is already limited to this repo.
+- Do not put runner or repo secrets in the workflow or `.env`; the cluster Secret is enough.
+
+### Roll back
+
+A failed deploy rolls back by itself. To go back after a deploy that passed, revert the commit on `main` (it deploys like any other), or by hand, from a checkout of the good commit: `server/deploy/orbstack.sh up`. While you are at it, pause deploys first. Quick restore of the last image: `docker tag via-server:previous via-server:dev && kubectl --context orbstack -n via rollout undo deploy/server deploy/tdx-gateway`.
+
+### Confirm the first deploy
+
+After registering: the runner shows Idle with labels `self-hosted, macOS, ARM64, via-orbstack`. With deploys paused (`touch ~/.via-no-deploy`), run the workflow (Actions > Deploy to OrbStack > Run workflow, branch `main`): it should succeed and log `paused`. Then `rm ~/.via-no-deploy`, run it again and watch: build, rollout, `deployed <sha>`. Check `kubectl --context orbstack -n via get deploy server -o jsonpath='{.metadata.annotations.via\.local/deployed-sha}'` equals `git rev-parse origin/main`.
+
+### Remove it
+
+    cd ~/actions-runner-via && ./svc.sh stop && ./svc.sh uninstall
+    ./config.sh remove --token <removal token from Settings > Actions > Runners>
+    cd ~ && rm -rf ~/actions-runner-via ~/.via-no-deploy
+
+Then delete `.github/workflows/deploy-orbstack.yml` (and `orbstack-deploy-checks.yml`) in a PR. This removes only the runner directory; shared data and tiles are not under it. The stack keeps running.
