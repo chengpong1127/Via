@@ -22,6 +22,7 @@ echo "kubectl $*" >>"$CALLS"
 case "$*" in
   *"rollout undo"*) touch "$STATE/undone" ;;
   *"rollout status"*) [ ! -f "$STATE/rollout-fails" ] || [ -f "$STATE/undone" ] || exit 1 ;;
+  *"get jobs"*) [ ! -f "$STATE/job-active" ] || echo 1 ;;
   *"get deploy"*deployed-sha*) cat "$STATE/deployed-sha" 2>/dev/null || true ;;
   *"get deploy"*revision*) echo 7 ;;
 esac
@@ -175,6 +176,30 @@ git -C "$world/checkout" checkout -q "$sha"
 check "older than the deployed commit: skipped with exit 0" "$(status "$sha")" 0
 has "older than the deployed commit: says so" "$world/out" "already at or beyond"
 hasnt "older than the deployed commit: no build" "$world/calls" "docker build"
+
+make_world nonserver
+echo docs >"$world/checkout/README.md"
+git -C "$world/checkout" add -A
+git -C "$world/checkout" commit -q -m "docs only"
+git -C "$world/checkout" push -q origin main
+docs_sha="$(git -C "$world/checkout" rev-parse HEAD)"
+check "non-server commit on top of a green server commit: deploys" "$(status "$docs_sha")" 0
+has "non-server commit: builds" "$world/calls" "docker build"
+
+make_world nonservernoci
+echo docs >"$world/checkout/README.md"
+git -C "$world/checkout" add -A
+git -C "$world/checkout" commit -q -m "docs only"
+git -C "$world/checkout" push -q origin main
+docs_sha="$(git -C "$world/checkout" rev-parse HEAD)"
+echo '{"workflow_runs":[]}' >"$world/state/ci.json"
+check "non-server commit whose server ancestor has no green run: fails" "$(status "$docs_sha")" 1
+
+make_world job
+touch "$world/state/job-active"
+check "active Job in the namespace: skipped with exit 0" "$(status "$sha")" 0
+has "active Job in the namespace: says so" "$world/out" "Job is active"
+hasnt "active Job in the namespace: no build" "$world/calls" "docker build"
 
 check "script uses no secrets and no destructive commands" "$(grep -cE 'secrets\.|rm -rf|rm -r |rmdir|mv ' "$deploy/orbstack-deploy.sh" || true)" 0
 

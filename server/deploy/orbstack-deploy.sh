@@ -38,10 +38,12 @@ git -C "$REPO_DIR" diff --quiet HEAD || die "checkout has local changes"
 git -C "$REPO_DIR" merge-base --is-ancestor "$sha" origin/main || die "$sha is not on origin/main"
 
 repo="${GITHUB_REPOSITORY:-$(git -C "$REPO_DIR" remote get-url origin | sed -E 's#^.*[:/]([^/]+/[^/]+)$#\1#; s#\.git$##')}"
-ci_url="${VIA_CI_API:-https://api.github.com/repos/$repo/actions/workflows/server.yml/runs}?head_sha=$sha&event=push&status=completed"
-green="$(curl -fsS -m 30 "$ci_url" | jq --arg sha "$sha" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length')" \
-  || die "could not read the Server CI result for $sha"
-[ "$green" -ge 1 ] || die "no green Server CI push run on main for $sha"
+ci_sha="$(git -C "$REPO_DIR" rev-list -1 "$sha" -- server .github/workflows/server.yml)"
+[ -n "$ci_sha" ] || die "no commit touching server/ at or before $sha"
+ci_url="${VIA_CI_API:-https://api.github.com/repos/$repo/actions/workflows/server.yml/runs}?head_sha=$ci_sha&event=push&status=completed"
+green="$(curl -fsS -m 30 "$ci_url" | jq --arg sha "$ci_sha" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length')" \
+  || die "could not read the Server CI result for $ci_sha"
+[ "$green" -ge 1 ] || die "no green Server CI push run on main for $ci_sha (the last commit at or before $sha that touches server/)"
 
 [ -n "${VIA_DATA_DIR:-}" ] && [ -n "${VIA_TILES_DIR:-}" ] || die "set VIA_DATA_DIR and VIA_TILES_DIR (runner .env file)"
 for dir in "$VIA_DATA_DIR" "$VIA_TILES_DIR"; do
@@ -56,6 +58,12 @@ deployed="$(kc get deploy server -o "jsonpath={.metadata.annotations.via\.local/
 if [ -n "$deployed" ] && [ "$deployed" != "$sha" ] && git -C "$REPO_DIR" merge-base --is-ancestor "$sha" "$deployed" 2>/dev/null; then
   log "cluster is already at or beyond $sha (deployed $deployed); skipping"
   summary "Deploy of $sha skipped: cluster already at or beyond it ($deployed)"
+  exit 0
+fi
+
+if [ -n "$(kc get jobs -o 'jsonpath={.items[*].status.active}' 2>/dev/null || true)" ]; then
+  log "a Job is active in namespace $NS (data refresh?); not deploying $sha"
+  summary "Deploy of $sha skipped: a Job is active in namespace $NS"
   exit 0
 fi
 
