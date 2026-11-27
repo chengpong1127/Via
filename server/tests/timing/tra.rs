@@ -225,7 +225,7 @@ fn departure_resolver(network: Arc<TransitRuntime>, tdx: Arc<TdxClient>) -> Depa
 }
 
 #[tokio::test]
-async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule() {
+async fn fresh_tra_realtime_overrides_static_timing_with_realtime_timing() {
     let update = recent_update();
     let (tdx, _) = fixture_client(
         payload(vec![train("100", 7, &update)], &update),
@@ -237,7 +237,7 @@ async fn fresh_tra_realtime_overrides_static_timing_with_delay_adjusted_schedule
     let result = resolver.next_departures(query("100")).await.unwrap();
     let trip = &result[0];
 
-    assert_eq!(trip.timing_basis, TimingBasis::DelayAdjustedSchedule);
+    assert_eq!(trip.timing_basis, TimingBasis::Realtime);
     assert_eq!(trip.timing_reliability, TimingReliability::Reliable);
     assert_eq!(trip.stop_times[0].departure_at, expected_departure(7));
     assert_eq!(trip.stop_times[1].arrival_at, expected_departure(17));
@@ -352,7 +352,7 @@ async fn duplicate_train_queries_are_served_by_one_tdx_request() {
     assert!(results.iter().all(|result| {
         result
             .as_ref()
-            .is_ok_and(|trips| trips[0].timing_basis == TimingBasis::DelayAdjustedSchedule)
+            .is_ok_and(|trips| trips[0].timing_basis == TimingBasis::Realtime)
     }));
     assert_eq!(
         results[0].as_ref().unwrap()[0].stop_times[0].departure_at,

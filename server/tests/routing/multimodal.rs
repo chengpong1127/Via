@@ -978,7 +978,7 @@ async fn ranking_reconstruction_benchmark() {
 async fn transit_legs_are_labelled_estimated_only_on_frequency_estimate_timing() {
     for (basis, estimated) in [
         (TimingBasis::Schedule, false),
-        (TimingBasis::RealtimePrediction, false),
+        (TimingBasis::Realtime, false),
         (TimingBasis::FrequencyEstimate, true),
     ] {
         let transit = network();

@@ -196,7 +196,7 @@ impl TraDepartureSource {
             trip.id.as_str(),
             observation.observed_at.unix_timestamp_nanos()
         ));
-        trip.timing_basis = TimingBasis::DelayAdjustedSchedule;
+        trip.timing_basis = TimingBasis::Realtime;
         trip.timing_reliability = TimingReliability::Reliable;
         trip.scheduled_trip_id = scheduled_trip_id;
         trip.observed_at = Some(observation.observed_at);

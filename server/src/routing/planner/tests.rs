@@ -127,7 +127,7 @@ fn effective_trip(value: &str, pattern_id: &str, arrival_minute: i64) -> Effecti
                 departure_at: datetime!(2026-09-21 10:00 UTC) + Duration::minutes(arrival_minute),
             },
         ],
-        timing_basis: TimingBasis::RealtimePrediction,
+        timing_basis: TimingBasis::Realtime,
         timing_reliability: TimingReliability::Reliable,
         observed_at: None,
         evidence: Vec::new(),

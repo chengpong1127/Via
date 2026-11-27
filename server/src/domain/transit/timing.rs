@@ -18,8 +18,7 @@ use crate::domain::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TimingBasis {
-    RealtimePrediction,
-    DelayAdjustedSchedule,
+    Realtime,
     Schedule,
     FrequencyEstimate,
 }

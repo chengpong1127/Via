@@ -910,7 +910,7 @@ async fn matrix_route_mismatch_preserves_a_later_feasible_transit_departure() {
                         departure_at: departure + Duration::minutes(alight_minute),
                     },
                 ],
-                timing_basis: TimingBasis::RealtimePrediction,
+                timing_basis: TimingBasis::Realtime,
                 timing_reliability: TimingReliability::Reliable,
                 observed_at: None,
                 evidence: Vec::new(),
