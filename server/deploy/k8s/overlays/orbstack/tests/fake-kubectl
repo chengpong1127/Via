@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Stand-in for kubectl: keeps the server's static hostPath in a file instead of a cluster.
+echo "$*" >>"$FAKE_LOG"
+path_file="$FAKE_STATE/server-path"
+case "$*" in
+  *"get deploy/server"*)
+    [ ! -f "$FAKE_STATE/no-server" ] || { echo "Error from server (NotFound): deployments.apps \"server\" not found" >&2; exit 1; }
+    cat "$path_file"
+    ;;
+  *"patch deploy/server"*)
+    cp "$path_file" "$FAKE_STATE/server-path.previous"
+    patch=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "-p" ]; then patch="$2"; fi
+      shift
+    done
+    echo "$patch" >>"$FAKE_STATE/patches.json"
+    printf '%s' "$(printf '%s' "$patch" | jq -r '.spec.template.spec.volumes[0].hostPath.path')" >"$path_file"
+    ;;
+  *"rollout status"*)
+    [ ! -f "$FAKE_STATE/rollout-fails" ] || { echo "error: deployment exceeded its progress deadline" >&2; exit 1; }
+    ;;
+  *"rollout undo"*)
+    cp "$FAKE_STATE/server-path.previous" "$path_file"
+    ;;
+  *) exit 2 ;;
+esac

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Stand-in for via-data in tests: no network, no Valhalla. Prints the same lines as the real CLI.
+echo "$*" >>"$FAKE_LOG"
+args=("$@")
+if [ "${args[0]:-}" = "--config" ]; then
+  cp "${args[1]}" "$FAKE_STATE/config-used.toml"
+  args=("${args[@]:2}")
+fi
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+case "${args[0]}" in
+  fetch)
+    [ -z "${FAKE_FETCH_FAIL:-}" ] || { echo "fetch failed" >&2; exit 1; }
+    mkdir -p "$DATA_DIR/fetch/$ts"
+    if [ -n "${FAKE_REUSED:-}" ]; then
+      printf '{"sources":{},"reused_sources":{"%s":"2026-11-20T00:00:00Z"}}\n' "$FAKE_REUSED" >"$DATA_DIR/fetch/$ts/manifest.json"
+    else
+      printf '{"sources":{},"reused_sources":{}}\n' >"$DATA_DIR/fetch/$ts/manifest.json"
+    fi
+    ln -sfn "$ts" "$DATA_DIR/fetch/latest"
+    echo "fetch snapshot: $DATA_DIR/fetch/$ts"
+    echo "latest fetch snapshot: $DATA_DIR/fetch/latest"
+    echo "tdx usage:"
+    echo 'via_tdx_upstream_requests_total{dataset="static",status="200"} 1'
+    ;;
+  build)
+    [ "${args[1]}" = "--input" ] || exit 2
+    [ -f "${args[2]}/manifest.json" ] || { echo "no snapshot ${args[2]}" >&2; exit 1; }
+    [ -z "${FAKE_BUILD_FAIL:-}" ] || { echo "build failed" >&2; exit 1; }
+    mkdir -p "$DATA_DIR/build/$ts"
+    printf '{"ok":"%s"%s}' "$ts" "${FAKE_ARTIFACT_EXTRA:-}" >"$DATA_DIR/build/$ts/.via-static.json"
+    ln -sfn "$ts/.via-static.json" "$DATA_DIR/build/.via-static-latest.json"
+    echo "static artifact: $DATA_DIR/build/$ts/.via-static.json"
+    echo "latest static artifact: $DATA_DIR/build/.via-static-latest.json"
+    ;;
+  validate)
+    [ "${args[1]}" = "--static" ] || exit 2
+    [ -z "${FAKE_VALIDATE_FAIL:-}" ] || { echo "invalid artifact" >&2; exit 1; }
+    grep -q '"ok"' "${args[2]}"
+    echo "validated"
+    ;;
+  validate-config) echo "configuration is valid" ;;
+  *) exit 2 ;;
+esac
