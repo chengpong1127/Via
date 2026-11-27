@@ -3,6 +3,7 @@ mod report;
 
 use std::{
     error::Error,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -136,7 +137,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Command::Validate(args) => validate(args)?,
         Command::Inspect(args) => inspect(args)?,
     }
-    Ok(())
+    std::io::stdout().flush()?;
+    std::process::exit(0)
 }
 
 async fn fetch(args: FetchArgs, settings: &ViaConfig) -> Result<(), Box<dyn Error>> {
