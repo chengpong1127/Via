@@ -16,7 +16,7 @@ Findings below are from 2026-11-23 to 2026-11-26.
 - Data refresh: download GTFS only (`--gtfs-only`, #39); Valhalla needs a port-forward to the OrbStack service on 8002 and `VIA_VALHALLA_URL`.
 
 ## Findings
-- Common lines: sharing lines across stops of one place widens boardable lines from 1.25 to 2.73 per edge offline (shipped as #40; Phase 1 p50 114.8 to 99.6 ms and p95 257.6 to 216.9 ms, with run-to-run spread larger than the difference).
+- Common lines: sharing lines across stops of one place widens boardable lines from 1.25 to 2.73 per edge offline (proposed in open PR #40, not merged: no measured win survived the timed hop, so decide after a live A/B on the corrected build; Phase 1 p50 114.8 to 99.6 ms and p95 257.6 to 216.9 ms, with run-to-run spread larger than the difference).
 - EXP-008 live A/B (19 valid of 20 scenarios): labelled headway estimates arrive 23 to 36 min earlier in 3 scenarios; place sharing 3.5 to 10 min earlier in 2; both combined earlier in 4; nothing got worse; TDX requests per plan unchanged by place sharing. Estimates shipped as #42.
 - EXP-009 (place-aware fan-out of walking transfers) not retained: 69.5% of stops hit the 12-edge cap, 74% of kept edges go to a place already reached, and on the Taipei core the cap removes 84% of reachable walking pairs. One edge per place hides other lines (17 of 97 scenarios worse). Whole places nearest-first gave 15 to 19 better and 7 to 9 worse by over 30 s on static cost, a metric the search does not optimise, so a live A/B is needed.
 - EXP-010 (TDX N1 bus ETA error, 81 evening buses, one hour only): MAE 33 s at 0 to 5 min, 76 s at 5 to 10, 93 s at 10 to 20; bias +12 to +27 s up to 10 min and -135 s beyond 20 min (n=52). Rerun in daytime.

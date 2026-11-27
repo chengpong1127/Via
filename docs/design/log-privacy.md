@@ -7,7 +7,7 @@ are in `server/docs/deploy-aws.md` section 10 and `server/docs/operations.md`.
 ## What was found
 - The only real leak in `server/src` was reqwest errors wrapped by the TDX client: their source chain and Debug output carried the full request URL with query string. Fixed by dropping the URL when the error is built and redacting query and fragment in one helper.
 - Spans use `skip_all` and a path-only HTTP span; metric labels are static (`dataset` only); no `tracing` call logged coordinates.
-- Redirects are off on the TDX request client and the gateway client; the GTFS download client keeps default redirects (carries no coordinates).
+- Redirects are off (`Policy::none()`) on the TDX request client and the gateway client; confirm on the next data refresh that nothing relied on redirects; the GTFS download client keeps default redirects (carries no coordinates).
 - Stop IDs, mode sets, counts and timings may stay in logs.
 
 ## Guard rails
