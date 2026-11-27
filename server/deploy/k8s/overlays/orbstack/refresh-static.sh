@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Weekly static-data refresh, run by the weekly-refresh CronJob (docs/local-orbstack.md).
 #
-# One staged job: fetch (GTFS and every TDX file, paced by tdx.fetch in config/via.toml),
+# One staged job: fetch (GTFS and every TDX file, paced by VIA_FETCH_REQUESTS_PER_MINUTE),
 # build, validate, activate. Activation points the server Deployment's static hostPath at
 # the new build; the rolling update keeps the old pod serving until the new one is Ready,
 # and a failed rollout is undone. Anything that fails before activation leaves the server

@@ -90,14 +90,14 @@ AWS is paused. The local OrbStack stack refreshes weekly instead, with one fetch
 
 A Kubernetes CronJob, `nightly-static` (aws overlay), runs at 03:00 Asia/Taipei:
 
-1. `via-data fetch --gtfs-only` (one paced TDX call, see `tdx.fetch.requests_per_minute`, default 60 per minute; the very first run has no snapshot and does a full paced fetch, a few minutes). Snapshots live in `/var/lib/via/pipeline` (mounted at `/build/server/data`).
+1. `via-data fetch --gtfs-only` (one paced TDX call, see `tdx.fetch.requests_per_minute`, default 4 per minute, the free-tier pace; the very first run has no snapshot and does a full paced fetch, a few minutes). Snapshots live in `/var/lib/via/pipeline` (mounted at `/build/server/data`).
 2. If the new GTFS sha256 equals the one of the last successful build, the new snapshot is dropped and the job ends. Nothing is built, activated or restarted.
 3. Otherwise `via-data build` (against the in-cluster `valhalla` service), then the artifact is copied to `/var/lib/via/static/incoming/<id>/` and `incoming/READY` is written.
 4. On the host, `via-static-activate.path` sees `READY` and runs `fetch.sh --incoming`: the same validate (`via-data validate` from the server image), atomic `current` symlink switch, restart, readiness wait and automatic rollback as section 4. `READY` is consumed on success and on failure, so a rejected build is not retried in a loop; the next night builds again only if the GTFS changed or the build had not succeeded.
 
 No AWS credentials are involved. The pod needs the `tdx-credentials` Secret (the same one the gateway uses) and write access to two host directories, which `install-k3s.sh` creates owned by uid 10001. On a node bootstrapped before this change run once: `sudo install -d -o 10001 -g 10001 /var/lib/via/pipeline /var/lib/via/static/incoming`, install the two `via-static-activate.*` units from `server/deploy/aws/artifacts/` and `systemctl enable --now via-static-activate.path`.
 
-TDX quota: the job spends at most `tdx.fetch.requests_per_minute` requests per minute (default 60) and the gateway shares the per-key limit of the TDX plan (https://tdx.transportdata.tw/pricing), so the 03:00 slot (no traffic) is deliberate. Do not run live TDX experiments against the production key around that time.
+TDX quota: the job spends at most `tdx.fetch.requests_per_minute` requests per minute (default 4) and the gateway shares the per-key limit of the TDX plan (https://tdx.transportdata.tw/pricing), so the 03:00 slot (no traffic) is deliberate. Do not run live TDX experiments against the production key around that time.
 
 Do not merge PR #19 before #27: the job depends on `via-data fetch --gtfs-only` and the paced fetch from #27 (PR in progress). The job requires the image to contain `via-data fetch --gtfs-only` and the paced fetch (#27, PR #39; exit 0 means a complete snapshot, 1 means nothing was published, config under `[tdx.fetch]`). Until the image has it the job fails and the previous data stays active.
 

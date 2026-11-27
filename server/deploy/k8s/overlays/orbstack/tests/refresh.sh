@@ -28,7 +28,7 @@ fails=0
 check() {
   if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1 (expected '$3', got '$2')"; fails=$((fails + 1)); fi
 }
-calls() { grep -c "$1" "$FAKE_LOG" || true; }
+calls() { grep -c -e "$1" "$FAKE_LOG" || true; }
 server_path() { cat "$FAKE_STATE/server-path"; }
 latest_target() { readlink "$DATA_DIR/build/.via-static-latest.json"; }
 run() { "$script" >"$tmp/out.log" 2>&1; }
@@ -62,7 +62,7 @@ check "patch keeps the volume name and Directory type" "$(jq -r '.spec.template.
 check "old build and snapshot are kept" "$(untouched)" "yes"
 check "tdx usage block reaches the job log" "$(grep -c '^tdx usage:' "$tmp/out.log")" "1"
 check "secrets are never printed" "$(grep -c -e test-client-secret-9999 -e test-client-id-0000 "$tmp/out.log" || true)" "0"
-check "the shipped config is used as it is (pacing lives in config/via.toml only)" "$(calls -- '--config')" "0"
+check "the shipped config is used as it is (pacing lives in config/via.toml only)" "$(calls '--config')" "0"
 
 reset
 export VALHALLA_CHECK=false

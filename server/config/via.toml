@@ -74,7 +74,7 @@ bike_catalog_page_size = 1000
 rate_limit_backoff_seconds = 3
 
 [tdx.fetch]
-requests_per_minute = 60
+requests_per_minute = 4
 connect_timeout_ms = 5000
 request_timeout_ms = 30000
 max_attempts = 4

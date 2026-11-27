@@ -26,6 +26,8 @@ spec:
               value: production
             - name: VIA_VALHALLA_URL
               value: http://valhalla:8002/
+            - name: VIA_FETCH_REQUESTS_PER_MINUTE
+              value: "60"
             - name: BUILD_TIMEOUT_SECONDS
               value: "7200"
             - name: ROLLOUT_TIMEOUT

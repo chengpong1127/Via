@@ -43,6 +43,7 @@ check "a second run never overlaps the first" "$(sed -n 's/^  concurrencyPolicy:
 check "the job does not retry a failed run on its own" "$(sed -n 's/^      backoffLimit: //p' "$tmp/weekly-refresh.yaml")" "0"
 check "a missed run cannot start much later than the night slot" "$(sed -n 's/^  startingDeadlineSeconds: //p' "$tmp/weekly-refresh.yaml")" "3600"
 check "the job has a memory limit so a build cannot OOM its neighbours" "$(grep -c '^                memory: 4Gi$' "$tmp/weekly-refresh.yaml")" "1"
+check "fetch pacing for the OrbStack key is set in the job, once" "$(grep -c -A1 'name: VIA_FETCH_REQUESTS_PER_MINUTE' "$tmp/weekly-refresh.yaml" | head -1)/$(grep -c 'value: "60"' "$tmp/weekly-refresh.yaml")" "1/1"
 check "TDX key comes from the tdx-credentials Secret" "$(grep -c 'name: tdx-credentials' "$tmp/weekly-refresh.yaml")" "2"
 check "valhalla is reached through the in-cluster service" "$(grep -c 'value: http://valhalla:8002/' "$tmp/weekly-refresh.yaml")" "1"
 

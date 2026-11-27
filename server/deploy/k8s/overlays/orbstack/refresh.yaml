@@ -4,10 +4,11 @@
 # Settings in this file:
 #   schedule / timeZone               when it runs (Sunday 23:00 Taipei)
 #   startingDeadlineSeconds           a run missed while the Mac sleeps still starts within this long
+#   VIA_FETCH_REQUESTS_PER_MINUTE     TDX fetch pacing, 60 (1 req/s of the owner's 5 req/s key, shared with the live server);
+#                                     the shipped default stays 4 for a free-tier key
 #   BUILD_TIMEOUT_SECONDS             a build that has not printed its artifact by then is stopped
 #   ROLLOUT_TIMEOUT                   how long the new server pod may take to become Ready
 #   resources                         provisional until a run has been measured (docs/local-orbstack.md)
-# TDX fetch pacing is not here: it is tdx.fetch.requests_per_minute in config/via.toml.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -44,6 +45,8 @@ spec:
                   value: production
                 - name: VIA_VALHALLA_URL
                   value: http://valhalla:8002/
+                - name: VIA_FETCH_REQUESTS_PER_MINUTE
+                  value: "60"
                 - name: BUILD_TIMEOUT_SECONDS
                   value: "7200"
                 - name: ROLLOUT_TIMEOUT
